@@ -1,9 +1,10 @@
+using Msync.Optimization;
 using System.Reflection;
 using Msync.Core;
 using Msync.Runtime;
 using Module = Msync.Core.Module;
 
-MethodInfo method = typeof(Optimizer).Assembly.GetType("Msync.Core.LocalSlotCompaction")!
+MethodInfo method = typeof(Optimizer).Assembly.GetType("Msync.Optimization.LocalSlotCompaction")!
     .GetMethod("Compact", BindingFlags.Static | BindingFlags.NonPublic)!;
 Module Compact(Module module) => (Module)method.Invoke(null, [module])!;
 int assertions = 0;

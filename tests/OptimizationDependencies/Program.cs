@@ -1,3 +1,4 @@
+using Msync.Optimization;
 using System.Reflection;
 using System.Diagnostics;
 using System.Text.Json;
@@ -31,7 +32,7 @@ if (args.Contains("--measure", StringComparer.Ordinal))
     return;
 }
 
-Type dependencies = typeof(Optimizer).Assembly.GetType("Msync.Core.OptimizationDependencies")!;
+Type dependencies = typeof(Optimizer).Assembly.GetType("Msync.Optimization.OptimizationDependencies")!;
 MethodInfo capture = dependencies.GetMethod("Capture", BindingFlags.Static | BindingFlags.NonPublic)!;
 MethodInfo matches = dependencies.GetMethod("Matches", BindingFlags.Instance | BindingFlags.NonPublic)!;
 int checks = 0;

@@ -1,4 +1,4 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
-  <ItemGroup><Compile Include="../../src/Msync.Core/DefinitionSet.cs" Link="DefinitionSet.cs" /></ItemGroup>
+  <ItemGroup><Compile Include="../../src/Msync.Optimization/Analysis/DefinitionSet.cs" Link="DefinitionSet.cs" /></ItemGroup>
 </Project>

@@ -1,3 +1,4 @@
+using Msync.Optimization;
 using System.Reflection;
 using System.Text;
 using Msync.Compiler;
@@ -5,7 +6,7 @@ using Msync.Core;
 using Msync.Runtime;
 using Module = Msync.Core.Module;
 
-MethodInfo pass = typeof(Optimizer).Assembly.GetType("Msync.Core.TailCallOptimization")!
+MethodInfo pass = typeof(Optimizer).Assembly.GetType("Msync.Optimization.TailCallOptimization")!
     .GetMethod("Optimize", BindingFlags.Static | BindingFlags.NonPublic)!;
 int assertions = 0;
 void Require(bool condition, string message)
@@ -13,7 +14,7 @@ void Require(bool condition, string message)
     assertions++;
     if (!condition) throw new InvalidOperationException(message);
 }
-Module Transform(Module module) => Optimizer.FormBlocks(module with
+Module Transform(Module module) => BlockBuilder.Form(module with
 {
     Functions = module.Functions.Select((function, index) =>
         (FunctionCode)pass.Invoke(null, [module, function, index])!).ToArray()

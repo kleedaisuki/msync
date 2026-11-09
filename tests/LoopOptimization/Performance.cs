@@ -1,3 +1,4 @@
+using Msync.Optimization;
 using System.Diagnostics;
 using System.Reflection;
 using Msync.Compiler;
@@ -11,7 +12,7 @@ internal static class LoopPerformance
         var source = "let total = 0; for item in [" + string.Join(',', Enumerable.Range(1, 16)) + "] { total = total + item; }; total";
         var baseline = Compiler.Compile(source, "loop-performance", 0);
         var constants = baseline.Constants.ToList();
-        var method = typeof(Optimizer).Assembly.GetType("Msync.Core.LoopOptimization")!.GetMethod("Optimize", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var method = typeof(Optimizer).Assembly.GetType("Msync.Optimization.LoopOptimization")!.GetMethod("Optimize", BindingFlags.NonPublic | BindingFlags.Static)!;
         var loop = baseline with { Functions = baseline.Functions.Select(function => (FunctionCode)method.Invoke(null, [baseline, function, constants, 3])!).ToArray() };
         var full = Optimizer.Optimize(baseline, 3);
         var context = new BindingContext(Environment.CurrentDirectory, HostContext.HomeDirectory);

@@ -42,6 +42,16 @@ def main() -> None:
     revision = subprocess.check_output(
         ["git", "rev-parse", options.ref], cwd=ROOT, text=True
     ).strip()
+    optional_projects: list[str] = []
+    optimization_exists: subprocess.CompletedProcess[bytes] = subprocess.run(
+        ["git", "cat-file", "-e", f"{revision}:src/Msync.Optimization"],
+        cwd=ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if optimization_exists.returncode == 0:
+        optional_projects.append("src/Msync.Optimization")
     archive = subprocess.check_output(
         [
             "git",
@@ -50,6 +60,7 @@ def main() -> None:
             revision,
             "src/Msync.Compiler",
             "src/Msync.Core",
+            *optional_projects,
             "stdlib",
             "Directory.Build.props",
             "global.json",

@@ -1,10 +1,11 @@
+using Msync.Optimization;
 using System.Reflection;
 using Msync.Compiler;
 using Msync.Core;
 using Msync.Runtime;
 using Module = Msync.Core.Module;
 
-var pass = typeof(Optimizer).Assembly.GetType("Msync.Core.InterproceduralSpecialization")!
+var pass = typeof(Optimizer).Assembly.GetType("Msync.Optimization.InterproceduralSpecialization")!
     .GetMethod("Optimize", BindingFlags.NonPublic | BindingFlags.Static)!;
 var assertions = 0;
 var root = Path.Combine(Environment.CurrentDirectory, ".temp", "ipa-specialization-" + Guid.NewGuid().ToString("N"));

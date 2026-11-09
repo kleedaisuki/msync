@@ -1,10 +1,11 @@
+using Msync.Optimization;
 using System.Reflection;
 using Msync.Compiler;
 using Msync.Core;
 using Msync.Runtime;
 using Module = Msync.Core.Module;
 
-MethodInfo pass = typeof(Optimizer).Assembly.GetType("Msync.Core.AggregateArgumentSpecialization")!
+MethodInfo pass = typeof(Optimizer).Assembly.GetType("Msync.Optimization.AggregateArgumentSpecialization")!
     .GetMethod("Optimize", BindingFlags.Static | BindingFlags.NonPublic)!;
 Module Apply(Module module, int level = 2) => (Module)pass.Invoke(null, [module, level])!;
 int assertions = 0;

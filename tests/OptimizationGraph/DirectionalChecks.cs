@@ -1,3 +1,4 @@
+using Msync.Optimization;
 using System.Reflection;
 using Msync.Core;
 using Module = Msync.Core.Module;
@@ -6,7 +7,7 @@ internal static class DirectionalChecks
 {
     internal static int Run()
     {
-        MethodInfo optimize = typeof(Optimizer).Assembly.GetType("Msync.Core.DirectionalNormalization")!
+        MethodInfo optimize = typeof(Optimizer).Assembly.GetType("Msync.Optimization.DirectionalNormalization")!
             .GetMethod("Optimize", BindingFlags.NonPublic | BindingFlags.Static)!;
         int assertions = 0;
         for (int length = 2; length <= 7; length++)

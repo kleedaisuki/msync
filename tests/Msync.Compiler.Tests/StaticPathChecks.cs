@@ -1,3 +1,4 @@
+using Msync.Optimization;
 using Msync.Compiler;
 using Msync.Core;
 using Frontend = Msync.Compiler.Compiler;

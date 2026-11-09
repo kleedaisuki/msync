@@ -160,7 +160,7 @@ internal static class Program
             else if (scenario is not ("independent" or "gated_literal" or "gated_shared")) throw new ArgumentException($"Unknown scenario '{scenario}'");
         }
         code.Add(new(OpCode.Null)); code.Add(new(OpCode.Return));
-        return Optimizer.FormBlocks(new(constants, [new("main", 0, locals, code, TypeRef.Null)], Stage: ArtifactStage.Executable,
+        return BlockBuilder.Form(new(constants, [new("main", 0, locals, code, TypeRef.Null)], Stage: ArtifactStage.Executable,
             Context: new(directory, directory), OptimizationLevel: 0));
     }
 

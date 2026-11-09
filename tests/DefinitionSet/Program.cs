@@ -1,4 +1,4 @@
-using Msync.Core;
+using Msync.Optimization;
 
 int assertions = 0;
 void Require(bool condition, string message)

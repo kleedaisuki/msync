@@ -9,4 +9,5 @@
     <ProjectReference Include="$(MsyncSourceRoot)/src/Msync.Compiler/Msync.Compiler.csproj" />
     <ProjectReference Include="$(MsyncSourceRoot)/src/Msync.Runtime/Msync.Runtime.csproj" />
   </ItemGroup>
+  <ItemGroup><ProjectReference Include="../../../src/Msync.Optimization/Msync.Optimization.csproj" /></ItemGroup>
 </Project>

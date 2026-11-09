@@ -1,3 +1,4 @@
+using Msync.Optimization;
 using System.Reflection;
 using System.Diagnostics;
 using System.Text;
@@ -13,7 +14,7 @@ void Require(bool condition, string message)
     if (!condition) throw new InvalidOperationException(message);
 }
 
-MethodInfo scalarize = typeof(Optimizer).Assembly.GetType("Msync.Core.ScopeScalarization")!
+MethodInfo scalarize = typeof(Optimizer).Assembly.GetType("Msync.Optimization.ScopeScalarization")!
     .GetMethod("Optimize", BindingFlags.NonPublic | BindingFlags.Static)!;
 Module Scalarize(Module module)
 {

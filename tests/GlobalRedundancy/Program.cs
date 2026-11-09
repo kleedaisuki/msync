@@ -1,10 +1,11 @@
+using Msync.Optimization;
 using System.Reflection;
 using System.Diagnostics;
 using Msync.Core;
 using Msync.Runtime;
 using Module = Msync.Core.Module;
 
-var pass = typeof(Optimizer).Assembly.GetType("Msync.Core.GlobalRedundancy")!.GetMethod("Optimize", BindingFlags.Static | BindingFlags.NonPublic)!;
+var pass = typeof(Optimizer).Assembly.GetType("Msync.Optimization.GlobalRedundancy")!.GetMethod("Optimize", BindingFlags.Static | BindingFlags.NonPublic)!;
 var assertions = 0;
 var root = Path.Combine(Environment.CurrentDirectory, ".temp", "global-redundancy-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);

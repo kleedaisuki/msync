@@ -1,3 +1,4 @@
+using Msync.Optimization;
 using System.Reflection;
 using Msync.Core;
 using Msync.Runtime;
@@ -9,7 +10,7 @@ if (args.Contains("--measure", StringComparer.Ordinal))
     return;
 }
 
-MethodInfo pass = typeof(Optimizer).Assembly.GetType("Msync.Core.IndexedMemoryOptimization")!
+MethodInfo pass = typeof(Optimizer).Assembly.GetType("Msync.Optimization.IndexedMemoryOptimization")!
     .GetMethod("Optimize", BindingFlags.NonPublic | BindingFlags.Static)!;
 int checks = 0;
 BindingContext context = new(Environment.CurrentDirectory, Environment.CurrentDirectory);

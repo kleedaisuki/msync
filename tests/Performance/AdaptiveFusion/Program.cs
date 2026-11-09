@@ -1,3 +1,4 @@
+using Msync.Optimization;
 using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
@@ -160,7 +161,7 @@ internal static class Program
         public override TypeRef Type => throw new MsyncException("selected marker");
     }
 
-    private static Module AddModule(Value left, Value right, string root) => Optimizer.FormBlocks(new([left, right],
+    private static Module AddModule(Value left, Value right, string root) => BlockBuilder.Form(new([left, right],
         [new("add", 0, 2,
         [new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.Constant, 1), new(OpCode.InitializeLocal, 1),
          new(OpCode.LoadLocal, 0), new(OpCode.LoadLocal, 1), new(OpCode.Add, Span: new("selected-fusion-error.msync", 12, 3)), new(OpCode.Return)], TypeRef.Any)],

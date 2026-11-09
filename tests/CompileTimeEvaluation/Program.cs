@@ -1,10 +1,11 @@
+using Msync.Optimization;
 using System.Reflection;
 using Msync.Compiler;
 using Msync.Core;
 using Msync.Runtime;
 using Module = Msync.Core.Module;
 
-var method = typeof(Optimizer).Assembly.GetType("Msync.Core.CompileTimeEvaluation")!
+var method = typeof(Optimizer).Assembly.GetType("Msync.Optimization.CompileTimeEvaluation")!
     .GetMethod("Optimize", BindingFlags.NonPublic | BindingFlags.Static)!;
 var root = Path.Combine(Environment.CurrentDirectory, ".temp", "compile-time-evaluation-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);

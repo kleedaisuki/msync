@@ -1,3 +1,4 @@
+using Msync.Optimization;
 using System.Runtime.CompilerServices;
 using Msync.Compiler;
 using Msync.Core;

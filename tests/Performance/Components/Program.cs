@@ -1,3 +1,4 @@
+using Msync.Optimization;
 using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
@@ -110,7 +111,7 @@ internal static class Program
             ("compile_o0", () => SourceCompiler.Compile(source, sourceName, 0)),
             ("compile_o1", () => SourceCompiler.Compile(source, sourceName, 1)),
             ("optimize_o1", () => Optimizer.Optimize(raw, 1)),
-            ("form_blocks", () => Optimizer.FormBlocks(raw)),
+            ("form_blocks", () => BlockBuilder.Form(raw)),
             ("artifact_validate", () => { Artifact.Validate(optimized); return optimized; }),
             ("artifact_encode", () => Encode(optimized)),
             ("artifact_decode", () => Decode(encoded)),

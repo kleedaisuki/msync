@@ -1,3 +1,4 @@
+using Msync.Optimization;
 using System.Collections;
 using System.Reflection;
 using Msync.Core;
@@ -5,7 +6,7 @@ using Msync.Runtime;
 using SourceCompiler = Msync.Compiler.Compiler;
 using Module = Msync.Core.Module;
 
-MethodInfo analyze = typeof(Optimizer).Assembly.GetType("Msync.Core.MemoryEffects")!
+MethodInfo analyze = typeof(Optimizer).Assembly.GetType("Msync.Optimization.MemoryEffects")!
     .GetMethod("Analyze", BindingFlags.NonPublic | BindingFlags.Static)!;
 int assertions = 0;
 void Check(bool condition, string message)

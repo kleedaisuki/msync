@@ -1,3 +1,6 @@
+#if MSYNC_OPTIMIZATION
+using Msync.Optimization;
+#endif
 using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;

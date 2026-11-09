@@ -1,3 +1,4 @@
+using Msync.Optimization;
 using System.Reflection;
 using Msync.Core;
 using Module = Msync.Core.Module;
@@ -8,7 +9,7 @@ void Require(bool condition, string message)
     assertions++;
     if (!condition) throw new InvalidOperationException(message);
 }
-Type type = typeof(Module).Assembly.GetType("Msync.Core.ConstantInterner", throwOnError: true)!;
+Type type = typeof(Optimizer).Assembly.GetType("Msync.Optimization.ConstantInterner", throwOnError: true)!;
 ConstructorInfo constructor = type.GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).Single();
 MethodInfo intern = type.GetMethod("Intern", BindingFlags.Instance | BindingFlags.NonPublic)!;
 FieldInfo indices = type.GetField("indices", BindingFlags.Instance | BindingFlags.NonPublic)!;
@@ -47,7 +48,7 @@ code.Add(new(OpCode.Null)); code.Add(new(OpCode.Return));
 var function = new FunctionCode("main", 0, 0, code, TypeRef.Null);
 var module = new Module(constants, [function], OptimizationLevel: 0);
 pool = constructor.Invoke([constants]);
-Type graph = typeof(Module).Assembly.GetType("Msync.Core.GraphOptimization", throwOnError: true)!;
+Type graph = typeof(Optimizer).Assembly.GetType("Msync.Optimization.GraphOptimization", throwOnError: true)!;
 MethodInfo optimize = graph.GetMethod("Optimize", BindingFlags.Static | BindingFlags.NonPublic)!;
 var result = (FunctionCode)optimize.Invoke(null, [module, function, constants, null, pool])!;
 Require(indices.GetValue(pool) is null, "Original literal transfer script unnecessarily built an interning index");

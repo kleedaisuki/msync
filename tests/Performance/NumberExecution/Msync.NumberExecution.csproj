@@ -14,4 +14,13 @@
     <Reference Include="Msync.Compiler"><HintPath>$(FrozenAssemblies)/Msync.Compiler.dll</HintPath></Reference>
     <Reference Include="Msync.Runtime"><HintPath>$(FrozenAssemblies)/Msync.Runtime.dll</HintPath></Reference>
   </ItemGroup>
+  <PropertyGroup Condition="('$(FrozenAssemblies)' == '' And Exists('../../../src/Msync.Optimization/Msync.Optimization.csproj')) Or Exists('$(FrozenAssemblies)/Msync.Optimization.dll')">
+    <DefineConstants>$(DefineConstants);MSYNC_OPTIMIZATION</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(FrozenAssemblies)' == '' And Exists('../../../src/Msync.Optimization/Msync.Optimization.csproj')">
+    <ProjectReference Include="../../../src/Msync.Optimization/Msync.Optimization.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(FrozenAssemblies)' != '' And Exists('$(FrozenAssemblies)/Msync.Optimization.dll')">
+    <Reference Include="Msync.Optimization"><HintPath>$(FrozenAssemblies)/Msync.Optimization.dll</HintPath></Reference>
+  </ItemGroup>
 </Project>

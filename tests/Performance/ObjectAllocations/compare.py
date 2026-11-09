@@ -5,9 +5,9 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import statistics
 import subprocess
+from pathlib import Path
 from typing import Any
 
 
@@ -17,7 +17,7 @@ def command(image: Path) -> list[str]:
 
 def identity(image: Path) -> dict[str, str]:
     result: dict[str, str] = {"image": str(image), "sha256": hashlib.sha256(image.read_bytes()).hexdigest()}
-    for name in ("Msync.Core.dll", "Msync.Compiler.dll", "Msync.Runtime.dll"):
+    for name in ("Msync.Core.dll", "Msync.Optimization.dll", "Msync.Compiler.dll", "Msync.Runtime.dll"):
         dependency: Path = image.parent / name
         if dependency.exists():
             result[name] = hashlib.sha256(dependency.read_bytes()).hexdigest()

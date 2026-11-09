@@ -5,4 +5,5 @@
     <ProjectReference Include="../../src/Msync.Runtime/Msync.Runtime.csproj" />
     <EmbeddedResource Include="Fixtures/path-v1.mso" />
   </ItemGroup>
+  <ItemGroup><ProjectReference Include="../../src/Msync.Optimization/Msync.Optimization.csproj" /></ItemGroup>
 </Project>

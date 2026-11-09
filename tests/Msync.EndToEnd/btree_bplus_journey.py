@@ -341,6 +341,7 @@ def main() -> None:
                 "Msync.Compiler.dll",
                 "Msync.Runtime.dll",
                 "Msync.Core.dll",
+                "Msync.Optimization.dll",
             )
             if (binary.parent / name).exists()
         },

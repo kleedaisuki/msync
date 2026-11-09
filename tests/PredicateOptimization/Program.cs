@@ -1,3 +1,4 @@
+using Msync.Optimization;
 using System.Reflection;
 using System.Diagnostics;
 using Msync.Compiler;
@@ -5,7 +6,7 @@ using Msync.Core;
 using Msync.Runtime;
 using Module = Msync.Core.Module;
 
-var method = typeof(Optimizer).Assembly.GetType("Msync.Core.PredicateOptimization")!.GetMethod("Optimize", BindingFlags.Static | BindingFlags.NonPublic)!;
+var method = typeof(Optimizer).Assembly.GetType("Msync.Optimization.PredicateOptimization")!.GetMethod("Optimize", BindingFlags.Static | BindingFlags.NonPublic)!;
 var rewrite = method.CreateDelegate<Func<Module, FunctionCode, List<Value>, FunctionCode>>();
 var root = Path.Combine(Environment.CurrentDirectory, ".temp", "predicate-optimization-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
@@ -19,7 +20,7 @@ Module Optimize(Module module)
 {
     var constants = module.Constants.ToList();
     var functions = module.Functions.Select(function => rewrite(module, function, constants)).ToArray();
-    return Optimizer.FormBlocks(module with { Constants = constants, Functions = functions });
+    return BlockBuilder.Form(module with { Constants = constants, Functions = functions });
 }
 async Task<string> Run(Module module)
 {

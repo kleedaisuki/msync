@@ -1,10 +1,11 @@
+using Msync.Optimization;
 using System.Reflection;
 using Msync.Compiler;
 using Msync.Core;
 using Msync.Runtime;
 using Module = Msync.Core.Module;
 
-var optimize = typeof(Optimizer).Assembly.GetType("Msync.Core.LoopOptimization")!.GetMethod("Optimize", BindingFlags.Static | BindingFlags.NonPublic)!;
+var optimize = typeof(Optimizer).Assembly.GetType("Msync.Optimization.LoopOptimization")!.GetMethod("Optimize", BindingFlags.Static | BindingFlags.NonPublic)!;
 var root = Path.Combine(Environment.CurrentDirectory, ".temp", "loop-optimization-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
 var assertions = 0;

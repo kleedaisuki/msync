@@ -1,3 +1,4 @@
+using Msync.Optimization;
 using System.Text;
 using Msync.Compiler;
 using Msync.Core;

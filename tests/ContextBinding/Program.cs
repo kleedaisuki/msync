@@ -1,3 +1,4 @@
+using Msync.Optimization;
 using Msync.Core;
 using Msync.Runtime;
 using Module = Msync.Core.Module;
@@ -26,9 +27,9 @@ Directory.CreateDirectory(root);
 try
 {
     BindingContext context = new(root, root, Path.Combine(root, "script.msync"));
-    Module pure = Optimizer.FormBlocks(new([], [new("main", 0, 0, [new(OpCode.True), new(OpCode.Return)], TypeRef.Bool)], Stage: ArtifactStage.Executable, Context: context));
+    Module pure = BlockBuilder.Form(new([], [new("main", 0, 0, [new(OpCode.True), new(OpCode.Return)], TypeRef.Bool)], Stage: ArtifactStage.Executable, Context: context));
     Check(ReferenceEquals(ExecutionLowering.Lower(pure), pure), "No-op contextual lowering replaced the module");
-    Module scalar = Optimizer.FormBlocks(new([new StringValue("value")], [new("main", 0, 1,
+    Module scalar = BlockBuilder.Form(new([new StringValue("value")], [new("main", 0, 1,
         [new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.LoadLocal, 0), new(OpCode.Return)], TypeRef.String)],
         Stage: ArtifactStage.Executable, Context: context));
     Check(ReferenceEquals(ExecutionLowering.Lower(scalar), scalar), "Ordinary scalar code allocated a new execution image");

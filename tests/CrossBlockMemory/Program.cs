@@ -1,3 +1,4 @@
+using Msync.Optimization;
 using System.Reflection;
 using Msync.Compiler;
 using Msync.Core;
@@ -10,9 +11,9 @@ void Check(bool condition, string message)
     checks++;
     if (!condition) throw new InvalidOperationException(message);
 }
-MethodInfo transform = typeof(Optimizer).Assembly.GetType("Msync.Core.CrossBlockMemoryOptimization")!
+MethodInfo transform = typeof(Optimizer).Assembly.GetType("Msync.Optimization.CrossBlockMemoryOptimization")!
     .GetMethods(BindingFlags.Static | BindingFlags.NonPublic).Single(method => method.Name == "Optimize" && method.GetParameters().Length == 4);
-MethodInfo analyzeMemory = typeof(Optimizer).Assembly.GetType("Msync.Core.MemoryEffects")!
+MethodInfo analyzeMemory = typeof(Optimizer).Assembly.GetType("Msync.Optimization.MemoryEffects")!
     .GetMethod("Analyze", BindingFlags.Static | BindingFlags.NonPublic)!;
 Module Rewrite(Module original)
 {
@@ -131,7 +132,7 @@ try
 
     const string lateCapture = "let module = scope { read: fn() { \"ok\" } }; fn unrelated() { true }; unrelated(); let action = fn() { module::read() }; action()";
     Module lateOriginal = Compiler.Compile(lateCapture, "late-first-capture", 0);
-    MethodInfo blockScalarize = typeof(Optimizer).Assembly.GetType("Msync.Core.ScopeScalarization")!
+    MethodInfo blockScalarize = typeof(Optimizer).Assembly.GetType("Msync.Optimization.ScopeScalarization")!
         .GetMethod("Optimize", BindingFlags.Static | BindingFlags.NonPublic)!;
     Module lateBlock = lateOriginal with
     {
