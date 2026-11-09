@@ -42,6 +42,26 @@ The compiler also records eager Buffer snapshot calls with point-in-time semanti
 argument metadata. Later solving the source Buffer's inference cell must not
 retroactively change the result contract of an earlier immutable snapshot.
 
+## Typed HIR resource domains (0.8.1)
+
+A flow join of independently allocated Buffer values retains a finite set of
+possible resource identities. It does not allocate a merged backing store or
+erase the indexed-storage capability. All non-null alternatives must be owned
+Buffers; joining an ordinary Range does not grant that capability.
+
+Element reads join the possible values. Writes satisfy every possible target's
+fixed carrier, including constraints established on different control-flow
+edges. Indexed effect summaries retain these carrier constraints separately
+from their resulting element type: a read union is not a writable constraint.
+Reifying a live resource's current element type does not rewrite the binding's
+fixed storage type or an earlier membership snapshot.
+
+When a resource view can select Path-backed or String-backed storage, the
+runtime performs the top-level implicit conversion against the actual target.
+Path-to-String uses `NativeText`; String-to-Path retains the runtime directory
+and home context. Normal singleton-target compile-time conversions remain in
+place. Neither conversion changes the resource's equality/hash identity.
+
 ## Values are not prototype locations
 
 A prototype is used to infer an element schema, not to identify the location of

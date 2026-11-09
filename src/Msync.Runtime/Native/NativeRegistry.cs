@@ -33,7 +33,7 @@ public static partial class NativeRegistry
             "environment" => EnvironmentOperation(operation, arguments, context),
             "regex" => RegexOperation(operation, arguments),
             "text" => await TextBuilderOperations.InvokeAsync(operation, arguments, cancellationToken),
-            "storage" => await IndexedStorageOperations.InvokeAsync(operation, arguments, cancellationToken),
+            "storage" => await IndexedStorageOperations.InvokeAsync(operation, arguments, context, cancellationToken),
             "shell" => ShellOperation(operation, arguments, context, cancellationToken),
             _ => throw new MsyncException($"Native namespace '{group}' is not registered")
         };

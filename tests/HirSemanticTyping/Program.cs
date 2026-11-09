@@ -6,6 +6,48 @@ using Msync.Runtime;
 int checks = 0;
 bool metadataOnly = args.Contains("--meta", StringComparer.Ordinal);
 bool typeIdentityOnly = args.Contains("--type-is", StringComparer.Ordinal);
+bool resourceUnionOnly = args.Contains("--indexed-union", StringComparer.Ordinal);
+bool indexedCastOnly = args.Contains("--indexed-cast", StringComparer.Ordinal);
+bool indexedCurrentOnly = args.Contains("--indexed-current", StringComparer.Ordinal);
+bool indexedFreshOnly = args.Contains("--indexed-fresh", StringComparer.Ordinal);
+if (indexedFreshOnly)
+{
+    const string native = "native fn buffer_new(initial: Range) -> Range; native fn buffer_get(items: Range, index: Number) -> Scope; native fn buffer_push(items: Range, value) -> Number; ";
+    await Number(native + "let rows = buffer_new([scope { children: buffer_new([1]) }]); buffer_push(buffer_get(rows, 0)::children, 3)", 1);
+    await Number(native + "fn source() { [scope { children: buffer_new([1]) }] }; let rows = buffer_new(source()); buffer_push(buffer_get(rows, 0)::children, 3)", 1);
+    Console.WriteLine($"PASS {checks} fresh deferred resource graph journeys");
+    return;
+}
+if (indexedCurrentOnly)
+{
+    await Text("let buffer = $std::storage::Buffer::new([]); $std::storage::Buffer::push(buffer, 42); $std::meta::type_name(decltype(buffer))", "Range<Number>");
+    await Text("let buffer = $std::storage::Buffer::new([]); let alias = buffer; let holder = scope { items: alias }; $std::storage::Buffer::push(buffer, 42); $std::meta::type_name(decltype(holder::items))", "Range<Number>");
+    await Text("let buffer = $std::storage::Buffer::new([]); let snapshot = $std::storage::Buffer::snapshot(buffer); $std::storage::Buffer::push(buffer, 42); $std::meta::type_name(decltype(snapshot))", "Range<Never>");
+    await Number("let buffer = $std::storage::Buffer::new([]); $std::storage::Buffer::push(buffer, 42); let sum = 0; for value in buffer { sum = sum + value; }; sum", 42);
+    Console.WriteLine($"PASS {checks} indexed current-type HIR journeys");
+    return;
+}
+if (indexedCastOnly)
+{
+    const string buffers = "let paths = $std::storage::Buffer::new([./first]); let texts = $std::storage::Buffer::new([\"first\"]); let rows = $std::storage::Buffer::new([scope { items: paths }, scope { items: texts }]); ";
+    await PathResult(buffers + "$std::storage::Buffer::push($std::storage::Buffer::get(rows, 0)::items, \"./next\"); $std::storage::Buffer::get(paths, 1)", "./next");
+    await Text(buffers + "$std::storage::Buffer::push($std::storage::Buffer::get(rows, 1)::items, ./next); $std::storage::Buffer::get(texts, 1)", "./next");
+    await PathResult(buffers + "$std::storage::Buffer::set($std::storage::Buffer::get(rows, 0)::items, 0, \"./next\"); $std::storage::Buffer::get(paths, 0)", "./next");
+    await Text(buffers + "$std::storage::Buffer::insert($std::storage::Buffer::get(rows, 1)::items, 0, ./next); $std::storage::Buffer::get(texts, 0)", "./next");
+    await IndexedIdentity();
+    Console.WriteLine($"PASS {checks} indexed target conversion journeys");
+    return;
+}
+if (resourceUnionOnly)
+{
+    await Number("native fn buffer_new(initial: Range) -> Range; native fn buffer_get(items: Range, index: Number) -> Scope; native fn buffer_push(items: Range, value) -> Number; let first = scope { children: buffer_new([1]) }; let second = scope { children: buffer_new([2]) }; let nodes = buffer_new([first, second]); buffer_push(buffer_get(nodes, 0)::children, 3)", 1);
+    await Number("native fn buffer_new(initial: Range) -> Range; native fn buffer_get(items: Range, index: Number) -> Scope; native fn buffer_push(items: Range, value) -> Number; let first = scope { children: buffer_new([1]) }; let second = scope { children: buffer_new([2]) }; let nodes = buffer_new([first, second]); fn select(nodes, index: Number) { buffer_get(nodes, index)::children }; buffer_push(select(nodes, 0), 3)", 1);
+    await Boolean("let state = scope { changed: false }; let rows = $std::storage::Buffer::new([scope { children: $std::storage::Buffer::new([1]) }]); fn choose(rows) { state::changed = true; $std::storage::Buffer::get(rows, 0)::children }; let selected = choose(rows); state::changed", true);
+    await Number("let first = scope { children: $std::storage::Buffer::new([1]) }; let second = scope { children: $std::storage::Buffer::new([2]) }; let rows = $std::storage::Buffer::new([first, second]); let selector = 0; fn choose(rows) { $std::storage::Buffer::get(rows, selector)::children }; $std::storage::Buffer::push(choose(rows), { selector = 1; 3 }); $std::storage::Buffer::size(first::children)", 2);
+    Reject("let candidate = if $std::fs::exists(./resource-choice) { $std::storage::Buffer::new([1]) } else { [2] }; $std::storage::Buffer::push(candidate, 3)", "E0222");
+    Console.WriteLine($"PASS {checks} indexed resource union HIR journeys");
+    return;
+}
 if (typeIdentityOnly)
 {
     await Number("let count = 0; for type in [Number, String] { if 3 is type { count = count + 1; }; }; count", 1);
@@ -22,6 +64,7 @@ if (metadataOnly)
     await Boolean("$std::meta::is_invocable(fn(value) { value + 1 }, Number)", true);
     await Boolean("$std::meta::is_invocable(fn(value) { value + 1 }, Bool)", false);
     await Boolean("fn bad(value) { 1 + true }; $std::meta::is_invocable(bad, Number)", false);
+    await Boolean("fn unused(operation) { $std::meta::is_invocable(operation, Number) }; $std::meta::is_invocable(fn(value) { value }, Number)", true);
     await Boolean("fn recur(value: Number) -> Number { if value > 0 { recur(value - 1) } else { 0 } }; $std::meta::is_invocable(recur, Number)", true);
     await Boolean("$std::meta::is_invocable_r(String, fn(value) { value }, Path)", true);
     await Boolean("$std::meta::is_invocable_r(Number, fn(value) { value }, Path)", false);
@@ -36,6 +79,8 @@ if (metadataOnly)
     await Number("let count = 0; fn effect() { count = 1; 3 }; $std::meta::is_invocable(effect); count", 0);
     await Boolean("let count = 0; $std::meta::has_member({ count = 1; scope { item: true } }, \"item\"); count == 0", true);
     await Number("let count = 0; fn choose() { count = 1; $std::meta::is_invocable }; choose()(fn(value) { value }, Number); count", 1);
+    await Boolean("concept Numeric { op: fn(Number) -> Number }; fn require_numeric(value: Numeric) { value }; let mutable = scope { op: fn(value: Number) { value } }; let invalid = fn { require_numeric(mutable); mutable::op = fn(value: Number) { true }; }; $std::meta::is_invocable(invalid)", false);
+    await Boolean("concept Numeric { op: fn(Number) -> Number }; fn require_numeric(value: Numeric) { value }; let mutable = scope { op: fn(value: Number) { value } }; let invalid = fn { require_numeric(mutable); mutable::op = fn(value: Number) { true }; }; $std::meta::is_invocable(invalid); mutable::op = fn(value: Number) { true }; mutable::op(3)", true);
     Reject("fn bad(value) { 1 + true }; $std::meta::invoke_result(bad, Number)", "E0222");
     Console.WriteLine($"PASS {checks} dependent metadata HIR journeys");
     return;
@@ -92,10 +137,9 @@ async Task<Value> Execute(string source, ArtifactStage stage)
     HirModule hir = Compiler.Analyze(source, "hir-typing.msync");
     if (metadataOnly)
     {
-        Check(!hir.Calls.Any(call => call.NativeName is { } name && name.StartsWith("meta.", StringComparison.Ordinal)
-            && name is not "meta.is_same"), "Dependent metadata must not survive as a runtime native call");
+        Check(!HasRuntimeDependentMeta(hir), "Dependent metadata must not survive as a runtime native call");
     }
-    if (metadataOnly || typeIdentityOnly)
+    if (metadataOnly || typeIdentityOnly || resourceUnionOnly || indexedCastOnly || indexedCurrentOnly || indexedFreshOnly)
     {
         using MemoryStream graph = new();
         HirArtifact.Write(hir, graph);
@@ -134,6 +178,39 @@ async Task Text(string source, string expected)
             $"{source}: expected String '{expected}', received {result.Type} '{result}' ({stage})");
     }
 }
+async Task PathResult(string source, string expected)
+{
+    foreach (var stage in new[] { ArtifactStage.Relocatable, ArtifactStage.Executable })
+    {
+        Value value = await Execute(source, stage);
+        Check(value is PathValue path && path.NativeText == expected
+            && path.WorkingDirectory == Environment.CurrentDirectory,
+            $"{source}: expected anchored Path '{expected}', received {value.Type} '{value}' ({stage})");
+    }
+}
+async Task IndexedIdentity()
+{
+    RuntimeContext context = new();
+    async ValueTask<Value> Invoke(string operation, params Value[] values) =>
+        await NativeRegistry.InvokeAsync("storage." + operation, values, context,
+            static (_, _, _) => throw new InvalidOperationException("Storage must not invoke a callback."));
+    var buffer = (RangeValue)await Invoke("buffer_new", new RangeValue(Array.Empty<Value>(), new(TypeKind.Never)));
+    var snapshot = (RangeValue)await Invoke("buffer_snapshot", buffer);
+    int before = buffer.GetHashCode();
+    HashSet<RangeValue> identities = [buffer];
+    _ = await Invoke("buffer_push", buffer, new StringValue("first"));
+    Check(buffer.ItemType == TypeRef.String && snapshot.ItemType.Kind == TypeKind.Never,
+        "First-write inference must not change an earlier snapshot carrier.");
+    Check(buffer.GetHashCode() == before && identities.Contains(buffer),
+        "First-write inference must retain Buffer hash identity.");
+    _ = await Invoke("buffer_push", buffer, new PathValue("./next", context.WorkingDirectory));
+    Check(await Invoke("buffer_get", buffer, new NumberValue(1)) is StringValue { Data: "./next" },
+        "The actual Buffer target owns the Path-to-String conversion.");
+    var nullable = (RangeValue)await Invoke("buffer_new", new RangeValue(new Value[] { Value.Null, new StringValue("first") }, TypeRef.String.WithNull));
+    _ = await Invoke("buffer_push", nullable, new PathValue("./next", context.WorkingDirectory));
+    Check(await Invoke("buffer_get", nullable, new NumberValue(2)) is StringValue { Data: "./next" },
+        "Null admission must not remove the target's text conversion.");
+}
 async Task Numbers(string source, double[] expected)
 {
     foreach (var stage in new[] { ArtifactStage.Relocatable, ArtifactStage.Executable })
@@ -155,4 +232,30 @@ void Check(bool condition, string description)
 {
     checks++;
     if (!condition) throw new InvalidOperationException(description);
+}
+static bool HasRuntimeDependentMeta(HirModule module)
+{
+    bool[] visited = new bool[module.Nodes.Length];
+    Stack<HirNodeId> pending = new(module.Functions.Where(function => !function.IsOpen).Select(function => function.Body));
+    while (pending.TryPop(out var id))
+    {
+        if (visited[id.Value]) continue;
+        visited[id.Value] = true;
+        HirNode node = module.Node(id);
+        if (node.Kind == HirKind.Call && module.Calls[node.Data].NativeName is
+            "meta.is_invocable" or "meta.is_invocable_r" or "meta.invoke_result" or
+            "meta.parameter_count" or "meta.parameter_types" or "meta.is_variadic" or
+            "meta.has_member" or "meta.member_type" or "meta.member_names" or "meta.member_count") return true;
+        foreach (var child in module.Children(node)) pending.Push(child);
+        if (node.Kind == HirKind.Match)
+            foreach (var arm in module.Matches[node.Data].Arms) pending.Push(arm.Value);
+        if (node.Kind is HirKind.Closure or HirKind.TemplateClosure)
+        {
+            var captures = node.Kind == HirKind.Closure ? module.Closures[node.Data].Captures : module.TemplateClosures[node.Data].Captures;
+            if (captures.IsDefault) continue;
+            foreach (var capture in captures)
+                if (capture.Mode == HirCaptureMode.Value) pending.Push(capture.SourceValue);
+        }
+    }
+    return false;
 }

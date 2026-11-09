@@ -5,7 +5,7 @@ namespace Msync.Runtime;
 internal static class IndexedStorageOperations
 {
     internal static async ValueTask<Value> InvokeAsync(string operation, IReadOnlyList<Value> args,
-        CancellationToken token)
+        RuntimeContext context, CancellationToken token)
     {
         RangeValue range = (RangeValue)args[0];
         if (operation == "buffer_new")
@@ -24,13 +24,15 @@ internal static class IndexedStorageOperations
             case "buffer_clear": items.Clear(); return Value.Null;
             case "buffer_get": return items[BufferIndex(args[1], items.Count, false, operation)];
             case "buffer_set":
-                items[BufferIndex(args[1], items.Count, false, operation)] = args[2];
-                range.InferItemType(args[2]);
+                Value replacement = StoreValue(range, args[2], context);
+                items[BufferIndex(args[1], items.Count, false, operation)] = replacement;
+                range.InferItemType(replacement);
                 return Value.Null;
             case "buffer_push":
                 int next = items.Count;
-                items.Add(args[1]);
-                range.InferItemType(args[1]);
+                Value appended = StoreValue(range, args[1], context);
+                items.Add(appended);
+                range.InferItemType(appended);
                 return new NumberValue(next);
             case "buffer_pop":
                 if (items.Count == 0) throw new MsyncException("Buffer::pop requires a nonempty buffer.");
@@ -39,8 +41,9 @@ internal static class IndexedStorageOperations
                 items.RemoveAt(last);
                 return tail;
             case "buffer_insert":
-                items.Insert(BufferIndex(args[1], items.Count, true, operation), args[2]);
-                range.InferItemType(args[2]);
+                Value inserted = StoreValue(range, args[2], context);
+                items.Insert(BufferIndex(args[1], items.Count, true, operation), inserted);
+                range.InferItemType(inserted);
                 return Value.Null;
             case "buffer_remove":
                 int index = BufferIndex(args[1], items.Count, false, operation);
@@ -55,6 +58,15 @@ internal static class IndexedStorageOperations
             default: throw new MsyncException($"Unknown storage native '{operation}'.");
         }
     }
+
+    // A selected resource can have a different text representation from another
+    // resource in the same static view; conversion belongs to the actual target.
+    private static Value StoreValue(RangeValue range, Value value, RuntimeContext context) => value switch
+    {
+        StringValue when range.ItemType.WithoutNull == TypeRef.Path => context.AsPath(value),
+        PathValue path when range.ItemType.WithoutNull == TypeRef.String => new StringValue(path.NativeText),
+        _ => value
+    };
 
     private static int BufferIndex(Value value, int count, bool insert, string operation)
     {

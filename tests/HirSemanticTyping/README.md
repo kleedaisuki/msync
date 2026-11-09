@@ -33,6 +33,8 @@ enumerates values or performs I/O to establish these facts.
 dotnet run --project tests/HirSemanticTyping -c Release
 dotnet run --project tests/HirSemanticTyping -c Release -- --meta
 dotnet run --project tests/HirSemanticTyping -c Release -- --type-is
+dotnet run --project tests/HirSemanticTyping -c Release -- --indexed-union
+dotnet run --project tests/HirSemanticTyping -c Release -- --indexed-cast
 ```
 
 Use an isolated artifacts path while other implementation lanes build the shared
@@ -51,3 +53,16 @@ including loop-carried Type values. It checks left-to-right operand effects,
 unknown represented types, and static `decltype` identities through the same
 `.mhir` round-trip boundary. A dynamic Type is a value, not a request to execute
 the right operand in a speculative query context.
+
+The indexed-resource slice combines independently allocated Buffers stored in
+different Scope rows, then reads and mutates a selected row's Buffer. The flow
+join retains a finite domain of possible resource identities, not a new merged
+resource. Reads join their element facts; writes must satisfy each possible
+target's fixed carrier and update the corresponding alias facts. A union with
+an ordinary Range does not acquire the Buffer capability.
+
+The indexed-cast slice selects between Path-backed and String-backed resources,
+checks the actual stored representation after push/set/insert, and checks that
+first-write inference preserves existing membership snapshots and hash identity.
+String-to-Path conversion retains the runtime directory/home context; the
+opposite conversion uses the selected Path's native spelling.
