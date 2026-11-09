@@ -97,4 +97,14 @@ Require(TypeCompletion.Candidates(TypeCompletion.Find(declaring, declarationCare
     .Any(member => member.Name == "typename" && member.SemanticRole == "keyword"), "Concept field completion does not offer typename.");
 Require(!TypeCompletion.Candidates(TypeCompletion.Find(optional, optionType), option.At(optionType)).Any(member => member.Name == "typename"),
     "typename was offered outside a concept requirement.");
+const string nativeAlias = "let read = $std::io::read_text;";
+EditorAnalysis native = EditorCompiler.Analyze(nativeAlias, "native-alias-editor.msync");
+Require(native.Diagnostic is null, native.Diagnostic?.Message ?? "Native alias analysis failed.");
+Require(native.Occurrences.Any(item => item.Span.Start == nativeAlias.IndexOf("read", StringComparison.Ordinal)
+    && item.Signature.StartsWith("fn read(path:", StringComparison.Ordinal) && item.Signature.EndsWith("-> String", StringComparison.Ordinal)),
+    "Native callable hover lost its source parameter names through an alias.");
+const string variadicAlias = "let values = $std::ranges::of;";
+EditorAnalysis variadic = EditorCompiler.Analyze(variadicAlias, "variadic-signature-editor.msync");
+Require(variadic.Occurrences.Any(item => item.Span.Start == variadicAlias.IndexOf("values", StringComparison.Ordinal)
+    && item.Signature.Contains("...value", StringComparison.Ordinal)), "Native variadic hover lost its argument tail.");
 Console.WriteLine($"PASS {checks} standard concept editor contracts");

@@ -60,6 +60,8 @@ public static class EditorCompiler
         new Compilation("", "<standard-concepts>", 0).StandardConceptDefinitions()
             .Select(pair => EditorContextCollector.DescribeConcept(pair.Value) with { Name = pair.Key })
             .ToArray());
+    private static readonly Lazy<IReadOnlyDictionary<string, (NativeDeclaration Declaration, string Source)>> nativeDeclarations =
+        new(Compilation.StandardNativeDeclarations);
     private static readonly Lazy<SemanticMember[]> processMembers = new(() => ProcessCapabilities.Members.Select(pair =>
         new SemanticMember(pair.Key, pair.Value.ToString(), $"{pair.Key}: {pair.Value}", pair.Key switch
         {
@@ -309,7 +311,7 @@ public static class EditorCompiler
             contents = summary.Members;
             description = info.Type == TypeRef.Scope ? summary.Description : description + summary.Text;
         }
-        if (!info.EditorUnknown && info.NativeName is { } native) description += $"\n\nNative standard-library function `{native}`.";
+        if (!info.EditorUnknown && info.NativeName is { } native) description += NativeDocumentation(native);
         string role = info.EditorUnknown ? "variable" : info.Type.WithoutNull == TypeRef.Function ? "function"
             : info.Type == TypeRef.Type || info.Type.WithoutNull == TypeRef.Scope && info.Scope?.Named == true ? "type" : "variable";
         return new(span, info.EditorUnknown ? "unknown" : type, signature, description, contents,
@@ -326,7 +328,7 @@ public static class EditorCompiler
         string signature = string.Join("\n", choices.Select(value => Signature(name, value)).Distinct(StringComparer.Ordinal));
         string description = Description(type, unknown: false);
         var native = choices.Select(value => value.NativeName).FirstOrDefault(value => value is not null);
-        if (native is not null) description += $"\n\nNative standard-library function `{native}`.";
+        if (native is not null) description += NativeDocumentation(native);
         SemanticMember[]? contents = null;
         if (members && !unknown && type == TypeRef.Process) contents = processMembers.Value;
         if (members && !unknown && choices.Any(value => value.Scope is not null))
@@ -397,6 +399,14 @@ public static class EditorCompiler
     private static string MemberList(IEnumerable<SemanticMember> items) =>
         "\n\nMembers:\n" + string.Join("\n", items.Select(member => $"- `{member.Name}: {member.Type}`"));
 
+    private static string NativeDocumentation(string name)
+    {
+        string description = $"\n\nNative standard-library function `{name}`.";
+        if (!nativeDeclarations.Value.TryGetValue(name, out var declaration)) return description;
+        string documentation = EditorContextCollector.DocumentationAt(declaration.Source, declaration.Declaration.Span.Start);
+        return documentation.Length == 0 ? description : description + "\n\n" + documentation;
+    }
+
     private static string Signature(string? name, Info info)
     {
         if (info.EditorUnknown) return name is null ? "unknown" : $"{name}: unknown";
@@ -413,6 +423,10 @@ public static class EditorCompiler
         if (info.NativeName is { } native)
         {
             var registered = NativeSignatures.Get(native);
+            if (nativeDeclarations.Value.TryGetValue(native, out var declaration))
+                return FunctionSignature(name ?? declaration.Declaration.Name, declaration.Declaration.Parameters,
+                    Slice(declaration.Source, declaration.Declaration.ReturnType.Span), declaration.Source,
+                    variadicMinimum: registered.Variadic ? registered.Parameters.Count : null);
             return $"fn {name ?? native}({string.Join(", ", registered.Parameters)}) -> {registered.Result}";
         }
         string type = info.TypeValue is { } inferred ? $"Type ({inferred})" : info.Type.ToString();
@@ -420,9 +434,9 @@ public static class EditorCompiler
     }
 
     private static string FunctionSignature(string? name, IReadOnlyList<Parameter> parameters, string result, string source,
-        IReadOnlyList<IReadOnlyList<TypeRef>>? specializations = null) =>
+        IReadOnlyList<IReadOnlyList<TypeRef>>? specializations = null, int? variadicMinimum = null) =>
         $"fn {name ?? ""}({string.Join(", ", parameters.Select((parameter, index) =>
-            $"{parameter.Name}{(parameter.Nullable ? "?" : "")}: {(parameter.Type is not null ? Slice(source, parameter.Type.Span)
+            $"{(index >= variadicMinimum ? "..." : "")}{parameter.Name}{(index >= variadicMinimum ? "" : parameter.Nullable ? "?" : "")}: {(parameter.Type is not null ? Slice(source, parameter.Type.Span)
                 : specializations is null || specializations.Count == 0 ? "inferred at call"
                     : string.Join(" | ", specializations.Select(instance => instance[index].ToString()).Distinct()))}"))}) -> {result}";
 
@@ -537,6 +551,11 @@ public static class EditorCompiler
 
 internal sealed partial class Compilation
 {
+    internal static IReadOnlyDictionary<string, (NativeDeclaration Declaration, string Source)> StandardNativeDeclarations() =>
+        libraries.Value.SelectMany(library => library.Value.Document.Statements.OfType<NativeDeclaration>()
+            .Select(declaration => new KeyValuePair<string, (NativeDeclaration, string)>(library.Key + "." + declaration.Name,
+                (declaration, library.Value.Source)))).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+
     private readonly Dictionary<Info, string>? editorConceptRequirements = observe is null ? null : new(ReferenceEqualityComparer.Instance);
 
     private void DescribeConceptRequirement(Info info, ConceptDefinition definition, ConceptMember requirement)

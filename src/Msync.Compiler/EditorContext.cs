@@ -73,21 +73,23 @@ internal sealed partial class EditorContextCollector
         };
     }
 
-    private static string ConceptDocumentation(ConceptDefinition definition)
+    private static string ConceptDocumentation(ConceptDefinition definition) => DocumentationAt(definition.Source, definition.Syntax.Span.Start);
+
+    internal static string DocumentationAt(string source, int position)
     {
-        int end = definition.Syntax.Span.Start;
-        while (end > 0 && definition.Source[end - 1] is ' ' or '\t') end--;
-        if (end > 0 && definition.Source[end - 1] == '\n') end--;
-        if (end > 0 && definition.Source[end - 1] == '\r') end--;
+        int end = position;
+        while (end > 0 && source[end - 1] is ' ' or '\t') end--;
+        if (end > 0 && source[end - 1] == '\n') end--;
+        if (end > 0 && source[end - 1] == '\r') end--;
         List<string> lines = [];
         while (end > 0)
         {
-            int start = definition.Source.LastIndexOf('\n', end - 1) + 1;
-            ReadOnlySpan<char> line = definition.Source.AsSpan(start, end - start).Trim();
+            int start = source.LastIndexOf('\n', end - 1) + 1;
+            ReadOnlySpan<char> line = source.AsSpan(start, end - start).Trim();
             if (!line.StartsWith("#", StringComparison.Ordinal)) break;
             lines.Add(line[1..].TrimStart().ToString());
             end = start > 0 ? start - 1 : 0;
-            if (end > 0 && definition.Source[end - 1] == '\r') end--;
+            if (end > 0 && source[end - 1] == '\r') end--;
         }
         lines.Reverse();
         return string.Join("\n", lines);
