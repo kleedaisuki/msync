@@ -11,6 +11,8 @@ import tarfile
 import zipfile
 from pathlib import Path, PurePosixPath
 
+from build import version as package_version
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -142,7 +144,7 @@ def audit_vsix(archive: Path, version: str) -> list[str]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--native-source", required=True)
-    parser.add_argument("--version", default="0.8.0")
+    parser.add_argument("--version", default=package_version())
     parser.add_argument("--dist", type=Path, default=ROOT / "dist")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
