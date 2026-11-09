@@ -296,3 +296,64 @@ binding-phase writer. The fresh Scope field/capture alias discriminator was
 already verified on frozen snapshot 2. This closes this bounded architecture
 review, not the project's complete semantic compatibility, performance,
 cross-platform/editor acceptance, or release work.
+
+## Later semantic regression: concept obligations across calls
+
+Snapshot 7's real semantic journey exposed a separate summary-completeness
+failure after the phase-ownership findings above had closed. The query returns
+true for this invalid function, although the established language contract
+requires checked operation-member constraints to survive replacement:
+
+```msync
+concept Numeric { operation: fn(value: Number) -> Number, };
+fn require_numeric(value: Numeric) { 0 };
+let mutable = scope { operation: fn(value: Number) { value + 1 } };
+let invalid = fn {
+    require_numeric(mutable);
+    mutable::operation = fn(value: Number) { true };
+};
+let allowed = $std::meta::is_invocable(invalid);
+mutable::operation = fn(value: Number) { true };
+```
+
+`allowed` must be false, while the final outer assignment remains legal because
+the failed query must not export its constraints. The supplied snapshot 7
+journey already establishes the failure; this review did not rebuild or rerun a
+matrix to rediscover it.
+
+The causal path is concrete. `BuildInstance` abstracts the constrained argument,
+then `RequireConcept` registers `(formal region, member)` obligations only in
+the callee's `MemberContracts`. `FreezeSummary` and `FunctionInstance` retain
+values, aliases and writes, but not these obligations. Returning from
+`require_numeric` therefore leaves the enclosing query's captured Scope without
+the Numeric operation constraint. Its subsequent `MemberAssign` correctly calls
+`CheckMemberContracts`, but sees an empty table and accepts the Bool result.
+The cache-hit path also bypasses `BuildInstance`, where the parameter check and
+registration previously lived. This is missing constraint transfer, not an
+output leak and not a reason to special-case invocation predicates.
+
+The minimal coherent construction has two parts:
+
+1. Check/register explicit concept parameter preconditions in the caller's
+   constraint workspace on **every** invocation, including cache hits. For a
+   query, that workspace is its existing isolated context.
+2. Preserve newly established, reachable member obligations in formal-space
+   summaries, and substitute their region/associated-type identities at the
+   call boundary. Import existing obligations needed to check a callee body,
+   and validate projected member writes against the destination obligations.
+   Keep this sparse; do not retain/copy the caller world or put concrete
+   allocation identities into the code key.
+
+A wrapper without an annotated parameter distinguishes the second requirement
+from merely repairing the first: `fn acquire(value) { require_numeric(value); 0 }`
+must carry its internal requirement back to a caller before that caller replaces
+`value::operation`. A cached mutator built with an unconstrained object must also
+be rejected when replayed against a different, already-constrained object of the
+same callable shape. Use one factory to construct both objects so differing
+lambda declaration identities do not accidentally force a cache miss.
+
+These discriminators concern ordinary call semantics as well as `decltype` and
+`is_invocable`. Their implementation belongs to the compiler owner; no production
+changes were made in this review. The direct per-invocation precondition fix was
+already in progress when this causal finding was reported; transitive obligation
+projection remains an explicit part of the proposed completion criterion.
