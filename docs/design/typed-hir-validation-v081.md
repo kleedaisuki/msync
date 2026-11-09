@@ -135,3 +135,16 @@ diagnostic in this snapshot, so it has no candidate timing or speedup claim.
 Further measurements use a corrected producer after an actual execution result,
 not merely a successful compilation. Default-pipeline proof does not by itself
 establish every capability/retention boundary in the architectural matrix.
+
+The following frozen9 snapshot (`471dee5698a4d8d64c3d7bfb36e8afbdcde10c0a3f8db71ff25780a5eae0089c`
+Compiler SHA-256) passed that diagnostic boundary but exposed semantic-analysis
+growth instead. A stage-marked host containing just `BTree::new`, **one** direct
+`BTree::insert`, and `BTree::size` printed `analyze-start` but did not reach the
+analysis result, lowering or optimization. At the last observation its own
+process had elapsed 2 minutes 19 seconds, accumulated 2 minutes 34 seconds CPU,
+and retained 9,859,396 KiB RSS. The process was terminated rather than risking
+the shared development host; two/four-insert and warm measurements were not run.
+The source, process observation and exact assembly hashes are under
+`.temp/hir-stage-trace/`. This is a semantic-instantiation resource-growth defect,
+not a completed cost measurement or an optimizer/runtime regression. Counts
+available only on a completed HIR result cannot be inferred from this run.
