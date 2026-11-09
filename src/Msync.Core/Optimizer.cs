@@ -46,6 +46,20 @@ public static class Optimizer
                 return result;
             }).ToArray()
             };
+            if (level >= 2 && !prepared.PreserveLocals)
+            {
+                var clients = prepared.Functions.Select(function => NeedsMemoryAnalysis(function, constants)).ToArray();
+                if (clients.Contains(true))
+                {
+                    var memoryContext = prepared;
+                    var memoryEffects = MemoryEffects.Analyze(memoryContext);
+                    prepared = prepared with
+                    {
+                        Functions = prepared.Functions.Select((function, index) => clients[index]
+                            ? CrossBlockMemoryOptimization.Optimize(memoryContext, function, constants, memoryEffects) : function).ToArray()
+                    };
+                }
+            }
             var effects = EffectAnalysis.FunctionEffects(prepared);
             if (previousEffects is null || !effects.SequenceEqual(previousEffects)) { effectEpoch++; previousEffects = effects; }
             var functions = prepared.Functions.Select((function, index) => prepared.PreserveLocals && index == prepared.EntryPoint
@@ -105,6 +119,20 @@ public static class Optimizer
     }
     private static FunctionCode Unchanged(FunctionCode previous, FunctionCode next) => next.LocalCount == previous.LocalCount
         && next.Instructions.SequenceEqual(previous.Instructions) ? previous : next;
+    private static bool NeedsMemoryAnalysis(FunctionCode function, IReadOnlyList<Value> constants)
+    {
+        bool fields = false;
+        bool scope = function.CaptureCount > 0 || function.ParameterCount > 0 &&
+            (function.ParameterTypes is null || function.ParameterTypes.Any(type => (type.Kind & TypeKind.Scope) != 0));
+        foreach (var instruction in function.Instructions)
+        {
+            fields |= instruction.Op is OpCode.GetMember or OpCode.SetMember;
+            scope |= instruction.Op is OpCode.MakeScope or OpCode.SetMember
+                || instruction.Op == OpCode.GetMember && instruction.A > 0
+                || instruction.Op == OpCode.Constant && constants[instruction.A] is ScopeValue;
+        }
+        return fields && scope;
+    }
     public static Module FormBlocks(Module module) => module with
     { Blocks = module.Functions.SelectMany((function, index) => Partition(function, index)).ToArray() };
     private static IEnumerable<BasicBlock> Partition(FunctionCode function, int functionIndex)

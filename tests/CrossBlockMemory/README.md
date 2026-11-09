@@ -23,3 +23,29 @@ The design follows the def/use/join separation described by
 clobber queries described by [GCC alias analysis](https://gcc.gnu.org/onlinedocs/gccint/Alias-analysis.html).
 It does not claim that a fixed field schema implies a statically bounded runtime
 instance count.
+
+## Physical instances and precise call effects
+
+Escaped instances remain real Scope values. For eligible fields, invocation-local
+shadow slots carry the same value across blocks. The must-valid field set is
+intersected at CFG joins; an overlapping write kills a version, and an explicit
+field store refreshes both the physical field and its shadow location. Constructor
+staging preserves argument evaluation and raw-cell fields stay physical.
+
+The four-argument optimizer entry consumes one module-wide `MemoryEffects`
+analysis. Known parameter and capture field paths invalidate only overlapping
+fields, while captured binding rebinding is separate from mutation of the old
+object. Readonly helpers and filesystem observations do not overwrite Scope
+fields. Unknown source callbacks invalidate escaped fields when invoked or
+enumerated; creating a lazy adapter is not that invocation. Native and closure
+dispatch use the actual reachable callable, never an unproved direct-call hint.
+
+Return-alias summaries are may-alias facts: the actual function return type's
+Null/scalar alternatives remain in the abstract value. Missing-field and raw
+captured-cell discriminators check that neither a possible error nor a shared
+location is replaced with an unconditional cached scalar.
+
+Physical stores are retained; deleting a physical write across a potentially
+failing call would change the externally observable failure prefix. Private
+stores become ordinary local definitions and the existing graph DSE removes
+overwritten versions with the normal observable-effect rules.
