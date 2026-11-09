@@ -183,6 +183,7 @@ public static class Binding
         };
         var bound = module with { Constants = module.Constants.Select(BindValue).ToArray(), Context = full, Stage = ArtifactStage.Executable };
         var optimized = Optimizer.Optimize(ExecutionLowering.Lower(bound), module.OptimizationLevel);
-        return Optimizer.Optimize(ExecutionLowering.Lower(optimized), module.OptimizationLevel);
+        // The final lowering selects native transfers exposed by folding; it introduces no new pure expressions.
+        return ExecutionLowering.Lower(optimized);
     }
 }

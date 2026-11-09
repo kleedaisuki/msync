@@ -1290,3 +1290,57 @@ Complete raw observations and native/source manifests are in
 executable inventory, additional raw-shape fields and composed CLI/editor
 acceptance. Functional platform acceptance is recorded independently by the
 native delivery owner; a managed CLI journey is not relabeled as Native AOT.
+
+## Contextual binding: one optimizer fixed point
+
+`Binding.Bind` previously ran contextual lowering and the complete optimizer
+fixed point twice. The first lowering freezes known endpoint roots; optimization
+can then expose more literal paths. The final lowering only selects the native
+local-transfer opcode and removes no-ops. It does not introduce a pure
+expression, change the transfer's dependency effects, or make another global
+optimization fixed point useful. The pipeline is now lower → optimize → lower.
+Executable input is already bound and is returned unchanged.
+
+`ExecutionLowering` also retains unchanged functions and modules. It skips
+functions without symbolic endpoint roots, generic transfers or no-ops; copies
+an instruction array only on its first actual replacement; and builds relocation
+tables only when removing no-ops. Unsupported conversions are unknown to its
+small constant tracker rather than retaining the pre-conversion value.
+
+The focused executable test and reproducible managed binding probe are:
+
+```sh
+dotnet run --project tests/ContextBinding -c Release
+DOTNET_TieredCompilation=0 dotnet run --project tests/ContextBinding -c Release -- --benchmark
+```
+
+The 38 workflow assertions cover O0–O3 relocatable/executable round trips,
+captured cwd, actual transferred bytes, unselected work, a condition changing
+between executions, a now-missing selected source returning false, and preserved
+completed destination bytes. These checks intentionally observe the filesystem
+at execution, not binding. Native cross-platform package acceptance remains the
+separate product journey.
+
+For causal measurement, Core sources were frozen at `e7149dd`; the candidate
+changed only `Binding` and `ExecutionLowering`. Both Release assemblies used the
+same .NET 10.0.403 SDK on Linux. Ten warmups preceded 300 prepared binding samples
+per case (40 for 128 conditional transfers). Three process runs per variant
+alternated AB/BA; tiered compilation was disabled identically to avoid measuring
+promotion during the short probe. The table reports the median of process
+medians and median synchronous thread allocations. Source compilation, artifact
+decoding and actual I/O are outside this interval.
+
+| Prepared O2 binding | Before ms | After ms | Before bytes | After bytes |
+| --- | ---: | ---: | ---: | ---: |
+| Literal result | 0.0015 | 0.0010 | 1,648 | 1,056 |
+| One local transfer | 0.0188 | 0.0102 | 7,128 | 3,728 |
+| 128 local transfers | 0.4634 | 0.2524 | 197,480 | 100,936 |
+| 128 conditionally selected transfers | 8.3454 | 4.9693 | 4,512,128 | 2,760,920 |
+
+Frozen Core SHA-256 identities were
+`2c068704757a3e44027f11082da9523fc941a692168fd6440e326c67a83b4f11`
+(before) and
+`5b640548733d370f2d615141adb5ac68acbbba278cd810b3f35c305542477a34`
+(after). Raw samples and isolated source/build images are disposable under
+`.temp/context-binding/controlled-final.json`. This is a binding-cost result,
+not a claim about CLI startup or disk throughput.
