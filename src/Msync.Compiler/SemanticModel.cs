@@ -32,7 +32,6 @@ internal sealed record ScopeInfo(IReadOnlyDictionary<string, Info> Members, bool
     IReadOnlyDictionary<string, IReadOnlyList<EditorLocation>>? Origins = null,
     IReadOnlySet<string>? NullableMembers = null, IReadOnlyDictionary<string, TypeRef?>? StorageTypes = null)
 {
-    public bool StandardLibrary { get; init; }
     public object Identity { get; init; } = new();
     public bool IsInitializing { get; set; }
     public IReadOnlyDictionary<string, StorageConstraint> Storage { get; init; } =

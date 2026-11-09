@@ -58,7 +58,6 @@ internal sealed class EditorSnapshot
             scope = new(members, scope.Named, scope.Origins, scope.NullableMembers, scope.StorageTypes)
             {
                 Identity = scope.Identity,
-                StandardLibrary = scope.StandardLibrary,
                 AllocationSite = scope.AllocationSite,
                 Storage = scope.Storage.ToDictionary(pair => pair.Key, pair => Storage(pair.Value), StringComparer.Ordinal),
                 FieldBindings = scope.FieldBindings.ToDictionary(pair => pair.Key, pair => pair.Value with { Storage = Storage(pair.Value.Storage) }, StringComparer.Ordinal)
