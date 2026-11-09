@@ -44,12 +44,12 @@ scope FoldCase {
         $std::string::to_lowercase(a) == $std::string::to_lowercase(b)
     },
 };
-let names = $std::containers::Set::with_equality(["Klee", "klee", "Alice"],
+let names = $std::containers::EqualitySet::with_equality(["Klee", "klee", "Alice"],
     FoldCase);
-$std::containers::Set::insert(names, "ALICE");
-$std::containers::Set::insert(names, "Bob");
-$std::containers::Set::remove(names, "aLiCe");
-$std::string::join($std::containers::Set::snapshot(names), ",") -> ./set.txt;
+$std::containers::EqualitySet::insert(names, "ALICE");
+$std::containers::EqualitySet::insert(names, "Bob");
+$std::containers::EqualitySet::remove(names, "aLiCe");
+$std::string::join($std::containers::EqualitySet::snapshot(names), ",") -> ./set.txt;
 let records = $std::containers::Map::with_equality([
     scope { key: "Klee", value: 1 },
     scope { key: "Alice", value: 2 },
@@ -83,9 +83,6 @@ let dequeued? = $std::containers::Queue::pop(fifo);
 if dequeued is not null { (dequeued as String) -> ./queue.txt; };
 let head? = $std::containers::Queue::peek(fifo);
 if head is not null { (head as String) -> ./queue-peek.txt; };
-let previous = $std::collections::List(["old"]);
-previous::add("works");
-$std::string::join(previous::snapshot(), ",") -> ./compatibility.txt;
 acquire;
 """
 
@@ -103,7 +100,6 @@ OUTPUTS: dict[str, bytes] = {
     "stack-empty.txt": b"empty",
     "queue.txt": b"5",
     "queue-peek.txt": b"6",
-    "compatibility.txt": b"old,works",
 }
 
 NEGATIVE: tuple[tuple[str, str, tuple[str, ...]], ...] = (
@@ -120,7 +116,7 @@ NEGATIVE: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         (
             "let policy = scope { Self: String, "
             "equal: fn(a: String, b: String) { 1 } }; "
-            '$std::containers::Set::with_equality(["x"], policy);'
+            '$std::containers::EqualitySet::with_equality(["x"], policy);'
         ),
         ("equal", "Bool"),
     ),
