@@ -18,7 +18,7 @@ internal sealed partial class SemanticAnalyzer
                     new(HirLiteralKind.Type, Type: hir.Types[node.Data].RuntimeType), DenotedType: new(node.Data));
             case HirKind.TypeOf:
             {
-                var value = Analyze(children[0], context.Fork(publish: false));
+                var value = Analyze(children[0], context.QueryFork());
                 var result = node with { Kind = HirKind.TypeValue, Data = value.Type.Value };
                 return new(hir.Type(TypeRef.Type), Add(result, hir.Type(TypeRef.Type), [], context),
                     new(HirLiteralKind.Type, Type: Runtime(value)), DenotedType: value.Type);
@@ -38,7 +38,7 @@ internal sealed partial class SemanticAnalyzer
             case HirKind.IsType:
             {
                 var value = Analyze(children[0], context);
-                var type = Analyze(children[1], context.Fork(publish: false));
+                var type = Analyze(children[1], context.QueryFork());
                 if (type.DenotedType is not { } target) throw Error(node.Source, "'is' compares against null or a type.", "E0203");
                 TypeRef actual = value.DenotedType is { } denoted ? hir.Types[denoted.Value].RuntimeType : Runtime(value);
                 TypeRef required = hir.Types[target.Value].RuntimeType;
@@ -212,6 +212,7 @@ internal sealed partial class SemanticAnalyzer
         InvalidateScopeAliases(scope, context);
         var updated = scope with { Fields = scope.Fields.SetItem(node.Text!, value) };
         context.Objects[scope.Region] = updated;
+        context.FieldWrites.Add((scope.Region, node.Text!));
         if (scope.Locations.TryGetValue(node.Text!, out var location)) context.Values[location] = value;
         return new(hir.Type(TypeRef.Null), Add(node with { Data = offset }, hir.Type(TypeRef.Null), [receiver.Node, value.Node], context));
     }

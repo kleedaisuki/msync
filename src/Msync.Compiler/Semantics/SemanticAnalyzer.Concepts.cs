@@ -108,7 +108,7 @@ internal sealed partial class SemanticAnalyzer
     private void CheckConceptMember(SemanticValue actual, HirConceptMember member, int concept,
         ImmutableDictionary<HirTypeId, HirTypeId> associated, HirSourceRange source, SemanticContext context)
     {
-        SemanticContext probe = context.Fork(publish: false);
+        SemanticContext probe = context.QueryFork();
         foreach (var pair in associated) probe.Substitutions[pair.Key] = pair.Value;
         if (member.Signature < 0)
         {
@@ -157,6 +157,7 @@ internal sealed partial class SemanticAnalyzer
 
     private void InvalidateScopeAliases(SemanticScope written, SemanticContext context)
     {
+        if (!written.Dynamic && written.Aliases.IsDefaultOrEmpty && !context.AliasViews.ContainsKey(written.Region)) return;
         var aliases = ScopeAliases(written).ToHashSet();
         HashSet<int> affected = [];
         foreach (int alias in aliases)

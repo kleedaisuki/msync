@@ -82,6 +82,15 @@ public static partial class NativeSignatures
         RegisterStorage(result);
         RegisterMeta(result);
         RegisterShell(result);
+        foreach (var (name, signature) in result.ToArray())
+        {
+            if (!name.StartsWith("ranges.", StringComparison.Ordinal) || signature.Behavior is not null) continue;
+            bool deferred = signature.Result.WithoutNull.Kind == TypeKind.Range;
+            NativeBehavior behavior = deferred ? NativeBehavior.Deferred
+                : NativeBehavior.Enumerates | NativeBehavior.MayFail;
+            if (name is "ranges.take" or "ranges.drop" or "ranges.stride" or "ranges.step") behavior |= NativeBehavior.MayFail;
+            result[name] = signature with { Behavior = behavior };
+        }
         return result;
     }
 }

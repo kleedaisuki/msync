@@ -17,7 +17,7 @@ internal sealed partial class SemanticAnalyzer
         SemanticScope? scope = payload?.Scope;
         if (payload is null && first.Scope is { } a && second.Scope is { } b)
         {
-            if (a.Region == b.Region) scope = a;
+            if (a.Region >= 0 && a.Region == b.Region) scope = a;
             else
             {
                 var fields = a.Fields.Where(pair => b.Fields.ContainsKey(pair.Key)).ToImmutableDictionary(
@@ -35,7 +35,8 @@ internal sealed partial class SemanticAnalyzer
             callables, scope, element, EagerRange: first.EagerRange && second.EagerRange,
             Alternatives: [first, second],
             IndexedRegion: first.IndexedRegion == second.IndexedRegion ? first.IndexedRegion : null,
-            DenotedType: first.DenotedType == second.DenotedType ? first.DenotedType : null);
+            DenotedType: first.DenotedType == second.DenotedType ? first.DenotedType : null,
+            DeferredEffects: CombineDeferredEffects(first.DeferredEffects, second.DeferredEffects));
     }
 
     private static IEnumerable<SemanticCallable> Choices(SemanticValue value) => value.Callables.IsDefault
@@ -48,7 +49,7 @@ internal sealed partial class SemanticAnalyzer
         for (int index = 0; index < hir.ScopeLayouts.Count; index++)
             if (hir.ScopeLayouts[index].Fields.AsSpan().SequenceEqual(layout.AsSpan())) return index;
         int result = hir.ScopeLayouts.Count;
-        hir.ScopeLayouts.Add(new(layout));
+        hir.InternScopeLayout(new(layout));
         return result;
     }
 
@@ -112,7 +113,7 @@ internal sealed partial class SemanticAnalyzer
             throw Error(source, $"Expected {expected.RuntimeType}, found {Runtime(value)}.", "E0203");
         if (expected.Concept >= 0)
         {
-            RequireConcept(value, expected.Concept, source, context ?? new(new(-1), false), expected.RuntimeType.Nullable);
+            RequireConcept(value, expected.Concept, source, context ?? new(new(-1)), expected.RuntimeType.Nullable);
             return;
         }
         RequireStructure(value, target, source, allowImplicit, []);
@@ -160,7 +161,7 @@ internal sealed partial class SemanticAnalyzer
         return value with
         {
             Type = target,
-            Node = context.Publish ? hir.Add(HirKind.Coerce, target, source, [value.Node], data: target.Value) : HirNodeId.None,
+            Node = context.Publish ? context.Output!.Add(HirKind.Coerce, target, source, [value.Node], data: target.Value) : HirNodeId.None,
             Literal = value.Literal is { Kind: HirLiteralKind.String } text && expected.RuntimeType.WithoutNull == TypeRef.Path
                 ? new(HirLiteralKind.Path, Text: text.Text)
                 : value.Literal is { Kind: HirLiteralKind.Path } path && expected.RuntimeType.WithoutNull == TypeRef.String

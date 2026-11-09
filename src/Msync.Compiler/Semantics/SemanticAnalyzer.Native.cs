@@ -13,6 +13,7 @@ internal sealed partial class SemanticAnalyzer
             throw Error(source, $"Unknown native '{name}'.", "E0204");
         var inputs = CheckNativeArguments(signature, arguments, source, context).ToArray();
         SemanticValue? callback = null;
+        ImmutableArray<SemanticDeferredWrite> callbackEffects = [];
         if (signature.Parameters.Count > 0 && inputs.Length >= signature.Parameters.Count
             && signature.Parameters[^1].WithoutNull == TypeRef.Function)
         {
@@ -36,36 +37,70 @@ internal sealed partial class SemanticAnalyzer
                 }
                 callbackArguments = [domain, item];
             }
-            (callback, inputs[index]) = NativeCallback(inputs[index], callbackArguments, source, context);
+            (callback, inputs[index], callbackEffects) = NativeCallback(inputs[index], callbackArguments, source, context);
             if (name is "ranges.filter" or "ranges.take_while" or "ranges.drop_while" or "ranges.any" or "ranges.any_of"
                 or "ranges.all_of" or "ranges.none" or "ranges.none_of" or "ranges.find_if" or "ranges.sort_with")
                 Require(callback, hir.Type(TypeRef.Bool), source, context: context);
         }
         var value = NativeResult(signature, inputs, callback, source, context);
+        NativeBehavior behavior = signature.Behavior.GetValueOrDefault();
+        ImmutableArray<SemanticDeferredWrite> pending = callbackEffects;
+        for (int index = 0; index < signature.Parameters.Count && index < inputs.Length; index++)
+            if (signature.Parameters[index].WithoutNull.Kind == TypeKind.Range)
+                pending = CombineDeferredEffects(pending, inputs[index].DeferredEffects);
+        if (signature.ResultRule == NativeResultRule.RangeFlatten && inputs[0].Element is { } nested)
+            pending = pending.AddRange(nested.DeferredEffects.IsDefault ? [] : nested.DeferredEffects);
+        if ((behavior & NativeBehavior.Deferred) != 0)
+            value = value with { DeferredEffects = pending, EagerRange = false };
+        else if ((behavior & (NativeBehavior.Enumerates | NativeBehavior.Invokes)) != 0)
+        {
+            ApplyDeferredEffects(pending, context);
+            value = value with { DeferredEffects = [] };
+        }
         if (value.Literal is { } literal && signature.Name.StartsWith("meta.", StringComparison.Ordinal))
-            return value with { Node = context.Publish ? hir.Literal(literal, value.Type, source) : HirNodeId.None };
+            return value with { Node = context.Publish ? context.Output!.Literal(literal, value.Type, source) : HirNodeId.None };
         callee ??= new(hir.Type(TypeRef.Function), context.Publish
-            ? hir.Add(HirKind.NativeFunction, hir.Type(TypeRef.Function), source, text: name) : HirNodeId.None,
+            ? context.Output!.Add(HirKind.NativeFunction, hir.Type(TypeRef.Function), source, text: name) : HirNodeId.None,
             Callables: [new(NativeName: name)]);
         return value with
         {
-            Node = EmitCall(new(HirCallKind.Native, new(-1), name), callee, inputs, value.Type, source, context),
+            Node = EmitCall(new(HirCallKind.Native, new(-1), name), callee, inputs, value.Type, source, context, NativeEffects(signature)),
             Location = null
         };
     }
 
-    private (SemanticValue Result, SemanticValue Function) NativeCallback(SemanticValue callable,
+    private static HirEffects NativeEffects(NativeSignature signature)
+    {
+        NativeBehavior behavior = signature.Behavior.GetValueOrDefault();
+        bool memory = (behavior & NativeBehavior.LocalMemory) != 0;
+        HirEffects read = memory ? HirEffects.ReadMemory : HirEffects.ReadExternal;
+        HirEffects write = memory ? HirEffects.WriteMemory : HirEffects.WriteExternal;
+        HirEffects effects = signature.Effect switch
+        {
+            NativeEffect.Read => read | HirEffects.MayFail,
+            NativeEffect.Write => read | write | HirEffects.MayFail,
+            _ => HirEffects.None
+        };
+        if ((behavior & NativeBehavior.MayFail) != 0) effects |= HirEffects.MayFail;
+        if ((behavior & NativeBehavior.Enumerates) != 0) effects |= HirEffects.Enumerate | HirEffects.Invoke | HirEffects.ReadMemory | HirEffects.MayFail;
+        if ((behavior & NativeBehavior.Invokes) != 0) effects |= HirEffects.Invoke | HirEffects.MayFail;
+        return effects;
+    }
+
+    private (SemanticValue Result, SemanticValue Function, ImmutableArray<SemanticDeferredWrite> Effects) NativeCallback(SemanticValue callable,
         IReadOnlyList<SemanticValue> arguments, HirSourceRange source, SemanticContext context)
     {
         SemanticValue? output = null;
         ImmutableArray<HirDispatchTarget>.Builder targets = ImmutableArray.CreateBuilder<HirDispatchTarget>();
+        ImmutableArray<SemanticDeferredWrite>.Builder effects = ImmutableArray.CreateBuilder<SemanticDeferredWrite>();
         foreach (var choice in Choices(callable))
         {
             SemanticValue result;
             if (choice.Template is { } template)
             {
-                var instance = Instantiate(template, choice.Captures, arguments, source, context);
+                var instance = Instantiate(template, choice.Captures, arguments, source, context, applyEffects: false);
                 result = instance.Result!;
+                effects.AddRange(instance.Effects);
                 targets.Add(new(HirCallableId.From(template), instance.Id));
             }
             else if (choice.NativeName is { } native)
@@ -77,10 +112,50 @@ internal sealed partial class SemanticAnalyzer
         if (context.Publish && targets.Count != 0)
         {
             int adaptation = hir.Adaptations.Count;
-            hir.Adaptations.Add(new(targets.ToImmutable()));
-            callable = callable with { Node = hir.Add(HirKind.AdaptFunction, callable.Type, source, [callable.Node], adaptation) };
+            context.Output!.AddAdaptation(new(targets.ToImmutable()));
+            callable = callable with { Node = context.Output!.Add(HirKind.AdaptFunction, callable.Type, source, [callable.Node], adaptation) };
         }
-        return (output, callable);
+        return (output, callable, effects.ToImmutable());
+    }
+
+    private static ImmutableArray<SemanticDeferredWrite> CombineDeferredEffects(
+        ImmutableArray<SemanticDeferredWrite> first, ImmutableArray<SemanticDeferredWrite> second)
+    {
+        if (first.IsDefaultOrEmpty) return second.IsDefault ? [] : second;
+        return second.IsDefaultOrEmpty ? first : first.AddRange(second);
+    }
+
+    private void ApplyDeferredEffects(SemanticValue range, SemanticContext context) =>
+        ApplyDeferredEffects(range.DeferredEffects, context);
+
+    private void ApplyDeferredEffects(ImmutableArray<SemanticDeferredWrite> writes, SemanticContext context)
+    {
+        if (writes.IsDefaultOrEmpty) return;
+        foreach (var write in writes)
+        {
+            if (write.Kind == SemanticWriteKind.Location)
+            {
+                if (context.Values.TryGetValue(write.Location, out var before))
+                    context.Values[write.Location] = Join(before, write.After) with { Literal = null };
+                context.CellWrites.Add(write.Location);
+                continue;
+            }
+            if (write.Kind == SemanticWriteKind.Indexed)
+            {
+                if (context.Indexed.TryGetValue(write.Region, out var storage))
+                    context.Indexed[write.Region] = storage with { Element = Join(storage.Element, write.After) with { Literal = null } };
+                context.IndexedWrites.Add(write.Region);
+                continue;
+            }
+            if (!context.Objects.TryGetValue(write.Region, out var target)
+                || !target.Fields.TryGetValue(write.Field!, out var previous)) continue;
+            InvalidateScopeAliases(target, context);
+            var after = Join(previous, write.After) with { Literal = null };
+            target = context.Objects[write.Region] with { Fields = context.Objects[write.Region].Fields.SetItem(write.Field!, after) };
+            context.Objects[write.Region] = target;
+            if (target.Locations.TryGetValue(write.Field!, out var location)) context.Values[location] = after;
+            context.FieldWrites.Add((write.Region, write.Field!));
+        }
     }
 
     private string TypeSchemaKey(SemanticValue value) =>
@@ -252,13 +327,14 @@ internal sealed partial class SemanticAnalyzer
         if (signature.Name == "storage.buffer_new")
         {
             var element = DynamicElement(Item(arguments[0]), context);
-            int region = nextRegion++;
+            int region = ++nextRegion;
             context.Indexed[region] = new(element,
                 Runtime(element).Kind == TypeKind.Never ? null : element.Type);
             return RangeValue(element) with { IndexedRegion = region, EagerRange = true };
         }
         if (arguments[0].IndexedRegion is not { } identity || !context.Indexed.TryGetValue(identity, out var storage))
             throw Error(source, "Indexed operations require a Buffer-owned Range; construct it with Buffer::new.", "E0222");
+        if (signature.Effect == NativeEffect.Write) context.IndexedWrites.Add(identity);
         if (signature.Name is "storage.buffer_set" or "storage.buffer_push" or "storage.buffer_insert")
         {
             var value = arguments[^1];
@@ -285,7 +361,7 @@ internal sealed partial class SemanticAnalyzer
         {
             var fields = scope.Fields.ToImmutableDictionary(pair => pair.Key,
                 pair => DynamicElement(pair.Value, context), StringComparer.Ordinal);
-            scope = scope with { Region = nextRegion++, Fields = fields, Dynamic = true,
+            scope = scope with { Region = ++nextRegion, Fields = fields, Dynamic = true,
                 Aliases = ScopeAliases(scope).ToImmutableArray(), Locations = ImmutableDictionary<string, HirLocationId>.Empty };
             context.Objects[scope.Region] = scope;
             foreach (int alias in scope.Aliases)

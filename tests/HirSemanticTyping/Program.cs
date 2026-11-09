@@ -21,6 +21,12 @@ Reject("concept Numeric { item: Number }; fn use(value: Numeric) { value }; use(
 
 const string transform = "native fn transform(values: Range, operation: Function) -> Range;";
 await Numbers(transform + "transform([1, 2], fn(value) { value + 1 })", [2, 3]);
+await Number(transform + "let state = scope { changed: false }; let pending = transform([1], fn(value) { state::changed = true; value }); if state::changed { 1 } else { 0 }", 0);
+await Number(transform + "native fn materialize(values: Range) -> Range; let state = scope { changed: false }; let pending = transform([1], fn(value) { state::changed = true; value }); materialize(pending); if state::changed { 1 } else { 0 }", 1);
+await Number(transform + "native fn materialize(values: Range) -> Range; let state?: Number = 4; let pending = transform([1], fn(value) { state = null; value }); materialize(pending); if state is null { 1 } else { 0 }", 1);
+await Number(transform + "native fn materialize(values: Range) -> Range; let state = scope { changed: false }; fn build() { transform([1], fn(value) { state::changed = true; value }) }; materialize(build()); if state::changed { 1 } else { 0 }", 1);
+await Number(transform + "native fn materialize(values: Range) -> Range; let state = scope { changed: false }; materialize(transform([], fn(value) { state::changed = true; value })); if state::changed { 1 } else { 0 }", 0);
+await Number(transform + "native fn materialize(values: Range) -> Range; native fn single(value) -> Range; let state = scope { changed: false }; let pending = transform([1], fn(value) { state::changed = true; value }); materialize(single(pending)); if state::changed { 1 } else { 0 }", 0);
 const string filter = "native fn filter(values: Range, operation: Function) -> Range;";
 await Numbers(filter + "filter([1, 2, 3], fn(value) { value > 1 })", [2, 3]);
 Reject(filter + "filter([1], fn(value) { value })", "E0203");
@@ -40,6 +46,9 @@ const string indexed = """
 await Number(indexed + "let items = buffer_new([1]); buffer_set(items, 0, 7); buffer_get(items, 0)", 7);
 await Numbers(indexed + "let items = buffer_new([1]); let saved = buffer_snapshot(items); buffer_set(items, 0, 7); saved", [1]);
 Reject(indexed + "let items = buffer_new([1]); buffer_set(items, 0, true)", "E0203");
+await Boolean(indexed + "let first = scope { red: false }; let second = scope { red: false }; let items = buffer_new([first, second]); let a = buffer_get(items, 0); let b = buffer_get(items, 1); a::red = true; if b::red { true } else { false }", false);
+await Boolean(indexed + "let first = scope { red: false }; let items = buffer_new([first]); let a = buffer_get(items, 0); let b = buffer_get(items, 0); a::red = true; b::red = false; if a::red { true } else { false }", false);
+await Boolean(indexed + "let first = scope { red: false }; let items = buffer_new([first]); let a = buffer_get(items, 0); a::red = true; if first::red { true } else { false }", true);
 Console.WriteLine($"PASS {checks} typed HIR type/operator/native contracts");
 
 async Task<Value> Execute(string source, ArtifactStage stage)
@@ -59,7 +68,8 @@ async Task Number(string source, double expected)
     foreach (var stage in new[] { ArtifactStage.Relocatable, ArtifactStage.Executable })
     {
         Value value = await Execute(source, stage);
-        Check(value is NumberValue actual && actual.Data == expected, source + " did not return expected Number");
+        Check(value is NumberValue actual && actual.Data == expected,
+            $"{source}: expected Number {expected}, received {value.Type} '{value}' ({stage})");
     }
 }
 async Task Boolean(string source, bool expected)
