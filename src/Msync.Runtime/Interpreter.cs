@@ -70,16 +70,15 @@ public sealed partial class Interpreter
     }
     private async ValueTask<Value> RunCodeAsync(int functionIndex, Value[] locals, int startInstruction, CancellationToken cancellationToken)
     {
-        var owner = new WorkOwner();
         var caller = currentOwner;
-        currentOwner = owner;
+        currentOwner = default;
         try { return await RunOwnedCodeAsync(functionIndex, locals, startInstruction, cancellationToken); }
-        finally { try { await JoinOwnerAsync(owner); } finally { currentOwner = caller; } }
+        finally { try { await JoinOwnerAsync(currentOwner); } finally { currentOwner = caller; } }
     }
     private async ValueTask<Value> RunOwnedCodeAsync(int functionIndex, Value[] locals, int startInstruction, CancellationToken cancellationToken)
     {
         var function = module.Functions[functionIndex];
-        List<Value> stack = [];
+        OperandStack stack = new();
         var pc = startInstruction;
         while (pc < function.Instructions.Count)
         {
@@ -91,21 +90,14 @@ public sealed partial class Interpreter
         return stack.Count == 0 ? Value.Null : stack[^1];
     }
     private readonly record struct BlockOutcome(int Next, Value? Value = null, bool Returned = false);
-    private static Instruction SpecializeBlockInstruction(Instruction instruction, List<Value> stack)
+    private static Instruction SpecializeBlockInstruction(Instruction instruction, OperandStack stack)
     {
         if (instruction.Op != OpCode.Transfer || stack.Count < 2) return instruction;
         static bool Local(Value value) => value is StringValue or PathValue { Connection: null or { Kind: ConnectionKind.Local } };
         return Local(stack[^1]) && Local(stack[^2]) ? instruction with { Op = OpCode.LocalTransfer } : instruction;
     }
-    private async ValueTask<BlockOutcome> RunBlockAsync(FunctionCode function, Value[] locals, List<Value> stack, int startInstruction, BasicBlock block, CancellationToken cancellationToken)
+    private async ValueTask<BlockOutcome> RunBlockAsync(FunctionCode function, Value[] locals, OperandStack stack, int startInstruction, BasicBlock block, CancellationToken cancellationToken)
     {
-        Value Pop() { var value = stack[^1]; stack.RemoveAt(stack.Count - 1); return value; }
-        Value[] PopMany(int count)
-        {
-            var values = new Value[count];
-            for (var i = count - 1; i >= 0; i--) values[i] = Pop();
-            return values;
-        }
         var code = function.Instructions;
         var pc = startInstruction;
         for (; pc < block.End; pc++)
@@ -122,91 +114,104 @@ public sealed partial class Interpreter
                     case OpCode.True: stack.Add(Value.True); break;
                     case OpCode.False: stack.Add(Value.False); break;
                     case OpCode.LoadLocal: stack.Add(ReadLocal(locals, instruction.A)); break;
-                    case OpCode.StoreLocal: WriteLocal(locals, instruction.A, Pop()); break;
-                    case OpCode.InitializeLocal: locals[instruction.A] = Pop(); break;
+                    case OpCode.StoreLocal: WriteLocal(locals, instruction.A, stack.Pop()); break;
+                    case OpCode.InitializeLocal: locals[instruction.A] = stack.Pop(); break;
                     case OpCode.LoadCell: stack.Add(CaptureLocal(locals, instruction.A)); break;
                     case OpCode.LoadStorage: stack.Add(locals[instruction.A]); break;
                     case OpCode.GetCapture:
                         {
-                            var captures = ((FunctionValue)Pop()).Captures;
+                            var captures = ((FunctionValue)stack.Pop()).Captures;
                             stack.Add(captures is not null && instruction.A < captures.Count ? captures[instruction.A] : Value.Null); break;
                         }
                     case OpCode.SetMember:
-                        { var value = Pop(); StoreMember(Pop(), instruction.Text!, value, instruction.A); stack.Add(Value.Null); break; }
-                    case OpCode.Pop: Pop(); break;
-                    case OpCode.Dup: stack.Add(stack[^1]); break;
+                        { var value = stack.Pop(); StoreMember(stack.Pop(), instruction.Text!, value, instruction.A); stack.Add(Value.Null); break; }
+                    case OpCode.Pop: stack.Discard(); break;
+                    case OpCode.Dup: stack.Duplicate(); break;
                     case OpCode.Jump:
                         pc = instruction.A - 1; break;
                     case OpCode.JumpIfFalse:
                     case OpCode.JumpIfTrue:
-                        if (AsBool(await ResolveAsync(Pop())) == (instruction.Op == OpCode.JumpIfTrue)) pc = instruction.A - 1;
+                        if (AsBool(await ResolveAsync(stack.Pop())) == (instruction.Op == OpCode.JumpIfTrue)) pc = instruction.A - 1;
                         break;
-                    case OpCode.MakeClosure: stack.Add(new FunctionValue(instruction.A, PopMany(instruction.B))); break;
+                    case OpCode.MakeClosure:
+                        {
+                            // Function equality includes capture storage identity, even without captures.
+                            var captures = instruction.B == 0 ? new Value[0] : stack.PopMany(instruction.B);
+                            stack.Add(new FunctionValue(instruction.A, captures)); break;
+                        }
                     case OpCode.SpecializeClosure:
-                        stack.Add(Specialize((FunctionValue)Pop(), instruction)); break;
+                        stack.Add(Specialize((FunctionValue)stack.Pop(), instruction)); break;
                     case OpCode.Call:
                     case OpCode.ProcessCall:
                         {
-                            var arguments = ValueArguments(PopMany(instruction.A)); var callee = ReadValue(Pop());
-                            if (instruction.Op == OpCode.Call && instruction.Text is not null && callee is FunctionValue { NativeName: null } dynamicFunction) callee = Specialize(dynamicFunction, instruction);
-                            else if (instruction.Op == OpCode.Call && instruction.B != 0) callee = ((FunctionValue)callee) with { Function = instruction.B - 1 };
-                            stack.Add(await InvokeScheduledAsync(callee, arguments, instruction.B, instruction.Span, cancellationToken)); break;
+                            var arguments = ValueArguments(stack.PopMany(instruction.A)); var callee = ReadValue(stack.Pop());
+                            int? target = null;
+                            if (instruction.Op == OpCode.Call && instruction.Text is not null && callee is FunctionValue { NativeName: null } dynamicFunction)
+                                target = DispatchTarget(dynamicFunction, instruction);
+                            else if (instruction.Op == OpCode.Call && instruction.B != 0)
+                            {
+                                var selected = (FunctionValue)callee;
+                                if (selected.NativeName is null) target = instruction.B - 1;
+                            }
+                            stack.Add(await InvokeScheduledAsync(callee, arguments, instruction.B, instruction.Span, cancellationToken, target)); break;
                         }
                     case OpCode.NativeCall:
-                        stack.Add(await InvokeNativeAsync(instruction.Text!, PopMany(instruction.A), cancellationToken)); break;
+                        if (instruction.Text == "math.pow" && instruction.A == 2
+                            && stack.TryPopNumbers(out double baseNumber, out double exponent))
+                            stack.AddNumber(NativeRegistry.Power(baseNumber, exponent));
+                        else stack.Add(await InvokeNativeAsync(instruction.Text!, stack.PopMany(instruction.A), cancellationToken));
+                        break;
                     case OpCode.Barrier: await FenceAsync(instruction.A, instruction.B, instruction.Text); break;
                     case OpCode.Acquire:
                         if (instruction.A == 0) await JoinAllAsync();
-                        else stack.Add(await AcquireAsync(Pop()));
+                        else stack.Add(await AcquireAsync(stack.Pop()));
                         break;
                     case OpCode.Return:
-                        return new(pc, stack.Count == 0 ? Value.Null : Pop(), true);
+                        return new(pc, stack.Count == 0 ? Value.Null : stack.Pop(), true);
                     case OpCode.LoadBuiltin: stack.Add(Builtin(instruction.Text!)); break;
                     case OpCode.Convert:
                         {
-                            var value = Pop();
-                            var type = instruction.Text == "Path" ? TypeRef.Path : TypeRef.String;
-                            stack.Add(MapValue(value, type, item => instruction.Text == "Path" ? context.AsPath(item) : instruction.Text == "String" ? new StringValue(Text(item)) : throw new MsyncException($"Unknown conversion {instruction.Text}"), value.Type == TypeRef.String ? "local" : PathEndpoint(value))); break;
+                            stack.Add(ConvertValue(stack.Pop(), instruction.Text!)); break;
                         }
                     case OpCode.MakeRange:
                         {
-                            var values = PopMany(instruction.A);
+                            var values = stack.PopMany(instruction.A);
                             stack.Add(new RangeValue(values, values.Select(v => v.Type).Aggregate(new TypeRef(TypeKind.Never), TypeRef.Union))); break;
                         }
                     case OpCode.MakeLazyRange:
                         {
-                            var values = PopMany(instruction.A);
+                            var values = stack.PopMany(instruction.A);
                             var type = instruction.B > 0 && module.Constants[instruction.B - 1] is TypeValue typed ? typed.Data : TypeRef.Any;
                             stack.Add(new RangeValue(LazyItemsAsync(values, instruction.Text, cancellationToken), type)); break;
                         }
                     case OpCode.DeferRange:
-                        stack.Add(CreateDeferredRange(Pop())); break;
+                        stack.Add(CreateDeferredRange(stack.Pop())); break;
                     case OpCode.GetSingleton: stack.Add(GetSingleton(instruction.A)); break;
-                    case OpCode.SetSingleton: stack.Add(SetSingleton(instruction.A, Pop())); break;
+                    case OpCode.SetSingleton: stack.Add(SetSingleton(instruction.A, stack.Pop())); break;
                     case OpCode.MakeScope:
-                        stack.Add(MakeScope(instruction, PopMany(instruction.A))); break;
-                    case OpCode.GetMember: stack.Add(Member(Pop(), instruction.Text!, instruction.A)); break;
+                        stack.Add(MakeScope(instruction, stack.PopMany(instruction.A))); break;
+                    case OpCode.GetMember: stack.Add(Member(stack.Pop(), instruction.Text!, instruction.A)); break;
                     case OpCode.Qualify:
                         {
-                            var item = Pop(); var scope = Pop();
+                            var item = stack.Pop(); var scope = stack.Pop();
                             stack.Add(scope is ConnectionValue connection
                                 ? MapValue(item, TypeRef.Path, value => Qualify(connection, value), connection.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl ? connection.ToString() : "local")
                                 : Member(scope, Text(await ResolveAsync(item)))); break;
                         }
                     case OpCode.PathJoin:
                         {
-                            var right = Pop(); var left = Pop();
+                            var right = stack.Pop(); var left = stack.Pop();
                             stack.Add(CombineValues(left, right, TypeRef.Path, (root, item) => PathSemantics.JoinValue(context.AsPath(root), item), PathEndpoint(left))); break;
                         }
                     case OpCode.SelectPath:
                         {
-                            var directory = context.AsPath(Pop());
+                            var directory = context.AsPath(stack.Pop());
                             stack.Add(new RangeValue(SelectAsync(directory, instruction.Text!, cancellationToken), TypeRef.Path, new PathSelection(directory, instruction.Text!))); break;
                         }
                     case OpCode.Transfer:
                     case OpCode.LocalTransfer:
                         {
-                            var destination = Pop(); var source = Pop();
+                            var destination = stack.Pop(); var source = stack.Pop();
                             bool discarded = pc + 1 < code.Count && code[pc + 1].Op == OpCode.Pop
                                 && source is PathValue or StringValue or DeferredValue
                                 && destination is PathValue or StringValue or DeferredValue;
@@ -216,17 +221,17 @@ public sealed partial class Interpreter
                             else stack.Add(await completion ? Value.True : Value.False);
                             break;
                         }
-                    case OpCode.Not: stack.Add(MapValue(Pop(), TypeRef.Bool, value => AsBool(value) ? Value.False : Value.True)); break;
-                    case OpCode.IsNull: stack.Add(Pop() is NullValue ? Value.True : Value.False); break;
+                    case OpCode.Not: stack.Add(MapValue(stack.Pop(), TypeRef.Bool, value => AsBool(value) ? Value.False : Value.True)); break;
+                    case OpCode.IsNull: stack.Add(stack.Pop() is NullValue ? Value.True : Value.False); break;
                     case OpCode.IsType:
                         {
-                            var expected = Pop() as TypeValue ?? throw new MsyncException("Type identity requires a type on the right");
-                            var value = Pop(); var type = value is TypeValue typeValue ? typeValue.Data : value.Type;
+                            var expected = stack.Pop() as TypeValue ?? throw new MsyncException("Type identity requires a type on the right");
+                            var value = stack.Pop(); var type = value is TypeValue typeValue ? typeValue.Data : value.Type;
                             stack.Add(expected.Data.Accepts(type) ? Value.True : Value.False); break;
                         }
                     case OpCode.RegexMatch:
                         {
-                            var pattern = instruction.Text ?? Text(Pop()); var value = Pop();
+                            var pattern = instruction.Text ?? Text(stack.Pop()); var value = stack.Pop();
                             stack.Add(value is PathValue or StringValue && Regex.IsMatch(Text(value), pattern, RegexOptions.CultureInvariant) ? Value.True : Value.False); break;
                         }
                     case OpCode.Equal:
@@ -236,17 +241,18 @@ public sealed partial class Interpreter
                     case OpCode.Greater:
                     case OpCode.GreaterEqual:
                         {
-                            var right = Pop(); var left = Pop();
-                            stack.Add(CombineValues(left, right, TypeRef.Bool, (a, b) =>
+                            if (stack.TryPopNumbers(out double leftNumber, out double rightNumber))
+                                stack.Add(CompareNumbers(leftNumber, rightNumber, instruction.Op));
+                            else
                             {
-                                var comparison = Compare(a, b);
-                                var result = instruction.Op switch { OpCode.Equal => comparison == 0, OpCode.NotEqual => comparison != 0, OpCode.Less => comparison < 0, OpCode.LessEqual => comparison <= 0, OpCode.Greater => comparison > 0, _ => comparison >= 0 };
-                                return result ? Value.True : Value.False;
-                            })); break;
+                                var right = stack.Pop(); var left = stack.Pop();
+                                stack.Add(CompareValues(left, right, instruction.Op));
+                            }
+                            break;
                         }
                     case OpCode.GetIterator:
                         {
-                            var range = Pop() as RangeValue ?? throw new MsyncException("Iteration requires Range");
+                            var range = stack.Pop() as RangeValue ?? throw new MsyncException("Iteration requires Range");
                             var iterator = range.Items.GetAsyncEnumerator(cancellationToken); iterators.Add(iterator); stack.Add(new IteratorValue(iterator)); break;
                         }
                     case OpCode.IteratorNext:
@@ -262,16 +268,19 @@ public sealed partial class Interpreter
                     case OpCode.Divide:
                     case OpCode.Remainder:
                         {
-                            var right = Pop(); var left = Pop();
-                            var type = left.Type == TypeRef.String ? TypeRef.String : TypeRef.Number;
-                            stack.Add(CombineValues(left, right, type, (a, b) =>
+                            if (stack.TryPopNumbers(out double leftNumber, out double rightNumber))
+                                stack.AddNumber(Arithmetic(leftNumber, rightNumber, instruction.Op));
+                            else
                             {
-                                if (instruction.Op == OpCode.Add && a is StringValue sa && b is StringValue sb) return new StringValue(sa.Data + sb.Data);
-                                var l = ((NumberValue)a).Data; var r = ((NumberValue)b).Data;
-                                return new NumberValue(instruction.Op switch { OpCode.Add => l + r, OpCode.Subtract => l - r, OpCode.Multiply => l * r, OpCode.Remainder => l % r, _ => l / r });
-                            })); break;
+                                var right = stack.Pop(); var left = stack.Pop();
+                                stack.Add(ArithmeticValues(left, right, instruction.Op));
+                            }
+                            break;
                         }
-                    case OpCode.Negate: stack.Add(MapValue(Pop(), TypeRef.Number, value => new NumberValue(-((NumberValue)value).Data))); break;
+                    case OpCode.Negate:
+                        if (stack.TryPopNumber(out double number)) stack.AddNumber(-number);
+                        else stack.Add(MapValue(stack.Pop(), TypeRef.Number, value => new NumberValue(-((NumberValue)value).Data)));
+                        break;
                     default: throw new MsyncException($"Unsupported bytecode operation {instruction.Op}");
                 }
             }
@@ -296,16 +305,21 @@ public sealed partial class Interpreter
     private FunctionValue Specialize(FunctionValue function, Instruction instruction)
     {
         if (function.NativeName is not null) return function;
-        if (instruction.Text is null) return function with { Function = instruction.A };
-        if (!dispatchTables.TryGetValue(instruction.Text, out var targets))
+        var target = instruction.Text is null ? instruction.A : DispatchTarget(function, instruction);
+        return target == function.Function ? function : function with { Function = target };
+    }
+    private int DispatchTarget(FunctionValue function, Instruction instruction)
+    {
+        if (!dispatchTables.TryGetValue(instruction.Text!, out var targets))
         {
-            targets = FunctionDispatch.Parse(instruction.Text);
-            dispatchTables.Add(instruction.Text, targets);
+            targets = FunctionDispatch.Parse(instruction.Text!);
+            dispatchTables.Add(instruction.Text!, targets);
         }
-        return targets.TryGetValue(function.Function, out var target) ? function with { Function = target }
+        return targets.TryGetValue(function.Function, out var target) ? target
             : throw new MsyncException($"Function #{function.Function} has no compiled specialization in this dispatch table", instruction.Span);
     }
-    private Value Capture(Value value) => value is PathValue path ? path with { WorkingDirectory = path.WorkingDirectory ?? context.WorkingDirectory, HomeDirectory = path.HomeDirectory ?? context.HomeDirectory } : value;
+    private Value Capture(Value value) => value is PathValue path && (path.WorkingDirectory is null || path.HomeDirectory is null)
+        ? path with { WorkingDirectory = path.WorkingDirectory ?? context.WorkingDirectory, HomeDirectory = path.HomeDirectory ?? context.HomeDirectory } : value;
     private Value Builtin(string name)
     {
         name = name.TrimStart('$');

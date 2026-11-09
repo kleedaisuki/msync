@@ -6,7 +6,7 @@ public readonly record struct SchedulingStatistics(long AdmittedTransfers, long 
 
 public sealed partial class Interpreter
 {
-    private sealed class WorkOwner
+    private struct WorkOwner
     {
         public List<PendingWork>? Tasks;
         public List<ProcessValue>? Processes;

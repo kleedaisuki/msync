@@ -51,7 +51,7 @@ public static partial class NativeRegistry
             "divide" => first / second,
             "fmin" => double.MinNumber(first, second),
             "fmax" => double.MaxNumber(first, second),
-            "pow" => Math.Pow(first, second),
+            "pow" => Power(first, second),
             "atan2" => Math.Atan2(first, second),
             "hypot" => double.Hypot(first, second),
             "fmod" => first % second,
@@ -63,6 +63,8 @@ public static partial class NativeRegistry
             _ => throw new MsyncException($"Unknown math native '{operation}'")
         });
     }
+
+    internal static double Power(double left, double right) => Math.Pow(left, right);
 
     private static double MathNumber(Value value) => value is NumberValue number ? number.Data
         : throw new MsyncException($"Expected Number, received {value.Type}");

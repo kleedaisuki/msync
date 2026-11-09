@@ -6,7 +6,7 @@ namespace Msync.Runtime;
 
 public sealed partial class Interpreter
 {
-    private async ValueTask<Value> InvokeScheduledAsync(Value callee, IReadOnlyList<Value> arguments, int scheduling, SourceSpan? origin, CancellationToken cancellationToken)
+    private async ValueTask<Value> InvokeScheduledAsync(Value callee, IReadOnlyList<Value> arguments, int scheduling, SourceSpan? origin, CancellationToken cancellationToken, int? compiledTarget = null)
     {
         callee = ReadValue(callee);
         arguments = ValueArguments(arguments);
@@ -15,6 +15,8 @@ public sealed partial class Interpreter
             var process = await StartProcessAsync(context.AsPath(callee), await ResolveArgumentsAsync(arguments), cancellationToken, origin);
             return (scheduling & 1) != 0 && (scheduling & 2) == 0 ? process : await AcquireAsync(process);
         }
+        if (compiledTarget is { } target && callee is FunctionValue { NativeName: null } function)
+            return await RunFunctionAsync(target, function.Captures ?? [], arguments, cancellationToken);
         return await InvokeAsync(callee, arguments, cancellationToken);
     }
     private async ValueTask<Value> RunProcessAsync(PathValue executable, IReadOnlyList<Value> arguments, CancellationToken cancellationToken)
