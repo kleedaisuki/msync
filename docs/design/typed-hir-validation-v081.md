@@ -105,3 +105,33 @@ The semantic-query boundary also follows
 meaning and source identity remain inspectable independently of emitted runtime
 layout. These are mechanism references, not requirements to reproduce either
 compiler's entire pipeline or memory management strategy.
+
+## Default-pipeline integration observations
+
+The immutable `hir-editor-cli/frozen8` snapshot uses the new default
+`Compiler.Compile` pipeline rather than an independently invoked analysis side
+path. Compiler SHA-256 is
+`0ac431334e98d6dec5255b358dda24e5c5aae0bf9153c72c03e958ce00c63993`;
+the full six-assembly receipt accompanies the snapshot.
+
+The semantic journey passed three O2 source/object/executable routes, **84 exact
+file observations**, six invalid-program diagnostics, and absence of the query's
+forbidden output. This includes the two same-shape wrapper/capture projection
+witnesses, delayed execution once, late-written captured cells, and a failed
+invocation query whose temporary concept obligations do not leak into later
+real writes. Its report is `.temp/hir-semantic-journey/snapshot8.json`.
+
+Earlier snapshots exposed distinct real defects rather than fixture timeouts:
+nullable storage admission was omitted during assignment; Range-returning calls
+executed eagerly; a late captured cell was modeled as its initial Null and then
+as an unnecessarily broad domain; standard-module closures retained a replaced
+initialization cell; and a query omitted a required callable-write obligation.
+The small independent reproducers were used before restoring the composed
+journey. Expectations and standard-library code were not changed to mask them.
+
+These observations are not final Native or full standard-library acceptance.
+The small B-tree cost input still stops at a mixed native/source call-domain
+diagnostic in this snapshot, so it has no candidate timing or speedup claim.
+Further measurements use a corrected producer after an actual execution result,
+not merely a successful compilation. Default-pipeline proof does not by itself
+establish every capability/retention boundary in the architectural matrix.
