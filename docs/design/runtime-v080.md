@@ -275,3 +275,11 @@ C# source forcibly converted to CRLF, then checks real authenticated transfers
 and native process calls with actual CRLF filenames, payloads and arguments. It
 also runs the six source/object/executable selected-query journeys on that image;
 each actual selected transfer keeps its one SSH client/authentication/exec session.
+
+## Adaptive execution research
+
+[HotSpot/CoreCLR runtime research](managed-runtime-optimization-v080.md) separates
+host Native AOT optimization from guest-bytecode feedback. The proposed first
+experiments are cheaper call resolution, guarded site caches and precompiled
+fused handlers; no native JIT, general OSR, custom GC or speculative filesystem
+proof is implemented or implied by that research.
