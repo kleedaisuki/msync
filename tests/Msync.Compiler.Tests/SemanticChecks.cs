@@ -214,7 +214,11 @@ internal static class SemanticChecks
             AssertType(Accept("let action = if exists ./condition { $std::string::to_lowercase } else { $std::string::to_uppercase }; $std::ranges::transform([\"Text\"], action)"), new(TypeKind.Range, TypeRef.String));
             var mixed = Accept("let action = if exists ./condition { fn(value) { value } } else { $std::string::to_uppercase }; action(\"Text\")");
             AssertType(mixed, TypeRef.String);
-            Require(Dispatches(mixed, OpCode.Call).Single().Count == 1, "Mixed source/native calls must map the source closure while preserving native identity.");
+            var call = mixed.Functions.SelectMany(function => function.Instructions).Single(instruction => instruction.Op == OpCode.Call);
+            Require(call.B > 0 && mixed.Functions[call.B - 1].ParameterTypes?.SequenceEqual([TypeRef.String]) == true,
+                "Mixed source/native calls must specialize the sole source closure for String.");
+            Require(mixed.Constants.OfType<FunctionValue>().Any(value => value.NativeName == "string.to_uppercase"),
+                "Mixed source/native calls must retain the native alternative's identity.");
         });
         if (failures.Count > 0) throw new InvalidOperationException("Branch semantic checks failed:\n" + string.Join("\n", failures));
     }

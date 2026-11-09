@@ -49,7 +49,7 @@ internal static class EndpointChecks
         Check(hosts.Members!.Single(item => item.Name == "primary").Endpoint == Forge, "Scope member endpoint identity was lost");
         var nested = hosts.Members!.Single(item => item.Name == "nested");
         Check(nested.Members!.Single().Endpoint == new ConnectionValue(ConnectionKind.Wsl, "Ubuntu"), "nested Scope descriptors lost their endpoint identity");
-        EditorAnalysis recovery = EditorCompiler.Analyze(source + "alias::", "file:///endpoints.msync");
+        EditorAnalysis recovery = EditorCompiler.Analyze(source + "./ @ ", "file:///endpoints.msync");
         Check(recovery.RecoveryBindings!.Single(item => item.Name == "alias").Endpoint == Forge, "incomplete qualifier recovery lost its accepted endpoint alias");
     }
 
@@ -88,7 +88,7 @@ internal static class EndpointChecks
         int sharedMember = source.IndexOf("value::host", StringComparison.Ordinal) + "value::".Length;
         Check(analysis.Occurrences.Single(item => item.Span.Start == sharedMember && item.Span.Length == 4).Endpoint is null,
             "a shared generic source occurrence reports the last specialized endpoint");
-        Module module = Frontend.Compile(source);
+        Module module = Frontend.Compile(source, optimization: 0);
         Check(module.Functions.Count(item => item.Name == "identity" && item.ParameterTypes?.SequenceEqual([TypeRef.Connection]) == true) == 1
             && module.Functions.Count(item => item.Name == "firstItem") == 1,
             "endpoint hints became value-based bytecode specialization");
@@ -97,7 +97,7 @@ internal static class EndpointChecks
     private static void SessionBindingDescriptions()
     {
         CompilerSession session = new();
-        _ = session.Compile("let remote = ssh://forge; scope Hosts { guest: $wsl }; fn send(file) { file -> remote::file };");
+        _ = session.Compile("let remote = ssh://forge; scope Hosts { guest: $wsl }; fn send(file) { file -> file @ remote };");
         session.AcceptSubmission();
         IReadOnlyList<SemanticMember> first = session.DescribeBindings();
         Check(first.Single(item => item.Name == "remote").Endpoint == Forge, "live session lost its accepted endpoint");
@@ -107,7 +107,7 @@ internal static class EndpointChecks
         session.ReconcileSubmission(_ => false);
         Check(session.DescribeBindings().Single(item => item.Name == "remote").Endpoint == Forge, "failed shadow replaced an accepted endpoint hint");
         Module changed = session.Compile("let remote = ssh://other; let unfinished = ssh://unreached;");
-        int completed = changed.Functions[0].Instructions.First(item => item.Op == OpCode.StoreLocal).A;
+        int completed = changed.Functions[0].Instructions.First(item => item.Op == OpCode.InitializeLocal).A;
         session.ReconcileSubmission(slot => slot == completed);
         var current = session.DescribeBindings();
         Check(current.Single(item => item.Name == "remote").Endpoint == Other && current.All(item => item.Name != "unfinished"),
