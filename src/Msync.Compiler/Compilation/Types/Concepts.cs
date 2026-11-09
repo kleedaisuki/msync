@@ -5,16 +5,6 @@ using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 
 namespace Msync.Compiler;
 
-internal sealed record ConceptDefinition(ConceptDeclaration Syntax, string Source, string SourceName,
-    ImmutableDictionary<string, ConceptDefinition> Environment)
-{
-    public bool StandardShadowed { get; init; }
-}
-internal sealed record ConceptContract(TypeSyntax Annotation, TypeEnvironment Environment);
-internal sealed record ConceptMemberContract(ConceptDefinition Definition, ConceptMember Requirement, IReadOnlyDictionary<string, Info> Associated);
-internal sealed record TypeEnvironment(ImmutableDictionary<string, ConceptDefinition> Concepts, bool StandardShadowed,
-    string Source, string SourceName);
-
 internal sealed partial class Compilation
 {
     private readonly HashSet<(ConceptDefinition Concept, object Shape)> checkingConcepts = [];
@@ -212,7 +202,7 @@ internal sealed partial class Compilation
                 : RequirementInfo(frame, definition, parameter.Type, associated, span);
             return parameter.Nullable ? argument with { Type = argument.Type.WithNull } : argument;
         }).ToArray();
-        Frame probe = CloneFrame(frame);
+        Frame probe = Frame.Fork(frame);
         Info result;
         try { result = Invoke(probe, actual with { Storage = null, Type = actual.Type.WithoutNull }, arguments, span); }
         catch (CompileException error)
@@ -339,7 +329,7 @@ internal sealed partial class Compilation
 
     private static Frame TypeFrame(Frame frame, TypeEnvironment environment)
     {
-        Frame lexical = CloneFrame(frame, environment.Source, environment.SourceName);
+        Frame lexical = Frame.Fork(frame, environment.Source, environment.SourceName);
         lexical.Concepts = environment.Concepts;
         lexical.Environment = environment.StandardShadowed
             ? lexical.Environment.SetItem("std", new(-1, UnknownInfo)) : lexical.Environment.Remove("std");

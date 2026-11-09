@@ -90,7 +90,7 @@ internal sealed partial class Compilation
         var recordedArguments = callee.NativeName == "storage.buffer_snapshot"
             ? arguments.Select(new EditorSnapshot(copySpecializations: false).CopyInfo).ToArray()
             : arguments.ToArray();
-        MutableCall call = new(CloneFrame(frame), storage, recordedArguments, span, expressions, contract);
+        MutableCall call = new(Frame.Fork(frame), storage, recordedArguments, span, expressions, contract);
         CheckCallableResult(call, callee, result);
         if (id == mutableCalls.Count) mutableCalls.Add(call);
         else mutableCalls[id] = call;
@@ -127,7 +127,7 @@ internal sealed partial class Compilation
                     }
                     else if (candidate.NativeName is { } native)
                     {
-                        var scratch = CloneFrame(call.Caller);
+                        var scratch = Frame.Fork(call.Caller);
                         result = InvokeNative(scratch, native, call.Arguments, call.Span, call.Expressions);
                     }
                     else continue;
@@ -340,7 +340,7 @@ internal sealed partial class Compilation
             Facts = caller.Facts,
             EditorProbe = true,
             Concepts = function.Concepts,
-            UnwrittenLocations = UnwrittenLocations(function.Syntax)
+            UnwrittenLocations = LexicalWriteAnalysis.ForFunction(function.Syntax)
         };
         foreach (var (name, binding) in function.Captures)
         {

@@ -114,7 +114,7 @@ internal sealed partial class Compilation
         TypeRef? constraint = initial.Type.WithoutNull.Kind == TypeKind.Never ? null : initial.Type;
         while (true)
         {
-            Frame scratch = CloneFrame(frame);
+            Frame scratch = Frame.Fork(frame);
             var callback = ResolveDispatch(scratch, operation, [domain, item], span);
             if (constraint is null && callback.Result.Type.WithoutNull.Kind != TypeKind.Never)
                 constraint = initial.Type.Nullable ? callback.Result.Type.WithNull : callback.Result.Type;

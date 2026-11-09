@@ -145,7 +145,7 @@ internal sealed partial class Compilation
             TypeRef[] next;
             if (choice.Function is { } function)
             {
-                Frame lexical = CloneFrame(frame);
+                Frame lexical = Frame.Fork(frame);
                 lexical.Concepts = function.Concepts;
                 lexical.Environment = function.Captures.ToImmutableDictionary(StringComparer.Ordinal);
                 next = function.Syntax.Parameters.Select(parameter => parameter.Type is null ? TypeRef.Any

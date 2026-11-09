@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using Msync.Compiler.Syntax;
 using Msync.Core;
+using Msync.Optimization;
 using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 
 namespace Msync.Compiler;
@@ -14,7 +15,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
     private ImmutableDictionary<string, Binding> sessionEnvironment = ImmutableDictionary<string, Binding>.Empty;
     private int sessionLocals;
     private ImmutableDictionary<string, ConceptDefinition> sessionConcepts = ImmutableDictionary<string, ConceptDefinition>.Empty;
-    private static readonly Lazy<IReadOnlyDictionary<string, StandardSource>> libraries = new(ReadLibraries);
+    private static readonly Lazy<IReadOnlyDictionary<string, StandardSource>> libraries = new(StandardSourceCatalog.Read);
     private int nextTemplate;
 
     public Module Run() => Submit(source);
@@ -38,7 +39,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
             Locals = sessionLocals,
             Concepts = sessionConcepts,
             SingleExecution = true,
-            UnwrittenLocations = CaptureWrites.Document(document, submittedBindings is null)
+            UnwrittenLocations = LexicalWriteAnalysis.ForDocument(document, submittedBindings is null)
         };
         SnapshotFacts(frame);
         if (functions.Count == 0) functions.Add(new("<main>", 0, 0, [], TypeRef.Null));
@@ -91,36 +92,6 @@ internal sealed partial class Compilation(string source, string sourceName, int 
                 foreach (var key in templates[i].Specializations.Keys.Where(key => !previousKeys[i].Contains(key)).ToArray()) templates[i].Specializations.Remove(key);
             throw;
         }
-    }
-
-    private sealed class StandardSource
-    {
-        private readonly Lazy<string> source;
-        private readonly Lazy<Document> document;
-        public string Source => source.Value;
-        public Document Document => document.Value;
-        public StandardSource(string resource, string module)
-        {
-            source = new(() =>
-            {
-                using var stream = typeof(Compiler).Assembly.GetManifestResourceStream(resource)!;
-                using StreamReader reader = new(stream);
-                return reader.ReadToEnd();
-            });
-            document = new(() => Parser.Parse(source.Value, $"msync-stdlib:///0.8.0/{module}.msync"));
-        }
-    }
-
-    private static IReadOnlyDictionary<string, StandardSource> ReadLibraries()
-    {
-        Dictionary<string, StandardSource> result = [];
-        var assembly = typeof(Compiler).Assembly;
-        foreach (var name in assembly.GetManifestResourceNames().Where(n => n.EndsWith(".msync", StringComparison.Ordinal)))
-        {
-            var module = name.Split('.')[^2];
-            result[module] = new(name, module);
-        }
-        return result;
     }
 
     private Info Statements(Frame frame, IReadOnlyList<Statement> statements, bool trackBindings = false)

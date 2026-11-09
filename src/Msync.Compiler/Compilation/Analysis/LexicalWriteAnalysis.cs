@@ -3,12 +3,15 @@ using Msync.Compiler.Syntax;
 
 namespace Msync.Compiler;
 
-internal sealed partial class Compilation
+internal static class LexicalWriteAnalysis
 {
     private static readonly ConditionalWeakTable<FunctionExpr, CaptureWrites> functionWrites = new();
 
-    private static IReadOnlySet<int> UnwrittenLocations(FunctionExpr function) =>
+    internal static IReadOnlySet<int> ForFunction(FunctionExpr function) =>
         functionWrites.GetValue(function, static syntax => CaptureWrites.Function(syntax)).Unwritten;
+
+    internal static IReadOnlySet<int> ForDocument(Document document, bool closedRoot) =>
+        CaptureWrites.Document(document, closedRoot);
 
     private sealed class CaptureWrites(IReadOnlySet<int> unwritten)
     {
@@ -143,7 +146,7 @@ internal sealed partial class Compilation
                         }
                         return;
                 }
-                foreach (var child in Children(node)) Visit(child, environment, globals);
+                foreach (var child in SyntaxTraversal.Children(node)) Visit(child, environment, globals);
             }
 
             private void Scope(ScopeExpr scope, LexicalScope parent, LexicalScope globals)

@@ -246,7 +246,7 @@ internal sealed partial class Compilation
         {
             frame.Facts = domain;
             RestoreScope(frame, environment);
-            var probe = CloneFrame(frame);
+            var probe = Frame.Fork(frame);
             probe.EditorReportErrors = false;
             analyze(probe);
             var next = JoinFacts(domain, probe.Facts);

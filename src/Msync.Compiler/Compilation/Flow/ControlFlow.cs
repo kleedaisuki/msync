@@ -77,7 +77,7 @@ internal sealed partial class Compilation
             RestoreScope(frame, before);
             if (frame.EditorRecovery)
             {
-                Frame probe = CloneFrame(frame);
+                Frame probe = Frame.Fork(frame);
                 probe.EditorProbe = true;
                 probe.EditorReportErrors = false;
                 probe.Environment = Refined(probe, conditional.Condition, !test.KnownBool.Value);

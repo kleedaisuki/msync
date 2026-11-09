@@ -1,3 +1,4 @@
+using static Msync.Compiler.Syntax.SyntaxTraversal;
 using System.Collections.Immutable;
 using Msync.Compiler.Syntax;
 using Msync.Core;

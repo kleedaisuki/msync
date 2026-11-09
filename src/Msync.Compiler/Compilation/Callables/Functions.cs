@@ -1,3 +1,4 @@
+using static Msync.Compiler.Syntax.SyntaxTraversal;
 using Msync.Compiler.Syntax;
 using Msync.Core;
 using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
@@ -137,7 +138,7 @@ internal sealed partial class Compilation
                 }
         if (observe is not null && HasActiveEditorShape(template, arguments, captureInfos))
         {
-            var recursiveContext = CloneFrame(caller);
+            var recursiveContext = Frame.Fork(caller);
             recursiveContext.Concepts = template.Concepts;
             var guarded = template.Syntax.ReturnType is null ? UnknownInfo : ConceptInfo(recursiveContext, template.Syntax.ReturnType);
             return new(-1, guarded, arguments.Select(argument => argument.Type).ToArray());
@@ -165,7 +166,7 @@ internal sealed partial class Compilation
             EditorProbe = caller.EditorProbe,
             EditorReportErrors = caller.EditorReportErrors,
             DeferredCaptures = caller.DeferredCaptures,
-            UnwrittenLocations = UnwrittenLocations(template.Syntax),
+            UnwrittenLocations = LexicalWriteAnalysis.ForFunction(template.Syntax),
             EditorCallTrace = caller.EditorRecovery ? new(caller.SourceName, caller.Source, span, template.Syntax.Parameters, specialization.ParameterTypes, caller.EditorCallTrace) : null
         };
         frame.SelfCaptureSlots[template.Id] = Enumerable.Range(0, template.Captures.Count).ToArray();
@@ -318,13 +319,13 @@ internal sealed partial class Compilation
 
     private Info Call(Frame frame, CallExpr call)
     {
-        Frame scratch = CloneFrame(frame);
+        Frame scratch = Frame.Fork(frame);
         var result = CallEager(scratch, call);
         if (result.Type.Kind == TypeKind.Range && !result.EagerRange)
         {
             if (!scratch.DeferredReads)
             {
-                scratch = CloneFrame(frame);
+                scratch = Frame.Fork(frame);
                 scratch.DeferredCaptures = true;
                 scratch.DeferredReads = true;
                 result = CallEager(scratch, call);
@@ -349,7 +350,7 @@ internal sealed partial class Compilation
         if (call.Callee is NameExpr { Name: "decltype" })
         {
             if (call.Arguments.Count != 1) throw Error(frame, "decltype expects one unevaluated expression.", call.Span);
-            Frame scratch = CloneFrame(frame);
+            Frame scratch = Frame.Fork(frame);
             var inferred = Expression(scratch, call.Arguments[0]);
             return TypeConstant(frame, inferred.Type, call.Span);
         }
@@ -442,7 +443,7 @@ internal sealed partial class Compilation
             }
             else if (candidate.NativeName is not null)
             {
-                Frame scratch = CloneFrame(frame);
+                Frame scratch = Frame.Fork(frame);
                 next = InvokeNative(scratch, candidate.NativeName, arguments, span);
                 foreach (var binding in scratch.Code.Where(instruction => instruction.Op == OpCode.SpecializeClosure)) frame.Code.Add(binding);
             }

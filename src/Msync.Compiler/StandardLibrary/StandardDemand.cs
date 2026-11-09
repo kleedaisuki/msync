@@ -1,3 +1,4 @@
+using static Msync.Compiler.Syntax.SyntaxTraversal;
 using Msync.Compiler.Syntax;
 
 namespace Msync.Compiler;

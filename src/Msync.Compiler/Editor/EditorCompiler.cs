@@ -4,55 +4,6 @@ using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 
 namespace Msync.Compiler;
 
-public sealed record SemanticMember(string Name, string Type, string Signature, string Description,
-    IReadOnlyList<SemanticMember>? Members = null, ConnectionValue? Endpoint = null, string SemanticRole = "variable",
-    PathValue? KnownPath = null, string? KnownText = null)
-{
-    public bool IsConstraint { get; init; }
-}
-public sealed record SemanticOccurrence(SourceSpan Span, string Type, string Signature, string Description,
-    IReadOnlyList<SemanticMember>? Members = null, ConnectionValue? Endpoint = null, string SemanticRole = "variable",
-    PathValue? KnownPath = null, string? KnownText = null);
-public sealed record EditorAnalysis(IReadOnlyList<SemanticOccurrence> Occurrences, SourceDiagnostic? Diagnostic,
-    IReadOnlyList<SemanticMember>? RecoveryBindings = null, int? RecoveryStart = null)
-{
-    internal EditorContextCollector? Contexts { get; init; }
-    internal IReadOnlyList<(SourceSpan Span, IReadOnlyList<SemanticMember> Types)> AssociatedTypes { get; init; } = [];
-    internal IReadOnlyList<(SourceSpan Span, EditorLocation Target)> AssociatedDefinitions { get; init; } = [];
-    public IReadOnlyList<SourceSpan> RegexSpans { get; init; } = [];
-    public IReadOnlyList<EditorSymbol> Symbols { get; init; } = [];
-    public IReadOnlyList<EditorLocation> DefinitionsAt(int offset)
-    {
-        var associated = AssociatedDefinitions.Where(reference => reference.Span.Start <= offset && offset <= reference.Span.End)
-            .Select(reference => reference.Target).Distinct().ToArray();
-        return associated.Length == 0 ? Contexts?.DefinitionsAt(offset) ?? [] : associated;
-    }
-    public IReadOnlyList<SourceSpan> TypeSpans { get; init; } = [];
-    public bool IsTypePosition(int offset)
-    {
-        foreach (SourceSpan span in TypeSpans)
-            if (span.Start <= offset && offset <= span.End) return true;
-        return false;
-    }
-    public EditorContext At(int offset)
-    {
-        EditorContext context = Contexts?.At(offset) ?? new(RecoveryBindings ?? [], null);
-        return IsTypePosition(offset) ? context with
-        {
-            IsTypePosition = true,
-            CanDeclareAssociatedType = AssociatedTypes.Any(scope => scope.Span.Start <= offset && offset <= scope.Span.End),
-            Bindings = AssociatedTypes.Where(scope => scope.Span.Start <= offset && offset <= scope.Span.End)
-                .OrderBy(scope => scope.Span.Length).SelectMany(scope => scope.Types)
-                .Concat(Contexts?.ConceptsAt(offset) ?? [])
-                .Concat(context.Bindings.Any(member => member.Name == "std") ? [] : EditorCompiler.StandardConceptBindings)
-                .Concat(context.Bindings)
-                .DistinctBy(member => member.Name).ToArray()
-        } : context;
-    }
-    public SemanticMember? Resolve(int offset, string name) => Contexts is { } contexts ? contexts.Resolve(offset, name)
-        : RecoveryBindings?.FirstOrDefault(binding => binding.Name == name);
-}
-
 public static class EditorCompiler
 {
     private static readonly Lazy<IReadOnlyList<SemanticMember>> builtins = new(CreateBuiltinBindings);
@@ -235,7 +186,7 @@ public static class EditorCompiler
                     if (declarations.TryGetValue(type.Name, out var target))
                         yield return (EditorTypeNames.Parts(source, type).Last().Span, target);
             }
-            foreach (var reference in AssociatedTypeDefinitions(Compilation.Children(node), sourceName, source)) yield return reference;
+            foreach (var reference in AssociatedTypeDefinitions(SyntaxTraversal.Children(node), sourceName, source)) yield return reference;
         }
 
         static IEnumerable<TypeSyntax> RequirementTypes(IEnumerable<Node> requirements)
@@ -263,7 +214,7 @@ public static class EditorCompiler
                 yield return (concept.Span, concept.Types.Where(type => type.NameSpan is { Length: > 0 })
                     .Select(type => new SemanticMember(type.Name, "Type", $"typename {type.Name}",
                     "An associated type selected from the constrained Scope.", SemanticRole: "type") { IsConstraint = true }).ToArray());
-            foreach (var scope in ConceptTypeScopes(Compilation.Children(node))) yield return scope;
+            foreach (var scope in ConceptTypeScopes(SyntaxTraversal.Children(node))) yield return scope;
         }
     }
 
@@ -518,7 +469,7 @@ public static class EditorCompiler
                     break;
                 case ScopeMember { Value: ScopeExpr } member: Add(member.NameSpan, "Scope", $"{member.Name}: Scope"); break;
             }
-            Seed(Compilation.Children(node), source, occurrences, typeSpans);
+            Seed(SyntaxTraversal.Children(node), source, occurrences, typeSpans);
         }
         void AddType(TypeSyntax? type)
         {
@@ -547,29 +498,5 @@ public static class EditorCompiler
                     : "A lexical Scope. Select its declared members with `::`.",
                 SemanticRole: role ?? (type == "Function" ? "function" : "variable"));
         }
-    }
-}
-
-internal sealed partial class Compilation
-{
-    internal static IReadOnlyDictionary<string, (NativeDeclaration Declaration, string Source)> StandardNativeDeclarations() =>
-        libraries.Value.SelectMany(library => library.Value.Document.Statements.OfType<NativeDeclaration>()
-            .Select(declaration => new KeyValuePair<string, (NativeDeclaration, string)>(library.Key + "." + declaration.Name,
-                (declaration, library.Value.Source)))).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
-
-    private readonly Dictionary<Info, string>? editorConceptRequirements = observe is null ? null : new(ReferenceEqualityComparer.Instance);
-
-    private void DescribeConceptRequirement(Info info, ConceptDefinition definition, ConceptMember requirement)
-    {
-        if (editorConceptRequirements is not null)
-            editorConceptRequirements[info] = definition.Source[requirement.Span.Start..requirement.Span.End];
-    }
-
-    internal string? ConceptRequirementSignature(Info info) => editorConceptRequirements?.GetValueOrDefault(info);
-
-    private void Observe(Frame frame, SourceSpan span, Info info, string? name = null)
-    {
-        if (observe is null || !IsCurrentSource(frame)) return;
-        observe(span, info, name, frame.EditorReportErrors);
     }
 }
