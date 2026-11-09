@@ -82,6 +82,22 @@ RejectModule(scalarCycle with
 RejectModule(scalarCycle with { Functions = [scalarCycle.Functions[0] with { IsOpen = true }] }, "Open function is not an executable entry");
 RejectModule(scalarCycle with { Functions = scalarCycle.Functions.Add(new("unresolved", [], [], new(0), HirNodeId.None, IsOpen: true)) }, "A reserved non-entry function is not a finalized artifact");
 
+HirModule symbolicTest = scalarCycle with
+{
+    Types = scalarCycle.Types.Add(new(TypeRef.Type)).Add(new(TypeRef.Bool)),
+    Nodes = scalarCycle.Nodes.Add(scalarCycle.Nodes[0] with { Kind = HirKind.TypeValue, Type = new(1), Data = 0 })
+        .Add(scalarCycle.Nodes[0] with { Kind = HirKind.IsType, Type = new(2), Children = new(0, 2), Data = -1 }),
+    Edges = [new(0), new(1)],
+    Templates = [new("type_test", [], [], new(2), scalarCycle.Nodes[0].Source)]
+};
+HirModule symbolicRead = Decode(Encode(symbolicTest));
+Check(symbolicRead.Children(symbolicRead.Nodes[2]).SequenceEqual([new HirNodeId(0), new(1)]),
+    "Bound generic type test retains its unevaluated symbolic target");
+Check(HirPrinter.Print(symbolicRead).Contains("IsType symbolic", StringComparison.Ordinal),
+    "Bound type test does not invent a finalized target type");
+RejectModule(symbolicTest with { Functions = [symbolicTest.Functions[0] with { Body = new(2), Result = new(2) }] },
+    "Closed function cannot retain a symbolic type-test operand");
+
 byte[] tiny = Encode(Scalar(42));
 for (int length = 0; length < tiny.Length; length++) Reject(tiny[..length], "Truncation rejected");
 byte[] badMagic = (byte[])tiny.Clone(); badMagic[0] ^= 0xff; Reject(badMagic, "Bad magic rejected");

@@ -161,7 +161,12 @@ public static class HirValidation
             case HirKind.Return: Arity(count, 0, 1); break;
             case HirKind.Unary: if (!Enum.IsDefined((HirUnaryOperator)node.Data)) Fail("unknown unary operator"); Arity(count, 1, 1); break;
             case HirKind.Binary: if (!Enum.IsDefined((HirBinaryOperator)node.Data)) Fail("unknown binary operator"); Arity(count, 2, 2); break;
-            case HirKind.Coerce or HirKind.Convert or HirKind.IsType: Id(node.Data, module.Types.Length, "conversion or type test"); Arity(count, 1, 1); break;
+            case HirKind.Coerce or HirKind.Convert: Id(node.Data, module.Types.Length, "conversion target"); Arity(count, 1, 1); break;
+            case HirKind.IsType:
+                Arity(count, 1, 2);
+                if (count == 1) Id(node.Data, module.Types.Length, "type test target");
+                break;
+            case HirKind.TypeOf: Arity(count, 1, 1); break;
             case HirKind.RegexMatch or HirKind.SelectPath: if (node.Text is null) Fail("pattern text is missing"); Arity(count, 1, 1); break;
             case HirKind.Call: Id(node.Data, module.Calls.Length, "call node"); Arity(count, 1, int.MaxValue); break;
             case HirKind.Closure: Id(node.Data, module.Closures.Length, "closure node"); Arity(count, 0, 0); break;
@@ -275,7 +280,7 @@ public static class HirValidation
                 if (visited[id.Value]) continue;
                 visited[id.Value] = true;
                 var node = module.Node(id);
-                if (node.Kind is HirKind.Error or HirKind.TypeOf)
+                if (node.Kind is HirKind.Error or HirKind.TypeOf || node.Kind == HirKind.IsType && node.Children.Count != 1)
                     Fail($"closed function retains unresolved semantic {node.Kind}");
                 foreach (var child in module.Children(node)) pending.Push(child);
                 if (node.Kind == HirKind.Match)

@@ -157,7 +157,8 @@ public static class HirPrinter
             string operand = node.Kind switch
             {
                 HirKind.Literal => "@c" + node.Data,
-                HirKind.TypeValue or HirKind.Coerce or HirKind.Convert or HirKind.IsType => "@t" + node.Data,
+                HirKind.TypeValue or HirKind.Coerce or HirKind.Convert => "@t" + node.Data,
+                HirKind.IsType => node.Children.Count == 1 ? "@t" + node.Data : "symbolic",
                 HirKind.ReadLocation or HirKind.ReadStorage or HirKind.Declare or HirKind.Assign => "@l" + node.Data,
                 HirKind.Call => "@k" + node.Data,
                 HirKind.Closure => "@u" + node.Data,
