@@ -29,6 +29,7 @@ public static partial class NativeRegistry
             "process" => await ProcessOperationAsync(operation, arguments, cancellationToken),
             "environment" => EnvironmentOperation(operation, arguments, context),
             "regex" => RegexOperation(operation, arguments),
+            "text" => await TextBuilderOperationAsync(operation, arguments, cancellationToken),
             _ => throw new MsyncException($"Native namespace '{group}' is not registered")
         };
     }

@@ -90,6 +90,7 @@ public static partial class NativeSignatures
         RegisterIteration(result);
         RegisterEnvironment(result);
         RegisterRegex(result);
+        RegisterTextBuilder(result);
         return result;
     }
 }
