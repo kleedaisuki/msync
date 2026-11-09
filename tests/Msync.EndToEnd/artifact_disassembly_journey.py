@@ -146,13 +146,24 @@ def main() -> None:
             ["--no-config", "bind-ir", str(relocatable), "-o", str(executable)],
         )
         source.unlink()
-        # This configuration would fail parsing if inspection entered normal runtime setup.
-        (cwd / ".msync.toml").write_text("broken = [", encoding="utf-8")
+        # An explicitly selected malformed configuration must not enter runtime setup.
+        broken_config = cwd / "broken.toml"
+        broken_config.write_text("broken = [", encoding="utf-8")
         report: dict[str, Any] = {}
         for path, stage in [(relocatable, "relocatable"), (executable, "executable")]:
             before = hashlib.sha256(path.read_bytes()).hexdigest()
             raw = success(
-                binary, cwd, ["--color", "always", "disassemble", str(path), "--json"]
+                binary,
+                cwd,
+                [
+                    "--config",
+                    str(broken_config),
+                    "--color",
+                    "always",
+                    "disassemble",
+                    str(path),
+                    "--json",
+                ],
             )
             assert b"\x1b" not in raw
             document: dict[str, Any] = json.loads(raw)
