@@ -54,6 +54,7 @@ public static class Optimizer
             for (var index = 0; index < reduced.Functions.Count; index++)
                 graphs[index][reduced.Functions[index]] = (effectEpoch, reduced.Functions[index]);
             var specialized = level >= 2 ? InterproceduralSpecialization.Optimize(reduced, level) : reduced;
+            if (level >= 2) specialized = AggregateArgumentSpecialization.Optimize(specialized, level);
             var inlined = FunctionInlining.Inline(specialized, level);
             if (inlined.Functions.Count == current.Functions.Count
                 && inlined.Functions.Select((function, index) => function.Instructions.SequenceEqual(current.Functions[index].Instructions)).All(equal => equal))
