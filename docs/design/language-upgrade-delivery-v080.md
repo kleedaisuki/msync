@@ -246,7 +246,8 @@ The baseline is the preceding accepted Native source
 `a952448083a6f0bea9ee2def0e775dcd804500f7` from run 42619095812. The existing
 packages and evidence above are that baseline, not acceptance for this follow-up.
 Incremental Native acceptance selects `option`, `data`, `concepts-tooling`,
-`number-allocation`, `library-policy`, `command-policies`, `trees`, `type-traits`,
+`number-allocation`, `static-optimization`, `library-policy`, `command-policies`,
+`trees`, `type-traits`,
 `terminal-library`, `shell-repl` and `stdlib-cost` under `polish_phases=upgrade`.
 An explicit phase selection is not broadened to unrelated remote-library work
 by the Linux SSH-fixture option. Already accepted frozen-context tests run only
@@ -258,3 +259,8 @@ completion in `stdlib-cost`. Its JSON and terminal transcripts are retained
 under the platform-results directory. These absolute Native observations are
 distinct from the performance owner's matched managed before/after allocation
 measurements.
+
+The selected static-optimization journey also inspects final bytecode for
+public Buffer read/count reuse, while preserving distinct buffer identities and
+callee-before-argument evaluation across source and both binary stages. It does
+not repeat the optimizer owner's internal graph/effect matrices.

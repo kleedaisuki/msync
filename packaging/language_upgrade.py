@@ -30,6 +30,7 @@ JOURNEYS: tuple[tuple[str, Path], ...] = (
     ("data", END_TO_END / "standard_data_journey.py"),
     ("concepts-tooling", END_TO_END / "standard_concepts_tooling_journey.py"),
     ("number-allocation", END_TO_END / "number_allocation_journey.py"),
+    ("static-optimization", END_TO_END / "static_optimization_journey.py"),
     ("library-policy", END_TO_END / "stdlib_policy_journey.py"),
     ("command-policies", END_TO_END / "commands_policy_journey.py"),
     ("trees", END_TO_END / "ordered_structures_journey.py"),
