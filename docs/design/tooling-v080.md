@@ -110,6 +110,36 @@ absolute effect-marker path detects accidental execution independently of server
 cwd. Script-looking literals and a valid debug span containing a `command:` URI
 remain inert data, rather than requiring a test-only product hook.
 
+### Initial atomic replacement and watcher ownership
+
+File-scheme artifacts use synchronous Node directory notifications registered
+before the first byte read. One non-recursive watcher is shared per parent
+directory; an index filters notifications to the visible artifact filenames.
+Watching the directory, rather than the original file inode, follows the
+compiler's owned-stage atomic replacement. Temporary staging filenames do not
+cause unrelated artifact reads. Non-file providers retain VS Code's filesystem
+watch API, and native notification errors report their cause and fall back to
+that provider. Byte reads themselves still use `workspace.fs`.
+
+This closes an observed first-open race, not an optimization based on a guessed
+timeout. With the final Native AOT decoder, two independent fresh VS Code 1.144
+hosts saw the compiler publish generation two and the OS report its rename,
+while the IR document remained on generation one for the full observation
+window. Explicit refresh decoded generation two immediately. A subsequent
+atomic compile refreshed automatically, with no intervening sleep or document
+close, distinguishing initial watcher registration from reader or model-cache
+failure. The [VS Code watcher internals][watch-internals] explain why a
+non-recursive RelativePattern inside the workspace may depend on an existing
+recursive workspace watcher; the stable API exposes no readiness promise.
+
+After the notification change, the independent host on the identical Native
+binary observed the first atomic replacement automatically, followed by ordinary
+corruption and repair writes without manual refresh. Existing source editing,
+restart, navigation, inert metadata and byte preservation also passed. There is
+no polling interval, added sleep, recursive scan or duplicate local watcher.
+
+[watch-internals]: https://github.com/microsoft/vscode/wiki/File-Watcher-Internals
+
 Native TextMate coloring is the fallback. Semantic URI tokens retain the
 protocol, `://` operator, and complete address separately; quoted URI text stays
 a String. Tokens spanning actual newlines split into legal single-line UTF-16
