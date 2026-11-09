@@ -129,6 +129,45 @@ The value must be consumed; a wrong sum takes the independently rejected Path.
 This is a new mutable-language workload, so the paired driver exposes it only
 as `--candidate-case finite_sum` when an older product control is also present.
 
+### Cross-block memory and compact layouts
+
+Three explicit workloads compare the same production source against the accepted
+0.8 baseline; they do not require a new benchmark-only runtime API:
+
+| Case | Consumed work and interpretation |
+| --- | --- |
+| `memory_branches` | N distinct Scope instances live across selected branches; all resulting fields determine the returned Path. One `fs.exists` query supplies a runtime condition, so the run phases include that same metadata query in both images. |
+| `memory_loop` | A Scope's `value` and `total` fields carry through a finite loop and branch. The returned Path depends on the exact sequential sum. Successful field scalarization can expose further pure evaluation. |
+| `layout_factory` | A source factory returns a lazy Range of fresh three-field Scopes. The probe consumes the production Range delegate and reads every instance's file field; it measures actual construction rather than only returning an unevaluated adapter. |
+
+Use `--cases memory_branches,memory_loop,layout_factory --sizes 1,32,128
+--levels 0,2` in the component executable, or select them individually with
+`--case` in `tests/Performance/optimizer_pipeline.py`. Defaults and the existing
+ordinary-call/transfer controls are unchanged. The branch fixture is created
+outside timing under the selected root's `.temp/memory-performance`; it is not
+a frozen filesystem proof. `layout_factory` run measurements include the same
+small asynchronous consumption/count/last-value driver in both images. Count
+and final-Path assertions, artifact encoding and all codec roundtrips remain
+outside timed sample loops.
+
+The separate CLI journey is:
+
+```sh
+python3 tests/Msync.EndToEnd/memory_layout_journey.py --binary /path/to/msync
+```
+
+It executes actual source, `.mso` and `.mexe` at explicit O0 and O2 with exact
+binary file payloads. Both branch edges, loop-carried fields, disjoint called
+objects, captured field cells, multiple live instances from one constructor
+site, selected/unselected deferred callbacks and selected failures are covered.
+The executable is launched from a different directory than its bound origin.
+Use `--case NAME` for a changed contract instead of rerunning unrelated cases.
+The default also includes two frontend regressions found while constructing the
+memory journey: nullable Scope joins must retain field metadata, and repeated
+loop joins must preserve unchanged metadata identities. `--baseline-compatible`
+excludes those two cases when exercising the frozen previous native image;
+it does not weaken the candidate's default acceptance.
+
 ```sh
 /path/to/native/msync-components --optimizer-pipeline \
   --sizes 1,32,128,512 --levels 0,1,2,3 --samples 15 --warmups 3 \

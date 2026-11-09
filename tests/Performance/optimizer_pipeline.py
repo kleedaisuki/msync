@@ -25,6 +25,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 CASES = ("calls", "scope_calls", "finite_loop", "branch_reuse")
+MEMORY_CASES = ("memory_branches", "memory_loop", "layout_factory")
 
 
 @dataclass(frozen=True)
@@ -147,7 +148,9 @@ def main() -> None:
     parser.add_argument("--baseline-source", required=True)
     parser.add_argument("--candidate-source", required=True)
     parser.add_argument(
-        "--case", action="append", choices=(*CASES, "call_dag", "transfers")
+        "--case",
+        action="append",
+        choices=(*CASES, *MEMORY_CASES, "call_dag", "transfers"),
     )
     parser.add_argument(
         "--candidate-case", action="append", choices=("mutable_scopes", "finite_sum")

@@ -84,6 +84,8 @@ internal static class OptimizerPipelineProbe
     {
         bool bytecode = workload == "call_dag";
         bool transfers = workload == "transfers";
+        bool memory = MemoryPipelineWorkloads.IsMemory(workload);
+        MemoryPipelineWorkloads.Prepare(workload, options.Root);
         string source = bytecode ? "" : Source(workload, size);
         string sourceName = $"optimizer-{workload}-{size}.msync";
         File.WriteAllText(Path.Combine(Path.GetDirectoryName(options.Output)!, sourceName), source);
@@ -103,10 +105,10 @@ internal static class OptimizerPipelineProbe
             }
             else
             {
-                Verify(optimized, runtime, size, bytecode);
-                Verify(executable, runtime, size, bytecode);
-                Verify(RoundTrip(optimized), runtime, size, bytecode);
-                Verify(RoundTrip(executable), runtime, size, bytecode);
+                VerifyResult(optimized);
+                VerifyResult(executable);
+                VerifyResult(RoundTrip(optimized));
+                VerifyResult(RoundTrip(executable));
             }
             shapes.Add(Shape(workload, size, level, "relocatable", source, optimized));
             shapes.Add(Shape(workload, size, level, "executable", source, executable));
@@ -115,8 +117,8 @@ internal static class OptimizerPipelineProbe
                 ("compile", () => SourceCompiler.Compile(source, sourceName, level)),
                 ("optimize", () => Optimizer.Optimize(raw, level)),
                 ("bind", () => Binding.Bind(optimized, binding)),
-                ("run_relocatable", () => Interpreter.ExecuteAsync(optimized, runtime).GetAwaiter().GetResult()),
-                ("run_executable", () => Interpreter.ExecuteAsync(executable, runtime).GetAwaiter().GetResult())
+                ("run_relocatable", () => Execute(optimized)),
+                ("run_executable", () => Execute(executable))
             ];
             foreach (var stage in stages)
             {
@@ -126,6 +128,14 @@ internal static class OptimizerPipelineProbe
                 observations.Add(observation);
                 Console.WriteLine($"{workload,-13} n={size,-4} O{level} {stage.Name,-15} p50={observation.P50Milliseconds:F4} ms p95={observation.P95Milliseconds:F4} ms alloc={observation.AllocatedBytesPerOperation:F0} B/op");
             }
+        }
+
+        object Execute(Module module) => memory ? MemoryPipelineWorkloads.Execute(module, runtime, size, workload)
+            : Interpreter.ExecuteAsync(module, runtime).GetAwaiter().GetResult();
+        void VerifyResult(Module module)
+        {
+            if (memory) MemoryPipelineWorkloads.Verify(module, runtime, size, workload);
+            else Verify(module, runtime, size, bytecode);
         }
     }
 
@@ -213,6 +223,7 @@ internal static class OptimizerPipelineProbe
 
     private static string Source(string workload, int size)
     {
+        if (MemoryPipelineWorkloads.TrySource(workload, size, out string memory)) return memory;
         StringBuilder text = new();
         if (workload == "finite_sum")
         {
