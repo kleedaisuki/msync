@@ -24,6 +24,7 @@ public static partial class NativeRegistry
         }
         RangeValue source = Range(args[0], name);
         if (name == "at") return ElementAt(source, Ordinal(args[1], name, false), token);
+        if (name == "materialize") return Materialized(source, token);
         Value result = name switch
         {
             "concat" => Concatenated(source, Range(args[1], name), token),
@@ -32,7 +33,6 @@ public static partial class NativeRegistry
             "enumerate_from" => new RangeValue(Indexed(source, FiniteNumber(args[1], name), token), TypeRef.Scope),
             "chunk" => new RangeValue(Partitioned(source, Ordinal(args[1], name, true), false, token), new(TypeKind.Range, source.ItemType)),
             "slide" => new RangeValue(Partitioned(source, Ordinal(args[1], name, true), true, token), new(TypeKind.Range, source.ItemType)),
-            "materialize" => new RangeSnapshot(source).Value,
             "sort" => Adapt(source, source.ItemType, (values, cancellation) => Sorted(values, null, invoke, cancellation), token),
             "sort_with" => Adapt(source, source.ItemType, (values, cancellation) => Sorted(values, args[1], invoke, cancellation), token),
             "scan" => new RangeValue(Scanned(source, args[1], args[2], invoke, token), TypeRef.Any),
@@ -138,26 +138,11 @@ public static partial class NativeRegistry
         if (!sliding && window.Count > 0) yield return new RangeValue(window.ToArray(), source.ItemType);
     }
 
-    private sealed class RangeSnapshot(RangeValue source)
+    private static async ValueTask<Value> Materialized(RangeValue source, CancellationToken token)
     {
-        private Task<List<Value>>? snapshot;
-        internal RangeValue Value => new(Items(), source.ItemType);
-
-        private async Task<List<Value>> Read(CancellationToken token)
-        {
-            List<Value> values = [];
-            await foreach (Value value in source.Items.WithCancellation(token)) values.Add(value);
-            return values;
-        }
-
-        private async IAsyncEnumerable<Value> Items([EnumeratorCancellation] CancellationToken token = default)
-        {
-            Task<List<Value>> load = snapshot ??= Read(token);
-            List<Value> values;
-            try { values = await load; }
-            catch { if (ReferenceEquals(snapshot, load)) snapshot = null; throw; }
-            foreach (Value value in values) { token.ThrowIfCancellationRequested(); yield return value; }
-        }
+        List<Value> values = [];
+        await foreach (Value value in source.Items.WithCancellation(token)) values.Add(value);
+        return new RangeValue(values, source.ItemType);
     }
 
     private static async IAsyncEnumerable<Value> Scanned(RangeValue source, Value initial, Value operation,

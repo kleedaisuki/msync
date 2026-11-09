@@ -17,5 +17,7 @@ public static partial class NativeSignatures
         Add("path_separator", TypeRef.String, NativeEffect.Read);
         foreach (string name in new[] { "get", "set", "unset", "variables" })
             result["environment." + name] = result["environment." + name] with { Behavior = NativeBehavior.MayFail };
+        result["environment.variables"] = result["environment.variables"] with
+        { Behavior = NativeBehavior.MayFail | NativeBehavior.EagerRange };
     }
 }

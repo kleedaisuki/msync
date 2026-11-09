@@ -15,6 +15,8 @@ public static partial class NativeSignatures
         Add("chunk", NativeResultRule.RangeNested, range, TypeRef.Number);
         Add("slide", NativeResultRule.RangeNested, range, TypeRef.Number);
         Add("materialize", NativeResultRule.FirstArgument, range);
+        result["ranges.materialize"] = result["ranges.materialize"] with
+        { Behavior = NativeBehavior.Enumerates | NativeBehavior.MayFail | NativeBehavior.EagerRange };
         Add("sort", NativeResultRule.FirstArgument, range);
         Add("sort_with", NativeResultRule.FirstArgument, range, TypeRef.Function);
         Add("scan", NativeResultRule.RangeScan, range, TypeRef.Any, TypeRef.Function);
