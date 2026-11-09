@@ -68,7 +68,7 @@ new language contract.
 
 | Layer | Actual implementation | Consequence |
 | --- | --- | --- |
-| Values | `src/Msync.Core/Values.cs`: `NumberValue(double Data)` | Every Number is binary64, including parsed integer text and host integral results |
+| Values | `src/Msync.Core/Values/ScalarValues.cs`: `NumberValue(double Data)` | Every Number is binary64, including parsed integer text and host integral results |
 | Source literals | `Syntax/Parser.cs`, line 330: `long.TryParse` then `NumberExpr` | Decimal/scientific literals are not parsed as numbers; even an integer beyond signed 64-bit falls back to a name/Path |
 | Lexing | `Syntax/Lexer.cs`: `+`, `-`, `*`, `%` can remain inside an Atom | `1+2` is a Path while `1 + 2` is arithmetic; the DSL deliberately also admits atom-shaped names and paths |
 | Source arithmetic | `Compiler/Values.cs`: numeric `+`, `-`, `*`, unary `-` | Numeric division exists in the VM but source `/` always lowers to PathJoin |

@@ -2,11 +2,13 @@
 
 ## C# 0.8 implementation
 
-The current loader is `src/Msync.Cli/Configuration.cs`; the original Rust loader
-is preserved under `legacy/src/config.rs`. Discovery, one-file selection,
+The current loader is `src/Msync.Cli/Configuration/Configuration.cs`; the original
+Rust loader is available in the immutable v0.7.3 Git history. Discovery, one-file
+selection,
 relative-path anchoring, environment/CLI precedence, source provenance and
 side-effect-free inspection retain the contracts below. The default grammar is
-now `0.8`; selecting an older grammar reaches the explicit legacy CLI boundary.
+now `0.8`; the retired Rust grammar and forwarding entrypoint are no longer
+available in the current executable.
 
 Use [Tomlyn 2.10.1](https://github.com/xoofx/Tomlyn/tree/2.10.1)'s actual TOML
 parser and source-generated `TomlTable` metadata, not a line-oriented subset or

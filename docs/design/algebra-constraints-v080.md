@@ -109,10 +109,10 @@ represent products and application records without introducing a nominal type.
 The current implementation already has most of the operational substrate:
 
 * `TypeRef` has a closed bitset and a Range element descriptor, in
-  `src/Msync.Core/Types.cs`.
+  `src/Msync.Core/Types/TypeRef.cs`.
 * `Info` separately retains actual Scope members, callable templates and
   alternatives, Type-value denotations and storage identities, in
-  `src/Msync.Compiler/SemanticModel.cs`.
+  `src/Msync.Compiler/Compilation/State/Info.cs`.
 * Generic calls specialize using actual argument/callable/Scope information;
   `Path | String` annotations restrict kinds without creating an open typeclass
   mechanism. See `Functions.Specialize` and `Typing.ResolveType`.

@@ -3,23 +3,78 @@
 ## Scope and ownership
 
 The 0.8 migration replaces the indentation-based Rust frontend with a C#
-compiler and a Native AOT executable. The original 0.7.3 implementation is
-preserved, independently buildable, under [`legacy/`](../../legacy/MIGRATION.md).
-Its source and artifact semantics are not changed by the new parser. Published
-tags and asset bytes are never rewritten.
+compiler and a Native AOT executable. The retired implementation remains
+available through the immutable [v0.7.3 Git history](https://github.com/kleedaisuki/msync/tree/v0.7.3),
+not a second implementation in the current checkout. Published tags and asset
+bytes are never rewritten.
 
 The root build uses .NET 10. The implementation boundaries are:
 
 | Component | Owns | Must not own |
 | --- | --- | --- |
-| `Msync.Core` | Semantic types, values, typed bytecode, artifact codec, machine-independent optimizer, module/stage contract | Source parser, authenticated sessions |
+| `Msync.Core` | Semantic types, values, typed bytecode, artifact codec, instruction effects and block formation | Source parser, optimizer passes, authenticated sessions |
+| `Msync.Optimization` | Machine-independent passes, function/effect analyses, constant evaluation, contextual IR binding/lowering | Source syntax, filesystem observations or authenticated execution |
 | `Msync.Compiler` | Tokens/AST, binding, type inference, refinement, specialization, lowering | Executing filesystem observations or processes |
-| `Msync.Runtime` | Contextual binding/lowering, native operations, interpretation and transfer lifetime | Parsing/debug-source execution |
+| `Msync.Runtime` | Native operations, interpretation, scheduling and process/transfer lifetime | Source parsing, a second optimizer implementation |
 | `Msync.Cli` | Commands, REPL, diagnostics, LSP transport and native process entrypoint | A second implementation of source semantics |
 
 Compilers, interpreters and native registries share semantic types rather than
 guessing capabilities from identifier spelling. Standard-library source modules
 are compiler inputs, not a second prose-only API.
+
+### Project and source organization
+
+The release preparation separates the optimizer into `Msync.Optimization`
+because both compilation and contextual execution consume it, while the artifact
+codec and value model must not depend on optimization policy. There is no
+compatibility facade in Core. The managed project graph is acyclic:
+
+```text
+Msync.Cli          -> Compiler, Runtime, Optimization
+Msync.Compiler     -> Core, Optimization
+Msync.Runtime      -> Core, Optimization
+Msync.Optimization -> Core
+Msync.Core         -> no other msync project
+```
+
+Compiler and Runtime also reference Core directly. The CLI directly references
+Optimization for its IR binding commands. These are build-time and ownership
+boundaries; Native AOT still links one self-contained executable rather than
+loading managed components at runtime.
+
+| Project | Source entry points and domains |
+| --- | --- |
+| Core | `Types/`, `Values/`, `Bytecode/`, `Artifacts/`, `Native/`, `Context/`, `Diagnostics/` |
+| Optimization | `Pipeline/`, `Analysis/`, `Flow/`, `Memory/`, `Interprocedural/`, `Evaluation/`, `Contextual/` |
+| Compiler | Public compiler/session facades; `Syntax/`, `Compilation/`, `Editor/`, `StandardLibrary/`, `Diagnostics/` |
+| Runtime | `Execution/`, `Scheduling/`, `Transfers/`, `Native/`, `Context/`, `Platform/`, `Text/`, `Generated/` |
+| CLI | `Program` routing; `Commands/`, `Terminal/`, `LanguageServer/`, `Artifacts/`, `Configuration/`, `Diagnostics/`, `Telemetry/` |
+
+Classes follow state ownership rather than file-count targets. Compiler models
+are grouped by frame, binding/storage, Scope and callable lifetimes. Pure
+`SyntaxTraversal` and `LexicalWriteAnalysis` do not own compilation state;
+`StandardSourceCatalog` caches source resources, not caller environments.
+`Compilation` partials retain the one coherent per-compilation/session state.
+
+Runtime `ExecutionSession`, `SessionImage` and `ResourceIndex` are independent
+owners rather than declarations appended to the interpreter. Opcode dispatch,
+invocation and lifecycle code are separate interpreter partials; native indexed
+storage and text-chunk operations are stateless domain owners. CLI command
+options and JSON-RPC framing similarly have explicit owners; the language
+server retains analysis and request coordination. No service locator or dynamic
+dependency-injection layer is introduced by this organization.
+
+The syntax frontend remains in Compiler: its consumers already need compiler
+analysis, so another assembly would not remove a current dependency. Transport
+is organized within Runtime rather than split behind new interfaces that would
+obscure prompt, context and resource ownership. Public language/native/IR
+contracts, operation ordering and algorithm implementations are unchanged.
+
+`BlockBuilder.Form` and `InstructionEffects` live in Core because artifact
+loading and execution need bytecode structure and per-operation semantics.
+Function-level effect analysis and optimizer dependency caches live in
+Optimization. Contextual binding/lowering there transforms IR and captured
+context; it does not perform filesystem observations or authentication.
 
 ```text
 *.msync
@@ -113,8 +168,8 @@ startup scan, parent-wide publication lock or filesystem-wide syncfs.
 One finite remote transfer uses one native SSH client/channel for metadata and
 bytes, preserving configured aliases, agents and native prompts.
 
-The old Rust implementation remains a separate historical baseline; its formats
-are not current C# execution inputs. Binary headers distinguish format version
+The Rust implementation is a Git-history baseline; its formats are not current
+C# execution inputs. Binary headers distinguish format version
 and language semantics, and unsupported versions are rejected explicitly.
 Native AOT distribution must run without an installed
 .NET runtime; `.mexe` is msync executable IR, not an OS-native executable.
@@ -168,3 +223,35 @@ in their focused 0.8 notes. This document fixes cross-component decisions, not a
 claim that every acceptance journey has already passed.
 The active [upgrade delivery matrix](language-upgrade-delivery-v080.md) separates
 required contracts, owner evidence, managed integration and native acceptance.
+
+### Organization-only release preparation
+
+The November 10 organization uses the accepted `8f2c78e` language implementation
+as its behavior baseline. The independent Optimization project changes managed
+ownership and build dependencies, not IR fields or algorithms. Existing external
+NuGet versions and content hashes are unchanged; all product and test project
+lock graphs were restored as metadata, without executing an indiscriminate test
+matrix.
+
+The coherent five-project Release CLI build completed with zero warnings and
+errors. Its assembly receipt is `.temp/csharp-organization/snapshot.json`.
+Focused integration reused the component owners' affected-contract checks:
+
+* Eighteen compiled objects across O0/O2/O3 are byte-identical to the accepted
+  Native baseline, including nullable flow, closure captures, associated types,
+  Scope self-reference, unevaluated metadata and indexed storage.
+* CLI object/executable bytes, execution output, disassembly JSON, configuration,
+  redirected REPL and Unicode JSON-RPC responses match before and after the
+  organization.
+* Runtime extraction preserves 582 executable/data member token streams after
+  owner-name normalization. Real archive production, dependency retirement and
+  cross-submission Process ownership remain exercised.
+* The shared CLI snapshot passes actual REPL/PTY cwd, completion, lazy output,
+  gated Process and Ctrl+C recovery, plus the integrated source/object/executable
+  language journey. New-assembly optimizer tests retain 44 dependency-cache and
+  206 indexed-memory contracts.
+
+Reports are under `.temp/csharp-organization/` and the component-specific
+organization directories. These are local behavior-preservation observations;
+the release workflow rebuilds Native packages and the editor host from the final
+commit rather than publishing an earlier binary under a reorganized source tag.
