@@ -231,9 +231,11 @@ internal sealed partial class SemanticAnalyzer
             RefineSubject(children[0], Intersect(ReadType(children[0], context), TypeRef.Null, positive), context);
         else if (node.Kind == HirKind.IsType)
         {
-            HirTypeId target = children.Length == 2 && program.Node(children[1]).Kind == HirKind.TypeValue
-                ? ResolveHirType(new(program.Node(children[1]).Data), context) : ResolveHirType(new(node.Data), context);
-            RefineTypeSubject(children[0], target, positive, context);
+            HirTypeId? target = children.Length == 2
+                ? program.Node(children[1]).Kind == HirKind.TypeValue
+                    ? ResolveHirType(new(program.Node(children[1]).Data), context) : Subject(children[1], context)?.DenotedType
+                : node.Data >= 0 ? ResolveHirType(new(node.Data), context) : null;
+            if (target is { } known) RefineTypeSubject(children[0], known, positive, context);
         }
     }
 
@@ -367,6 +369,7 @@ internal sealed partial class SemanticAnalyzer
     private void MergeContexts(SemanticContext destination, params SemanticContext[] branches)
     {
         if (branches.Length == 0) return;
+        MergeSingletonFlow(destination, branches);
         if (!destination.Publish) { MergeQueryContexts(destination, branches); return; }
         foreach (var pair in branches[0].Values) destination.Values[pair.Key] = pair.Value;
         foreach (var pair in branches[0].Storage) destination.Storage[pair.Key] = pair.Value;

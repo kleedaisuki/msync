@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblySearchPaths>{HintPathFromItem};{RawFileName}</AssemblySearchPaths>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(FrozenAssemblies)' == ''">
+    <ProjectReference Include="../../src/Msync.Compiler/Msync.Compiler.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(FrozenAssemblies)' != ''">
+    <Reference Include="Msync.Compiler" HintPath="$(FrozenAssemblies)/Msync.Compiler.dll" />
+    <Reference Include="Msync.Core" HintPath="$(FrozenAssemblies)/Msync.Core.dll" />
+    <Reference Include="Msync.Hir" HintPath="$(FrozenAssemblies)/Msync.Hir.dll" />
+    <Reference Include="Msync.Optimization" HintPath="$(FrozenAssemblies)/Msync.Optimization.dll" />
+  </ItemGroup>
+</Project>

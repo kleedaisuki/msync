@@ -11,6 +11,8 @@ internal sealed partial class SemanticAnalyzer
     {
         if (!NativeSignatures.TryGet(name, out var signature))
             throw Error(source, $"Unknown native '{name}'.", "E0204");
+        if (IsDependentMeta(name))
+            throw Error(source, "Dependent metadata queries require a direct, statically known invocation.", "E0222");
         var inputs = CheckNativeArguments(signature, arguments, source, context).ToArray();
         SemanticValue? callback = null;
         ImmutableArray<SemanticDeferredWrite> callbackEffects = [];
@@ -138,6 +140,8 @@ internal sealed partial class SemanticAnalyzer
                 if (context.Values.TryGetValue(write.Location, out var before))
                     context.Values[write.Location] = Join(before, write.After) with { Literal = null };
                 context.CellWrites.Add(write.Location);
+                if (context.Values.TryGetValue(write.Location, out var cellAfter))
+                    context.RecordWrite(new(SemanticWriteKind.Location, cellAfter, Location: write.Location));
                 continue;
             }
             if (write.Kind == SemanticWriteKind.Indexed)
@@ -145,6 +149,8 @@ internal sealed partial class SemanticAnalyzer
                 if (context.Indexed.TryGetValue(write.Region, out var storage))
                     context.Indexed[write.Region] = storage with { Element = Join(storage.Element, write.After) with { Literal = null } };
                 context.IndexedWrites.Add(write.Region);
+                if (context.Indexed.TryGetValue(write.Region, out var afterStorage))
+                    context.RecordWrite(new(SemanticWriteKind.Indexed, afterStorage.Element, Region: write.Region));
                 continue;
             }
             if (!context.Objects.TryGetValue(write.Region, out var target)
@@ -155,6 +161,7 @@ internal sealed partial class SemanticAnalyzer
             context.Objects[write.Region] = target;
             if (target.Locations.TryGetValue(write.Field!, out var location)) context.Values[location] = after;
             context.FieldWrites.Add((write.Region, write.Field!));
+            context.RecordWrite(new(SemanticWriteKind.Field, after, Region: write.Region, Field: write.Field));
         }
     }
 
@@ -214,7 +221,8 @@ internal sealed partial class SemanticAnalyzer
     {
         if ((!signature.Variadic && arguments.Count != signature.Parameters.Count)
             || signature.Variadic && arguments.Count < signature.Parameters.Count)
-            throw Error(source, $"Native '{signature.Name}' expects {(signature.Variadic ? "at least " : "")}{signature.Parameters.Count} arguments, got {arguments.Count}.", "E0204");
+            throw SemanticDiagnosticFactory.Arity(hir.Sources[source.Source.Value], new(source.Start, source.Length),
+                $"Native '{signature.Name}' expects {(signature.Variadic ? "at least " : "")}{signature.Parameters.Count} arguments, got {arguments.Count}.");
         var converted = ImmutableArray.CreateBuilder<SemanticValue>(arguments.Count);
         for (int index = 0; index < arguments.Count; index++)
         {
@@ -344,6 +352,8 @@ internal sealed partial class SemanticAnalyzer
             storage = storage with { Element = DynamicElement(Join(storage.Element, value), context) };
             context.Indexed[identity] = storage;
         }
+        if (signature.Effect == NativeEffect.Write)
+            context.RecordWrite(new(SemanticWriteKind.Indexed, storage.Element, Region: identity));
         return signature.Name switch
         {
             "storage.buffer_get" or "storage.buffer_pop" or "storage.buffer_remove" =>

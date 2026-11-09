@@ -197,7 +197,11 @@ public static class HirLowerer
                 case HirKind.Binary: Binary(node); break;
                 case HirKind.Coerce: case HirKind.Convert: Conversion(node); break;
                 case HirKind.IsNull: Emit(Child(node, 0)); Add(OpCode.IsNull, source: node.Source); break;
-                case HirKind.IsType: Emit(Child(node, 0)); Add(OpCode.Constant, owner.Constant(new TypeValue(owner.Type(new(node.Data))))); Add(OpCode.IsType, source: node.Source); break;
+                case HirKind.IsType:
+                    Emit(Child(node, 0));
+                    if (node.Children.Count == 2) Emit(Child(node, 1));
+                    else Add(OpCode.Constant, owner.Constant(new TypeValue(owner.Type(new(node.Data)))));
+                    Add(OpCode.IsType, source: node.Source); break;
                 case HirKind.RegexMatch: Emit(Child(node, 0)); Add(OpCode.RegexMatch, text: node.Text, source: node.Source); break;
                 case HirKind.Call: Call(node); break;
                 case HirKind.Closure: Closure(Hir.Closures[node.Data], node.Source); break;

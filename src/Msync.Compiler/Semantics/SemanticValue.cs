@@ -38,12 +38,19 @@ internal sealed record SemanticValue(HirTypeId Type, HirNodeId Node,
     public bool? KnownBool => Literal is { Kind: HirLiteralKind.Bool } literal ? literal.Boolean : null;
 }
 
-internal sealed class SemanticContext(HirFunctionId function, SemanticOutput? output = null, SemanticContext? parent = null)
+internal sealed partial class SemanticContext(HirFunctionId function, SemanticOutput? output = null, SemanticContext? parent = null)
 {
     public HirFunctionId Function { get; } = function;
     public SemanticOutput? Output { get; } = output;
     public bool Publish => Output is not null;
     public bool DeferredReads { get; set; }
+    public ImmutableHashSet<int> InitializedSingletons { get; set; } = [];
+    public ImmutableHashSet<int> MaybeInitializedSingletons { get; set; } = [];
+    public ImmutableArray<int> ActiveSingletonGuards { get; set; } = [];
+    public List<SemanticWriteEvent>? WriteEvents { get; set; }
+    public SemanticFacts<SemanticWriteTarget, ImmutableDictionary<int, SemanticConditionalFact>> SingletonWriteFacts { get; }
+        = new(parent?.SingletonWriteFacts);
+    public SemanticFacts<int, SemanticScope> SingletonSchemas { get; } = new(parent?.SingletonSchemas);
     public SemanticAnalyzer.InstantiationWorkspace? Queries { get; set; }
     public HirFlowAnalysis? FlowAnalysis { get; set; }
     public HirTypeId? ExpectedReturn { get; set; }
@@ -66,7 +73,10 @@ internal sealed class SemanticContext(HirFunctionId function, SemanticOutput? ou
     {
         if (Output is null) return QueryFork();
         SemanticContext fork = new(Function, Output)
-        { DeferredReads = DeferredReads, ExpectedReturn = ExpectedReturn, Queries = Queries, FlowAnalysis = FlowAnalysis, FieldWrites = FieldWrites, NextRegion = NextRegion };
+        { DeferredReads = DeferredReads, ExpectedReturn = ExpectedReturn, Queries = Queries, FlowAnalysis = FlowAnalysis, FieldWrites = FieldWrites, NextRegion = NextRegion, InitializedSingletons = InitializedSingletons, MaybeInitializedSingletons = MaybeInitializedSingletons,
+            ActiveSingletonGuards = ActiveSingletonGuards, WriteEvents = WriteEvents is null ? null : new(WriteEvents) };
+        foreach (var pair in SingletonWriteFacts) fork.SingletonWriteFacts.Add(pair.Key, pair.Value);
+        foreach (var pair in SingletonSchemas) fork.SingletonSchemas.Add(pair.Key, pair.Value);
         foreach (var pair in Locations) fork.Locations.Add(pair.Key, pair.Value);
         foreach (var pair in Values) fork.Values.Add(pair.Key, pair.Value);
         foreach (var pair in Storage) fork.Storage.Add(pair.Key, pair.Value);
@@ -79,7 +89,8 @@ internal sealed class SemanticContext(HirFunctionId function, SemanticOutput? ou
     }
 
     public SemanticContext QueryFork() => new(Function, parent: this)
-    { DeferredReads = DeferredReads, ExpectedReturn = ExpectedReturn, Queries = Queries ?? new(), FlowAnalysis = FlowAnalysis, NextRegion = NextRegion };
+    { DeferredReads = DeferredReads, ExpectedReturn = ExpectedReturn, Queries = Queries ?? new(), FlowAnalysis = FlowAnalysis, NextRegion = NextRegion, InitializedSingletons = InitializedSingletons, MaybeInitializedSingletons = MaybeInitializedSingletons,
+            ActiveSingletonGuards = ActiveSingletonGuards, WriteEvents = WriteEvents is null ? null : new(WriteEvents) };
 
     public HirLocationId Location(HirLocationId source) => Locations.GetValueOrDefault(source, source);
 }

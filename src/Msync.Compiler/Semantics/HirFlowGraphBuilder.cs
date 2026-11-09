@@ -142,8 +142,8 @@ internal sealed class HirFlowGraphBuilder(IFlowProgramView module,
         }
         else if (node.Kind == HirKind.MemberAssign)
         {
-            Operation(FlowOperation.WriteMemory());
             if (places?.Invoke(id) is { } place) Operation(FlowOperation.Evaluate(place, children[^1]));
+            else Operation(FlowOperation.WriteMemory());
         }
         else if (node.Kind == HirKind.Call)
         {
@@ -212,6 +212,8 @@ internal sealed class HirFlowGraphBuilder(IFlowProgramView module,
         var children = module.Children(node);
         if (node.Kind is HirKind.IsNull or HirKind.IsType && Place(children[0]) is { } subject)
         {
+            if (node.Kind == HirKind.IsType && children.Length == 2 && module.Node(children[1]).Kind != HirKind.TypeValue)
+                return [new(default, null, positive, Expression: id)];
             TypeRef tested = node.Kind == HirKind.IsNull ? TypeRef.Null
                 : children.Length == 2 && module.Node(children[1]).Kind == HirKind.TypeValue
                     ? module.RuntimeType(new(module.Node(children[1]).Data)) : module.RuntimeType(new(node.Data));

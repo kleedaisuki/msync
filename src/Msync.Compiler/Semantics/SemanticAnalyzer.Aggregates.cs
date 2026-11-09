@@ -12,9 +12,21 @@ internal sealed partial class SemanticAnalyzer
     {
         var construction = hir.Scopes[node.Data];
         SemanticScope? previous = construction.Singleton >= 0
-            ? singletonScopes.GetValueOrDefault(construction.Singleton) : null;
+            ? context.SingletonSchemas.GetValueOrDefault(construction.Singleton)
+                ?? singletonScopes.GetValueOrDefault(construction.Singleton) : null;
+        bool initialized = construction.Singleton >= 0 && context.InitializedSingletons.Contains(construction.Singleton);
+        SemanticContext destination = context;
+        // Keep the guarded initializer in generated code, but do not replay its
+        // flow effects on a path where this singleton is already initialized.
+        if (initialized) context = new(context.Function, context.Output, context)
+        {
+            Queries = context.Queries, DeferredReads = context.DeferredReads,
+            ExpectedReturn = context.ExpectedReturn, FlowAnalysis = context.FlowAnalysis,
+            InitializedSingletons = context.InitializedSingletons,
+            MaybeInitializedSingletons = context.MaybeInitializedSingletons
+        };
         int region = previous?.Region ?? ++nextRegion;
-        SemanticScope? currentObject = previous is not null
+        SemanticScope? currentObject = initialized && previous is not null
             ? context.Objects.GetValueOrDefault(region, previous) : null;
         var locations = construction.Fields.ToImmutableDictionary(
             field => hir.Locations[field.Value].Name, context.Location, StringComparer.Ordinal);
@@ -32,8 +44,20 @@ internal sealed partial class SemanticAnalyzer
             context.Storage[selfLocation] = hir.Type(TypeRef.Scope);
         }
 
+        var outerGuards = context.ActiveSingletonGuards;
+        if (construction.Singleton >= 0)
+        {
+            context.ActivateWriteEvents();
+            context.ActiveSingletonGuards = outerGuards.Add(construction.Singleton);
+        }
         List<HirNodeId> initializers = [];
-        foreach (var child in children) initializers.Add(Analyze(child, context).Node);
+        try
+        {
+            foreach (var child in children) initializers.Add(Analyze(child, context).Node);
+        }
+        finally { context.ActiveSingletonGuards = outerGuards; }
+        if (construction.Singleton >= 0 && !initialized)
+            context.WriteEvents!.Add(new(null, outerGuards, construction.Singleton));
         var populated = locations.ToImmutableDictionary(pair => pair.Key,
             pair => context.Values[pair.Value], StringComparer.Ordinal);
         var layout = declaredFields.Select(field =>
@@ -53,6 +77,7 @@ internal sealed partial class SemanticAnalyzer
                     throw Error(node.Source, $"Named Scope is missing its established field '{field.Name}'.", "E0203");
                 Require(value, field.StorageType, node.Source, allowImplicit: true, context: context);
                 var converted = Convert(value, field.StorageType, node.Source, context);
+                populated = populated.SetItem(field.Name, converted);
                 var fieldLocation = locations[field.Name];
                 context.Storage[fieldLocation] = field.StorageType;
                 context.Values[fieldLocation] = converted;
@@ -70,7 +95,13 @@ internal sealed partial class SemanticAnalyzer
 
         int shape = InternShape(layout);
         SemanticScope result = currentObject ?? new(region, shape, populated, locations, construction.Singleton >= 0);
-        context.Objects[region] = result;
+        destination.Objects[region] = result;
+        if (construction.Singleton >= 0)
+        {
+            destination.SingletonSchemas[construction.Singleton] = result;
+            destination.InitializedSingletons = destination.InitializedSingletons.Add(construction.Singleton);
+            destination.MaybeInitializedSingletons = destination.MaybeInitializedSingletons.Add(construction.Singleton);
+        }
         if (context.Publish && construction.Singleton >= 0) singletonScopes.TryAdd(construction.Singleton, result);
         HirTypeId type = hir.Type(new HirType(TypeRef.Scope, Shape: shape));
         HirNodeId expression = HirNodeId.None;
@@ -83,7 +114,12 @@ internal sealed partial class SemanticAnalyzer
                 System.Runtime.InteropServices.CollectionsMarshal.AsSpan(initializers), descriptor, effects: node.Effects);
         }
         SemanticValue valueResult = new(type, expression, Scope: result);
-        if (self is { } completed) context.Values[completed] = valueResult;
+        if (self is { } completed)
+        {
+            destination.Values[completed] = valueResult;
+            destination.Storage[completed] = type;
+            destination.Output?.SetLocation(completed, hir.Locations[completed.Value] with { StorageType = type });
+        }
         return valueResult;
     }
 
@@ -133,11 +169,8 @@ internal sealed partial class SemanticAnalyzer
         HashSet<HirLocationId> read = [], declared = [];
         CollectLocations(expression, read, declared);
         read.ExceptWith(declared);
-        SemanticContext deferred = new(new(context.Publish ? hir.Functions.Count : -1), context.Output)
-        { DeferredReads = true };
-        foreach (var pair in context.Substitutions) deferred.Substitutions.Add(pair.Key, pair.Value);
-        foreach (var pair in context.Objects) deferred.Objects.Add(pair.Key, pair.Value);
-        foreach (var pair in context.Indexed) deferred.Indexed.Add(pair.Key, pair.Value);
+        SemanticContext deferred = new(new(context.Publish ? hir.Functions.Count : -1), context.Output, context)
+        { DeferredReads = true, NextRegion = context.NextRegion };
         ImmutableArray<HirCapture>.Builder captures = ImmutableArray.CreateBuilder<HirCapture>();
         foreach (var original in read.OrderBy(location => location.Value))
         {
@@ -145,8 +178,10 @@ internal sealed partial class SemanticAnalyzer
             var target = AllocateThunkLocation(original, deferred);
             var value = context.Values.GetValueOrDefault(source)
                 ?? ValueForType(ResolveHirType(hir.Locations[source.Value].StorageType, context));
-            deferred.Values[target] = value;
-            deferred.Storage[target] = context.Storage.GetValueOrDefault(source, value.Type);
+            HirTypeId storage = context.Storage.GetValueOrDefault(source, value.Type);
+            deferred.Values[target] = !Stable(original) || value.Scope is not null
+                ? FutureRead(value, storage, deferred) : value;
+            deferred.Storage[target] = storage;
             captures.Add(new(target, HirCaptureMode.Location, source, HirNodeId.None));
         }
         foreach (var local in declared) _ = AllocateThunkLocation(local, deferred);

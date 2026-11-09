@@ -38,8 +38,15 @@ internal sealed partial class SourceBinder
         }
         else if (syntax.Name.StartsWith("$std::concepts::", StringComparison.Ordinal))
         {
-            if (context.Values.ContainsKey("std"))
-                throw Error($"Unknown type '{syntax.Name}': std is a lexical value here.", syntax.Span, "E0202");
+            if (context.Values.TryGetValue("std", out var shadow))
+            {
+                var definition = program.Declaration(Original(shadow));
+                var document = hir.Sources[definition.Source.Source.Value];
+                throw SemanticDiagnosticFactory.ShadowedStandardType(hir.Sources[source.Value], syntax.Span,
+                    $"Unknown type '{syntax.Name}': std is a lexical value here.",
+                    new(document.Name, document.Text ?? "", new(definition.Source.Start, definition.Source.Length),
+                        "this binding shadows the standard namespace"));
+            }
             var concepts = BindStandardModule("concepts");
             string name = syntax.Name["$std::concepts::".Length..];
             if (!concepts.Concepts.TryGetValue(name, out int declared))

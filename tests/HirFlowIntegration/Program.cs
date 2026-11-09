@@ -4,6 +4,13 @@ using Msync.Hir;
 using Msync.Runtime;
 
 int checks = 0;
+string? filter = args.Length == 2 && args[0] == "--case" ? args[1] : null;
+if (args.Contains("--btree", StringComparer.Ordinal))
+{
+    await Text("let tree = $std::containers::BTree::new(0, \"\"); $std::containers::BTree::insert(tree, 1, \"item\"); $std::containers::BTree::get(tree, 1)", "item");
+    Console.WriteLine($"PASS {checks} BTree artifact journeys");
+    return;
+}
 await Number("let changed = false; loop { if changed { break 7; } else { changed = true; } }", 7);
 await Number("let object? = null; loop { if object is null { object = scope { item: 7 }; } else { break object::item; } }", 7);
 await Number("let object? = null; for item in [1, 2] { if object is null { object = scope { item: item }; } else { object::item = 7; } }; if object is null { 0 } else { object::item }", 7);
@@ -11,10 +18,18 @@ await Number("let result = 0; for item in [1, 2, 3] { result = result + item; };
 await Number("fn run() { let state? = null; loop { if state is null { state = scope { item: 9 }; } else { break state::item; } } }; run()", 9);
 await Number("let changed = false; let operation = fn { 1 }; loop { if changed { break operation(); } else { operation = fn { 7 }; changed = true; } }", 7);
 await Number("let changed = false; let value: Scope = scope { common: 1, first: true }; loop { if changed { break value::common; } else { value = scope { common: 8, second: false }; changed = true; } }", 8);
+await Number("let state = scope { changed: false }; loop { if state::changed { break 7; } else { state::changed = true; } }", 7);
+await Number("let state = scope { changed: false }; let alias = state; loop { if state::changed { break 8; } else { alias::changed = true; } }", 8);
+await Number("let state = scope { inner: scope { changed: false } }; loop { if state::inner::changed { break 9; } else { state::inner::changed = true; } }", 9);
+await Number("let changed = false; let value: Scope = scope { item: scope { first: true }, tag: 1 }; loop { if changed { break value::tag; } else { value = scope { item: value, tag: 7 }; changed = true; } }", 7);
+await Number("let value: Scope = scope { item: 1, tag: 1 }; for item in [1, 2, 3] { value = scope { item: value, tag: 8 }; }; value::tag", 8);
+await Number("let changed = false; let represented = Number; loop { if changed { if 3 is represented { break 1; } else { break 7; } } else { represented = String; changed = true; } }", 7);
+await Number("let count = 0; for represented in [Number, String] { if represented is Number { count = count + 1; } }; count", 1);
 Console.WriteLine($"PASS {checks} structured-flow artifact journeys");
 
 async Task Number(string source, double expected)
 {
+    if (filter is not null && !source.Contains(filter, StringComparison.Ordinal)) return;
     var hir = Compiler.Analyze(source, "flow-journey.msync");
     foreach (int optimization in new[] { 0, 2 })
     {
@@ -26,5 +41,18 @@ async Task Number(string source, double expected)
         checks++;
         if (value is not NumberValue actual || actual.Data != expected)
             throw new InvalidOperationException($"Expected {expected}, got {value}: {source}");
+    }
+}
+
+async Task Text(string source, string expected)
+{
+    var hir = Compiler.Analyze(source, "flow-tree.msync");
+    foreach (int optimization in new[] { 0, 2 })
+    {
+        Module module = HirLowerer.Lower(hir, new(OptimizationLevel: optimization)).Module;
+        Value value = await Interpreter.ExecuteAsync(module);
+        checks++;
+        if (value is not StringValue actual || actual.Data != expected)
+            throw new InvalidOperationException($"Expected '{expected}', got {value}");
     }
 }

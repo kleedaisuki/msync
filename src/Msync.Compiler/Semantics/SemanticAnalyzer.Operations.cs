@@ -7,7 +7,7 @@ namespace Msync.Compiler.Semantics;
 
 internal sealed partial class SemanticAnalyzer
 {
-    private SemanticValue Operation(HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext context)
+    private SemanticValue Operation(HirNodeId id, HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext context)
     {
         switch (node.Kind)
         {
@@ -28,22 +28,27 @@ internal sealed partial class SemanticAnalyzer
             case HirKind.Binary:
                 return Binary(node, children, context);
             case HirKind.MemberRead:
-                return MemberRead(node, Analyze(children[0], context), context);
+                return MemberRead(id, node, Analyze(children[0], context), context);
             case HirKind.MemberAssign:
             {
                 var receiver = Analyze(children[0], context);
                 var value = Analyze(children[1], context);
-                return MemberAssign(node, receiver, value, context);
+                return MemberAssign(node, receiver, value, context, program.Node(children[1]).Source);
             }
             case HirKind.IsType:
             {
                 var value = Analyze(children[0], context);
-                var type = Analyze(children[1], context.QueryFork());
-                if (type.DenotedType is not { } target) throw Error(node.Source, "'is' compares against null or a type.", "E0203");
-                TypeRef actual = value.DenotedType is { } denoted ? hir.Types[denoted.Value].RuntimeType : Runtime(value);
-                TypeRef required = hir.Types[target.Value].RuntimeType;
-                bool? known = required.Accepts(actual) ? true : (required.Kind & actual.Kind) == 0 ? false : null;
-                return new(hir.Type(TypeRef.Bool), Add(node with { Data = target.Value }, hir.Type(TypeRef.Bool), [value.Node], context),
+                var type = Analyze(children[1], context);
+                Require(type, hir.Type(TypeRef.Type), program.Node(children[1]).Source, context: context);
+                bool? known = null;
+                if (type.DenotedType is { } target
+                    && (value.DenotedType is not null || (Runtime(value).Kind & TypeKind.Type) == 0))
+                {
+                    TypeRef actual = value.DenotedType is { } denoted ? hir.Types[denoted.Value].RuntimeType : Runtime(value);
+                    TypeRef required = hir.Types[target.Value].RuntimeType;
+                    known = required.Accepts(actual) ? true : (required.Kind & actual.Kind) == 0 ? false : null;
+                }
+                return new(hir.Type(TypeRef.Bool), Add(node with { Data = type.DenotedType?.Value ?? -1 }, hir.Type(TypeRef.Bool), [value.Node, type.Node], context),
                     known is { } result ? new(HirLiteralKind.Bool, Boolean: result) : null);
             }
             case HirKind.Convert:
@@ -60,7 +65,7 @@ internal sealed partial class SemanticAnalyzer
         if (node.Kind == HirKind.Unary)
         {
             var operation = (HirUnaryOperator)node.Data;
-            Require(operand!, hir.Type(operation == HirUnaryOperator.Not ? TypeRef.Bool : TypeRef.Number), node.Source);
+            Require(operand!, hir.Type(operation == HirUnaryOperator.Not ? TypeRef.Bool : TypeRef.Number), program.Node(children[0]).Source);
             HirLiteral? literal = operation == HirUnaryOperator.Not && operand!.KnownBool is { } known
                 ? new(HirLiteralKind.Bool, Boolean: !known)
                 : operation == HirUnaryOperator.Negate && operand!.Literal is { Kind: HirLiteralKind.Number } number
@@ -69,13 +74,13 @@ internal sealed partial class SemanticAnalyzer
         }
         if (node.Kind == HirKind.RegexMatch)
         {
-            Require(operand!, hir.Type(new TypeRef(TypeKind.Path | TypeKind.String)), node.Source);
+            Require(operand!, hir.Type(new TypeRef(TypeKind.Path | TypeKind.String)), program.Node(children[0]).Source);
             ValidatePattern(node.Text!, node.Source);
             return new(hir.Type(TypeRef.Bool), Add(node, hir.Type(TypeRef.Bool), [operand!.Node], context));
         }
         if (node.Kind == HirKind.SelectPath)
         {
-            Require(operand!, hir.Type(new TypeRef(TypeKind.Path | TypeKind.String)), node.Source);
+            Require(operand!, hir.Type(new TypeRef(TypeKind.Path | TypeKind.String)), program.Node(children[0]).Source);
             ValidatePattern(node.Text!, node.Source);
             var element = ValueForType(hir.Type(TypeRef.Path));
             var type = RangeType(element.Type);
@@ -84,7 +89,7 @@ internal sealed partial class SemanticAnalyzer
         if (node.Kind is HirKind.PathJoin or HirKind.Qualify or HirKind.Transfer)
         {
             var other = Analyze(children[1], context);
-            return PairOperation(node, operand!, other, context);
+            return PairOperation(node, operand!, other, context, program.Node(children[0]).Source, program.Node(children[1]).Source);
         }
         throw Error(node.Source, $"Unknown semantic operation '{node.Kind}'.");
     }
@@ -106,15 +111,17 @@ internal sealed partial class SemanticAnalyzer
     private SemanticValue Binary(HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext context)
     {
         var left = Analyze(children[0], context);
+        var leftSource = program.Node(children[0]).Source;
+        var rightSource = program.Node(children[1]).Source;
         var operation = (HirBinaryOperator)node.Data;
         if (operation is HirBinaryOperator.And or HirBinaryOperator.Or)
         {
-            Require(left, hir.Type(TypeRef.Bool), node.Source);
+            Require(left, hir.Type(TypeRef.Bool), leftSource);
             var branch = context.Fork();
             bool rightEdge = operation == HirBinaryOperator.And;
             RefineCondition(children[0], rightEdge, branch);
             var right = Analyze(children[1], branch);
-            Require(right, hir.Type(TypeRef.Bool), node.Source);
+            Require(right, hir.Type(TypeRef.Bool), rightSource);
             if (left.KnownBool is { } selected)
             {
                 if (selected == rightEdge) { MergeContexts(context, branch); AppendExits(context, branch); }
@@ -127,37 +134,39 @@ internal sealed partial class SemanticAnalyzer
         }
         var second = Analyze(children[1], context);
         if (operation == HirBinaryOperator.Divide && (Runtime(left) != TypeRef.Number || Runtime(second) != TypeRef.Number))
-            return PairOperation(node with { Kind = HirKind.PathJoin }, left, second, context);
+            return PairOperation(node with { Kind = HirKind.PathJoin }, left, second, context, leftSource, rightSource);
         if (operation >= HirBinaryOperator.Equal)
         {
             if (Runtime(left).Nullable || Runtime(second).Nullable)
-                throw Error(node.Source, "Null has no boolean comparison; use 'is null' or 'is not null'.", "E0201");
+                throw Error(Runtime(left).Nullable ? leftSource : rightSource,
+                    "Null has no boolean comparison; use 'is null' or 'is not null'.", "E0201");
             TypeRef comparable = new(TypeKind.Bool | TypeKind.Number | TypeKind.String | TypeKind.Path | TypeKind.Type | TypeKind.Connection);
-            Require(left, hir.Type(comparable), node.Source);
-            Require(second, hir.Type(comparable), node.Source);
+            Require(left, hir.Type(comparable), leftSource);
+            Require(second, hir.Type(comparable), rightSource);
             TypeRef text = new(TypeKind.Path | TypeKind.String);
             if (Runtime(left).Kind != TypeKind.Never && Runtime(second).Kind != TypeKind.Never
                 && Runtime(left) != Runtime(second) && !(text.Accepts(Runtime(left)) && text.Accepts(Runtime(second))))
                 throw Error(node.Source, $"Cannot compare {Runtime(left)} and {Runtime(second)}.", "E0203");
             return new(hir.Type(TypeRef.Bool), Add(node, hir.Type(TypeRef.Bool), [left.Node, second.Node], context));
         }
-        Require(left, hir.Type(TypeRef.Number), node.Source);
-        Require(second, hir.Type(TypeRef.Number), node.Source);
+        Require(left, hir.Type(TypeRef.Number), leftSource);
+        Require(second, hir.Type(TypeRef.Number), rightSource);
         return new(hir.Type(TypeRef.Number), Add(node, hir.Type(TypeRef.Number), [left.Node, second.Node], context));
     }
 
-    private SemanticValue PairOperation(HirNode node, SemanticValue left, SemanticValue right, SemanticContext context)
+    private SemanticValue PairOperation(HirNode node, SemanticValue left, SemanticValue right, SemanticContext context,
+        HirSourceRange leftSource, HirSourceRange rightSource)
     {
         var path = hir.Type(new TypeRef(TypeKind.Path | TypeKind.String));
         if (node.Kind == HirKind.Transfer)
         {
-            Require(left, hir.Type(new TypeRef(TypeKind.Path | TypeKind.String | TypeKind.Range)), node.Source);
-            if (left.Element is { } item) Require(item, path, node.Source);
-            Require(right, path, node.Source);
+            Require(left, hir.Type(new TypeRef(TypeKind.Path | TypeKind.String | TypeKind.Range)), leftSource);
+            if (left.Element is { } item) Require(item, path, leftSource);
+            Require(right, path, rightSource);
             return new(hir.Type(TypeRef.Bool), Add(node, hir.Type(TypeRef.Bool), [left.Node, right.Node], context));
         }
-        Require(left, path, node.Source);
-        Require(right, node.Kind == HirKind.Qualify ? hir.Type(TypeRef.Connection) : path, node.Source);
+        Require(left, path, leftSource);
+        Require(right, node.Kind == HirKind.Qualify ? hir.Type(TypeRef.Connection) : path, rightSource);
         return new(hir.Type(TypeRef.Path), Add(node, hir.Type(TypeRef.Path), [left.Node, right.Node], context));
     }
 
@@ -174,7 +183,7 @@ internal sealed partial class SemanticAnalyzer
                 ? item with { Type = hir.Type(element) } : null);
     }
 
-    private SemanticValue MemberRead(HirNode node, SemanticValue receiver, SemanticContext context)
+    private SemanticValue MemberRead(HirNodeId id, HirNode node, SemanticValue receiver, SemanticContext context)
     {
         if (node.Text is null)
         {
@@ -190,29 +199,41 @@ internal sealed partial class SemanticAnalyzer
         var scope = receiver.Scope;
         if (scope is not null && context.Objects.TryGetValue(scope.Region, out var latest)) scope = latest;
         if (scope is null || !scope.Fields.TryGetValue(node.Text!, out var value))
-            throw Error(node.Source, $"Scope has no member '{node.Text}'.", "E0205");
+            throw SemanticDiagnosticFactory.MissingMember(hir.Sources[node.Source.Source.Value],
+                new(node.Source.Start, node.Source.Length), node.Text!, scope?.Fields.Keys ?? []);
         int offset = FieldOffset(scope.Layout, node.Text!);
         HirLocationId? location = scope.Locations.TryGetValue(node.Text!, out var member) ? member : null;
         if (location is { } fieldLocation && context.Values.TryGetValue(fieldLocation, out var actual)) value = actual;
+        if (location is { } flowLocation) value = FlowRead(id, flowLocation, value, context);
         return value with { Node = Add(node with { Data = offset }, value.Type, [receiver.Node], context), Location = location };
     }
 
-    private SemanticValue MemberAssign(HirNode node, SemanticValue receiver, SemanticValue value, SemanticContext context)
+    private SemanticValue MemberAssign(HirNode node, SemanticValue receiver, SemanticValue value, SemanticContext context,
+        HirSourceRange valueSource)
     {
         if (Runtime(receiver).Nullable || Runtime(receiver) != TypeRef.Scope || receiver.Scope is not { } scope)
             throw Error(node.Source, "Member assignment requires a non-null Scope.", "E0206");
         if (context.Objects.TryGetValue(scope.Region, out var latest)) scope = latest;
         int offset = FieldOffset(scope.Layout, node.Text!);
-        if (offset < 0) throw Error(node.Source, $"Scope has no member '{node.Text}'.", "E0205");
+        if (offset < 0) throw SemanticDiagnosticFactory.MissingMember(hir.Sources[node.Source.Source.Value],
+            new(node.Source.Start, node.Source.Length), node.Text!, scope.Fields.Keys);
         var field = hir.ScopeLayouts[scope.Layout].Fields[offset];
         HirTypeId target = field.AdmitsNull ? Nullable(field.StorageType) : field.StorageType;
-        Require(value, target, node.Source, allowImplicit: true, context: context);
-        value = Convert(value, target, node.Source, context);
-        CheckMemberContracts(scope, node.Text!, value, node.Source, context);
+        try { Require(value, target, valueSource, allowImplicit: true, context: context); }
+        catch (CompileException error) when (scope.Locations.TryGetValue(node.Text!, out var fieldLocation))
+        {
+            var definition = hir.Locations[fieldLocation.Value];
+            SemanticDiagnosticFactory.FixedStorage(error, hir.Sources[definition.Source.Source.Value],
+                definition, hir.Types[target.Value].RuntimeType);
+            throw;
+        }
+        value = Convert(value, target, valueSource, context);
+        CheckMemberContracts(scope, node.Text!, value, valueSource, context);
         InvalidateScopeAliases(scope, context);
         var updated = scope with { Fields = scope.Fields.SetItem(node.Text!, value) };
         context.Objects[scope.Region] = updated;
         context.FieldWrites.Add((scope.Region, node.Text!));
+        context.RecordWrite(new(SemanticWriteKind.Field, value, Region: scope.Region, Field: node.Text!));
         if (scope.Locations.TryGetValue(node.Text!, out var location)) context.Values[location] = value;
         return new(hir.Type(TypeRef.Null), Add(node with { Data = offset }, hir.Type(TypeRef.Null), [receiver.Node, value.Node], context));
     }

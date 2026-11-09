@@ -6,31 +6,49 @@ namespace Msync.Compiler.Semantics;
 
 internal sealed partial class SemanticAnalyzer
 {
+    private readonly HashSet<HirLocationId> flowCapturedWrites = [];
+    private int flowDeclarationCount;
+
     private HirFlowAnalysis PrepareFlow(HirNodeId root, SemanticContext context)
     {
         var domains = ImmutableDictionary.CreateBuilder<HirLocationId, FlowLocationDomain>();
         var visited = new HashSet<HirNodeId>();
-        HashSet<HirLocationId> capturedWrites = [];
-        foreach (var declaration in program.Declarations)
+        for (; flowDeclarationCount < program.Declarations.Count; flowDeclarationCount++)
+        {
+            var declaration = program.Declarations[flowDeclarationCount];
             if (declaration.CapturedFrom is not null && program.WrittenLocations.Contains(program.Original(declaration.Location)))
-                capturedWrites.Add(program.Original(declaration.Location));
-        void Location(HirLocationId source)
+                flowCapturedWrites.Add(program.Original(declaration.Location));
+        }
+        void Location(HirLocationId source, FlowMemoryRegion? memory = null)
         {
             HirLocationId location = context.Location(source);
             if (domains.ContainsKey(location)) return;
             HirTypeId storage = context.Storage.GetValueOrDefault(location,
                 Resolve(hir.Locations[location.Value].StorageType, context));
             SemanticValue? value = context.Values.GetValueOrDefault(location);
+            bool module = StandardDeclaration(source) is not null;
+            bool assigned = value is not null && (!module || value.Scope is not null && hir.Types[value.Type.Value].Shape >= 0);
+            if (module && assigned) storage = value!.Type;
             bool external = program.TryDeclaration(source, out var declaration)
                 && (declaration.Kind is DeclarationKind.Field or DeclarationKind.Capture
-                    || capturedWrites.Contains(program.Original(source))
+                    || flowCapturedWrites.Contains(program.Original(source))
                     || program.IsSession && program.Exports.Values.Contains(source));
             domains.Add(location, new(hir.Types[storage.Value].RuntimeType,
                 hir.Types[storage.Value].RuntimeType, StableForLifetime: program.IsStable(source),
-                ExternallyWritable: external, InitiallyAssigned: value is not null,
-                InitialType: value is null ? new(TypeKind.Never) : Runtime(value),
-                StorageSemanticType: storage, InitialSemanticType: value?.Type,
+                ExternallyWritable: external, Memory: memory, InitiallyAssigned: assigned,
+                InitialType: !assigned ? new(TypeKind.Never) : Runtime(value!),
+                StorageSemanticType: storage, InitialSemanticType: assigned ? value!.Type : null,
                 DeferredSemanticType: storage));
+        }
+        HirLocationId? Place(HirNodeId id)
+        {
+            HirNode node = program.Node(id);
+            if (node.Kind is not (HirKind.MemberRead or HirKind.MemberAssign)) return null;
+            if (Subject(program.Children(id)[0], context)?.Scope is not { } scope) return null;
+            if (context.Objects.TryGetValue(scope.Region, out var current)) scope = current;
+            if (!scope.Locations.TryGetValue(node.Text!, out var field)) return null;
+            Location(field, new(scope.Region));
+            return field;
         }
         void Visit(HirNodeId id)
         {
@@ -39,6 +57,7 @@ internal sealed partial class SemanticAnalyzer
             if (node.Kind is HirKind.ReadLocation or HirKind.ReadStorage or HirKind.Declare or HirKind.Assign)
                 Location(new(node.Data));
             if (node.Kind == HirKind.For) Location(hir.Fors[node.Data].Item);
+            _ = Place(id);
             if (node.Kind is HirKind.TemplateClosure or HirKind.Closure) return;
             foreach (HirNodeId child in program.Children(id)) Visit(child);
             if (node.Kind == HirKind.Match)
@@ -52,13 +71,15 @@ internal sealed partial class SemanticAnalyzer
         var algebra = new HirFlowTypeAlgebra(hir);
         FlowFacts facts = FlowFacts.Create(domains.ToImmutable(), algebra);
         foreach (var pair in domains)
-            if (context.Values.TryGetValue(pair.Key, out var value))
+            if (pair.Value.InitiallyAssigned && context.Values.TryGetValue(pair.Key, out var value))
                 facts = facts.Assign(pair.Key, new(Runtime(value), Boolean: value.KnownBool, SemanticType: value.Type,
                     Callables: value.Callables.IsDefaultOrEmpty ? null : new(value.Callables.Select(choice =>
-                        new FlowCallableIdentity(choice.Template, choice.NativeName)))));
+                        new FlowCallableIdentity(choice.Template, choice.NativeName))),
+                    Denotations: value.DenotedType is { } denoted ? new([denoted]) : null));
         var projection = new HirTypeProjection(program, hir, context, algebra,
-            (callable, arguments) => SourceFlowReturn(callable, arguments, context));
-        return new HirFlowGraphBuilder(program, projection.Project, context.Location).Analyze(root, facts);
+            (callable, arguments) => SourceFlowReturn(callable, arguments, context), Place,
+            id => BoundCallables(id, context));
+        return new HirFlowGraphBuilder(program, projection.Project, context.Location, Place).Analyze(root, facts);
     }
 
     private SemanticValue FlowRead(HirNodeId id, HirLocationId location, SemanticValue value,
@@ -66,7 +87,7 @@ internal sealed partial class SemanticAnalyzer
     {
         if (context.FlowAnalysis is not { } analysis || !analysis.Inputs.TryGetValue(id, out var facts)
             || !facts.Reachable || !facts.Contains(location)) return value;
-        FlowFact fact = facts.Read(location, context.DeferredReads ? FlowReadKind.Deferred : FlowReadKind.Immediate);
+        FlowFact fact = facts.Read(location);
         if (!fact.Assigned || fact.Type.Kind == TypeKind.Never) return value;
         HirTypeId type = fact.SemanticType ?? hir.Type(fact.Type);
         SemanticValue result = value;
@@ -74,7 +95,29 @@ internal sealed partial class SemanticAnalyzer
             || type != value.Type && !hir.Types[type.Value].Alternatives.IsDefaultOrEmpty)
             result = ValueForType(type) with { Location = value.Location, Origin = value.Origin };
         result = result with { Type = type, Literal = fact.Boolean is { } boolean
-            ? new(HirLiteralKind.Bool, Boolean: boolean) : value.Literal is { Kind: HirLiteralKind.Bool } ? null : result.Literal };
+            ? new(HirLiteralKind.Bool, Boolean: boolean) : null,
+            DenotedType = fact.Denotations is { Types.Length: 1 } denotations ? denotations.Types[0] : null,
+            Observation = null };
+        if (result.DenotedType is { } denoted)
+            result = result with { Literal = new(HirLiteralKind.Type, Type: hir.Types[denoted.Value].RuntimeType) };
+        if (result.Scope is { } scope)
+        {
+            var fields = scope.Fields;
+            foreach (var (name, field) in scope.Locations)
+            {
+                if (!facts.Contains(field)) continue;
+                FlowFact fieldFact = facts.Read(field);
+                if (!fieldFact.Assigned || fieldFact.Type.Kind == TypeKind.Never) continue;
+                SemanticValue fieldValue = context.Values.GetValueOrDefault(field, fields[name]);
+                fieldValue = fieldValue with { Type = fieldFact.SemanticType ?? hir.Type(fieldFact.Type),
+                    Literal = fieldFact.Boolean is { } fieldBoolean ? new(HirLiteralKind.Bool, Boolean: fieldBoolean) : null };
+                context.Values[field] = fieldValue;
+                fields = fields.SetItem(name, fieldValue);
+            }
+            scope = scope with { Fields = fields };
+            result = result with { Scope = scope };
+            if (scope.Region >= 0) context.Objects[scope.Region] = scope;
+        }
         if (fact.Callables is { } callables)
             result = result with { Callables = callables.Choices.Select(choice =>
             {

@@ -5,6 +5,12 @@ using Msync.Core;
 using Msync.Hir;
 using Msync.Runtime;
 
+if (args.Contains("--singletons", StringComparer.Ordinal))
+{
+    await SingletonChecks.RunAsync();
+    return;
+}
+
 if (args.Contains("--aggregates", StringComparer.Ordinal))
 {
     await AggregateChecks.RunAsync();

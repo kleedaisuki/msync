@@ -116,7 +116,7 @@ internal sealed partial class SourceBinder
                 hir.Locations[location.Value].Name, hir.Locations[location.Value].StorageType,
                 hir.Locations[location.Value].AdmitsNull)).ToImmutableArray()));
             int construction = hir.Scopes.Count;
-            hir.Scopes.Add(new(layout, fields));
+            hir.AddScope(new(layout, fields));
             var body = Node(HirKind.Scope, hir.Type(new HirType(TypeRef.Scope, Shape: layout)),
                 library.Document.Span, initializers, construction);
             BoundModule module = new(name, source, body, scope.Values, scope.Concepts);
@@ -335,7 +335,7 @@ internal sealed partial class SourceBinder
     }
 
     private CompileException Error(string message, SourceSpan span, string code = "E0200") =>
-        new(message, sourceText, sourceName, span, code: code);
+        SemanticDiagnosticFactory.Create(new(sourceName, sourceText), span, message, code);
 
     private void RecoverDeclaration(Statement statement)
     {

@@ -183,7 +183,8 @@ internal sealed partial class SemanticAnalyzer
     private CompileException ConceptError(int concept, HirSourceRange source, string expected, string actual)
     {
         var definition = hir.Concepts[concept];
-        var error = Error(source, $"Value does not satisfy concept '{definition.Name}': expected {expected}, found {actual}.", "E0214");
+        var error = SemanticDiagnosticFactory.Concept(hir.Sources[source.Source.Value], new(source.Start, source.Length),
+            $"Value does not satisfy concept '{definition.Name}': expected {expected}, found {actual}.");
         var origin = hir.Sources[definition.Source.Source.Value];
         error.Diagnostic.Related.Add(new(origin.Name, origin.Text ?? "",
             new(definition.Source.Start, definition.Source.Length), $"concept '{definition.Name}' declared here"));

@@ -106,7 +106,8 @@ internal sealed partial class SemanticAnalyzer
                 }
         }
         if (!AcceptsRuntime(expected.RuntimeType, Runtime(value), allowImplicit))
-            throw Error(source, $"Expected {expected.RuntimeType}, found {Runtime(value)}.", "E0203");
+            throw SemanticDiagnosticFactory.TypeMismatch(hir.Sources[source.Source.Value],
+                new(source.Start, source.Length), Runtime(value), expected.RuntimeType);
         if (expected.Concept >= 0)
         {
             RequireConcept(value, expected.Concept, source, context ?? new(new(-1)), expected.RuntimeType.Nullable);

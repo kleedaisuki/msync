@@ -297,3 +297,26 @@ export identities. Semantic analysis and read-only queries consume that table;
 there is no callback into `SourceBinder` and no query-triggered parsing or
 binding. Runtime initialization remains separate: semantic publication schedules
 only the required module initialization, while a type query publishes none.
+
+### Named-Scope initialization effects
+
+A named Scope's structural schema is not evidence that its initializer has run.
+Semantic paths retain separate definitely-initialized and possibly-initialized
+singleton sets; a control-flow join intersects the former and unions the latter.
+Query contexts own overlays and cannot initialize a published semantic path.
+
+The typed initializer remains behind the backend's runtime singleton guard.
+When a path already proves initialization, its semantic initializer is checked in
+an overlay without replaying writes into the current path. Functions containing
+singleton-dependent effects additionally need ordered semantic write events:
+location, field and indexed writes carry active initialization guards, followed
+by an initialization-completion event. Final-cell snapshots alone cannot model
+an unconditional write before versus after a guarded initializer. Ordinary
+functions keep the existing final-write summary path and allocate no event list.
+
+At uncertain initialization edges, a bounded singleton/target sidecar retains
+abstract values conditional on initialized versus uninitialized state. It is not
+a second environment snapshot. Field writes with a retained binding cell use
+the same target identity as direct cell writes. Unconditional replacement
+collapses both outcomes back into the ordinary value fact; guarded replay uses
+the initialized outcome for the skipped-initializer edge.

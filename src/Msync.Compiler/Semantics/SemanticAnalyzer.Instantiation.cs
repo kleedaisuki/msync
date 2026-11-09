@@ -26,6 +26,7 @@ internal sealed partial class SemanticAnalyzer
         public ImmutableDictionary<int, SemanticIndexed> Indexed { get; set; } = ImmutableDictionary<int, SemanticIndexed>.Empty;
         public ImmutableDictionary<HirLocationId, SemanticValue> Cells { get; set; } = ImmutableDictionary<HirLocationId, SemanticValue>.Empty;
         public ImmutableDictionary<int, ImmutableHashSet<int>> AliasViews { get; set; } = ImmutableDictionary<int, ImmutableHashSet<int>>.Empty;
+        public ImmutableArray<SemanticWriteEvent> WriteEvents { get; set; } = default;
         public ImmutableHashSet<int> IndexedWrites { get; set; } = [];
         public ImmutableHashSet<HirLocationId> CellWrites { get; set; } = [];
         public ImmutableHashSet<(int Region, string Field)> FieldWrites { get; set; } = [];
@@ -130,10 +131,26 @@ internal sealed partial class SemanticAnalyzer
     {
         var template = hir.Templates[id.Value];
         if (arguments.Count != template.Parameters.Length)
-            throw Error(source, $"Function expects {template.Parameters.Length} arguments, got {arguments.Count}.", "E0204");
+        {
+            var declaration = hir.Sources[template.Source.Source.Value];
+            throw SemanticDiagnosticFactory.Arity(hir.Sources[source.Source.Value], new(source.Start, source.Length),
+                $"Function expects {template.Parameters.Length} arguments, got {arguments.Count}.",
+                template.Parameters.Select(parameter => hir.Locations[parameter.Value].Name),
+                new(declaration.Name, declaration.Text ?? "", new(template.Source.Start, template.Source.Length),
+                    "function signature declared here"));
+        }
         var actualCaptures = captured.IsDefault ? ImmutableArray<SemanticCapture>.Empty : captured;
-        var captureValues = actualCaptures.Select(capture => capture.Mode == HirCaptureMode.Location
-            ? caller.Values.GetValueOrDefault(capture.Source, capture.Value) : capture.Value).ToArray();
+        SemanticValue[] captureValues = new SemanticValue[actualCaptures.Length];
+        for (int index = 0; index < actualCaptures.Length; index++)
+        {
+            var capture = actualCaptures[index];
+            var value = capture.Mode == HirCaptureMode.Location
+                ? caller.Values.GetValueOrDefault(capture.Source, capture.Value) : capture.Value;
+            if (caller.DeferredReads && capture.Mode == HirCaptureMode.Location
+                && (!Stable(capture.Source) || value.Scope is not null))
+                value = FutureRead(value, caller.Storage.GetValueOrDefault(capture.Source, value.Type), caller);
+            captureValues[index] = value;
+        }
         string key = InstanceKey(id, arguments, captureValues, caller);
         var cache = caller.Publish ? instances : (caller.Queries ??= new()).Instances;
         if (!cache.TryGetValue(key, out var instance))
@@ -309,6 +326,7 @@ internal sealed partial class SemanticAnalyzer
         instance.FieldWrites = context.FieldWrites.ToImmutableHashSet();
         instance.CellWrites = context.CellWrites.ToImmutableHashSet();
         instance.IndexedWrites = context.IndexedWrites.ToImmutableHashSet();
+        instance.WriteEvents = context.WriteEvents is null ? default : context.WriteEvents.ToImmutableArray();
         instance.AliasViews = context.AliasViews.Where(pair => objects.ContainsKey(pair.Key))
             .ToImmutableDictionary(pair => pair.Key, pair => pair.Value);
 
