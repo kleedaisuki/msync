@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>msync-stdlib-load</AssemblyName>
+    <PublishAot>true</PublishAot>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="../../../src/Msync.Compiler/Msync.Compiler.csproj" /></ItemGroup>
+</Project>
