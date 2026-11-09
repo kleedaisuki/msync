@@ -102,8 +102,8 @@ O1/O2/O3:
   FormBlocks
 ```
 
-Binding performs context lowering, reruns this optimizer, then repeats lowering
-and optimization. Exact literal bodies avoid rediscovering the graph after a
+Binding now performs `lower → optimize → lower`, with one optimizer invocation
+at the selected level, not two. Exact literal bodies avoid rediscovering the graph after a
 previous pass has reduced a body to a literal return. This shortcut applies to
 literal value bodies, not to a guessed no-work lifecycle bypass.
 
@@ -146,7 +146,7 @@ that reaching constants or value-number keys have identical representations.
 
 | Family | Actual msync boundary and status |
 | --- | --- |
-| Contextual partial evaluation | `Binding.Bind` attaches context, invokes `ExecutionLowering`, reruns `Optimizer`, then repeats lowering/optimization. Implemented in working code; verify idempotence and residual IR rather than assume two repetitions suffice for every future pass |
+| Contextual partial evaluation | `Binding.Bind` attaches context and performs lower → optimize → lower once. It freezes context, not live filesystem observations; executable execution does not repeat binding or optimization |
 | Operation selection | `ExecutionLowering` replaces proven local Transfer with LocalTransfer and materializes builtin endpoint values. Endpoint grammar belongs to the selected endpoint, not the host alone |
 | Resource dependence scheduling | `Interpreter.Scheduling` uses endpoint/path hierarchy and read/write dependencies. This is machine/context-dependent I/O scheduling, not GCC RTL scheduling; runtime owner is validating actual bytes and process/barrier lifetimes |
 | Directional acquire/release | `Barrier`/`Acquire` and invocation-owned pending work are observable scheduling constraints. No DCE, CSE or loop motion may silently turn them into no-ops or global unrelated drains |
@@ -211,6 +211,55 @@ the current C# native baseline using the established
 [performance journeys](performance-v080.md). Scheduling wins additionally need
 actual independent/overlapping path jobs and barrier-controlled processes on
 Linux and Windows; microbenchmarks alone do not establish user-visible latency.
+
+## Source-container follow-up: GCC and LLVM (2026-11-09)
+
+The new indexed containers supply a concrete workload for another optimization
+selection, rather than a reason to copy the remaining GCC option list. Upstream
+references were checked against GCC **16.2** and LLVM **23.1.5**; the latter is
+advertised by the [LLVM project](https://llvm.org/). The implemented additions
+are machine-independent and run before `.mso` publication. Context binding can
+apply the same optimizer after lowering; none caches filesystem or remote proofs.
+
+| Selected mechanism | Actual implementation and semantic boundary |
+| --- | --- |
+| Dependency-local analysis invalidation | `OptimizationDependencies` records actual direct/dispatch callee bodies and effect summaries, replacing the graph cache's module-global effect epoch. Transitive effects already come from the existing fixed point. Unrelated functions keep their valid graphs; body/layout changes invalidate dependencies. This follows LLVM's [analysis-preservation mechanism](https://llvm.org/docs/NewPassManager.html#implementing-analysis-invalidation), not a new pass-manager framework |
+| Indexed-memory read availability | `IndexedMemoryOptimization` reuses a dominating successful Buffer read, intersects the same producer at CFG joins, and resets on backedges. Exact indices distinguish disjoint writes; value-only stores preserve length, while resize/callback/barrier clobbers invalidate facts. The first potentially failing read and its span remain. This adopts the useful [MemorySSA clobber-query principle](https://llvm.org/docs/MemorySSA.html) without introducing general memory SSA or speculative DSE |
+| Closed native call-domain specialization | The compiler's existing monotone callable domain can prove one native target. O2/O3 standalone lowering then removes dynamic dispatch while retaining callee-before-argument evaluation. Multiple/unknown domains, sessions and editor probes remain relinkable. Compiler-only boundaries disappear before artifact output; there is no new bytecode format |
+| Remove representation-only wrappers | Buffer values are the owned Range itself; the named family contains native function values. Removing the Scope/fields-array wrapper and source method frames makes indexed optimization reach the public container API instead of an artificial direct-FFI-only probe |
+
+The [dependency probe](../../tests/OptimizationDependencies/README.md) measured
+the same source graph in ABBA order: graph analyses **227 → 130**, optimizer
+allocation **1,939,544 → 1,557,904 bytes**, and pooled p50 **4.2068 → 3.0959 ms**.
+Optimized artifact bytes are identical, and the native-only unchanged control
+adds no allocation. This is optimizer cost reduction, not a new user-program
+transformation or an established callee-literal folding feature.
+
+The [indexed probe](../../tests/IndexedMemoryOptimization/README.md) consumes
+1024 loop iterations. Sixteen repeated read sites become one: prepared VM p50
+**18.3638 → 2.8472 ms**, allocation **3,590,224 → 272,472 bytes**. The optimizer
+spends another roughly **0.21 ms / 104 KB** on that case; it is not a free pass.
+No-Buffer optimizer allocation remains exactly unchanged. A cheap literal-index
+screen avoids CFG work for the distinct-index control. These are managed causal
+component observations, not universal Native AOT startup or tree-throughput claims.
+
+Public-source coverage closes the mechanism: 77 native-domain contracts, 206
+indexed contracts, 191 owned-carrier checks, nine actual CLI routes, and the
+four-container source/object/executable aggregate passed. The final native
+platform wave owns its own immutable-image evidence. See the native-friendly
+[CLI entrypoint](../../tests/Msync.EndToEnd/static_optimization_journey.py).
+
+Two real residual opportunities were deliberately not added as unconditional
+passes. A frozen probe confirms ordinary natural loops are outside the current
+iterator-only LICM recognizer, and `x >= 0` does not eliminate a later `x < 0`.
+However, actual tree/heap arithmetic is mostly variant, Heap already hoists its
+size, and moving policy/field loads needs must-execute and alias proofs. A fresh
+CFG pass or general numeric lattice was not justified on every small script.
+Future demand-driven IEEE-aware relations must retain NaN and signed-zero facts;
+general store deletion also needs the exception/must-execute conditions in
+LLVM's [tagged DSE implementation](https://github.com/llvm/llvm-project/blob/llvmorg-23.1.5/llvm/lib/Transforms/Scalar/DeadStoreElimination.cpp).
+SIMD, CPU register allocation, fast-math and broad loop cloning remain unsuitable
+for the established workload, not silently missing promised features.
 
 [releases]: https://gcc.gnu.org/releases.html
 [options]: https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Optimize-Options.html
