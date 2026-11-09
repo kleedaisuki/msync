@@ -1,0 +1,62 @@
+name: Publish verified packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run:
+        description: Successful release-package candidate run built from this exact main commit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: promote-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - id: version
+        name: Read the matching package version
+        shell: python
+        run: |
+          import os
+          import sys
+
+          sys.path.insert(0, 'packaging')
+          from build import version
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'version={version()}\n')
+      - name: Verify and stage the accepted candidate bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+        run: python packaging/promote_candidate.py --run "$CANDIDATE_RUN"
+      - name: Publish without rebuilding or replacing released versions
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        with:
+          script: |
+            const publish = require('./packaging/publish-release.cjs');
+            await publish({github, context, core, version: process.env.PACKAGE_VERSION});
+      - name: Retain the promotion receipt
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: public-release-receipt
+          if-no-files-found: ignore
+          include-hidden-files: true
+          path: .temp/promoted-release/receipt.json

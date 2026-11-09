@@ -103,6 +103,28 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Could not download the immutable installer upgrade baseline.' }
           if ((Get-FileHash .temp/previous-setup.exe -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'ed22547657e0981cb282180d72342f3e6cf95ea3ceada33993b8dec9e5e03498') { throw 'Upgrade baseline digest differs.' }
           ./packaging/windows/test.ps1 -InstallerPath "dist/msync-${{ needs.version.outputs.version }}-windows-x86_64-setup.exe" -PreviousInstallerPath .temp/previous-setup.exe
+      - name: Record exact native candidate payloads
+        shell: python
+        env:
+          PACKAGE_VERSION: ${{ needs.version.outputs.version }}
+          PACKAGE_NAME: ${{ matrix.name }}
+        run: |
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          version: str = os.environ['PACKAGE_VERSION']
+          platform: str = os.environ['PACKAGE_NAME']
+          names: tuple[str, ...] = ((f'msync-{version}-{platform}.zip', f'msync-{version}-{platform}-setup.exe')
+                                   if os.name == 'nt' else (f'msync-{version}-{platform}.tar.gz',))
+          assets: list[dict[str, object]] = [
+              {'name': name, 'size': (Path('dist') / name).stat().st_size,
+               'sha256': hashlib.sha256((Path('dist') / name).read_bytes()).hexdigest()}
+              for name in names]
+          output: Path = Path('.temp/platform-results/language-upgrade/payload.json')
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps({'version': version, 'source': os.environ['GITHUB_SHA'], 'assets': assets}, indent=2) + '\n', encoding='utf-8')
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-${{ matrix.name }}
@@ -179,6 +201,7 @@ jobs:
       - name: Verify packaged editor payload
         shell: python
         run: |
+          import hashlib
           import json
           import os
           import sys
@@ -191,7 +214,12 @@ jobs:
           archive: Path = Path('dist') / f'msync-language-{version}.vsix'
           output: Path = Path('.temp/editor-release/payload.json')
           output.parent.mkdir(parents=True, exist_ok=True)
-          output.write_text(json.dumps({'version': version, 'members': audit_vsix(archive, version)}, indent=2) + '\n', encoding='utf-8')
+          payload: dict[str, object] = {
+              'version': version, 'source': os.environ['GITHUB_SHA'],
+              'members': audit_vsix(archive, version),
+              'assets': [{'name': archive.name, 'size': archive.stat().st_size,
+                          'sha256': hashlib.sha256(archive.read_bytes()).hexdigest()}]}
+          output.write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-vscode

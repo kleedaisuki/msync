@@ -777,3 +777,32 @@ are recorded, not confused with different source content. Full artifact IDs,
 package hashes, host metadata and audit results are retained in
 `.temp/final-stdlib-delivery-v080.json`; disposable records are not product
 runtime dependencies. No published tag or release asset was replaced.
+
+## Candidate validation and byte-preserving promotion (0.8.1)
+
+Compiler and editor performance must be assessed before creating an immutable
+release. A `release.yml` dispatch with `publish=false` builds both Native
+platforms and the VSIX, runs the selected product/editor journeys, and retains
+the exact payloads plus acceptance receipts. Each receipt records its source
+commit, package version, byte size and SHA-256. Editor packaging also records
+the product members already compared against the built source bundle.
+
+After correctness, time/allocation and UX acceptance, fast-forward `main` to
+that same frozen commit without starting a second native build. Dispatch
+`promote.yml` on `main` with the successful candidate run ID. The promotion
+requires that release workflow, its exact source SHA, both native jobs, the
+editor job and all six payload/acceptance artifacts. It verifies the receipt
+hashes, native manifests, authored standard-source bytes and VSIX version/member
+set before invoking the unchanged immutable publisher.
+
+Promotion neither rebuilds Native binaries nor repackages the VSIX. Its four
+published payloads are byte-for-byte the accepted candidate assets; the existing
+publisher generates `SHA256SUMS`, binds the version tag to the tested commit,
+uploads all assets to a draft, then publishes. It never replaces a published
+tag or asset. No unrelated CI result or lint status participates in promotion.
+
+Do not append versioned source or documentation commits between candidate
+freeze and promotion: the exact-source check deliberately rejects that mismatch.
+Store measurements in the candidate artifacts first; commit the final release
+receipt after publication. A changed candidate needs a new validation run,
+not a force-moved tag or a second interpretation of the accepted payload bytes.
