@@ -38,7 +38,7 @@ internal sealed class ReplSession(ExecutionOptions options, int optimization, st
     {
         await ExecuteAsync(ShellPrelude, CancellationToken.None);
         await using InteractivePrompt? prompt = InteractivePrompt.IsSupported
-            ? new(syntax.IsIncomplete, PromptNames, color: TerminalPresentation.Colors(color), describe: DescribePromptBindings, analyze: source => compiler.AnalyzeEditor(source, execution.GetLocalValue), colorPolicy: color,
+            ? new(syntax.IsIncomplete, PromptNames, color: TerminalPresentation.Colors(color), describe: DescribePromptBindings, analyze: source => compiler.AnalyzeEditor(source), colorPolicy: color,
                 workingDirectory: () => execution.WorkingDirectory) : null;
         editing = prompt is not null;
         if (!Console.IsInputRedirected)

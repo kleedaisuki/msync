@@ -80,6 +80,17 @@ try
         Check(await Submit("let alias = counter; alias::inc(); counter::get()") is NumberValue { Data: 1 },
             "accepted feedback preserves Scope and captured-cell identity");
 
+        await Submit("let watched = scope { text: \"before\" };");
+        ScopeValue watched = (ScopeValue)await Submit("watched");
+        watched.SetMember("text", new StringValue("native update"));
+        const string watchedPrefix = "watched::";
+        EditorAnalysis live = compiler.AnalyzeEditor(watchedPrefix, execution.GetLocalValue);
+        Check(live.At(watchedPrefix.Length).Receiver?.Members?.Single(member => member.Name == "text")
+            .KnownText == "native update", "editor feedback reads the latest actual Scope fields");
+        Check(compiler.DescribeBindings().Single(member => member.Name == "watched").Members?
+            .Single(member => member.Name == "text").KnownText == "before",
+            "an editor feedback overlay does not publish facts into the accepted generation");
+
         await Submit("let shared = 0; fn bump() { global shared; shared = shared + 1; shared };");
         Check(await Submit("bump()") is NumberValue { Data: 1 }, "global import uses its definition location");
         await Submit("let shared = \"shadow\";");
@@ -90,6 +101,34 @@ try
         await Submit("text = \"after\";");
         Check(await Submit("$std::ranges::first(delayed)") is StringValue { Data: "after" },
             "deferred arguments read their shared location on demand");
+
+        await Submit("fn identity(value) { value }; fn invalid_later(value) { value + true };");
+        Check(await Submit("identity(42)") is NumberValue { Data: 42 },
+            "a retained generic body specializes for a new Number call");
+        Check(await Submit("identity(\"later\")") is StringValue { Data: "later" },
+            "the same retained generic body specializes for a later String call");
+        Check(compiler.AnalyzeEditor("invalid_later(1)", execution.GetLocalValue).Diagnostic is not null,
+            "a deferred generic body is checked when an editor query supplies its arguments");
+        try
+        {
+            await Submit("let unpublished = 1; invalid_later(1)");
+            throw new InvalidOperationException("The invalid generic call unexpectedly compiled.");
+        }
+        catch (CompileException) { }
+        Check(!compiler.BindingNames.Contains("unpublished"),
+            "a failed generic specialization publishes no part of its submission");
+        Check(await Submit("identity(7)") is NumberValue { Data: 7 },
+            "failed query and compilation leave prior generic definitions usable");
+
+        await Submit("""
+            fn make_recursion() {
+                fn recur(n: Number) -> Number { if n == 0 { 0 } else { recur(n - 1) } };
+                recur
+            };
+            let recurse = make_recursion();
+            """);
+        Check(await Submit("recurse(3)") is NumberValue { Data: 0 },
+            "a returned private recursive closure retains its shared self location");
 
         await Submit("let values?: Range<Number> = [1];");
         Check(await Submit("if values is not null { $std::ranges::size(values) } else { 0 }") is NumberValue { Data: 1 },
