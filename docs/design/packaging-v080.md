@@ -510,3 +510,22 @@ and restart the intended absolute `msync.serverPath`; see
 [the deployment instructions](../releases/0.8.0.md#replacing-a-same-version-development-build).
 No public release, tag or asset was changed. Performance evidence is retained
 separately in `performance-v080.md` rather than inferred from acceptance counts.
+
+
+### Follow-up evaluated-callee correction
+
+Independent runtime experiments exposed an existing optimized-source alias
+proof error in the preceding native candidate: evaluating `action(change())`
+correctly snapshots callable A, but the argument changes its shared binding to
+B and the following `action(false)` must call B. Source O0 and independent typed
+IR/codec controls produced AB; optimized candidate `ff26545` produced AA.
+`5e66232` invalidates future local callable facts through captured aliases while
+retaining the already evaluated operand-stack callable. Frontend and runtime
+ABIs are unchanged.
+
+The owner accepted 36 real source/`.mso`/`.mexe` executions across O0/O1/O2/O3 and
+four REPL results in `a18ec6c`. The targeted native entry is
+`tests/Msync.EndToEnd/call_order_journey.py --binary PATH`. Only this changed
+contract and new payload construction are selected for the corrective native
+pair; accepted Scope/global/artifact/UI evidence is retained. The final native
+hashes must identify the corrected image rather than relabel the previous one.
