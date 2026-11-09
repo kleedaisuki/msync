@@ -38,8 +38,10 @@ JOURNEYS: tuple[tuple[str, Path], ...] = (
     ("terminal-library", END_TO_END / "terminal_library_journey.py"),
     ("shell-repl", END_TO_END / "repl_shell_journey.py"),
     ("stdlib-cost", ROOT / "tests/Performance/stdlib_expansion.py"),
+    ("console-encoding", END_TO_END / "windows_console_encoding_probe.py"),
     ("remote-library", END_TO_END / "stdlib_upgrade_journey.py"),
 )
+OPTIONAL_PHASES: frozenset[str] = frozenset({"console-encoding", "remote-library"})
 
 
 def main() -> int:
@@ -64,7 +66,7 @@ def main() -> int:
     output: Path = arguments.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     selected: set[str] = set(
-        arguments.phase or (name for name, _ in JOURNEYS if name != "remote-library")
+        arguments.phase or (name for name, _ in JOURNEYS if name not in OPTIONAL_PHASES)
     )
     if arguments.ssh_fixture and arguments.phase is None:
         selected.add("remote-library")
@@ -111,6 +113,8 @@ def main() -> int:
                 "--work-root",
                 str(output / "stdlib-cost-work"),
             ]
+        elif name == "console-encoding":
+            extra = ["--output", str(output / "console-encoding.json")]
         phases.append(
             run_phase(
                 name,
