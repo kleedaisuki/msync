@@ -11,8 +11,7 @@ internal sealed class SemanticSessionValues(BoundProgram program, HirLoweringLay
 {
     private readonly Dictionary<Value, SemanticValue> observed = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<CellValue, HashSet<HirLocationId>> cells = new(ReferenceEqualityComparer.Instance);
-    private int nextRegion = Math.Max(facts.Objects.Keys.DefaultIfEmpty(0).Max(),
-        facts.Indexed.Keys.DefaultIfEmpty(0).Max()) + 1;
+    private int nextRegion = facts.NextRegion;
 
     public void Refresh(IEnumerable<HirLocationId> exports, Func<int, Value?> resolve)
     {
@@ -70,7 +69,7 @@ internal sealed class SemanticSessionValues(BoundProgram program, HirLoweringLay
     {
         SemanticScope? previous = hint.Scope;
         if (previous is not null) previous = facts.Objects.GetValueOrDefault(previous.Region, previous);
-        int region = previous?.Region ?? nextRegion++;
+        int region = previous?.Region ?? ++nextRegion;
         var locations = previous?.Locations ?? ImmutableDictionary<string, HirLocationId>.Empty;
         if (locations.Count == 0 && actual.AllocationSite != 0)
             foreach (var (construction, site) in layout.AllocationSites)

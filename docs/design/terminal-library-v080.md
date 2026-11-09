@@ -185,3 +185,38 @@ The backend uses the platform file timestamp API rather than rewriting data;
 see [.NET File.SetLastWriteTimeUtc](https://learn.microsoft.com/en-us/dotnet/api/system.io.file.setlastwritetimeutc?view=net-10.0).
 The distinction between newline counts and logical records follows the
 [GNU Coreutils counting contract](https://www.gnu.org/software/coreutils/manual/html_node/wc-invocation.html).
+
+## Typed HIR persistent sessions (0.8.1)
+
+`CompilerSession` owns one serialized semantic workspace and one independent
+`HirLoweringSession`. Accepted bindings retain logical location identities;
+shadowing allocates another identity. Each source submission receives a new
+source identity while the session entry function remains stable. Binding imports
+previous bound declarations and generic bodies, not previous source or AST
+replay. Lowering receipts translate logical locations, callables and allocation
+sites to runtime slots and code identities.
+
+A source-generation transaction journals replacements of existing HIR records
+and checkpoints appended tables, including type interning. A successful compile
+keeps its pending generation; a failed compile restores the accepted workspace.
+Editor analysis freezes a read-only observation projection and then discards its
+temporary generation. This ownership transaction is distinct from generic
+inference queries, which have no executable-body writer. Cached prompt
+information contains type/signature/source projections, not typed body arenas.
+
+Execution acceptance projects actual exported values into semantic facts through
+the lowering receipt. Scope aliases and captured locations retain identity;
+recursive closure cells are resolved after their reachable descriptors exist.
+Only immutable scalar/path/connection descriptions and type/callable metadata
+cross this boundary. Processes, credentials, lazy Range producers and live
+runtime objects are neither traversed for effects nor embedded in HIR. Partial
+runtime failure retains initialized exported locations, including surviving
+Processes, rather than publishing declarations whose initializer failed.
+
+The REPL refreshes this feedback after every completed or failed execution and
+uses the accepted facts while editing the next submission. An explicit
+`AnalyzeEditor` runtime resolver remains supported: it refreshes a temporary
+facts overlay without changing the accepted generation. This avoids redundant
+exported-object traversal on every normal prompt keystroke while preserving
+live-feedback queries for other consumers. Existing Paths retain their captured
+origin across `cd`; the host process working directory is never changed.
