@@ -13,6 +13,7 @@ foreach (int level in new[] { 0, 2, 3 })
     await DeferredGeneration(level);
     await MissingTarget(level);
     await NativeTarget(level);
+    await FutureCallback(level);
     await SignatureSlots(level);
     await PartialFailure(level);
     await FutureProcess(level);
@@ -70,6 +71,19 @@ async Task NativeTarget(int level)
     Artifact.Validate(module);
     var result = await Interpreter.ExecuteAsync(module);
     Require(result is RangeValue, $"O{level}: native Function values bypass source identity lookup");
+}
+
+async Task FutureCallback(int level)
+{
+    await using ExecutionSession session = new();
+    Module initial = CallbackImage(Initial(), level, future: false);
+    Artifact.Validate(initial);
+    await session.ExecuteAsync(initial);
+    Require(session.GetLocalValue(1) is RangeValue { RetainedValues: [FunctionValue { Function: 3 }] },
+        $"O{level}: deferred range exposes the retained thunk without enumerating it");
+    await session.ExecuteAsync(CallbackImage(Reassign(), level, future: true));
+    Value result = await session.ExecuteAsync(CallbackImage(Consume(), level, future: true));
+    Require(result is NumberValue { Data: 20 }, $"O{level}: native callbacks specialize the current callable from their session signature");
 }
 
 async Task SignatureSlots(int level)
@@ -196,6 +210,28 @@ static Module Image(IReadOnlyList<Instruction> entry, int level, bool future)
     if (future) targets.Add(4, 5);
     return new([new NumberValue(10), new NumberValue(20)], [main, identity, body, thunk, identity, body], OptimizationLevel: level)
     { SessionDispatches = [new(0, targets)], SessionRoots = [0, 1] };
+}
+
+static Module CallbackImage(IReadOnlyList<Instruction> entry, int level, bool future)
+{
+    Module image = Image(entry, level, future);
+    FunctionCode[] functions = image.Functions.ToArray();
+    functions[1] = functions[4] = new("generic_callback", 1, 2, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, CaptureCount: 1);
+    functions[2] = new("initial_callback", 1, 2,
+        [new(OpCode.LoadLocal, 0), new(OpCode.LoadLocal, 1), new(OpCode.Add), new(OpCode.Return)], TypeRef.Number, CaptureCount: 1);
+    functions[5] = new("future_callback", 1, 2,
+        [new(OpCode.LoadLocal, 0), new(OpCode.LoadLocal, 1), new(OpCode.Multiply), new(OpCode.Return)], TypeRef.Number, CaptureCount: 1);
+    functions[3] = new("deferred_transform", 0, 1,
+    [
+        new(OpCode.Constant, 2), new(OpCode.LoadLocal, 0), new(OpCode.SpecializeClosure, -1),
+        new(OpCode.NativeCall, 2, Text: "ranges.transform"), new(OpCode.Return)
+    ], new(TypeKind.Range, TypeRef.Number), CaptureCount: 1);
+    return image with
+    {
+        Functions = functions,
+        Constants = [new NumberValue(10), new NumberValue(20),
+        new RangeValue([new NumberValue(1)], TypeRef.Number)]
+    };
 }
 
 static Instruction[] Initial() =>

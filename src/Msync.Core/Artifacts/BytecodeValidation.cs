@@ -129,7 +129,7 @@ internal static class BytecodeValidation
                     if (instruction.B != module.Functions[instruction.A].CaptureCount) throw Error("closure capture layout disagrees with function");
                     PopMany(instruction.B); stack.Add(new(TypeRef.Function, instruction.A)); break;
                 case OpCode.SpecializeClosure:
-                    Require(Pop(), TypeKind.Function); stack.Add(new(TypeRef.Function, instruction.Text is null ? instruction.A : null)); break;
+                    Require(Pop(), TypeKind.Function); stack.Add(new(TypeRef.Function, instruction.A >= 0 && instruction.Text is null ? instruction.A : null)); break;
                 case OpCode.Call:
                 case OpCode.ProcessCall:
                     {

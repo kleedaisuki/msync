@@ -81,7 +81,7 @@ public sealed partial class Interpreter
                             if (instruction.Op == OpCode.Call && instruction.B < 0)
                             {
                                 if (callee is not FunctionValue selected) throw new MsyncException("An open session call requires a Function value.", instruction.Span);
-                                if (selected.NativeName is null) target = SessionDispatchTarget(selected, instruction);
+                                if (selected.NativeName is null) target = SessionDispatchTarget(selected, -instruction.B - 1, instruction.Span);
                             }
                             else if (instruction.Op == OpCode.Call && instruction.Text is not null && callee is FunctionValue { NativeName: null } dynamicFunction)
                                 target = DispatchTarget(dynamicFunction, instruction);

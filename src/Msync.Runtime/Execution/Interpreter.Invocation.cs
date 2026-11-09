@@ -24,7 +24,8 @@ public sealed partial class Interpreter
     private FunctionValue Specialize(FunctionValue function, Instruction instruction)
     {
         if (function.NativeName is not null) return function;
-        var target = instruction.Text is null ? instruction.A : DispatchTarget(function, instruction);
+        var target = instruction.A < 0 ? SessionDispatchTarget(function, -instruction.A - 1, instruction.Span)
+            : instruction.Text is null ? instruction.A : DispatchTarget(function, instruction);
         return target == function.Function ? function : function with { Function = target };
     }
     private int DispatchTarget(FunctionValue function, Instruction instruction)
@@ -37,15 +38,14 @@ public sealed partial class Interpreter
         return targets.TryGetValue(function.Function, out var target) ? target
             : throw new MsyncException($"Function #{function.Function} has no compiled specialization in this dispatch table", instruction.Span);
     }
-    private int SessionDispatchTarget(FunctionValue function, Instruction instruction)
+    private int SessionDispatchTarget(FunctionValue function, int slot, SourceSpan? source)
     {
         RefreshSessionImage();
-        int slot = -instruction.B - 1;
         if (module.SessionDispatches is not { } tables || (uint)slot >= (uint)tables.Count
             || tables[slot].Slot != slot)
-            throw new MsyncException($"Session call signature #{slot} is unavailable. Execute this deferred value in its active REPL session.", instruction.Span);
+            throw new MsyncException($"Session call signature #{slot} is unavailable. Execute this deferred value in its active REPL session.", source);
         return tables[slot].Targets.TryGetValue(function.Function, out int target) ? target
-            : throw new MsyncException($"Function #{function.Function} has no compiled specialization for session call signature #{slot}.", instruction.Span);
+            : throw new MsyncException($"Function #{function.Function} has no compiled specialization for session call signature #{slot}.", source);
     }
     private Value Capture(Value value) => value is PathValue path && (path.WorkingDirectory is null || path.HomeDirectory is null)
         ? path with { WorkingDirectory = path.WorkingDirectory ?? context.WorkingDirectory, HomeDirectory = path.HomeDirectory ?? context.HomeDirectory } : value;

@@ -103,7 +103,8 @@ public static class Artifact
                     throw new MsyncException($"Invalid local index {instruction.A} in '{function.Name}'", instruction.Span);
                 if (instruction.Op == OpCode.Constant && (instruction.A < 0 || instruction.A >= module.Constants.Count))
                     throw new MsyncException($"Invalid constant index {instruction.A}", instruction.Span);
-                if (instruction.Op is OpCode.MakeClosure or OpCode.SpecializeClosure && (instruction.A < 0 || instruction.A >= module.Functions.Count))
+                if ((instruction.Op == OpCode.MakeClosure || instruction.Op == OpCode.SpecializeClosure && instruction.A >= 0)
+                    && (instruction.A < 0 || instruction.A >= module.Functions.Count))
                     throw new MsyncException($"Invalid function index {instruction.A}", instruction.Span);
                 if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue && (instruction.A < 0 || instruction.A > function.Instructions.Count))
                     throw new MsyncException($"Invalid jump target {instruction.A}", instruction.Span);
@@ -112,6 +113,9 @@ public static class Artifact
                 if (instruction.Op == OpCode.Call && instruction.B < 0
                     && (module.SessionDispatches is not { } dispatches || (uint)(-instruction.B - 1) >= (uint)dispatches.Count))
                     throw new MsyncException("Open call signature requires its active session dispatch table", instruction.Span);
+                if (instruction.Op == OpCode.SpecializeClosure && instruction.A < 0
+                    && (module.SessionDispatches is not { } adaptations || (uint)(-instruction.A - 1) >= (uint)adaptations.Count))
+                    throw new MsyncException("Open callback signature requires its active session dispatch table", instruction.Span);
                 if (instruction.Op is OpCode.Call or OpCode.SpecializeClosure && instruction.Text is not null)
                 {
                     foreach (var (source, target) in FunctionDispatch.Parse(instruction.Text))

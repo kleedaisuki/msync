@@ -16,6 +16,7 @@ public static class InstructionEffects
         OpCode.SetMember => InstructionEffect.Write | InstructionEffect.MayFail,
         OpCode.MakeScope when ScopeConstructionMayFail(instruction) => InstructionEffect.MayFail,
         OpCode.GetMember or OpCode.Qualify or OpCode.Convert or OpCode.RegexMatch => InstructionEffect.MayFail,
+        OpCode.SpecializeClosure when instruction.A < 0 => InstructionEffect.Read | InstructionEffect.MayFail,
         OpCode.SpecializeClosure => InstructionEffect.MayFail,
         OpCode.LoadCell => InstructionEffect.Capture,
         OpCode.GetCapture => InstructionEffect.MayFail,
