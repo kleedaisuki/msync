@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import platform
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -86,7 +87,7 @@ let command = $std::commands::Command::new(__EXECUTABLE__ as Path,
     ["--version"]);
 let result = $std::commands::Command::capture(command);
 if result::success and result::code == 0
-    and $std::string::contains(result::output, "0.8.0") {
+    and $std::string::contains(result::output, __PRODUCT_VERSION__) {
     "actual-process" -> ./process.txt;
 };
 acquire;
@@ -111,7 +112,15 @@ OUTPUTS: dict[str, bytes] = {
 def execute_services(binary: Path, parent: Path, levels: list[int]) -> tuple[int, int]:
     executions: int = 0
     observations: int = 0
-    program: str = PROGRAM.replace("__EXECUTABLE__", json.dumps(str(binary)))
+    parent.mkdir(parents=True, exist_ok=True)
+    version: subprocess.CompletedProcess[str] = invoke(binary, parent, "--version")
+    accept(version, "version")
+    reported: str = version.stdout.strip()
+    if re.fullmatch(r"msync \d+\.\d+\.\d+", reported) is None:
+        raise AssertionError(f"Unexpected product version output: {version.stdout!r}")
+    program: str = PROGRAM.replace("__EXECUTABLE__", json.dumps(str(binary))).replace(
+        "__PRODUCT_VERSION__", json.dumps(reported)
+    )
     for level in levels:
         for stage in ("source", "relocatable", "executable"):
             directory: Path = parent / f"O{level}" / stage

@@ -7,13 +7,14 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,6 +31,7 @@ class Journey:
     run_exit: int = 0
     diagnostic: str | None = None
     relocation: bool = False
+    version_output: str | None = None
 
 
 NATIVE_RELATIVE_PATH_PATTERN: str = (
@@ -218,8 +220,9 @@ JOURNEYS: tuple[Journey, ...] = (
     Journey(
         "path_call_returns_real_process",
         "__VERSION_PROCESS__ child::stdout -> result.txt;",
-        {"result.txt": f"msync 0.8.0{os.linesep}".encode()},
+        {},
         artifacts=True,
+        version_output="result.txt",
     ),
     Journey(
         "removed_keywords_are_ordinary_names",
@@ -627,6 +630,14 @@ def quote_string(value: str) -> str:
 def run_journey(
     journey: Journey, cli: Sequence[str], directory: Path, artifacts: bool
 ) -> dict[str, object]:
+    if journey.version_output is not None:
+        version: bytes = subprocess.check_output([*cli, "--version"], cwd=directory)
+        if re.fullmatch(rb"msync \d+\.\d+\.\d+\r?\n", version) is None:
+            raise AssertionError(f"Unexpected product version output: {version!r}")
+        journey = replace(
+            journey,
+            expected={**journey.expected, journey.version_output: version},
+        )
     commands: list[dict[str, object]] = []
     report: dict[str, object] = {
         "name": journey.name,

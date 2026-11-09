@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import tempfile
@@ -62,7 +63,8 @@ def run(payload: Path, image: str, fixture: Path) -> dict[str, str]:
     command([*base, image, "/usr/bin/test", "!", "-e", "/usr/bin/dotnet"])
     libraries = command([*base, image, "/sbin/ldconfig", "-p"]).stdout
     assert b"libicu" not in libraries, libraries.decode(errors="replace")
-    assert invoke(["--version"]) == b"msync 0.8.0\n"
+    version: bytes = invoke(["--version"])
+    assert re.fullmatch(rb"msync \d+\.\d+\.\d+\r?\n", version), version
     invoke(["--no-config", "check", "/work/main.msync"])
     invoke(["--no-config", "compile", "/work/main.msync", "-o", "/work/main.mso"])
     invoke(["--no-config", "bind-ir", "/work/main.mso", "-o", "/work/main.mexe"])
@@ -70,7 +72,7 @@ def run(payload: Path, image: str, fixture: Path) -> dict[str, str]:
     invoke(["--no-config", "run", "/work/main.msync"])
     expected = "Native 可莉 β\n".encode()
     assert (fixture / "message.txt").read_bytes() == expected
-    assert (fixture / "child.txt").read_bytes() == b"msync 0.8.0\n"
+    assert (fixture / "child.txt").read_bytes() == version
     source.unlink()
     for artifact, cwd in (("main.mso", "/work"), ("main.mexe", "/var/tmp")):
         (fixture / "message.txt").unlink()
@@ -86,12 +88,13 @@ def run(payload: Path, image: str, fixture: Path) -> dict[str, str]:
             cwd=cwd,
         )
         assert (fixture / "message.txt").read_bytes() == expected
-        assert (fixture / "child.txt").read_bytes() == b"msync 0.8.0\n"
+        assert (fixture / "child.txt").read_bytes() == version
     with sqlite3.connect(fixture / "session.sqlite") as connection:
         sessions = connection.execute("SELECT count(*) FROM sessions").fetchone()
         assert sessions == (2,), sessions
     return {
         "image": image,
+        "version": version.decode("utf-8").strip(),
         "binary_sha256": hashlib.sha256(
             (payload / "bin/msync").read_bytes()
         ).hexdigest(),

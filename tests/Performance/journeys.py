@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import statistics
 import subprocess
@@ -134,9 +135,10 @@ def freeze(
     version = subprocess.check_output(
         [str(destination), "--version"], text=True, encoding="utf-8"
     ).strip()
-    expected = "msync 0.8.0"
-    if version != expected:
-        raise ValueError(f"Expected {expected}, found {version} at {path}")
+    if re.fullmatch(r"msync \d+\.\d+\.\d+", version) is None:
+        raise ValueError(
+            f"Expected an msync product version, found {version} at {path}"
+        )
     return Image(
         name,
         str(destination),
