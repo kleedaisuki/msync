@@ -1396,3 +1396,134 @@ Raw per-image identities, samples and p95 observations are under
 `loading-latency.json`, `latency-128.json` and `latency-1024.json`. The final Native
 images are Linux SHA-256 `c828e4135c837da84b77f39c5117f9167742d27ef77830c170de59242772d69e`
 and Windows `a76b773498662ef3034221d339bbce5f18ee020c6aca50f7ab804d430f6d3d81`.
+
+## Numeric operands and object ownership after the library expansion
+
+The next optimization target is the interpreter representation, not another
+adaptive compilation tier. Ordinary library code now combines short Number
+expressions, materialized Range records and captured operation dictionaries.
+The existing static inliner and cross-block scalar replacement already eliminate
+many private objects; residual runtime allocations therefore need separate
+measurements instead of assuming that every source-level Scope survives.
+
+The design follows two related lessons from upstream work. The
+[CoreCLR object-stack-allocation design](https://github.com/dotnet/runtime/blob/main/docs/design/coreclr/jit/object-stack-allocation.md)
+ties allocation removal to escape/lifetime information, and observes that
+inlining exposes opportunities unavailable at opaque call boundaries.
+[Partial escape analysis](https://www.ssw.uni-linz.ac.at/Research/Papers/Stadler14/Stadler2014-CGO-PEA.pdf)
+distinguishes the branches on which an object must exist from those on which
+scalar fields suffice. msync already applies static private-Scope replacement;
+it does not adopt speculative heap materialization or JVM deoptimization merely
+because its host runtime supports related optimizations.
+
+The same distinction applies to functions. The
+[lambda-set-specialization work](https://www.languagesforsyste.ms/publication/lss/)
+tracks higher-order function flow to specialize calls. msync already specializes
+its known callable identities; retaining an integer selected target instead of
+allocating a new adjusted Function value is a smaller implementation consequence,
+not a claim to implement that paper's type system.
+
+The real-process acceptance fixture is
+[`number_allocation_journey.py`](../../tests/Msync.EndToEnd/number_allocation_journey.py).
+It reads its numeric seed from a file, executes 512 arithmetic-chain iterations,
+materializes 64 escaping Scope/Fn objects and checks shared versus independent
+captured locations. Runtime-derived negative zero, NaN, infinity and
+callee-before-argument mutation are checked as well. Each O0/O2/O3 source,
+source-deleted `.mso` and source-deleted contextual `.mexe` route checks six
+actual output files. The accepted baseline Native image above passes all nine
+routes; the fixture is shared with Windows acceptance. These checks establish
+semantics and staging, not a throughput measurement.
+
+### Allocation boundaries
+
+Number expression operands use an internal reference stack with a lazy double
+sidecar. A null internal reference marks a computed double, not the source
+`null` value (`Value.Null` remains an ordinary reference). Loading an existing
+Number preserves its reference; arithmetic chains, negation and comparisons can
+consume doubles without constructing intermediate `NumberValue` objects. A
+reference consumer such as a local/capture store, function argument or returned
+value materializes the ordinary representation. Captured cells and mutable Scope
+fields therefore retain their existing ownership and aliasing contracts. Pops
+clear references so a reused stack does not retain dead objects; discarding a
+numeric result does not box it just to throw it away.
+
+A first prototype used a 16-byte tagged entry for every operand. It needlessly
+doubled storage while constructing large reference-only Range literals: the
+1024-element probe allocated another 32 KiB through array growth. The sidecar
+instead grows only when a computed Number reaches that operand depth. It avoids
+charging String, Path and Scope stacks for a parallel double in every slot.
+
+The arithmetic/conversion/comparison helpers also separate scalar dispatch from
+deferred task construction. Previously, lambdas captured the loop's instruction
+variable, causing a display-class allocation on every instruction iteration,
+even for opcodes that did not need a callback. Deferred operations still retain
+their dependencies and selected exception span; the ordinary scalar path no
+longer creates those closures.
+
+Object ownership has similarly narrow boundaries. An invocation's work-owner
+record is an inline value whose optional task/process collections remain owned
+by that invocation. Selected call dispatch passes an integer target instead of
+cloning an otherwise unchanged Function value. Real captured Function values,
+fresh anonymous Scopes and independent empty capture arrays keep their identity;
+the implementation does not pool user objects or merge equal-looking instances.
+Ordinary empty argument arrays may be shared, and already-contextualized
+immutable Path constants need not be cloned again.
+
+### Matched runtime measurements
+
+The Number component probe is
+[`NumberExecution`](../../tests/Performance/NumberExecution/Program.cs), built
+against frozen before/after managed Release assemblies on .NET 10.0.14. Four
+processes run in ABBA order with tiered compilation disabled equally, nine
+observations per process and eight executions per observation. Each numeric
+case consumes 1024 values; source, serialized `.mso` and contextual `.mexe`
+results are checked at O0/O2/O3 before measurement. Bound artifact hashes match
+between images, including residual numeric opcode sites: the measured loops
+have not become constant returns. The before runtime SHA-256 is
+`928646f328b31cb3e7b9f0e5bfff3dc98ff49d88f81bf0b0370477cfe75bebbc`.
+The runtime change is `68f6717`; the checked-in probe and RID locks are `c629458`.
+Raw samples and after-image identity are in `.temp/number-runtime/paired.json`.
+
+| Prepared VM, 1024 elements | Before → after p50 ms | Before → after allocated bytes |
+| --- | ---: | ---: |
+| Sum | 1.0106 → 0.9157 | 559,032 → 66,720 |
+| Arithmetic chain | 2.4034 → 1.4392 | 1,542,072 → 66,720 |
+| Power chain | 2.4580 → 1.0494 | 1,296,312 → 66,720 |
+| Numeric comparisons | 1.9947 → 1.6186 | 1,181,752 → 59,424 |
+| Captured mutable accumulator | 2.2608 → 1.2133 | 1,542,200 → 66,672 |
+| Last element, no arithmetic | 0.9677 → 0.5593 | 362,424 → 42,088 |
+
+These are component observations, not Native AOT or whole-process startup
+claims. Concurrent development activity produces broad timing ranges; retain the
+raw per-process observations rather than treating the displayed medians as a
+portable latency guarantee. The arithmetic-chain allocation reduction is 95.7%.
+The no-arithmetic control also improves because it previously paid for dispatch
+display classes. Literal-return execution changes from 440 to 264 allocated
+bytes; sub-microsecond timings for that control are not interpreted.
+
+The final numeric checker additionally covers 3813 exact-bit and staged
+contracts, including signed zero and NaN payload preservation, original
+Number references and the seven probe scenarios. Native `math.pow`/`**` can
+consume raw double operands through the same `NativeRegistry.Power` calculation
+used by its ordinary native entrypoint. No reassociation, implicit fused
+multiply-add or algebraic-law assumption is introduced.
+
+The independent object probe is
+[`ObjectAllocations`](../../tests/Performance/ObjectAllocations/Program.cs).
+A frozen object-only overlay isolates invocation ownership, target selection and
+Path recapture from numeric stack changes: direct/captured 256-call workloads
+save approximately 47 KiB, an escaping-factory workload saves approximately
+61 KiB, and all executable artifact hashes match. Its paired timing samples are
+mixed; allocation reductions alone are attributed to this overlay. A work-owner
+struct does not imply a fixed per-call saving on every asynchronous route:
+an actually suspended state machine may carry a larger saved inline caller.
+Raw isolated evidence is under
+`.temp/object-allocations/{object-only-paired,object-only-tier0}/`.
+
+Combined runtime observations are under
+`.temp/object-allocations/combined-tier0/`. Direct/captured calls retain their
+real invocation/capture paths; object factories retain fresh instances rather
+than being optimized out. The probe separately exercises real nested transfer
+owners and barriers, zero-capture callable identity, cross-origin session paths,
+native dispatch and callee-before-argument mutation at O0/O1/O2/O3. These focused
+checks accompany the real CLI fixture instead of a blind full-suite rerun.
