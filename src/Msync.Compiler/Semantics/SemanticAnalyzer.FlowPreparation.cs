@@ -94,10 +94,11 @@ internal sealed partial class SemanticAnalyzer
         if (hir.Types[type.Value].Shape != hir.Types[value.Type.Value].Shape
             || type != value.Type && !hir.Types[type.Value].Alternatives.IsDefaultOrEmpty)
             result = RetypeFlowValue(value, type, []);
+        bool stable = facts.Domain(location).StableForLifetime;
         result = result with { Type = type, Literal = fact.Boolean is { } boolean
-            ? new(HirLiteralKind.Bool, Boolean: boolean) : null,
+            ? new(HirLiteralKind.Bool, Boolean: boolean) : stable && Runtime(value) != TypeRef.Type ? value.Literal : null,
             DenotedType = fact.Denotations is { Types.Length: 1 } denotations ? denotations.Types[0] : null,
-            Observation = null };
+            Observation = stable ? value.Observation : null };
         if (result.DenotedType is { } denoted)
             result = result with { Literal = new(HirLiteralKind.Type, Type: hir.Types[denoted.Value].RuntimeType) };
         if (result.Scope is { } scope)
@@ -110,7 +111,13 @@ internal sealed partial class SemanticAnalyzer
                 if (!fieldFact.Assigned || fieldFact.Type.Kind == TypeKind.Never) continue;
                 SemanticValue fieldValue = context.Values.GetValueOrDefault(field, fields[name]);
                 fieldValue = fieldValue with { Type = fieldFact.SemanticType ?? hir.Type(fieldFact.Type),
-                    Literal = fieldFact.Boolean is { } fieldBoolean ? new(HirLiteralKind.Bool, Boolean: fieldBoolean) : null };
+                    Literal = fieldFact.Boolean is { } fieldBoolean ? new(HirLiteralKind.Bool, Boolean: fieldBoolean) : null,
+                    DenotedType = fieldFact.Denotations is { Types.Length: 1 } fieldTypes ? fieldTypes.Types[0] : null,
+                    Observation = null };
+                if (fieldValue.DenotedType is { } fieldType)
+                    fieldValue = fieldValue with { Literal = new(HirLiteralKind.Type, Type: hir.Types[fieldType.Value].RuntimeType) };
+                if (fieldFact.Callables is { } fieldCallables)
+                    fieldValue = fieldValue with { Callables = ResolveFlowCallables(fieldValue, fieldCallables, context) };
                 context.Values[field] = fieldValue;
                 fields = fields.SetItem(name, fieldValue);
             }
@@ -119,23 +126,40 @@ internal sealed partial class SemanticAnalyzer
             if (scope.Region >= 0) context.Objects[scope.Region] = scope;
         }
         if (fact.Callables is { } callables)
-            result = result with { Callables = callables.Choices.Select(choice =>
-            {
-                var existing = value.Callables.IsDefault ? null : value.Callables.FirstOrDefault(item =>
-                    item.Template == choice.Template && item.NativeName == choice.NativeName);
-                if (existing is not null) return existing;
-                if (choice.Template is not { } template) return new SemanticCallable(NativeName: choice.NativeName);
-                var captures = hir.Templates[template.Value].Captures.Select(capture =>
-                {
-                    HirLocationId source = context.Location(capture.SourceLocation);
-                    SemanticValue captured = context.Values.GetValueOrDefault(source)
-                        ?? ValueForType(Resolve(hir.Locations[source.Value].StorageType, context));
-                    return new SemanticCapture(source, captured, capture.Mode);
-                }).ToImmutableArray();
-                return new SemanticCallable(template, Captures: captures);
-            }).ToImmutableArray() };
+            result = result with { Callables = ResolveFlowCallables(value, callables, context) };
         context.Values[location] = result;
         return result;
+    }
+
+    private ImmutableArray<SemanticCallable> ResolveFlowCallables(SemanticValue value, FlowCallableDomain domain,
+        SemanticContext context)
+    {
+        if (SameFlowCallables(value.Callables, domain)) return value.Callables;
+        return domain.Choices.Select(choice => (value.Callables.IsDefault ? null : value.Callables.FirstOrDefault(item =>
+            item.Template == choice.Template && item.NativeName == choice.NativeName))
+            ?? RestoreFlowCallable(choice, context)).ToImmutableArray();
+    }
+
+    private static bool SameFlowCallables(ImmutableArray<SemanticCallable> values, FlowCallableDomain domain)
+    {
+        if (values.IsDefault || values.Length != domain.Choices.Length) return false;
+        for (int index = 0; index < values.Length; index++)
+            if (values[index].Template != domain.Choices[index].Template
+                || values[index].NativeName != domain.Choices[index].NativeName) return false;
+        return true;
+    }
+
+    private SemanticCallable RestoreFlowCallable(FlowCallableIdentity choice, SemanticContext context)
+    {
+        if (choice.Template is not { } template) return new(NativeName: choice.NativeName);
+        var captures = hir.Templates[template.Value].Captures.Select(capture =>
+        {
+            HirLocationId source = context.Location(capture.SourceLocation);
+            SemanticValue captured = context.Values.GetValueOrDefault(source)
+                ?? ValueForType(Resolve(hir.Locations[source.Value].StorageType, context));
+            return new SemanticCapture(source, captured, capture.Mode);
+        }).ToImmutableArray();
+        return new(template, Captures: captures);
     }
 
     private SemanticValue RetypeFlowValue(SemanticValue value, HirTypeId type, HashSet<int> active)
