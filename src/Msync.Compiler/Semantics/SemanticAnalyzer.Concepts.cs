@@ -6,6 +6,19 @@ namespace Msync.Compiler.Semantics;
 
 internal sealed partial class SemanticAnalyzer
 {
+    private void RequireArgumentConcepts(HirTemplate template, IReadOnlyList<SemanticValue> arguments,
+        HirSourceRange source, SemanticContext caller)
+    {
+        for (int index = 0; index < template.Parameters.Length; index++)
+        {
+            var parameter = hir.Locations[template.Parameters[index].Value];
+            var type = hir.Types[parameter.StorageType.Value];
+            if (type.Concept < 0) continue;
+            RequireConcept(arguments[index], type.Concept, source, caller,
+                parameter.AdmitsNull || type.Nullable || type.RuntimeType.Nullable);
+        }
+    }
+
     private void RequireConcept(SemanticValue value, int conceptId, HirSourceRange source,
         SemanticContext context, bool nullable = false)
     {
