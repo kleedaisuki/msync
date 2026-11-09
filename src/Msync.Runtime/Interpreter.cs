@@ -132,7 +132,7 @@ public sealed partial class Interpreter
                             stack.Add(captures is not null && instruction.A < captures.Count ? captures[instruction.A] : Value.Null); break;
                         }
                     case OpCode.SetMember:
-                        { var value = Pop(); StoreMember(Pop(), instruction.Text!, value); stack.Add(Value.Null); break; }
+                        { var value = Pop(); StoreMember(Pop(), instruction.Text!, value, instruction.A); stack.Add(Value.Null); break; }
                     case OpCode.Pop: Pop(); break;
                     case OpCode.Dup: stack.Add(stack[^1]); break;
                     case OpCode.Jump:
@@ -187,11 +187,8 @@ public sealed partial class Interpreter
                     case OpCode.DeferRange:
                         stack.Add(CreateDeferredRange(Pop())); break;
                     case OpCode.MakeScope:
-                        {
-                            var values = PopMany(instruction.A); var names = instruction.Text?.Split('\0', StringSplitOptions.RemoveEmptyEntries) ?? [];
-                            stack.Add(new ScopeValue(names.Select((name, i) => KeyValuePair.Create(name, values[i])).ToDictionary()) { AllocationSite = instruction.B }); break;
-                        }
-                    case OpCode.GetMember: stack.Add(Member(Pop(), instruction.Text!)); break;
+                        stack.Add(MakeScope(instruction, PopMany(instruction.A))); break;
+                    case OpCode.GetMember: stack.Add(Member(Pop(), instruction.Text!, instruction.A)); break;
                     case OpCode.Qualify:
                         {
                             var item = Pop(); var scope = Pop();
@@ -329,9 +326,9 @@ public sealed partial class Interpreter
         };
     }
     private static Value NativeScope(string name) => new ScopeValue(NativeSignatures.All.Where(s => s.Name.StartsWith(name + ".", StringComparison.Ordinal)).ToDictionary(s => s.Name[(name.Length + 1)..], s => (Value)new FunctionValue(-1, NativeName: s.Name)));
-    private Value Member(Value value, string name) => value switch
+    private Value Member(Value value, string name, int hint = 0) => value switch
     {
-        ScopeValue scope when scope.Members.TryGetValue(name, out var member) => member,
+        ScopeValue scope => ScopeMember(scope, name, hint),
         ProcessValue process => ProcessMember(process, name),
         ConnectionValue connection => Qualify(connection, new PathValue(name)),
         _ => throw new MsyncException($"{value.Type} has no member '{name}'")

@@ -201,7 +201,7 @@ internal sealed partial class Compilation
                         : $"Available members: {string.Join(", ", left.Scope.Members.Keys.Order(StringComparer.Ordinal))}.", code: "E0205");
             Observe(frame, binary.Right.Span, info, member);
             if (left.Scope.Origins?.TryGetValue(member, out var origins) == true) CaptureDefinition(frame, binary.Right.Span, origins);
-            frame.Emit(OpCode.GetMember, text: member, span: binary.Span);
+            frame.Emit(OpCode.GetMember, FieldLayoutHint(left.Scope, member), text: member, span: binary.Span);
             info = Current(frame, info);
             return info with { Storage = left.Scope.Storage[member] };
         }

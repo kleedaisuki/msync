@@ -118,7 +118,7 @@ internal sealed partial class Compilation
             frame.Facts = frame.Facts.SetItem(scope.Identity, receiver with { Scope = updated });
             if (scope.FieldBindings.TryGetValue(field, out var fieldBinding)) frame.Facts = frame.Facts.SetItem(fieldBinding.Identity, value);
             Refresh(frame);
-            frame.Emit(OpCode.SetMember, text: field, span: assignment.Span);
+            frame.Emit(OpCode.SetMember, FieldLayoutHint(scope, field), text: field, span: assignment.Span);
             Observe(frame, member.Right.Span, value, field);
             if (scope.Origins?.TryGetValue(field, out var origins) == true) CaptureDefinition(frame, member.Right.Span, origins);
             return new(TypeRef.Null);

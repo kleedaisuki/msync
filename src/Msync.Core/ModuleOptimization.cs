@@ -38,7 +38,7 @@ internal static class ModuleOptimization
         Value RewriteValue(Value value) => value switch
         {
             FunctionValue { NativeName: null } function => function with { Function = functionIds[function.Function], Captures = function.Captures?.Select(RewriteValue).ToArray() },
-            ScopeValue scope => new ScopeValue(scope.Members.ToDictionary(pair => pair.Key, pair => RewriteValue(pair.Value))) { AllocationSite = scope.AllocationSite },
+            ScopeValue scope => scope.MapFields(RewriteValue),
             _ => value
         };
         Instruction Rewrite(Instruction instruction)

@@ -146,7 +146,7 @@ public static class Binding
         {
             PathValue path => path with { WorkingDirectory = path.WorkingDirectory ?? full.WorkingDirectory, HomeDirectory = path.HomeDirectory ?? full.HomeDirectory },
             FunctionValue function => function with { Captures = function.Captures?.Select(BindValue).ToArray() },
-            ScopeValue scope => new ScopeValue(scope.Members.ToDictionary(p => p.Key, p => BindValue(p.Value))) { AllocationSite = scope.AllocationSite },
+            ScopeValue scope => scope.MapFields(BindValue),
             _ => value
         };
         var bound = module with { Constants = module.Constants.Select(BindValue).ToArray(), Context = full, Stage = ArtifactStage.Executable };

@@ -1,0 +1,140 @@
+using Msync.Compiler;
+using Msync.Core;
+using Msync.Runtime;
+using Module = Msync.Core.Module;
+
+int assertions = 0;
+void Check(bool condition, string message)
+{
+    assertions++;
+    if (!condition) throw new InvalidOperationException(message);
+}
+
+ScopeLayout layout = new(new[] { "first", ".codex", "cell" });
+CellValue cell = new(new StringValue("before"));
+ScopeValue value = new(layout, [Value.True, new NumberValue(3), cell]) { AllocationSite = 17 };
+Check(ReferenceEquals(value.Members, value), "Scope allocated a separate member-view object");
+Check(layout.Names.SequenceEqual(["first", ".codex", "cell"]), "Declaration order changed");
+Check(value.IsField(1, ".codex") && !value.IsField(-1, ".codex") && !value.IsField(1, "cell"), "Offset/name guard changed");
+Check(value.TryGetFieldOffset("cell", out int offset) && offset == 2, "Field offset lookup changed");
+Check(value.GetField(2) is StringValue { Data: "before" }, "Indexed read did not dereference shared storage");
+value.SetField(2, new StringValue("indexed"));
+Check(cell.Data is StringValue { Data: "indexed" }, "Indexed write replaced the captured cell");
+value.SetMember("cell", new StringValue("named"));
+Check(value.Members["cell"] is StringValue { Data: "named" } && cell.Data is StringValue { Data: "named" }, "Named/member reads no longer share storage");
+Check(!value.Members.TryGetValue("missing", out Value? absent) && absent is NullValue, "Missing member lookup changed");
+Check(value.Select(pair => pair.Key).SequenceEqual(layout.Names), "Member enumeration order changed");
+Check(value.Members.Values.Last() is StringValue { Data: "named" }, "Value enumeration exposed a raw Cell");
+ScopeValue mapped = value.MapFields(item => item);
+Check(ReferenceEquals(mapped.Layout, layout) && mapped.AllocationSite == 17, "Cloning lost immutable layout or source provenance");
+mapped.SetMember("cell", new StringValue("independent"));
+Check(cell.Data is StringValue { Data: "named" }, "Cloning the visible values retained old mutable cells");
+try { value.SetMember("missing", Value.Null); throw new InvalidOperationException("Missing field write succeeded"); }
+catch (MsyncException error) { Check(error.Message == "Scope has no member 'missing'", "Missing field write diagnostic changed"); }
+try { _ = ScopeLayout.Parse("a\0a"); throw new InvalidOperationException("Duplicate member layout succeeded"); }
+catch (ArgumentException error) { Check(error.Message.Contains("same key", StringComparison.Ordinal), "Duplicate construction error changed"); }
+
+Module Factory() => new([new StringValue("original")],
+[
+    new("main", 0, 0,
+        [new(OpCode.Constant, 0), new(OpCode.MakeScope, 1, 39, "field"), new(OpCode.Return)], TypeRef.Scope)
+], OptimizationLevel: 0);
+Module factory = Factory();
+ExecutionSession session = new();
+ScopeValue first = (ScopeValue)await session.ExecuteAsync(factory);
+ScopeValue second = (ScopeValue)await session.ExecuteAsync(factory);
+Check(!ReferenceEquals(first, second), "Repeated execution reused an instance");
+first.SetMember("field", new StringValue("changed"));
+Check(second.Members["field"] is StringValue { Data: "original" }, "Repeated execution shared field payload storage");
+Check(second.AllocationSite == 39, "MakeScope lost allocation-site provenance");
+
+string root = Path.Combine(Environment.CurrentDirectory, ".temp", "scope-layout-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(root);
+try
+{
+    foreach ((string name, string source, string expected) in new[]
+    {
+        ("constructor-cells", "fn make(value) { scope { field: value, read: fn { field }, write: fn(newValue) { field = newValue; } } }; let first = make(\"first\"); let second = make(\"second\"); first::write(\"changed\"); if second::read() == \"second\" { first::read() } else { \"aliased\" }", "changed"),
+        ("closure-field-alias", "let item = scope { field: \"before\", read: fn { field } }; let alias = item; alias::field = \"after\"; item::read()", "after"),
+        ("loop-instances", "let read = fn { \"none\" }; for item in [\"first\", \"second\", \"third\"] { let object = scope { field: item, read: fn { field } }; read = object::read; }; read()", "third"),
+        ("branch-layout", "let object = if exists ./selected { scope { first: true, value: \"selected\" } } else { scope { value: \"other\", first: false } }; object::value", "other"),
+        ("nullable-field", "let object = scope { field?: \"before\", read: fn { field } }; object::field = null; if object::read() is null { \"cleared\" } else { \"stale\" }", "cleared"),
+        ("dot-member", "let object = scope { .codex: \"dot\" }; object::.codex", "dot")
+    })
+    {
+        foreach (int level in new[] { 0, 2, 3 })
+        {
+            Module raw = Compiler.Compile(source, name, level);
+            foreach (Module program in new[] { raw, RoundTrip(raw), RoundTrip(Binding.Bind(raw, new(root, root))) })
+            {
+                Value actual = await Interpreter.ExecuteAsync(program, new(WorkingDirectory: root));
+                Check(actual is StringValue text && text.Data == expected, $"{name} O{level}: expected '{expected}', received '{actual}'");
+            }
+        }
+    }
+    Module repeated = Compiler.Compile("fn make(value) { scope { field: value } }; scope { first: make(\"first\"), second: make(\"second\") }", "layout-reuse", 0);
+    ScopeValue pair = (ScopeValue)await Interpreter.ExecuteAsync(repeated, new(WorkingDirectory: root));
+    ScopeValue left = (ScopeValue)pair.Members["first"];
+    ScopeValue right = (ScopeValue)pair.Members["second"];
+    Check(ReferenceEquals(left.Layout, right.Layout), "Repeated constructor execution rebuilt the immutable shape");
+    Check(!ReferenceEquals(left, right), "Shape reuse merged distinct runtime instances");
+    Module sourceHints = Compiler.Compile("let object = scope { field: \"before\" }; object::field = \"after\"; object::field", "source-hints", 0);
+    Instruction[] fieldAccesses = sourceHints.Functions.SelectMany(function => function.Instructions)
+        .Where(instruction => instruction.Op is OpCode.GetMember or OpCode.SetMember).ToArray();
+    Check(fieldAccesses.Length == 2 && fieldAccesses.All(instruction => instruction.A > 0), "Known field layout did not provide compiler offset hints");
+    Check(RoundTrip(sourceHints).Functions[0].Instructions.SequenceEqual(sourceHints.Functions[0].Instructions), "Binary serialization changed field hints");
+    Module ignoredHints = sourceHints with
+    {
+        Functions = sourceHints.Functions.Select(function => function with
+        {
+            Instructions = function.Instructions.Select(instruction => instruction.Op is OpCode.GetMember or OpCode.SetMember
+                ? instruction with { A = 0 } : instruction).ToArray()
+        }).ToArray()
+    };
+    Check(await Interpreter.ExecuteAsync(ignoredHints, new(WorkingDirectory: root)) is StringValue { Data: "after" }, "Ignoring offset hints changed named access semantics");
+    foreach (int hint in new[] { 0, 1, 2, 19, -4 })
+    {
+        Module hinted = new([new StringValue("left"), new StringValue("right"), new StringValue("changed")],
+            [new("main", 0, 1,
+            [new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.MakeScope, 2, Text: "first\0second"), new(OpCode.StoreLocal, 0),
+             new(OpCode.LoadLocal, 0), new(OpCode.Constant, 2), new(OpCode.SetMember, hint, Text: "second"), new(OpCode.Pop),
+             new(OpCode.LoadLocal, 0), new(OpCode.GetMember, hint, Text: "second"), new(OpCode.Return)], TypeRef.String)], OptimizationLevel: 0);
+        foreach (Module program in new[] { hinted, RoundTrip(hinted), RoundTrip(Binding.Bind(hinted, new(root, root))) })
+            Check(await Interpreter.ExecuteAsync(program, new(WorkingDirectory: root)) is StringValue { Data: "changed" }, $"Offset hint {hint} bypassed named-field semantics");
+    }
+    Module endpoint = new([new ConnectionValue(ConnectionKind.Local)],
+        [new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.GetMember, 99, Text: "field"), new(OpCode.Return)], TypeRef.Path)], OptimizationLevel: 0);
+    Check(await Interpreter.ExecuteAsync(RoundTrip(endpoint), new(WorkingDirectory: root)) is PathValue { Raw: "field" }, "A field hint changed Connection qualification");
+    Module process = new([new ProcessValue(0, "output", "error")],
+        [new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.GetMember, 99, Text: "stdout"), new(OpCode.Return)], TypeRef.String)],
+        Stage: ArtifactStage.Executable, Context: new(root, root), OptimizationLevel: 0);
+    Check(await Interpreter.ExecuteAsync(process, new(WorkingDirectory: root)) is StringValue { Data: "output" }, "A field hint changed Process member selection");
+    const string lazyDuplicate = "a\0a";
+    foreach (bool selected in new[] { false, true })
+    {
+        Module duplicate = new([], [new("main", 0, 0,
+            [new(selected ? OpCode.True : OpCode.False), new(OpCode.JumpIfFalse, 7), new(OpCode.True), new(OpCode.False),
+             new(OpCode.MakeScope, 2, Text: lazyDuplicate), new(OpCode.Pop), new(OpCode.Jump, 7), new(OpCode.Null), new(OpCode.Return)], TypeRef.Null)], OptimizationLevel: 0);
+        try
+        {
+            _ = await Interpreter.ExecuteAsync(duplicate, new(WorkingDirectory: root));
+            Check(!selected, "A selected duplicate field constructor succeeded");
+        }
+        catch (MsyncException error)
+        {
+            Check(selected && error.InnerException is ArgumentException cause && cause.Message.Contains("same key", StringComparison.Ordinal),
+                $"Duplicate selection {selected}: {error}");
+        }
+    }
+}
+finally { Directory.Delete(root, recursive: true); }
+
+Console.WriteLine($"PASS: {assertions} compact-layout/member/cell/source/object/executable contracts");
+if (args.Contains("--performance", StringComparer.Ordinal)) Performance.Run();
+
+static Module RoundTrip(Module module)
+{
+    using MemoryStream bytes = new();
+    Artifact.Write(module, bytes); bytes.Position = 0;
+    return Artifact.Read(bytes);
+}
