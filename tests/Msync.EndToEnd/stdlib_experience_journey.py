@@ -353,6 +353,10 @@ let text = $std::string::join(["a", "b"], "|");
         client.close()
 
 
+def displayed_source(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
 def skills(binary: Path, parent: Path) -> dict[str, int]:
     client = Client(binary, cwd=parent)
     modules = ("io", "functional", "math", "ranges", "string", "path", "process")
@@ -374,11 +378,11 @@ def skills(binary: Path, parent: Path) -> dict[str, int]:
                 "msync/stdlibSource",
                 {"uri": f"msync-stdlib:///0.8.0/{module}.msync"},
             )
-            actual = str(embedded).strip()
+            actual = displayed_source(str(embedded))
             snippets = re.findall(
                 r"^```msync\n(.*?)^```", result.stdout, re.MULTILINE | re.DOTALL
             )
-            assert actual in [snippet.strip() for snippet in snippets], (
+            assert actual in [displayed_source(snippet) for snippet in snippets], (
                 topic,
                 result.stdout,
             )
@@ -422,7 +426,19 @@ def target_contract(binary: Path, parent: Path) -> dict[str, int]:
     return {"deferred_target_contract_diagnostics": 1}
 
 
+def fixture_contracts() -> None:
+    source = (
+        "native fn cast(value?, target: Type) -> String;\n# literal \\r\\n stays data\n"
+    )
+    assert displayed_source(source) == displayed_source(source.replace("\n", "\r\n"))
+    assert "\\r\\n" in displayed_source(source)
+    assert displayed_source('fn f() { "two  spaces" }\n') != displayed_source(
+        'fn f() { "two spaces" }\n'
+    )
+
+
 def main() -> None:
+    fixture_contracts()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument(
