@@ -529,3 +529,41 @@ four REPL results in `a18ec6c`. The targeted native entry is
 contract and new payload construction are selected for the corrective native
 pair; accepted Scope/global/artifact/UI evidence is retained. The final native
 hashes must identify the corrected image rather than relabel the previous one.
+
+
+### Accepted corrected and scheduler images
+
+[Corrected native run 42592564053](https://github.com/kleedaisuki/msync/actions/runs/42592564053)
+passed both operating systems from `ec3754544350fb82f43433dc34f0bfe48fc526a4`.
+It selected only the 36 callee-order byte executions, four REPL results and
+payload construction. The accepted initial memory/global/editor contracts were
+not rerun. Corrected executable hashes were Linux
+`93e6b0b405afbef5c21c099483c15049d66cd460b6f7fa45a51abf3add450e9d`
+and Windows `1087acc1ccbd518a6ff57c2f74caf57ddf4329a4553e07d2ecfbb0e72f4442aa`.
+
+The final scheduler delta `c0b21ab` was then accepted separately in
+[run 42595248446](https://github.com/kleedaisuki/msync/actions/runs/42595248446),
+source `a8c71875e5f7bd2b5a628a8bcdece3f8b72ec4d1`. Both native jobs passed the
+14 selected source/bound process gates and the real managed retirement,
+late-lease, fault/retry and namespace tests. Relative to the corrected image,
+production changed only `Interpreter.Scheduling.cs`; no adaptive-runtime research
+prototype was adopted. The formal native performance record is separate in
+`scheduler-runtime-v080.md`.
+
+| Final executable | SHA-256 |
+| --- | --- |
+| Linux | `f41a6731d02802065b9f280d73c1941f5b62f4ccdbc0a48ff2a7e06d79ce8b88` |
+| Windows | `3fd63f24e705b67ff1a1ae6af4a10cdff4a7f799dff3467a7159bdbe205535dc` |
+
+The final same-image VS Code 1.144 artifact host `cqv5mr` used that exact Linux
+path and SHA, with no managed assemblies. Read-only object/executable views,
+21 symbols per stage, hover/definition, automatic refresh/corruption recovery,
+restart, normal source editing and inert metadata all passed. The tested UI and
+VSIX remain `fdb29c3` / `2a71e1e6185489feeed8b109d90d4901d46c742f260a88453a57a10f413c3b70`.
+
+The final package audit verifies 232 entries per platform and all 59 modified
+prompt sources. Four current delivery assets and their actual digests are in
+`dist/SHA256SUMS`; `.temp/final-memory-artifact-delivery-v080.json` records all
+sources, prior/corrected/final image identities and exact paths. This closes the
+memory/artifact/global/correctness/scheduler delivery; a subsequently requested
+standard-library expansion is a separate coherent source slice.
