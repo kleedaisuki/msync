@@ -63,6 +63,10 @@ connections do not belong in an HIR artifact. A session export with unresolved
 locations must declare its imports; it is not a serialized REPL heap. A
 standalone lowering or execution request reports those required imports rather
 than inventing values or replaying submission history.
+`HirModule.UnresolvedImports` names these external locations explicitly. A
+location classified as an import is not by itself unresolved: standard-module
+cells initialized by the program's semantic prelude are ordinary resolved
+members of that program and must not be rejected as live session dependencies.
 
 ## Representation and inspection
 

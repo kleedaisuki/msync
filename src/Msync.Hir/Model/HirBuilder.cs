@@ -26,6 +26,7 @@ public sealed class HirBuilder
     public List<HirTemplateClosure> TemplateClosures { get; } = [];
     public List<HirConcept> Concepts { get; } = [];
     public List<HirExport> Exports { get; } = [];
+    public List<HirLocationId> UnresolvedImports { get; } = [];
     private readonly Dictionary<HirType, HirTypeId> types = new(new TypeComparer());
 
     private sealed class TypeComparer : IEqualityComparer<HirType>
@@ -74,5 +75,6 @@ public sealed class HirBuilder
         Edges.ToImmutableArray(), Literals.ToImmutableArray(), ScopeLayouts.ToImmutableArray(),
         Signatures.ToImmutableArray(), Calls.ToImmutableArray(), Closures.ToImmutableArray(),
         Scopes.ToImmutableArray(), Fors.ToImmutableArray(), Matches.ToImmutableArray(),
-        Barriers.ToImmutableArray(), Ranges.ToImmutableArray(), Adaptations.ToImmutableArray(), entry, Exports.ToImmutableArray(), isSession, TemplateClosures.ToImmutableArray(), Concepts.ToImmutableArray());
+        Barriers.ToImmutableArray(), Ranges.ToImmutableArray(), Adaptations.ToImmutableArray(), entry, Exports.ToImmutableArray(), isSession, TemplateClosures.ToImmutableArray(), Concepts.ToImmutableArray())
+    { UnresolvedImports = UnresolvedImports.ToImmutableArray() };
 }

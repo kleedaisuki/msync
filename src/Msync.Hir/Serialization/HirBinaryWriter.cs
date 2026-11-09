@@ -32,6 +32,7 @@ internal sealed class HirBinaryWriter(BinaryWriter writer)
         Array(module.Exports, value => { String(value.Name); writer.Write(value.Location.Value); });
         Array(module.TemplateClosures, value => { writer.Write(value.Template.Value); Array(value.Captures, Capture); });
         Array(module.Concepts, Concept);
+        Array(module.UnresolvedImports, location => writer.Write(location.Value));
     }
 
     private void Array<T>(ImmutableArray<T> values, Action<T> write)

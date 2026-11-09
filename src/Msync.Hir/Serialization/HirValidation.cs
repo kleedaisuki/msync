@@ -124,6 +124,7 @@ public static class HirValidation
             else if (literal.Kind == HirLiteralKind.Type) Fail("Type literal payload is missing");
         }
         foreach (var export in module.Exports) Id(export.Location.Value, module.Locations.Length, "export location");
+        foreach (var import in module.UnresolvedImports.OrEmpty()) Id(import.Value, module.Locations.Length, "unresolved imported location");
         foreach (var edge in module.Edges) Id(edge.Value, module.Nodes.Length, "node edge");
         foreach (var node in module.Nodes) Node(module, node);
         AcyclicNodes(module);

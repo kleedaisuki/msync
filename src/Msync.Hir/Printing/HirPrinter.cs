@@ -104,6 +104,7 @@ public static class HirPrinter
             Emit("");
             for (int index = 0; index < module.Nodes.Length; index++) Node(index);
             foreach (var export in module.Exports) Emit($"export {Quote(export.Name)} @l{export.Location.Value}");
+            foreach (var import in module.UnresolvedImports.OrEmpty()) Emit($"import unresolved @l{import.Value}");
             return new(string.Join('\n', lines) + "\n", definitions.ToImmutableArray(), References());
         }
 
@@ -218,6 +219,7 @@ public static class HirPrinter
             ImmutableArray<HirTextReference>.Builder result = ImmutableArray.CreateBuilder<HirTextReference>();
             for (int line = 0; line < lines.Count; line++)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 string text = lines[line];
                 bool quoted = false;
                 for (int at = 0; at < text.Length; at++)

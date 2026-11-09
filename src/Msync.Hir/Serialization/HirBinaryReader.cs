@@ -28,7 +28,7 @@ internal sealed class HirBinaryReader(BinaryReader reader)
     {
         HirFunctionId entry = new(reader.ReadInt32());
         bool session = Boolean();
-        return new(
+        HirModule result = new(
             Array("sources", 2, Source),
             Array("types", 31, Type),
             Array("locations", 28, Location),
@@ -51,6 +51,7 @@ internal sealed class HirBinaryReader(BinaryReader reader)
             Array("exports", 5, () => new HirExport(String(), new(reader.ReadInt32()))), session,
             Array("template closures", 8, () => new HirTemplateClosure(new(reader.ReadInt32()), Array("template captures", 13, Capture))),
             Array("concepts", 25, Concept));
+        return result with { UnresolvedImports = Array("unresolved imports", 4, () => new HirLocationId(reader.ReadInt32())) };
     }
 
     private ImmutableArray<T> Array<T>(string name, int minimumBytes, Func<T> read)

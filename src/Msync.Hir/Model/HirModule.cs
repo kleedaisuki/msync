@@ -80,6 +80,7 @@ public sealed record HirModule(
     ImmutableArray<HirTemplateClosure> TemplateClosures = default,
     ImmutableArray<HirConcept> Concepts = default)
 {
+    public ImmutableArray<HirLocationId> UnresolvedImports { get; init; } = [];
     public ReadOnlySpan<HirNodeId> Children(HirNode node) => Edges.AsSpan(node.Children.Start, node.Children.Count);
     public HirNode Node(HirNodeId id) => Nodes[id.Value];
     public TypeRef RuntimeType(HirTypeId id) => Types[id.Value].RuntimeType;
