@@ -27,6 +27,7 @@ internal sealed partial class SemanticAnalyzer
         SemanticContext context = caller.QueryFork();
         context.DeferredReads = future;
         context.FlowAnalysis = null;
+        context.ReturnPlaces = null;
         HashSet<HirLocationId> read = [], declared = [];
         foreach (HirNodeId child in children) CollectLocations(child, read, declared);
         read.ExceptWith(declared);
@@ -108,8 +109,12 @@ internal sealed partial class SemanticAnalyzer
     }
 
     private FlowFact? SourceFlowReturn(SemanticCallable callable, IReadOnlyList<FlowFact> arguments,
-        SemanticContext context) => SourceReturnShape(callable,
-            arguments.Select(argument => new ReturnShape(argument)).ToArray(), context)?.Fact;
+        SemanticContext context)
+    {
+        ReturnShape? result = SourceReturnShape(callable,
+            arguments.Select(argument => new ReturnShape(argument, argument.Eager)).ToArray(), context);
+        return result is { } returned ? returned.Fact with { Eager = returned.Eager } : null;
+    }
 
     // This projection owns only type constraints. It cannot publish instructions,
     // instantiate executable functions, or apply a callee's effects to its caller.
@@ -129,6 +134,7 @@ internal sealed partial class SemanticAnalyzer
         if (returnSchemes.TryGetValue(key, out var cached)) return cached;
         SemanticContext context = caller.QueryFork();
         context.FlowAnalysis = null;
+        context.ReturnPlaces = null;
         var domains = ImmutableDictionary.CreateBuilder<HirLocationId, FlowLocationDomain>();
         Dictionary<HirLocationId, bool> eager = [];
         for (int index = 0; index < arguments.Count; index++)
@@ -200,6 +206,7 @@ internal sealed partial class SemanticAnalyzer
             foreach (HirLocationId input in template.Parameters.Concat(template.Captures.Select(capture => capture.Target)))
                 if (context.Values.TryGetValue(input, out SemanticValue? value))
                     facts = SchemeScopeFacts(value, context, facts, described);
+            facts = RegisterSchemePlaces(template.Body, context, facts);
             var projection = new HirTypeProjection(program, hir, context, algebra,
                 (callee, inputs) => SourceFlowReturn(callee, inputs, context),
                 places: place => SchemePlace(place, context),
@@ -318,12 +325,10 @@ internal sealed partial class SemanticAnalyzer
                 {
                     FlowFact fact = Shape(member.Type).Fact;
                     if (row.Locations.TryGetValue(name, out HirLocationId location))
-                    {
                         member = context.Values.GetValueOrDefault(location, member);
-                        fact = facts.Contains(location) ? facts.Read(location)
-                            : fact with { Boolean = member.KnownBool };
-                    }
-                    return new(fact, member.EagerRange || member.IndexedRegion is not null
+                    if (SchemePlace(id, context) is { } place && facts.Contains(place)) fact = facts.Read(place);
+                    else fact = fact with { Boolean = member.KnownBool, Eager = member.EagerRange };
+                    return new(fact, fact.Eager || member.EagerRange || member.IndexedRegion is not null
                         || !member.IndexedAliases.IsDefaultOrEmpty, member);
                 }
             }
@@ -360,7 +365,7 @@ internal sealed partial class SemanticAnalyzer
         if (node.Kind is HirKind.TemplateClosure or HirKind.NativeFunction)
             metadata = new(projected.SemanticType ?? hir.Type(projected.Type), HirNodeId.None,
                 Callables: BoundCallables(id, context).ToImmutableArray());
-        return new(projected, isEager || metadata?.EagerRange == true,
+        return new(projected, projected.Eager || isEager || metadata?.EagerRange == true,
             metadata is null ? null : metadata with
             { Type = projected.SemanticType ?? hir.Type(projected.Type), Node = HirNodeId.None, Literal = null });
     }
@@ -513,6 +518,7 @@ internal sealed partial class SemanticAnalyzer
 
     private HirLocationId? SchemePlace(HirNodeId id, SemanticContext context)
     {
+        if (context.ReturnPlaces?.TryGetValue(id, out HirLocationId registered) == true) return registered;
         HirNode node = program.Node(id);
         if (node.Kind is not (HirKind.MemberRead or HirKind.MemberAssign) || node.Text is null) return null;
         HirNodeId receiver = program.Children(id)[0];
@@ -523,6 +529,42 @@ internal sealed partial class SemanticAnalyzer
         }
         HirLocationId? field = (futureCallableWrites ??= new(program)).Field(receiver, node.Text);
         return field is { } definition ? context.Location(definition) : null;
+    }
+
+    private FlowFacts RegisterSchemePlaces(HirNodeId body, SemanticContext context, FlowFacts facts)
+    {
+        Dictionary<HirNodeId, HirLocationId> places = [];
+        HashSet<HirNodeId> visited = [];
+        Visit(body);
+        context.ReturnPlaces = places;
+        return facts;
+
+        void Visit(HirNodeId id)
+        {
+            if (!visited.Add(id)) return;
+            HirNode node = program.Node(id);
+            if (node.Kind is HirKind.TemplateClosure or HirKind.Closure) return;
+            if (SchemePlace(id, context) is { } place)
+            {
+                places[id] = place;
+                if (!facts.Contains(place))
+                {
+                    HirLocation definition = hir.Locations[place.Value];
+                    HirTypeId type = context.Storage.GetValueOrDefault(place, ResolveHirType(definition.StorageType, context));
+                    if (definition.AdmitsNull) type = Nullable(type);
+                    SemanticValue? value = BoundValue(id, context);
+                    facts = facts.Extend([new(place, new(hir.Types[type.Value].RuntimeType,
+                        hir.Types[type.Value].RuntimeType, ExternallyWritable: true,
+                        InitialType: hir.Types[value?.Type.Value ?? type.Value].RuntimeType,
+                        StorageSemanticType: type, InitialSemanticType: value?.Type ?? type))]);
+                    if (value is not null) facts = facts.Assign(place, new(hir.Types[value.Type.Value].RuntimeType,
+                        Boolean: value.KnownBool, SemanticType: value.Type, Eager: value.EagerRange));
+                }
+            }
+            foreach (HirNodeId child in program.Children(id)) Visit(child);
+            if (node.Kind == HirKind.Match)
+                foreach (HirMatchArm arm in hir.Matches[node.Data].Arms) Visit(arm.Value);
+        }
     }
 
     private FlowFacts SchemeScopeFacts(SemanticValue value, SemanticContext context, FlowFacts facts,
@@ -541,7 +583,8 @@ internal sealed partial class SemanticAnalyzer
                     InitialType: hir.Types[member.Type.Value].RuntimeType))]);
             facts = facts.Assign(pair.Value, new(hir.Types[member.Type.Value].RuntimeType,
                 Boolean: member.KnownBool, SemanticType: member.Type,
-                Denotations: member.DenotedType is { } represented ? new([represented]) : null));
+                Denotations: member.DenotedType is { } represented ? new([represented]) : null,
+                Eager: member.EagerRange));
             facts = SchemeScopeFacts(member, context, facts, described);
         }
         return facts;

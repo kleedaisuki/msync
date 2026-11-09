@@ -32,7 +32,8 @@ internal sealed partial class SemanticAnalyzer
 
     private static bool IsScalarSchema(SemanticValue value) => value.Scope is null
         && value.Element is null && value.Callables.IsDefaultOrEmpty && value.IndexedRegion is null
-        && value.Alternatives.IsDefaultOrEmpty && value.DeferredEffects.IsDefaultOrEmpty && value.IndexedAliases.IsDefaultOrEmpty;
+        && value.Alternatives.IsDefaultOrEmpty && value.DeferredEffects.IsDefaultOrEmpty && value.IndexedAliases.IsDefaultOrEmpty
+        && value.FutureCallableDomain is null;
 
     private string ValueKey(SemanticValue value)
     {
@@ -47,20 +48,11 @@ internal sealed partial class SemanticAnalyzer
         key.Append(value.Type.Value).Append(value.EagerRange ? '!' : '.');
         if (value.DenotedType is { } denoted) key.Append('T').Append(denoted.Value);
         if (!active.Add(value)) { key.Append('^'); return; }
-        foreach (var callable in Choices(value))
+        AppendCallableKey(key, Choices(value), context, active, provenance);
+        if (value.FutureCallableDomain is { } future)
         {
-            key.Append('F').Append(callable.NativeName ?? callable.Template?.Value.ToString()).Append('(');
-            if (!callable.Captures.IsDefault)
-                foreach (var capture in callable.Captures)
-                {
-                    key.Append('C').Append(provenance.Location(capture.Source));
-                    if (context is not null && context.Values.TryGetValue(capture.Source, out var captured))
-                    {
-                        if (provenance.DefineLocation(capture.Source)) AppendValueKey(key, captured, context, active, provenance);
-                        else key.Append('^');
-                    }
-                    else AppendValueKey(key, capture.Value, context, active, provenance);
-                }
+            key.Append("U(");
+            AppendCallableKey(key, future.Choices, context, active, provenance);
             key.Append(')');
         }
         if (value.Scope is { } scope)
@@ -96,6 +88,27 @@ internal sealed partial class SemanticAnalyzer
                 AppendValueKey(key, write.After, context, active, provenance);
             }
         active.Remove(value);
+    }
+
+    private void AppendCallableKey(StringBuilder key, IEnumerable<SemanticCallable> choices,
+        SemanticContext? context, HashSet<SemanticValue> active, KeyProvenance provenance)
+    {
+        foreach (var callable in choices)
+        {
+            key.Append('F').Append(callable.NativeName ?? callable.Template?.Value.ToString()).Append('(');
+            if (!callable.Captures.IsDefault)
+                foreach (var capture in callable.Captures)
+                {
+                    key.Append('C').Append(provenance.Location(capture.Source));
+                    if (context is not null && context.Values.TryGetValue(capture.Source, out var captured))
+                    {
+                        if (provenance.DefineLocation(capture.Source)) AppendValueKey(key, captured, context, active, provenance);
+                        else key.Append('^');
+                    }
+                    else AppendValueKey(key, capture.Value, context, active, provenance);
+                }
+            key.Append(')');
+        }
     }
 
     private void AppendScopeKey(StringBuilder key, SemanticScope scope, SemanticContext? context,

@@ -41,7 +41,7 @@ internal sealed partial class SemanticAnalyzer
             // Bool argument must not delete the other caller's branch from shared code.
             var result = value with { Node = HirNodeId.None, Location = null,
                 Literal = value.DenotedType is null ? null : value.Literal,
-                Callables = [], Scope = null, Element = null, Alternatives = [], IndexedRegion = null, Origin = null, Observation = null, DeferredEffects = [], IndexedAliases = [] };
+                Callables = [], Scope = null, Element = null, Alternatives = [], IndexedRegion = null, Origin = null, Observation = null, DeferredEffects = [], IndexedAliases = [], FutureCallableDomain = null };
             active[value] = result;
             if (value.Scope is { } scope)
             {
@@ -89,6 +89,20 @@ internal sealed partial class SemanticAnalyzer
                         return capture with { Source = source, Value = captured };
                     }).ToImmutableArray()
                 }).ToImmutableArray() };
+            if (value.FutureCallableDomain is { } future)
+                result = result with { FutureCallableDomain = new(FormalLocation(future.Owner),
+                    future.Choices.Select(callable => callable with
+                    {
+                        Captures = callable.Captures.IsDefault ? [] : callable.Captures.Select(capture =>
+                        {
+                            var source = FormalLocation(capture.Source);
+                            var captured = Abstract(capture.Mode == HirCaptureMode.Location
+                                ? caller.Values.GetValueOrDefault(capture.Source, capture.Value) : capture.Value, role + "@future");
+                            formal.Values[source] = captured;
+                            formal.Storage[source] = owner.StorageType(capture.Source, caller);
+                            return capture with { Source = source, Value = captured };
+                        }).ToImmutableArray()
+                    }).ToImmutableArray()) };
             if (!value.Alternatives.IsDefaultOrEmpty && value.Scope is null && value.Element is null)
                 result = result with { Alternatives = value.Alternatives.Select(alternative => Abstract(alternative, role + "|" + alternative.Type.Value)).ToImmutableArray() };
             if (value.IndexedRegion is { } indexed)

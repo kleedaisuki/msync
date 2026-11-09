@@ -51,8 +51,9 @@ internal sealed partial class SemanticAnalyzer
             {
                 current = context.Values.GetValueOrDefault(location, current);
                 domain = context.Storage.GetValueOrDefault(location, domain);
-                current = FutureCallables(current, location, context, scope);
             }
+            current = FutureCallables(current, scope.Locations.TryGetValue(field.Name, out HirLocationId source)
+                ? source : current.FutureCallableDomain?.Owner, context, scope);
             SemanticValue future = FutureRead(current, domain, context, active);
             fields[field.Name] = future;
             if (scope.Locations.TryGetValue(field.Name, out location)) context.Values[location] = future;
@@ -69,8 +70,12 @@ internal sealed partial class SemanticAnalyzer
     private SemanticValue FutureCallables(SemanticValue value, HirLocationId? location, SemanticContext context,
         SemanticScope? receiver = null)
     {
+        location ??= value.FutureCallableDomain?.Owner;
         if (location is not { } source || hir.Types[value.Type.Value].RuntimeType.WithoutNull != Msync.Core.TypeRef.Function)
             return value;
+        if (value.FutureCallableDomain is { } admitted
+            && StorageOwner(admitted.Owner, context) == StorageOwner(source, context))
+            return value with { Callables = admitted.Choices, Alternatives = default };
         HirLocationId definition = program.Original(context.Definitions.GetValueOrDefault(source, source));
         var choices = Choices(value).ToList();
         HashSet<HirLocationId> active = [];

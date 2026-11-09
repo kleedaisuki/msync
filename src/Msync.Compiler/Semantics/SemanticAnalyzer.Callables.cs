@@ -29,7 +29,8 @@ internal sealed partial class SemanticAnalyzer
             && projected.Fact.Type.WithoutNull != TypeRef.Any.WithoutNull
             && (projected.Fact.Type.Kind & TypeKind.Range) != 0
                 ? projected.Fact.SemanticType : null;
-        return Invoke(callee, inputs, node.Source, context, resultDomain);
+        SemanticValue result = Invoke(callee, inputs, node.Source, context, resultDomain);
+        return shape?.Eager == true ? result with { EagerRange = true } : result;
     }
 
     private SemanticValue InvokeType(SemanticValue callee, IReadOnlyList<SemanticValue> arguments,

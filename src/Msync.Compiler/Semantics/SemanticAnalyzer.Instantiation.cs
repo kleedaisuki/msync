@@ -102,6 +102,13 @@ internal sealed partial class SemanticAnalyzer
                     else if (write.Kind == SemanticWriteKind.Indexed && context.Indexed.TryGetValue(write.Region, out var storage))
                         query.Indexed[write.Region] = storage;
                 }
+            if (value.FutureCallableDomain is { } future)
+            {
+                ImportLocation(future.Owner);
+                foreach (var callable in future.Choices)
+                    if (!callable.Captures.IsDefault)
+                        foreach (var capture in callable.Captures) { ImportLocation(capture.Source); Import(capture.Value); }
+            }
             foreach (var callable in Choices(value))
                 if (!callable.Captures.IsDefault)
                     foreach (var capture in callable.Captures)
@@ -159,6 +166,15 @@ internal sealed partial class SemanticAnalyzer
                     "function signature declared here"));
         }
         RequireArgumentConcepts(template, arguments, source, caller);
+        SemanticValue[]? preparedArguments = null;
+        for (int index = 0; index < arguments.Count; index++)
+        {
+            SemanticValue enriched = EnrichFutureDomains(arguments[index], caller);
+            if (ReferenceEquals(enriched, arguments[index])) continue;
+            preparedArguments ??= arguments.ToArray();
+            preparedArguments[index] = enriched;
+        }
+        if (preparedArguments is not null) arguments = preparedArguments;
         var actualCaptures = captured.IsDefault ? ImmutableArray<SemanticCapture>.Empty : captured;
         SemanticValue[] captureValues = new SemanticValue[actualCaptures.Length];
         for (int index = 0; index < actualCaptures.Length; index++)
@@ -168,6 +184,7 @@ internal sealed partial class SemanticAnalyzer
                 ? StorageValue(capture.Source, caller) ?? capture.Value : capture.Value;
             var storage = capture.Mode == HirCaptureMode.Location ? StorageType(capture.Source, caller) : value.Type;
             if (hir.Types[value.Type.Value].TypeParameter >= 0) value = value with { Type = storage };
+            value = EnrichFutureDomains(value, caller, capture.Source, rootStorage: capture.Mode == HirCaptureMode.Location);
             if (caller.DeferredReads && capture.Mode == HirCaptureMode.Location
                 && (!Stable(capture.Source) || value.Scope is not null))
                 value = FutureRead(value, storage, caller, capture.Source);
@@ -415,6 +432,13 @@ internal sealed partial class SemanticAnalyzer
                     else if (write.Kind == SemanticWriteKind.Indexed && context.Indexed.TryGetValue(write.Region, out var deferredStorage))
                         indexed.TryAdd(write.Region, deferredStorage);
                 }
+            if (value.FutureCallableDomain is { } future)
+            {
+                VisitCell(future.Owner);
+                foreach (var callable in future.Choices)
+                    if (!callable.Captures.IsDefault)
+                        foreach (var capture in callable.Captures) { VisitCell(capture.Source); Visit(capture.Value); }
+            }
             foreach (var callable in Choices(value))
                 if (!callable.Captures.IsDefault)
                     foreach (var capture in callable.Captures) { VisitCell(capture.Source); Visit(capture.Value); }

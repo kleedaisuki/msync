@@ -75,6 +75,7 @@ internal sealed partial class SemanticAnalyzer
             if (formal.Origin is { } origin && origin.Fields.IsDefaultOrEmpty) origins[origin.Root] = actual;
             if (formal.Scope is { } shape && actual.Scope is { } scope)
             {
+                if (shape.Region >= 0) shape = instance.Objects.GetValueOrDefault(shape.Region, shape);
                 scope = caller.Objects.GetValueOrDefault(scope.Region, scope);
                 scopeBindings[shape.Region] = scope;
                 if (scope.Region >= 0) regions[shape.Region] = scope.Region;
@@ -109,6 +110,21 @@ internal sealed partial class SemanticAnalyzer
                     var concrete = caller.Indexed[targets[0]];
                     for (int index = 1; index < targets.Length; index++) concrete = owner.JoinIndexed(concrete, caller.Indexed[targets[index]]);
                     Bind(prototype.Element, concrete.Element);
+                }
+            }
+            if (formal.FutureCallableDomain is { } formalFuture && actual.FutureCallableDomain is { } actualFuture)
+            {
+                Locations[formalFuture.Owner] = actualFuture.Owner;
+                for (int choice = 0; choice < Math.Min(formalFuture.Choices.Length, actualFuture.Choices.Length); choice++)
+                {
+                    var first = formalFuture.Choices[choice].Captures;
+                    var second = actualFuture.Choices[choice].Captures;
+                    if (first.IsDefaultOrEmpty || second.IsDefaultOrEmpty) continue;
+                    for (int index = 0; index < Math.Min(first.Length, second.Length); index++)
+                    {
+                        Locations[first[index].Source] = second[index].Source;
+                        Bind(first[index].Value, second[index].Value);
+                    }
                 }
             }
             if (!formal.Callables.IsDefaultOrEmpty && !actual.Callables.IsDefaultOrEmpty)
@@ -199,6 +215,13 @@ internal sealed partial class SemanticAnalyzer
                     Captures = callable.Captures.IsDefault ? [] : callable.Captures.Select(capture => capture with
                     { Source = MapLocation(capture.Source), Value = Project(capture.Value) }).ToImmutableArray()
                 }).ToImmutableArray() };
+            if (value.FutureCallableDomain is { } future)
+                result = result with { FutureCallableDomain = new(MapLocation(future.Owner),
+                    future.Choices.Select(callable => callable with
+                    {
+                        Captures = callable.Captures.IsDefault ? [] : callable.Captures.Select(capture => capture with
+                        { Source = MapLocation(capture.Source), Value = Project(capture.Value) }).ToImmutableArray()
+                    }).ToImmutableArray()) };
             if (!value.Alternatives.IsDefaultOrEmpty)
                 result = result with { Alternatives = value.Alternatives.Select(Project).ToImmutableArray() };
             if (value.IndexedRegion is { } indexed)
