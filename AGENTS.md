@@ -175,3 +175,12 @@
   escape retains complete shapes and shared cells; persistent sessions and
   editor contexts retain exports for later requests. Do not cache first-caller
   semantic environments or trade missing members for faster initialization.
+- Deferred-read stability is proved for declaration identities and lexical
+  lifetimes, not inferred from a variable's spelling or a single non-null use.
+  Unwritten private locations and closed-script roots can retain refinements;
+  future REPL roots, exported module cells and Scope fields remain mutable.
+  The shared AST cache contains syntax facts, never caller semantic state.
+- Repository `.msync` files use LF because literal newlines are language values.
+  Host-specific delimiters come from `environment::newline`. Windows human
+  console output uses UTF-8 at one saved/restored boundary; do not change input
+  encoding or framed/binary protocol streams to repair text rendering.
