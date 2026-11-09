@@ -101,6 +101,15 @@ writes. RAW, WAR and WAW dependencies retain source order, including directory
 subtree overlap; independent siblings do not conflict merely because publication
 changes their parent mtime. Finding predecessors visits path ancestors and actual
 overlapping descendants, rather than scanning every previously queued copy.
+The index owns one registration per admitted scalar transfer. Successful owner,
+explicit-transfer and selected-process joins retire that registration on the VM
+control thread, unlinking its reader/writer memberships and empty ancestors.
+Read observations do not scan unrelated active reader sets to discover garbage.
+Faulted or cancelled tasks remain dependency entries; an operational `false`
+still remains in the original owner's failure accounting after its completed
+resource registration is retired. Work-owner entries are not compacted, because
+After-region boundaries refer to their stable admission positions.
+
 Local identity resolves existing filesystem aliases. A selected Path-copy producer
 may publish a directory or link used by a later descendant operand. Admission
 waits for that specific predecessor, then resolves the descendant's new physical

@@ -8,8 +8,7 @@ public sealed partial class Interpreter
 {
     private sealed class WorkOwner
     {
-        public List<Task>? Tasks;
-        public List<Task<bool>>? UnobservedTransfers;
+        public List<PendingWork>? Tasks;
         public List<ProcessValue>? Processes;
         public Dictionary<string, int>? AfterRegions;
     }
@@ -17,7 +16,10 @@ public sealed partial class Interpreter
     {
         public override TypeRef Type => ResultType;
     }
-    private sealed record PendingWork(Task<bool> Completion, IReadOnlyList<ProcessValue> Processes, bool RequireSuccess);
+    private sealed record PendingWork(Task<bool> Completion, IReadOnlyList<ProcessValue> Processes, bool RequireSuccess)
+    {
+        public ResourceIndex.Registration? Registration;
+    }
     private sealed record ResourceKey(string Endpoint, string Path);
     private readonly ResourceIndex resources = new();
     private long admittedTransfers;
@@ -128,12 +130,11 @@ public sealed partial class Interpreter
             if (processDependencies.TryGetValue(dependency, out var related)) processes = processes.Concat(related).Distinct().ToArray();
         var work = new PendingWork(completion, processes, discarded);
         if (processes.Count != 0) processDependencies.Add(completion, processes);
-        resources.Add(completion, reads, writes);
+        work.Registration = resources.Add(completion, reads.Length == 0 ? null : reads[0], writes[0]);
         if (source is PathValue || source is DeferredValue && (source.Type.Kind & TypeKind.Path) != 0)
             namespaceProducers.Add(completion, writes[0]);
         pending.Add(work);
-        (currentOwner.Tasks ??= []).Add(completion);
-        if (discarded) (currentOwner.UnobservedTransfers ??= []).Add(completion);
+        (currentOwner.Tasks ??= []).Add(work);
         return completion;
     }
     private static bool DescendsFrom(ResourceKey child, ResourceKey parent)
@@ -171,7 +172,7 @@ public sealed partial class Interpreter
         if (direction == 1) { await ordering; await JoinTransfersAsync(includeProcessFlows: false); return; }
         var first = currentOwner.AfterRegions is { } regions && regions.Remove(region ?? "", out var boundary)
             ? boundary : currentOwner.Tasks?.Count ?? 0;
-        var associated = currentOwner.Tasks?.Skip(first) ?? [];
+        var associated = currentOwner.Tasks?.Skip(first).Select(work => (Task)work.Completion) ?? [];
         ordering = Task.WhenAll(pending.Where(work => work.Processes.Count == 0)
             .Select(work => (Task)work.Completion).Concat(associated).Prepend(ordering));
     }
@@ -179,19 +180,24 @@ public sealed partial class Interpreter
     {
         if (value is not ProcessValue process) throw new MsyncException($"acquire requires Process, received {value.Type}");
         var completed = process.Completion is null ? process : await process.Completion;
-        var flows = pending.Where(work => work.Processes.Any(related => ReferenceEquals(related, process))).Select(work => (Task)work.Completion).ToArray();
-        if (flows.Length != 0) await Task.WhenAll(flows);
+        var flows = pending.Where(work => work.Processes.Any(related => ReferenceEquals(related, process))).ToArray();
+        if (flows.Length != 0)
+        {
+            await Task.WhenAll(flows.Select(work => work.Completion));
+            foreach (var work in flows) Retire(work);
+        }
         sessionProcesses.Remove(process);
         return completed;
     }
-    private static async ValueTask JoinOwnerAsync(WorkOwner owner)
+    private async ValueTask JoinOwnerAsync(WorkOwner owner)
     {
         if (owner.Processes is { Count: > 0 })
             await Task.WhenAll(owner.Processes.Where(process => process.Completion is not null).Select(process => process.Completion!));
         if (owner.Tasks is { Count: > 0 })
         {
-            await Task.WhenAll(owner.Tasks);
-            if (owner.UnobservedTransfers?.Any(task => !task.Result) == true)
+            await Task.WhenAll(owner.Tasks.Select(work => work.Completion));
+            foreach (var work in owner.Tasks) Retire(work);
+            if (owner.Tasks.Any(work => work.RequireSuccess && !work.Completion.Result))
                 throw new MsyncException("One or more file transfers failed; completed files remain in place and the operation can be retried");
         }
     }
@@ -200,9 +206,18 @@ public sealed partial class Interpreter
         var work = pending.Where(item => includeProcessFlows || item.Processes.Count == 0).ToArray();
         if (work.Length == 0) return;
         await Task.WhenAll(work.Select(item => item.Completion));
+        foreach (var item in work) Retire(item);
         if (work.Any(item => item.RequireSuccess && !item.Completion.Result))
             throw new MsyncException("One or more file transfers failed; completed files remain in place and the operation can be retried");
         pending.RemoveAll(work => work.Completion.IsCompletedSuccessfully);
+    }
+    private void Retire(PendingWork work)
+    {
+        if (work.Registration is not { } registration || !work.Completion.IsCompletedSuccessfully) return;
+        resources.Remove(work.Completion, registration);
+        work.Registration = null;
+        processDependencies.Remove(work.Completion);
+        namespaceProducers.Remove(work.Completion);
     }
     private async ValueTask JoinAllAsync()
     {
@@ -222,12 +237,15 @@ public sealed partial class Interpreter
     }
     private sealed class ResourceIndex
     {
-        private sealed class Node(StringComparer comparer)
+        public sealed class Node(StringComparer comparer, Node? parent = null, string? name = null)
         {
             public readonly Dictionary<string, Node> Children = new(comparer);
             public readonly HashSet<Task> Readers = [];
             public readonly HashSet<Task> Writers = [];
+            public readonly Node? Parent = parent;
+            public readonly string? Name = name;
         }
+        public readonly record struct Registration(Node? Reader, Node Writer);
         private readonly Dictionary<string, Node> roots = new(StringComparer.Ordinal);
         private Node? unknown;
         public long NodesVisited { get; private set; }
@@ -292,10 +310,30 @@ public sealed partial class Interpreter
                 CollectDescendants(child, writing, tasks);
             }
         }
-        public void Add(Task completion, IReadOnlyList<ResourceKey> reads, IReadOnlyList<ResourceKey> writes)
+        public Registration Add(Task completion, ResourceKey? read, ResourceKey write)
         {
-            foreach (var key in reads) Leaf(key).Readers.Add(completion);
-            foreach (var key in writes) Leaf(key).Writers.Add(completion);
+            var reader = read is null ? null : Leaf(read);
+            var writer = Leaf(write);
+            reader?.Readers.Add(completion);
+            writer.Writers.Add(completion);
+            return new(reader, writer);
+        }
+        public void Remove(Task completion, Registration registration)
+        {
+            registration.Reader?.Readers.Remove(completion);
+            registration.Writer.Writers.Remove(completion);
+            if (registration.Reader is { } reader) Prune(reader);
+            Prune(registration.Writer);
+        }
+        private static void Prune(Node node)
+        {
+            while (node.Parent is { } parent && node.Children.Count == 0 && node.Readers.Count == 0 && node.Writers.Count == 0)
+            {
+                // A query can clear completed tasks before their owner's lease is retired.
+                if (!parent.Children.TryGetValue(node.Name!, out var child) || !ReferenceEquals(child, node)) return;
+                parent.Children.Remove(node.Name!);
+                node = parent;
+            }
         }
         private Node Leaf(ResourceKey key)
         {
@@ -303,7 +341,7 @@ public sealed partial class Interpreter
             NodesVisited++;
             foreach (var part in Parts(key))
             {
-                if (!node.Children.TryGetValue(part, out var child)) node.Children.Add(part, child = new(Comparer(key.Endpoint)));
+                if (!node.Children.TryGetValue(part, out var child)) node.Children.Add(part, child = new(Comparer(key.Endpoint), node, part));
                 node = child;
                 NodesVisited++;
             }
