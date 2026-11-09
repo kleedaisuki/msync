@@ -26,6 +26,11 @@ initial 32 contracts. Snapshot 5 (Compiler SHA256
 passed 44 contracts, including the arithmetic operand span, fixed-field
 declaration, lexical standard-namespace shadowing and actual parameter names.
 Four actual CLI checks also confirmed the operand underline and the source
-function signature. Two later assertions require assignment mismatch spans to
-identify the RHS value; these follow the same source-routing mechanism and are
-selected for the next coordinated snapshot rather than another full matrix.
+function signature. Snapshot 6 (Compiler SHA256
+`a46a1d8b54a49b2c403d8bdec41f266b50d1e55a15aad87293f7117304642503`)
+passed all 46 contracts. The copied test-host Compiler hash matched that
+coordinated snapshot. Two actual CLI assignment failures additionally verified
+that the four-character underline identifies `true`, while related locations
+identify the binding or field declaration that established `Number` storage.
+These final checks selected only the changed RHS routing, without repeating
+the earlier eight-file baseline comparison.
