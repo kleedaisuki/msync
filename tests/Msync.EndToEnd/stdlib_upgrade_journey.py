@@ -33,22 +33,29 @@ EXAMPLES: tuple[Example, ...] = (
     Example(
         "collection-alias-snapshot",
         r"""
-let list = $std::collections::List([" alpha ", "β"]);
+let list = $std::containers::List::new([" alpha ", "β"]);
 let alias = list;
-let before = list::snapshot();
-alias::add(" gamma ");
-let independent = $std::collections::List(["other"]);
-independent::add("object");
-let normalized = $std::ranges::transform(list::snapshot(), $std::string::trim);
-let result = $std::files::File(./list.txt);
-result::write($std::string::join(normalized, "|"));
+let before = $std::containers::List::snapshot(list);
+$std::containers::List::push(alias, " gamma ");
+let independent = $std::containers::List::new(["other"]);
+$std::containers::List::push(independent, "object");
+let normalized = $std::ranges::transform(
+    $std::containers::List::snapshot(list),
+    $std::string::trim
+);
+let file = $std::files::File::new(./list.txt);
+$std::files::File::write(file, $std::string::join(normalized, "|"));
 $std::string::join(before, "|") -> ./before.txt;
-$std::string::join(independent::snapshot(), "|") -> ./independent.txt;
-let removed = alias::remove_where(fn(value: String) {
-    $std::string::contains(value, "alpha")
-});
+$std::string::join($std::containers::List::snapshot(independent), "|")
+    -> ./independent.txt;
+let removed = $std::containers::List::remove_where(
+    alias,
+    fn(value: String) {
+        $std::string::contains(value, "alpha")
+    }
+);
 (removed as String) -> ./removed.txt;
-$std::string::join(list::snapshot(), "|") -> ./after.txt;
+$std::string::join($std::containers::List::snapshot(list), "|") -> ./after.txt;
 """,
         (
             ("list.txt", "alpha|β|gamma".encode()),
@@ -64,21 +71,46 @@ $std::string::join(list::snapshot(), "|") -> ./after.txt;
 let equal = fn(left: String, right: String) {
     $std::string::to_lowercase(left) == $std::string::to_lowercase(right)
 };
-let set = $std::collections::SetWith(["Alpha", "ALPHA", "Beta"], equal);
-set::add("beta");
-set::add("Gamma");
-$std::string::join(set::snapshot(), "|") -> ./set.txt;
-let map = $std::collections::MapWith([
-    scope { key: "alpha", value: 1 },
-    scope { key: "beta", value: 2 }
-], equal);
-let old_entries = map::entries();
-map::put("ALPHA", 9);
-map::put("gamma", 3);
-(map::get_or("alpha", 0) as String) -> ./value.txt;
-$std::string::join(map::keys(), "|") -> ./keys.txt;
-($std::ranges::sum($std::ranges::transform(old_entries,
-    fn(entry) { entry::value })) as String) -> ./old-sum.txt;
+
+let set = $std::containers::EqualitySet::with_equality(
+    ["Alpha", "ALPHA", "Beta"],
+    scope {
+        Self: String,
+        equal: equal
+    }
+);
+$std::containers::EqualitySet::insert(set, "beta");
+$std::containers::EqualitySet::insert(set, "Gamma");
+$std::string::join($std::containers::EqualitySet::snapshot(set), "|")
+    -> ./set.txt;
+let map = $std::containers::Map::with_equality(
+    [
+        scope {
+            key: "alpha",
+            value: 1
+        },
+        scope {
+            key: "beta",
+            value: 2
+        }
+    ],
+    scope {
+        Self: String,
+        equal: equal
+    }
+);
+let old_entries = $std::containers::Map::entries(map);
+$std::containers::Map::insert(map, "ALPHA", 9);
+$std::containers::Map::insert(map, "gamma", 3);
+($std::containers::Map::get_or(map, "alpha", 0) as String) -> ./value.txt;
+$std::string::join($std::containers::Map::keys(map), "|") -> ./keys.txt;
+(
+    $std::ranges::sum(
+        $std::ranges::transform(old_entries, fn(entry) {
+            entry::value
+        })
+    ) as String
+) -> ./old-sum.txt;
 """,
         (
             ("set.txt", b"Alpha|Beta|Gamma"),
@@ -90,32 +122,50 @@ $std::string::join(map::keys(), "|") -> ./keys.txt;
     Example(
         "unicode-builder-regex",
         r"""
-let builder = $std::text::Builder();
+let builder = $std::text::StringBuilder::new();
 let alias = builder;
-alias::append("A🙂");
-builder::append("β");
-let independent = $std::text::Builder();
-independent::append("X");
-builder::build() -> ./text.txt;
-(builder::length() as String) -> ./length.txt;
-independent::build() -> ./other.txt;
-let pattern = $std::regex::compile("(?<letter>β)(x)?");
-let matches = pattern::matches(builder::build());
+$std::text::StringBuilder::append(alias, "A🙂");
+$std::text::StringBuilder::append(builder, "β");
+let independent = $std::text::StringBuilder::new();
+$std::text::StringBuilder::append(independent, "X");
+$std::text::StringBuilder::build(builder) -> ./text.txt;
+($std::text::StringBuilder::len(builder) as String) -> ./length.txt;
+$std::text::StringBuilder::build(independent) -> ./other.txt;
+let pattern = $std::regex::Pattern::new("(?<letter>β)(x)?");
+let matches = $std::regex::Pattern::matches(
+    pattern,
+    $std::text::StringBuilder::build(builder)
+);
 let selected_match = $std::ranges::first(matches);
 if selected_match is not null {
     selected_match::value -> ./match.txt;
     (selected_match::index as String) -> ./index.txt;
     (selected_match::length as String) -> ./match-length.txt;
-    let selected = $std::ranges::filter(selected_match::groups, fn(group) {
-        group::name == "letter"
-    });
-    $std::string::join($std::ranges::transform(selected,
-        fn(group) { group::value }), "|") -> ./group.txt;
+    let selected = $std::ranges::filter(
+        selected_match::groups,
+        fn(group) {
+            group::name == "letter"
+        }
+    );
+    $std::string::join(
+        $std::ranges::transform(
+            selected,
+            fn(group) {
+                group::value
+            }
+        ),
+        "|"
+    ) -> ./group.txt;
 };
-pattern::replace(builder::build(), "[${letter}]") -> ./replaced.txt;
-builder::clear();
-builder::append_all(["new", "value"]);
-builder::build() -> ./cleared.txt;
+
+$std::regex::Pattern::replace(
+    pattern,
+    $std::text::StringBuilder::build(builder),
+    "[${letter}]"
+) -> ./replaced.txt;
+$std::text::StringBuilder::clear(builder);
+$std::text::StringBuilder::append_all(builder, ["new", "value"]);
+$std::text::StringBuilder::build(builder) -> ./cleared.txt;
 """,
         (
             ("text.txt", "A🙂β".encode()),
@@ -141,12 +191,14 @@ $std::environment::set(name, "newβ");
 let old = $std::ranges::filter(snapshot, fn(variable) {
     variable::name == name
 });
-$std::string::join($std::ranges::transform(old,
-    fn(variable) { variable::value }), "|") -> ./snapshot.txt;
+$std::string::join($std::ranges::transform(old, fn(variable) {
+    variable::value
+}), "|") -> ./snapshot.txt;
 let value? = $std::environment::get(name);
 if value is not null {
     value -> ./selected.txt;
 };
+
 $std::environment::unset(name);
 $std::environment::get_or(name, "removed") -> ./removed.txt;
 """,
@@ -160,25 +212,27 @@ $std::environment::get_or(name, "removed") -> ./removed.txt;
     Example(
         "directory-file-and-command",
         r"""
-concept WritableText {
-    write: fn(value: String) -> Null,
+fn save(destination: $std::concepts::TextFile, text: String) {
+    $std::files::File::write(destination, text)
 };
-fn save(destination: WritableText, text: String) {
-    destination::write(text)
-};
-let directory = $std::files::Directory(./data);
-directory::create();
-let file = directory::file("payload.txt");
+
+let directory = $std::files::Directory::new(./data);
+$std::files::Directory::create(directory);
+let file = $std::files::Directory::file(directory, "payload.txt");
 save(file, "before");
-file::write("after");
-file::append("🙂");
-let command = $std::commands::Command(__COMMAND_EXECUTABLE__, __COMMAND_ARGS__);
-let result = command::capture();
-result::write_to(./stdout.txt);
+$std::files::File::write(file, "after");
+$std::files::File::append(file, "🙂");
+let command = $std::commands::Command::new(
+    __COMMAND_EXECUTABLE__,
+    __COMMAND_ARGS__
+);
+let result = $std::commands::Command::capture(command);
+$std::commands::Completed::write_to(result, ./stdout.txt);
 result::error -> ./stderr.txt;
 (result::code as String) -> ./exit-code.txt;
-file::read_text() -> ./file-result.txt;
-($std::ranges::size(directory::snapshot()) as String) -> ./entry-count.txt;
+$std::files::File::read_text(file) -> ./file-result.txt;
+($std::ranges::size($std::files::Directory::snapshot(directory)) as String)
+    -> ./entry-count.txt;
 """,
         (
             ("data/payload.txt", "after🙂".encode()),
@@ -371,17 +425,17 @@ def ssh_journey(binary: Path, directory: Path) -> dict[str, Any]:
         )
         source = f"""
 let endpoint = ssh://Perf_Fixture;
-let file = $std::files::File({remote} @ endpoint);
-file::write("remote🙂");
-file::append("!");
-file::read_text() -> ./remote-read.txt;
-file::copy_to(./remote-copy.txt);
-let command = $std::commands::Command("/bin/sh", [
+let file = $std::files::File::new({remote} @ endpoint);
+$std::files::File::write(file, "remote🙂");
+$std::files::File::append(file, "!");
+$std::files::File::read_text(file) -> ./remote-read.txt;
+$std::files::File::copy_to(file, ./remote-copy.txt);
+let command = $std::commands::Command::new("/bin/sh", [
     "-c", "printf REMOTE; printf WARN >&2; exit 9"
 ]);
-let remote_command = command::on(endpoint);
-let result = remote_command::capture();
-result::write_to(./remote-stdout.txt);
+let remote_command = $std::commands::Command::on(command, endpoint);
+let result = $std::commands::Command::capture(remote_command);
+$std::commands::Completed::write_to(result, ./remote-stdout.txt);
 result::error -> ./remote-stderr.txt;
 (result::code as String) -> ./remote-status.txt;
 """

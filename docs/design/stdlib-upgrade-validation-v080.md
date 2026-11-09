@@ -18,9 +18,9 @@ fixture programs are independent of implementation test expectations.
 
 | Journey | Observable contract |
 | --- | --- |
-| Collection alias and snapshot | An alias mutates the same list; an earlier snapshot remains stable; another factory instance is independent; Range callbacks compose with a File service |
+| Collection alias and snapshot | An alias mutates the same list; an earlier snapshot remains stable; another constructed instance is independent; Range callbacks compose with a File service |
 | Map and Set equality | Caller-supplied equality determines duplicate keys/items; insertion order is stable; replacement does not mutate earlier entry snapshots |
-| Unicode Builder and Regex | Builder aliases share state but independent factories do not; indexes/lengths count Unicode scalars; named groups retain their value; clear starts a new sequence |
+| Unicode Builder and Regex | Builder aliases share state but independent instances do not; indexes/lengths count Unicode scalars; named groups retain their value; clear starts a new sequence |
 | Environment snapshot and narrowing | Set/get/unset observe actual process environment; an earlier variables Range is a snapshot; nullable values narrow before use |
 | Files and Commands | Replacing and appending preserve exact UTF-8 bytes; directory enumeration sees the published entry; commands retain stdout, stderr and a nonzero exit code |
 
@@ -58,7 +58,50 @@ The initial standalone observation was made while multiple compiler builds were
 active. Its large spread is not used as evidence for a performance conclusion;
 a paired native-image measurement belongs after the candidate freezes.
 
-## Acceptance evidence
+## Canonical Scope API migration
+
+The unpublished 0.8 library now has one public interface: PascalCase named Scope
+families and snake_case associated functions with explicit instance arguments.
+The active journeys use `containers::{List,Map,EqualitySet,Stack,Queue}`,
+`files::{File,Directory}`, `commands::{Command,Completed}`,
+`text::StringBuilder` and `regex::Pattern`. They do not restore removed factory
+functions or instance method closures. The File save example consumes the
+supplied `concepts::TextFile` contract directly.
+
+The `library`, `empty-collections` and optional `remote-library` packaging phases
+remain active and use those same canonical declarations. Their programs were
+migrated rather than dropping the real IO and transport observations. The
+separate `collections_journey.py` now accepts `--level` for an incremental
+optimization selection.
+
+The migration used an immutable managed Release snapshot under
+`.temp/canonical-source-migration/snapshot-1/`; its Compiler SHA-256 is
+`ace1a853119d3f41ddbca0f505c5b7da78ab34707fcec7379cb3218a9ac690a7` and Runtime
+SHA-256 is
+`844f8148fff434c0a8999094f22024338a0d900d0232f2674373afa9152e7a0e`.
+Only affected source/API boundaries were selected:
+
+| Selection | Accepted observation |
+| --- | --- |
+| Empty families | Three O2 source/object/executable routes, 23 observations each, and three fixed-schema or comparator rejections |
+| Collection mutation and aliases | Three O2 routes, 35 observations each, and three fixed-schema rejections |
+| Unicode text/regex and File/Command composition | Six O2 routes, 45 exact output-byte comparisons; binary source removal and different executable launch directory retained |
+| Actual SSH File/Command composition | Three O2 routes, 15 output-byte comparisons, five SSH clients per execution and no authentication during check/compile/bind |
+| Standalone service fixture | `tests/StdlibServices`: 72 observations across 18 O0/O2/O3 staged executions, including actual child-process input/output and argument snapshots |
+
+After formatting the seven inline source programs with the product formatter,
+their actual CLI checks passed. The two migrated collection/library source
+examples not covered by the selected service/text routes additionally produced
+their nine expected output files. Python formatting, Ruff and mypy passed for
+the three migrated journey drivers. These are managed semantic observations,
+not a Native AOT performance or platform claim. Native delivery consumes the
+same current scripts without repeating the earlier complete expansion matrix.
+
+Reports are under `.temp/canonical-source-migration/`, including
+`library-results.json`, `remote-results.json` and
+`formatted-cases/report.json`; standalone fixture details are in its README.
+
+## Earlier source-factory expansion acceptance
 
 The following records exercise executable source/compiler/native contracts.
 New source being present is not itself acceptance of its closures, callbacks,

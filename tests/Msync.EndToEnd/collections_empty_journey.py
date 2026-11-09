@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Exercise prototype-based empty collection factories through real CLI stages."""
+"""Exercise typed empty collection families through real CLI stages."""
+
 from __future__ import annotations
 
 import argparse
@@ -9,62 +10,123 @@ from collections.abc import Sequence
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE = '''
+SOURCE = """
+let List = $std::containers::List;
+let EqualitySet = $std::containers::EqualitySet;
+let Map = $std::containers::Map;
+let Stack = $std::containers::Stack;
+let Queue = $std::containers::Queue;
 fn assert(condition: Bool) {
-    if condition { "ok" } else { "FAILED" }
+    if condition {
+        "ok"
+    } else {
+        "FAILED"
+    }
 };
-let list = $std::collections::EmptyList(0);
-let set = $std::collections::EmptySet(0);
-let map = $std::collections::EmptyMap("", 0);
-let nullable = $std::collections::EmptyNullableMap("", 0);
-let stack = $std::collections::EmptyStack(0);
-let queue = $std::collections::EmptyQueue(0);
+
+let list = List::empty(0);
+let set = EqualitySet::empty(0);
+let map = Map::empty("", 0);
+let nullable = Map::empty_nullable("", 0);
+let stack = Stack::empty(0);
+let queue = Queue::empty(0);
 let equal = fn(a: String, b: String) {
     $std::string::to_lowercase(a) == $std::string::to_lowercase(b)
 };
-let custom_set = $std::collections::EmptySetWith("", equal);
-let custom_map = $std::collections::EmptyMapWith("", 0, equal);
-let before = $std::ranges::materialize([
-    assert(list::is_empty()), assert(set::is_empty()), assert(map::is_empty()),
-    assert(nullable::is_empty()), assert(stack::is_empty()),
-    assert(queue::is_empty()), assert(custom_set::is_empty()),
-    assert(custom_map::is_empty()), assert(stack::peek() is null),
-    assert(stack::pop() is null), assert(queue::peek() is null),
-    assert(queue::dequeue() is null), assert(list::get(10) is null)
-]);
-list::add(1);
-set::add(1);
-map::put("a", 1);
-nullable::put("a", null);
-stack::push(1);
-queue::enqueue(1);
-custom_set::add("ALPHA");
-custom_set::add("alpha");
-custom_map::put("ALPHA", 1);
-custom_map::put("alpha", 2);
-let after = $std::ranges::materialize([
-    assert(list::size() == 1), assert(set::size() == 1),
-    assert(map::get_or("a", 0) == 1),
-    assert(nullable::contains_key("a")),
-    assert(nullable::get_or("a", 7) is null),
-    assert($std::ranges::matches(stack::pop(), 1)),
-    assert($std::ranges::matches(queue::dequeue(), 1)),
-    assert(custom_set::size() == 1), assert(custom_map::size() == 1),
-    assert(custom_map::get_or("AlPhA", 0) == 2)
-]);
-$std::io::write_text(./result.txt,
-    $std::string::join($std::ranges::concat(before, after), "|"));
-'''
-NEGATIVE: tuple[str, ...] = (
-    'let list = $std::collections::EmptyList(0); list::add("bad");',
-    'let map = $std::collections::EmptyMap("", 0); map::put("a", null);',
-    'let map = $std::collections::EmptyMapWith(0, 0, '
-    'fn(a: String, b: String) { a == b }); map::put(1, 2);',
+
+let custom_set = EqualitySet::with_equality(
+    $std::ranges::take([""], 0),
+    scope {
+        Self: String,
+        equal: equal
+    }
+);
+let custom_map = Map::with_equality(
+    $std::ranges::take([scope {
+        key: "",
+        value: 0
+    }], 0),
+    scope {
+        Self: String,
+        equal: equal
+    }
+);
+let before = $std::ranges::materialize(
+    [
+        assert(List::is_empty(list)),
+        assert(EqualitySet::is_empty(set)),
+        assert(Map::is_empty(map)),
+        assert(Map::is_empty(nullable)),
+        assert(Stack::is_empty(stack)),
+        assert(Queue::is_empty(queue)),
+        assert(EqualitySet::is_empty(custom_set)),
+        assert(Map::is_empty(custom_map)),
+        assert(Stack::peek(stack) is null),
+        assert(Stack::pop(stack) is null),
+        assert(Queue::peek(queue) is null),
+        assert(Queue::pop(queue) is null),
+        assert(List::get(list, 10) is null)
+    ]
+);
+List::push(list, 1);
+EqualitySet::insert(set, 1);
+Map::insert(map, "a", 1);
+Map::insert(nullable, "a", null);
+Stack::push(stack, 1);
+Queue::push(queue, 1);
+EqualitySet::insert(custom_set, "ALPHA");
+EqualitySet::insert(custom_set, "alpha");
+Map::insert(custom_map, "ALPHA", 1);
+Map::insert(custom_map, "alpha", 2);
+let after = $std::ranges::materialize(
+    [
+        assert(List::size(list) == 1),
+        assert(EqualitySet::size(set) == 1),
+        assert(Map::get_or(map, "a", 0) == 1),
+        assert(Map::contains_key(nullable, "a")),
+        assert(Map::get_or(nullable, "a", 7) is null),
+        assert($std::ranges::matches(Stack::pop(stack), 1)),
+        assert($std::ranges::matches(Queue::pop(queue), 1)),
+        assert(EqualitySet::size(custom_set) == 1),
+        assert(Map::size(custom_map) == 1),
+        assert(Map::get_or(custom_map, "AlPhA", 0) == 2)
+    ]
+);
+$std::io::write_text(
+    ./result.txt,
+    $std::string::join($std::ranges::concat(before, after), "|")
+);
+"""
+NEGATIVE: tuple[tuple[str, str], ...] = (
+    (
+        (
+            "let list = $std::containers::List::empty(0); "
+            '$std::containers::List::push(list, "bad");'
+        ),
+        "E0203",
+    ),
+    (
+        (
+            'let map = $std::containers::Map::empty("", 0); '
+            '$std::containers::Map::insert(map, "a", null);'
+        ),
+        "E0203",
+    ),
+    (
+        (
+            "let policy = scope { Self: Number, "
+            "equal: fn(a: String, b: String) { a == b } }; "
+            "$std::containers::Map::with_equality([scope { key: 0, value: 0 }], policy);"
+        ),
+        "E0214",
+    ),
 )
 
 
 def run(command: Sequence[str], cwd: Path) -> None:
-    result = subprocess.run(command, cwd=cwd, capture_output=True, text=True)
+    result = subprocess.run(
+        command, cwd=cwd, capture_output=True, text=True, encoding="utf-8", check=False
+    )
     if result.returncode:
         raise RuntimeError(f"{list(command)!r}\n{result.stdout}\n{result.stderr}")
 
@@ -77,10 +139,12 @@ def main() -> None:
     parser.add_argument("--inline-source", action="store_true")
     args = parser.parse_args()
     cli: list[str] = [str(args.binary.resolve())] if args.binary else args.cli
-    prefix = (ROOT / "stdlib/collections.msync").read_text() if args.inline_source else ""
+    prefix = (
+        (ROOT / "stdlib/containers.msync").read_text() if args.inline_source else ""
+    )
 
     def code(source: str) -> str:
-        return prefix + source.replace("$std::collections::", "") if prefix else source
+        return prefix + source.replace("$std::containers::", "") if prefix else source
 
     temp = ROOT / ".temp"
     temp.mkdir(exist_ok=True)
@@ -90,20 +154,33 @@ def main() -> None:
         source.write_text(code(SOURCE), encoding="utf-8")
         portable = work / "empty.mso"
         executable = work / "empty.mexe"
-        run([*cli, "compile", str(source), "-O2", "-o", str(portable), "--no-config"], work)
-        run([*cli, "bind-ir", str(portable), "-o", str(executable), "--no-config"], work)
+        run(
+            [*cli, "compile", str(source), "-O2", "-o", str(portable), "--no-config"],
+            work,
+        )
+        run(
+            [*cli, "bind-ir", str(portable), "-o", str(executable), "--no-config"], work
+        )
         for artifact in (source, portable, executable):
             run([*cli, "run", str(artifact), "-O2", "--no-config"], work)
             actual = (work / "result.txt").read_text(encoding="utf-8")
             if actual.split("|") != ["ok"] * 23:
                 raise AssertionError(f"{artifact.suffix}: {actual}")
-        for invalid in NEGATIVE:
+        for invalid, diagnostic in NEGATIVE:
             source.write_text(code(invalid), encoding="utf-8")
-            result = subprocess.run([*cli, "check", str(source), "--no-config"],
-                                    cwd=work, capture_output=True, text=True)
-            if not result.returncode or "error[E0203]" not in result.stderr:
+            result = subprocess.run(
+                [*cli, "check", str(source), "--no-config"],
+                cwd=work,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            if not result.returncode or f"error[{diagnostic}]" not in result.stderr:
                 raise AssertionError(result.stderr)
-    print("PASS: 8 empty factories, 23 observations through 3 O2 CLI stages; 3 fixed-schema/comparer rejections")
+    print(
+        "PASS: 8 empty families, 23 observations through 3 O2 CLI stages; 3 fixed-schema/comparer rejections"
+    )
 
 
 if __name__ == "__main__":
