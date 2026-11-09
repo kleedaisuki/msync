@@ -357,3 +357,98 @@ These discriminators concern ordinary call semantics as well as `decltype` and
 changes were made in this review. The direct per-invocation precondition fix was
 already in progress when this causal finding was reported; transitive obligation
 projection remains an explicit part of the proposed completion criterion.
+
+## Finite keys for shared heap and resource views
+
+The frozen9 one-insert BTree failure was localized to `Compiler.Analyze`, before
+lowering or optimization. A separate bounded source-mirror trace then identifies
+an earlier concrete growth boundary: invocation 19 starts constructing a key
+with only nine Scope descriptions, five indexed descriptions and nine emitted
+functions. It does not reach its cache lookup/body-construction event before
+key text passes the mirror's 16 KiB observation stop. The preceding keys are
+14--851 characters. The large input includes the captured 30-member BTree class
+and a 12-member Scope. See the focused finite-trace note and receipts under
+`.temp/hir-finite-trace/`; this is a bounded diagnostic experiment, not a product
+limit or a completed BTree timing.
+
+### First change: serialize a graph, not its unfolded tree
+
+`AppendValueKey` uses a reference-identity recursion stack for `SemanticValue`.
+`KeyProvenance` assigns canonical ordinals to regions and locations, but does
+not stop expanding an already numbered node's body. One semantic region can
+therefore be revisited through different immutable value records and sibling
+capture paths. The key also traverses both a value's element view and indexed
+storage's element view. Canonical renaming alone does not bound repeated graph
+expansion. The current key does **not** directly traverse `Alternatives`, so
+that field must not be named as an observed direct key-expansion cause.
+
+The first correction is a per-key graph encoder: the first occurrence emits a
+canonical node definition; subsequent Scope-region, indexed-view and storage-cell
+occurrences emit a backreference. Definitions include the relevant type/callable
+schema and constraints. Resolve positive regions through the current context
+before encoding their bodies, and canonicalize captured storage owners rather
+than treating each immutable wrapper as a new object. Negative structural Scope
+regions need their own view identity; `-1` is not a shared object identity.
+Scalar inputs retain the existing allocation-light path.
+
+This change addresses the measured first boundary. It does not establish that
+later signature solving or resource-domain growth already terminates.
+
+### Second boundary: formal roles are not candidate-resource lists
+
+Three current interfaces encode the same cardinality-dependent assumption:
+
+* The key emits every `Scope.Aliases`/`IndexedAliases` member and its description.
+* `FormalInput` creates one formal indexed region for every actual candidate.
+* `InvocationProjection.Bind` pairs formal and actual candidates by array index.
+
+Consequently, merely deleting alias members from the key is unsound: a cache hit
+with a different candidate count would no longer have a valid substitution.
+Change those three boundaries together if the subsequent trace reaches this
+growth mechanism.
+
+Use a finite graph of **typed input roles**, rooted in ordered parameters and
+captures, with field/element/capture edges. For BTree, `self.nodes` is one indexed
+role; its element is a Node Scope view; `keys`, `values` and `children` are three
+different indexed roles even when two carriers are Number. Recursive edges close
+over bound allocation/type-schema roles rather than extending an access path
+for every fresh abstract object. A recursive summary must remain distinct from
+an exact root object. Allocation provenance must not use the new specialization
+instance ID, which would itself manufacture a new identity on every miss.
+
+Each formal resource view retains its read element union, write-admission
+constraints, sealed/unsealed carrier state, and definite-versus-summary status.
+The key records the finite role graph and proved No/May/Must alias relationships,
+not actual region numbers or candidate counts. Equal multi-candidate sets do not
+prove MustAlias: independent selections can have equal possible targets. A
+known identical singleton or a retained identical-choice origin can prove it.
+
+The call-local substitution maps each formal view to the actual candidate set.
+Reads join its descriptions; writes check every possible carrier and project
+updates back to the corresponding resources. A definite target can receive a
+strong update, while a summary write preserves old alternatives. Result
+projection expands a view to its actual aliases without merging runtime objects.
+Concept obligations and first-write carrier constraints travel through this
+same substitution. Ordinary one-resource inputs keep the direct fast path.
+
+The essential engineering distinction matches
+[LLVM's No/May/Must alias interface](https://llvm.org/docs/AliasAnalysis.html):
+possible overlap is not proof of identity, and read/write dependence is a
+separate result. The finite-summary design is informed by
+[Sagiv, Reps and Wilhelm's shape-analysis framework](https://www.cs.wisc.edu/wpis/papers/toplas02.pdf),
+which represents sets of mutable heaps abstractly instead of naming every
+concrete object. Msync needs only the small carrier/role fragment above, not a
+general shape-analysis engine or a new runtime object model.
+
+Finally, `ContainsCallable` currently finds a method inside its captured BTree
+class and treats that as a reason for a recursive-signature prequery. The trace
+shows matching publish/query analysis of `BTree::new`, which does not establish
+actual call recursion. Storage reachability and may-invoke recursion are distinct
+relations; a later call-graph/SCC refinement should not use containment alone.
+This is an observed duplicate-analysis cost, not evidence that it caused the
+key-19 explosion.
+
+Implementation and validation remain with the compiler owners. This review made
+no production changes, launched no product build and did not repeat the runaway
+input. The next discriminating observation is one corrected key/Analyze run,
+followed by caller-specific alias/carrier witnesses before a tree cost claim.
