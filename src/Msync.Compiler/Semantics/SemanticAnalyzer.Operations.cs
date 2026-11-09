@@ -193,7 +193,9 @@ internal sealed partial class SemanticAnalyzer
         }
         if (Runtime(receiver).Nullable) throw Error(node.Source, "Handle Null before selecting a member.", "E0201");
         if (Runtime(receiver) == TypeRef.Process && ProcessCapabilities.Members.TryGetValue(node.Text!, out var processType))
-            return new(hir.Type(processType), Add(node with { Data = -1 }, hir.Type(processType), [receiver.Node], context));
+            return new(hir.Type(processType), Add(node with { Data = -1,
+                Effects = node.Effects | NativeEffects(NativeSignatures.Get("process." + node.Text)) },
+                hir.Type(processType), [receiver.Node], context));
         if (Runtime(receiver) != TypeRef.Scope)
             throw Error(node.Source, $"Cannot select '{node.Text}' from {Runtime(receiver)}; '::' requires Scope or Process.", "E0206");
         var scope = receiver.Scope;
