@@ -209,7 +209,8 @@ internal static class InterproceduralSpecialization
                 case OpCode.Add:
                 case OpCode.Subtract:
                 case OpCode.Multiply:
-                case OpCode.Divide: case OpCode.Remainder:
+                case OpCode.Divide:
+                case OpCode.Remainder:
                     var right = Pop(); var left = new HashSet<int>(Pop()); left.UnionWith(right); stack.Add(left); break;
                 case OpCode.JumpIfFalse:
                 case OpCode.JumpIfTrue:
@@ -283,7 +284,7 @@ internal static class InterproceduralSpecialization
                     var scope = Pop(); stack.Add(scope.Members is { } members && members.TryGetValue(instruction.Text!, out var member) ? member : Unknown); break;
                 case OpCode.Call:
                     var arguments = PopMany(instruction.A); var callee = Pop();
-                    var target = callee.Function;
+                    var target = instruction.B < 0 ? null : callee.Function;
                     if (target is not null && instruction.Text is { } mapping)
                         target = FunctionDispatch.Parse(mapping).TryGetValue(target.Value, out var dispatched) ? dispatched : null;
                     else if (target is not null && instruction.B > 0) target = instruction.B - 1;

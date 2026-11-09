@@ -4,7 +4,9 @@ internal static class ModuleOptimization
 {
     internal static Module Compact(Module module)
     {
-        if (module.PreserveLocals) return module;
+        // Open-session dispatch tables retain physical callable identities across
+        // generations, including targets absent from this entry's closed graph.
+        if (module.PreserveLocals || module.SessionDispatches is { Count: > 0 }) return module;
         var functions = new HashSet<int>();
         var constants = new HashSet<int>();
         var work = new Queue<int>();

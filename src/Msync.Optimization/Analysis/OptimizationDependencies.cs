@@ -16,7 +16,7 @@ internal readonly struct OptimizationDependencies
         for (int pc = 0; pc < function.Instructions.Count; pc++)
         {
             var instruction = function.Instructions[pc];
-            if (instruction.Op != OpCode.Call) continue;
+            if (instruction.Op != OpCode.Call || instruction.B < 0) continue;
             if (instruction.B > 0) Add(ref calls, instruction.B - 1, module, effects);
             if (instruction.Text is null) continue;
             foreach (var target in FunctionDispatch.Parse(instruction.Text).Values)

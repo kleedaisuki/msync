@@ -238,7 +238,8 @@ internal static class GraphOptimization
             var instruction = node.Instruction;
             var left = node.Inputs.Length > 0 ? Input(0) : null;
             var right = node.Inputs.Length > 1 ? Input(1) : null;
-            if (instruction.Op == OpCode.Call && left is FunctionValue { NativeName: not null } native) node.NativeName = native.NativeName;
+            if (instruction.Op == OpCode.Call && instruction.B >= 0
+                && left is FunctionValue { NativeName: not null } native) node.NativeName = native.NativeName;
             node.Constant = instruction.Op switch
             {
                 OpCode.Constant => ConstantInterner.IsImmutable(constants[instruction.A]) ? constants[instruction.A] : null,

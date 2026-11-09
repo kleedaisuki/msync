@@ -388,6 +388,12 @@ internal static class MemoryEffects
 
         private ValueInfo Call(State state, ValueInfo callee, ValueInfo[] arguments, Instruction instruction)
         {
+            if (instruction.B < 0)
+            {
+                Unknown(state, [callee, .. arguments]);
+                deferred = true;
+                return ValueInfo.Top;
+            }
             var result = ValueInfo.Empty;
             if (callee.Unknown || callee.Origins.Length > 0 || callee.Closures.Length == 0)
             { Unknown(state, [callee, .. arguments]); result = ValueInfo.Top; }

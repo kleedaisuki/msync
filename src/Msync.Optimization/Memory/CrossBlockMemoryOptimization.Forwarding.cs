@@ -83,6 +83,8 @@ internal static partial class CrossBlockMemoryOptimization
 
         private Reference CallResult(int pc, Reference[] arguments)
         {
+            if (code[pc].Op == OpCode.Call && code[pc].B < 0)
+                return new(default, Opaque: true, Kinds: TypeKind.Any);
             if (NativeName(arguments[0]) is { } name && NativeSignatures.TryGet(name, out var native))
                 return new(default, Opaque: true, Kinds: native.Result.Kind,
                     Eager: EagerNative(name, native, arguments.Skip(1).ToArray()));
@@ -107,6 +109,7 @@ internal static partial class CrossBlockMemoryOptimization
 
         private bool MayRebind(int pc, Reference[] arguments)
         {
+            if (code[pc].Op == OpCode.Call && code[pc].B < 0) return true;
             if (NativeName(arguments[0]) is { } name) return NativeInvokes(name, arguments.Skip(1).ToArray());
             if (summaries is null || !Target(pc, arguments, out var target)) return true;
             var effects = summaries[target];
@@ -121,6 +124,7 @@ internal static partial class CrossBlockMemoryOptimization
 
         private bool Target(int pc, Reference[] arguments, out int target)
         {
+            if (code[pc].Op == OpCode.Call && code[pc].B < 0) { target = -1; return false; }
             if (targets.TryGetValue(pc, out target)) return true;
             var callee = arguments[0];
             if (callee.Closure == 0 || callee.Function < 0 || code[pc].Op != OpCode.Call) return false;

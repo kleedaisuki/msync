@@ -193,9 +193,9 @@ internal static class FunctionInlining
                 case OpCode.GetMember:
                     var scope = Pop(); stack.Add(scope?.Members is { } members && members.TryGetValue(instruction.Text!, out var member) ? member : null); break;
                 case OpCode.Call:
-                    PopMany(instruction.A); var closure = Pop(); var target = instruction.B > 0 && (!requireKnownCallee || closure?.Function is not null)
+                    PopMany(instruction.A); var closure = Pop(); var target = instruction.B < 0 ? null : instruction.B > 0 && (!requireKnownCallee || closure?.Function is not null)
                         ? instruction.B - 1 : instruction.Text is null ? closure?.Function : null;
-                    if (instruction.Text is not null && closure?.Function is { } identity
+                    if (instruction.B >= 0 && instruction.Text is not null && closure?.Function is { } identity
                         && FunctionDispatch.Parse(instruction.Text).TryGetValue(identity, out var dispatched)) target = dispatched;
                     if (target is { } known && (layouts is null || closure?.Captures is not { } count || count <= layouts[known].LocalCount)) targets[pc] = known;
                     stack.Add(null); Array.Clear(locals); break;
