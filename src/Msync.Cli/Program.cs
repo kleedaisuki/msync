@@ -21,7 +21,6 @@ internal static class Program
         string color = TerminalPresentation.RequestedColor(args);
         try
         {
-            if (args.Length != 0 && args[0] == "legacy") return await Legacy(args[1..]);
             if (args.Contains("--language-server", StringComparer.Ordinal)) return await new LanguageServer(CheckForEditor, source => Formatter.Format(source)).RunAsync();
             consoleEncoding = ConsoleEncodingScope.Open();
             if (args.Contains("--help", StringComparer.Ordinal) || args.Contains("-h", StringComparer.Ordinal))
@@ -58,17 +57,14 @@ internal static class Program
                 MemoryLimit = checked((long)configuration.MemoryLimit),
                 SpoolLimit = configuration.SpoolLimit is { } limit ? checked((long)limit) : null
             };
-            if (options.Syntax is not (null or "0.8" or "0.8.0")) return await Legacy(args);
             telemetry = TelemetrySession.TryOpen(configuration, options.Command, options.File, options.TracePath, options.TelemetryDatabase, options.NoTelemetry);
             if (options.Command == "repl") return Complete(await Repl(options, telemetry, configuration), telemetry);
             if (options.Command == "doctor") return Complete(Doctor(), telemetry);
             string file = options.File ?? throw new ArgumentException("A source or artifact filename is required; use --help for commands.");
             if (options.Command == "fmt") return Complete(Format(file, options), telemetry);
-            if (file.EndsWith(".mobj", StringComparison.OrdinalIgnoreCase) || file.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) return Complete(await Legacy(args), telemetry);
             bool binary = IsArtifact(file);
             string? source = binary ? null : await ReadSource(file);
             if (source is not null) snapshot = new(file, source);
-            if (source is not null && IsLegacySource(source)) return Complete(await Legacy(args, file == "-" ? source : null), telemetry);
             long compileStart = Stopwatch.GetTimestamp();
             Module module = binary ? Artifact.Read(file) : SourceCompiler.Compile(source!, file, options.Optimization);
             telemetry?.Observe(new("compile", "ok", Source: file, DurationNanoseconds: (long)(Stopwatch.GetElapsedTime(compileStart).TotalMilliseconds * 1_000_000)));
@@ -127,7 +123,6 @@ internal static class Program
         EditorCompiler.Analyze(source, name ?? "<source>");
 
     private static bool IsArtifact(string file) => file.EndsWith(".mso", StringComparison.OrdinalIgnoreCase) || file.EndsWith(".mexe", StringComparison.OrdinalIgnoreCase);
-    private static bool IsLegacySource(string source) => source.Split('\n').Take(5).Any(line => line.Trim().StartsWith("# msync: 0.", StringComparison.Ordinal) && !line.Trim().StartsWith("# msync: 0.8", StringComparison.Ordinal));
     private static ValueTask<string> ReadSource(string file) => file == "-"
         ? new(Console.In.ReadToEndAsync()) : ValueTask.FromResult(File.ReadAllText(file));
     private static async Task<byte[]> ReadArtifactInput()
@@ -182,24 +177,6 @@ internal static class Program
     {
         foreach (string program in new[] { "ssh", "wsl" }) Console.WriteLine($"{program}: {FindExecutable(program) ?? "not found on PATH"}");
         return 0;
-    }
-
-    private static async Task<int> Legacy(string[] args, string? source = null)
-    {
-        string? executable = Environment.GetEnvironmentVariable("MSYNC_LEGACY");
-        executable ??= FindExecutable("msync-legacy");
-        if (executable is null)
-            throw new ArgumentException("This command/source uses the preserved Rust baseline. Build it with `cargo build --release --manifest-path legacy/Cargo.toml`, then set MSYNC_LEGACY to the resulting msync executable, or run it directly with these arguments.");
-        ProcessStartInfo start = new(executable) { UseShellExecute = false, RedirectStandardInput = source is not null };
-        foreach (string arg in args) start.ArgumentList.Add(arg);
-        using Process process = Process.Start(start) ?? throw new IOException($"Cannot launch legacy executable '{executable}'");
-        if (source is not null)
-        {
-            await process.StandardInput.WriteAsync(source);
-            process.StandardInput.Close();
-        }
-        await process.WaitForExitAsync();
-        return process.ExitCode;
     }
 
     private static string? FindExecutable(string name)

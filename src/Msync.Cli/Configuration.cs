@@ -48,7 +48,7 @@ internal sealed class Configuration
         if (MemoryLimit < (ulong)BufferSize) throw Error("execution.memory_limit", "must admit at least one execution.buffer_size buffer");
         _ = SpoolLimit;
         RequireChoice("ui.color", "auto", "always", "never");
-        RequireChoice("language.syntax", "0.8", "0.8.0", "0.7", "0.7.3", "0.6", "0.5");
+        RequireChoice("language.syntax", "0.8", "0.8.0");
         if (settings["telemetry.enabled"].Value is not bool) throw Error("telemetry.enabled", "must be a Boolean");
         _ = Unsigned("progress.delay_ms");
         _ = Unsigned("progress.interval_ms");

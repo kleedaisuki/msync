@@ -48,5 +48,5 @@ missing expressions or require the source file to remain available.
 that stream as bytes using your shell's byte-preserving facilities; do not
 capture it through a text transcoding pipeline.
 
-Old explicit source/object formats remain under the preserved Rust baseline
-through `msync legacy ...` or `MSYNC_LEGACY`. Current skill examples use 0.8.
+Current commands accept the 0.8 language and format-4 bytecode. Earlier source
+and object formats are historical releases, not inputs to this implementation.

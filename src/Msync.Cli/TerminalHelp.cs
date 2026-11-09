@@ -43,7 +43,6 @@ internal static class TerminalHelp
         Row("repl", "Edit and evaluate interactively", color);
         Row("config", "Show effective settings and their origins", color);
         Row("doctor", "Locate optional native SSH/WSL clients", color);
-        Row("legacy ...", "Run the separately installed Rust baseline", color);
         Row("skill [TOPIC ...]", "Browse progressive language/tooling notes", color);
         Row("help [COMMAND|syntax]", "Read command details or the language guide", color);
         Console.WriteLine();
@@ -226,7 +225,6 @@ internal static class TerminalHelp
         ["fmt"] = new("format source", "fmt FILE [--check|--stdout]", ["Formats in place by default. --stdout prints the result instead; --check\nreturns 1 if formatting differs and never writes. '-' reads standard input.", "The target is 80 columns. Long calls and expressions break at syntax\nboundaries; literals are not split merely to meet a width target."], ["msync fmt sync.msync", "msync fmt sync.msync --check", "msync fmt sync.msync --stdout"]),
         ["repl"] = new("evaluate interactively", "repl", ["Bindings and functions persist across submissions. Earlier effects are not\nreplayed. Tab completes names and paths; /help lists session commands.", "Shift+Enter inserts a newline. An unfinished expression continues naturally.\nCtrl+C cancels input or running work without discarding earlier bindings."], ["msync repl"]),
         ["config"] = new("inspect effective configuration", "config [--config FILE|--no-config]", ["Prints TOML settings and their origins without creating runtime state.\nCommand-line options override discovered configuration values."], ["msync config", "msync --no-config config", "msync --config settings.toml config"]),
-        ["doctor"] = new("inspect optional transports", "doctor", ["Locates native ssh and wsl executables on PATH. A local-only script needs\nneither transport. Native clients retain their aliases, agents, and prompts."], ["msync doctor"]),
-        ["legacy"] = new("run the preserved Rust baseline", "legacy [ARGUMENTS...]", ["Runs the separately installed Rust implementation with unchanged arguments.\nSet MSYNC_LEGACY to its executable, or install msync-legacy on PATH.", "The compatibility boundary preserves old source and object semantics.\nThe 0.8 interpreter never reinterprets old debug source."], ["msync legacy --version"])
+        ["doctor"] = new("inspect optional transports", "doctor", ["Locates native ssh and wsl executables on PATH. A local-only script needs\nneither transport. Native clients retain their aliases, agents, and prompts."], ["msync doctor"])
     };
 }
