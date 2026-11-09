@@ -241,8 +241,11 @@ internal sealed partial class Compilation
                 remaining = new(remaining.Kind & ~covered, remaining.Element);
             }
             if (match.Value is NameExpr name && frame.Environment.TryGetValue(name.Name, out var bound))
-                frame.Bind(name.Name, bound with { Info = arm.Pattern is TypePattern type
-                    ? RefineInfo(bound.Info, ResolveType(frame, type.Type), true, true) : bound.Info with { Type = refined } });
+                frame.Bind(name.Name, bound with
+                {
+                    Info = arm.Pattern is TypePattern type
+                    ? RefineInfo(bound.Info, ResolveType(frame, type.Type), true, true) : bound.Info with { Type = refined }
+                });
             else frame.Environment = arm.Pattern is TypePattern type
                 ? RefineMember(frame, match.Value, ResolveType(frame, type.Type), true, true) : RefineMember(frame, match.Value, refined, true);
             if (arm.Pattern is NamePattern { Name: not "_" } capture) frame.Bind(capture.Name, new(slot, value with { Type = refined }));
@@ -288,8 +291,11 @@ internal sealed partial class Compilation
     {
         var refined = PatternType(frame, pattern, remaining);
         if (expression is NameExpr name && frame.Environment.TryGetValue(name.Name, out var binding))
-            frame.Bind(name.Name, binding with { Info = pattern is TypePattern type
-                ? RefineInfo(binding.Info, ResolveType(frame, type.Type), true, true) : binding.Info with { Type = refined } });
+            frame.Bind(name.Name, binding with
+            {
+                Info = pattern is TypePattern type
+                ? RefineInfo(binding.Info, ResolveType(frame, type.Type), true, true) : binding.Info with { Type = refined }
+            });
         else frame.Environment = pattern is TypePattern type
             ? RefineMember(frame, expression, ResolveType(frame, type.Type), true, true) : RefineMember(frame, expression, refined, true);
         if (pattern is NamePattern { Name: not "_" } capture) frame.Bind(capture.Name, new(slot, value with { Type = refined }));

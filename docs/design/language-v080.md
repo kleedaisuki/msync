@@ -43,6 +43,24 @@ supply its non-null type evidence, then the solved storage type is fixed. Branch
 refinement removes null from the other branch, and a null arm in `match` removes
 that case from the following catch-all. Conditions remain strictly Bool.
 
+`for` retains its Null result and accepts bare `break`; value-producing exits
+belong to `loop { ... break value; }`. Nested exits select the nearest loop.
+Break edges carry their own flow facts, rather than borrowing a surviving
+fallthrough refinement. Abrupt exits close the active iterators they leave,
+then close acquire regions; ordinary exhaustion needs no extra operation.
+Iterator close is an internal native capability, not a new source type or
+bytecode format.
+
+Destructuring a Range snapshots only the requested finite prefix once, then
+indexes that snapshot. Extra input is still ignored and a short input still
+fails at the missing index. This neither enumerates an unbounded suffix nor
+reruns a lazy callback separately for each binding.
+
+A value of type Type is not itself the type it denotes. Unknown denotations
+cannot be folded to false by comparing the metatype's bit with Number or String.
+Successful singleton type tests retain Type as the value type and record the
+proved denotation for branch-local casts; ordinary payload narrowing is separate.
+
 The finite semantic universe includes Bool, String, Path, Function, Scope,
 Connection, Process, Null, Range with an inferred item type, and Type values.
 Number is retained as a count primitive for the established range APIs and
