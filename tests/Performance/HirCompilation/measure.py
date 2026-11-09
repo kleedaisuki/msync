@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from world_scaling import scaling_cases
+
 SOURCES: dict[str, str] = {
     "none": "let value = true; value",
     "bool": "$std::bool::both(true, false)",
@@ -75,8 +77,11 @@ def main() -> None:
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--samples", type=int, default=7)
     parser.add_argument("--retention-only", action="store_true")
+    parser.add_argument("--world-scaling", action="store_true")
     parser.add_argument("--case", action="append", choices=tuple(SOURCES))
     args = parser.parse_args()
+    if args.world_scaling and args.case:
+        parser.error("--world-scaling selects its own four cases; omit --case")
     binary: Path | None = args.binary.resolve() if args.binary else None
     component: Path | None = args.component.resolve() if args.component else None
     if args.retention_only and component is None:
@@ -85,7 +90,9 @@ def main() -> None:
     output: Path = args.output.resolve()
     work.mkdir(parents=True, exist_ok=True)
     output.parent.mkdir(parents=True, exist_ok=True)
-    selected: list[str] = args.case or list(SOURCES)
+    scaling = scaling_cases() if args.world_scaling else {}
+    sources = {name: case.source for name, case in scaling.items()} or SOURCES
+    selected: list[str] = args.case or list(sources)
     records: list[dict[str, Any]] = []
     image: dict[str, Any] = {
         "source_revision": args.source_revision,
@@ -108,14 +115,24 @@ def main() -> None:
         }
     for name in selected:
         source = work / f"{name}.msync"
-        source.write_text(SOURCES[name], encoding="utf-8", newline="\n")
+        source.write_text(sources[name], encoding="utf-8", newline="\n")
         for level in (0, 2):
             record: dict[str, Any] = {
                 "case": name,
                 "optimization": level,
-                "source": SOURCES[name],
+                "source": sources[name],
                 "source_sha256": sha256(source),
             }
+            if name in scaling:
+                case = scaling[name]
+                record["scaling"] = {
+                    "unrelated_private_bindings": case.world_bindings,
+                    "calls": case.calls,
+                    "source_function_definitions": 1,
+                    "argument_shape": "Scope{item:Number}",
+                    "result_shape": "Scope{value:Scope{item:Number}}",
+                    "consumed_result_indices": [0, case.calls // 2, case.calls - 1],
+                }
             if binary is not None and not args.retention_only:
                 command = [
                     str(binary),

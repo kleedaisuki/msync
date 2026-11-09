@@ -157,3 +157,43 @@ The B-tree peak observations contain 1,054 and 1,636 samples respectively. Its
 sampled heap occupancy: these metrics answer different questions. A Typed HIR
 design should not convert short-lived inference traffic into permanently
 retained whole-program bodies merely to reduce its reported allocation count.
+
+## Unrelated-world scaling control
+
+`--world-scaling` replaces the ordinary cases with a 2 × 2 grid: 32 or 1,024
+unrelated private bindings, and 8 or 64 calls of one `wrap(value: Scope)`
+definition. Each argument is a fresh `Scope{item:Number}`; each result is a
+fresh `Scope{value:Scope{item:Number}}`. The final Scope consumes the first,
+middle and last result's numeric field. These are source-level anonymous
+objects with one structural shape, not 64 distinct code identities. All private
+bindings precede the definition and calls inside one block, making accidental
+copies of the caller's unrelated semantic world visible without importing the
+standard library or running IO. Each report records the grid dimensions,
+structural shapes, consumed indices and exact source bytes/hash.
+
+```sh
+python3 tests/Performance/HirCompilation/measure.py \
+  --world-scaling --component /absolute/frozen/probe/msync-hir-compilation \
+  --source-revision COMMIT --samples 7 \
+  --work .temp/hir-world/inputs --output .temp/hir-world/timing.json
+python3 tests/Performance/HirCompilation/measure.py \
+  --world-scaling --component /absolute/frozen/probe/msync-hir-compilation \
+  --source-revision COMMIT --retention-only \
+  --work .temp/hir-world/inputs --output .temp/hir-world/retention.json
+```
+
+Omit both binary options to generate and identify inputs without measuring a
+moving compiler. All four inputs were accepted by the frozen published 0.8.0
+Native compiler at O0; no candidate WIP was treated as a passing implementation.
+This addition does not repeat the accepted six-case baseline measurements.
+
+The discriminating question is whether analysis/lowering costs grow roughly
+with the unrelated world plus call sites, or multiply them by copying the whole
+world per call. Compare the call-count delta at each world size, not only the
+largest case's elapsed time. Report allocation traffic, held HIR, held bytecode
+and observed transient heap independently. The existing `functions` count is a
+final bytecode observation, not the number of semantic specializations. When
+the real candidate APIs are ready, record finalized HIR functions and distinct
+code instances before optimization alongside it; inlining and dead-code
+elimination may legitimately remove the residual wrapper. A source definition
+count of one is input metadata, not a fabricated candidate sharing result.
