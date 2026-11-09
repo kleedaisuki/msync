@@ -7,16 +7,16 @@ using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 
 namespace Msync.Compiler;
 
-internal sealed class SemanticObservationBuilder
+internal sealed partial class SemanticObservationBuilder
 {
     private readonly BoundProgram program;
     private readonly HirSourceId source;
     private readonly List<SemanticValueView> values = [];
     private readonly List<SemanticObservation> observations = [];
-    private readonly List<SemanticVisibility> contexts = [];
+    private readonly List<PendingVisibility> contexts = [];
     private readonly List<SemanticReceiver> receivers = [];
     private readonly List<SemanticPathOwner> pathOwners = [];
-    private readonly List<SemanticImport> imports = [];
+    private readonly List<PendingImport> imports = [];
     private readonly List<SemanticReference> references = [];
     private readonly Dictionary<(SemanticValue, SemanticScope?), SemanticValueId> valueIds = new(new ValueIdentityComparer());
     private readonly Dictionary<(HirNodeId, HirFunctionId), SemanticValueId> nodeValues = [];
@@ -31,7 +31,7 @@ internal sealed class SemanticObservationBuilder
     private readonly Dictionary<HirNodeId, BoundStandardUse[]> standardUses;
     private readonly Dictionary<HirSourceRange, BoundGlobalImport[]> globalImports;
     private readonly HashSet<BoundVisibility> recorded = new(ReferenceEqualityComparer.Instance);
-    private readonly Dictionary<(HirSourceRange, HirFunctionId), ImmutableDictionary<string, SemanticBindingView>> bindingViews = [];
+    private readonly Dictionary<SemanticContext, ObservationState> states = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<ImmutableDictionary<string, int>, ImmutableDictionary<string, SemanticConceptView>> conceptViews
         = new(ReferenceEqualityComparer.Instance);
 
@@ -105,7 +105,7 @@ internal sealed class SemanticObservationBuilder
             RecordPhysicalOwner(original, context);
         if (globalImports.TryGetValue(node.Source, out var selectedImports))
             foreach (var import in selectedImports)
-                imports.Add(new(Span(import.Source), Bindings(import.Bindings, context), true));
+                imports.Add(new(Span(import.Source), import.Bindings, Snapshot(context), true));
         if (after.TryGetValue(original, out var completed))
             foreach (var item in completed) RecordContext(item, context, concrete: true);
     }
@@ -118,10 +118,13 @@ internal sealed class SemanticObservationBuilder
         foreach (var item in program.Visibility)
             if (item.Owner.Source == source && !recorded.Contains(item))
                 RecordContext(item, generic, concrete: false);
+        var definitions = ImmutableDictionary.CreateBuilder<HirLocationId, SemanticBindingView>();
         foreach (var declaration in program.Declarations)
         {
-            if (declaration.Source.Source != source) continue;
             SemanticValue value = BoundValue(declaration.Location);
+            definitions.Add(declaration.Location, new(declaration.Name, declaration.Location,
+                Value(value, generic), Parameter(declaration.Location)));
+            if (declaration.Source.Source != source) continue;
             Observe(declaration.Source, value, generic, declaration.Name,
                 declaration.Kind == DeclarationKind.Parameter, concrete: false);
             references.Add(new(Span(declaration.Source), [Definition(declaration.Location)], false));
@@ -145,9 +148,17 @@ internal sealed class SemanticObservationBuilder
             int concept = program.Hir.Types[use.Type.Value].Concept;
             if (concept >= 0) references.Add(new(Span(use.Source), [program.Concepts[concept].Source]));
         }
+        var declarations = definitions.ToImmutable();
+        var visible = contexts.Select(item => new SemanticVisibility(Span(item.Visibility.Owner),
+            item.Visibility.IncludesEnd, item.Visibility.Position,
+            item.Facts.Bindings(item.Visibility.Bindings, declarations),
+            Concepts(item.Visibility.Concepts), item.Concrete)).ToImmutableArray();
+        var imported = imports.Select(item => new SemanticImport(item.Span,
+            item.Facts.Bindings(item.Bindings, declarations), item.Concrete)).ToImmutableArray();
+        foreach (var state in states.Values) state.Detach();
         return new(module, source, values.ToImmutableArray(), observations.ToImmutableArray(),
-            contexts.ToImmutableArray(), receivers.ToImmutableArray(), pathOwners.ToImmutableArray(),
-            imports.ToImmutableArray(), references.ToImmutableArray());
+            visible, receivers.ToImmutableArray(), pathOwners.ToImmutableArray(),
+            imported, references.ToImmutableArray());
     }
 
     private void Observe(HirSourceRange range, SemanticValue value, SemanticContext context,
@@ -159,30 +170,8 @@ internal sealed class SemanticObservationBuilder
 
     private void RecordContext(BoundVisibility item, SemanticContext context, bool concrete)
     {
-        contexts.Add(new(Span(item.Owner), item.IncludesEnd, item.Position,
-            Bindings(item.Bindings, context, item.Owner), Concepts(item.Concepts), concrete));
+        contexts.Add(new(item, Snapshot(context), concrete));
         recorded.Add(item);
-    }
-
-    private ImmutableDictionary<string, SemanticBindingView> Bindings(
-        ImmutableDictionary<string, HirLocationId> bindings, SemanticContext context, HirSourceRange? owner = null)
-    {
-        var key = (owner.GetValueOrDefault(), context.Function);
-        var result = owner is not null && bindingViews.TryGetValue(key, out var previous) ? previous
-            : ImmutableDictionary<string, SemanticBindingView>.Empty.WithComparers(StringComparer.Ordinal);
-        foreach (string name in result.Keys)
-            if (!bindings.ContainsKey(name)) result = result.Remove(name);
-        foreach (var (name, original) in bindings)
-        {
-            HirLocationId location = context.Location(original);
-            SemanticValue value = context.Values.GetValueOrDefault(location) ?? BoundValue(original);
-            SemanticValueId id = Value(value, context);
-            bool parameter = Parameter(original);
-            if (result.TryGetValue(name, out var old) && old.Location == location && old.Value == id && old.IsParameter == parameter) continue;
-            result = result.SetItem(name, new(name, location, id, parameter));
-        }
-        if (owner is not null) bindingViews[key] = result;
-        return result;
     }
 
     private ImmutableDictionary<string, SemanticConceptView> Concepts(ImmutableDictionary<string, int> concepts)

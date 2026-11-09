@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using Msync.Core;
 using Msync.Hir;
 using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
@@ -8,10 +7,10 @@ namespace Msync.Compiler;
 internal sealed class EditorSemanticIndex(SemanticObservationView view,
     Func<string, NativePresentation?>? nativeMetadata = null)
 {
-    private readonly SemanticValuePresenter presenter = new(view, nativeMetadata);
 
     public IReadOnlyList<SemanticOccurrence> Occurrences()
     {
+        SemanticValuePresenter presenter = new(view, nativeMetadata);
         List<SemanticOccurrence> result = [];
         foreach (var group in view.Observations.Where(item => item.Span.Source == view.Source)
             .GroupBy(item => new SourceSpan(item.Span.Start, item.Span.Length)))
@@ -30,15 +29,16 @@ internal sealed class EditorSemanticIndex(SemanticObservationView view,
 
     public EditorContext At(int offset)
     {
+        SemanticValuePresenter presenter = new(view, nativeMetadata);
         var imports = ImportsAt(offset);
         if (imports.Length != 0)
-            return new(DescribeBindings(imports.Select(item => item.Bindings)), null) { IsGlobalImport = true };
+            return new(DescribeBindings(imports.Select(item => item.Bindings), presenter), null) { IsGlobalImport = true };
         var contexts = ContextsAt(offset);
         var receivers = ReceiversAt(offset);
         var paths = PathOwnersAt(offset);
         SemanticConnectionView? endpoint = paths.Length == 0 ? null : paths[0].Endpoint;
         if (paths.Any(item => item.Endpoint != endpoint)) endpoint = null;
-        return new(DescribeBindings(contexts.Select(item => item.Bindings)),
+        return new(DescribeBindings(contexts.Select(item => item.Bindings), presenter),
             receivers.Length == 0 ? null : presenter.Describe("", receivers.Select(item => item.Value)),
             receivers.Length == 0 ? EditorReceiverKind.Member : receivers[0].Kind,
             SemanticValuePresenter.Connection(endpoint), paths.Length != 0);
@@ -54,12 +54,13 @@ internal sealed class EditorSemanticIndex(SemanticObservationView view,
 
     public SemanticMember? Resolve(int offset, string name)
     {
+        SemanticValuePresenter presenter = new(view, nativeMetadata);
         if (name.StartsWith('$')) return null;
         var imports = ImportsAt(offset);
-        if (imports.Length != 0) return ResolveBindings(imports.Select(item => item.Bindings).ToArray(), name);
+        if (imports.Length != 0) return ResolveBindings(imports.Select(item => item.Bindings).ToArray(), name, presenter);
         var receivers = ReceiversAt(offset);
         if (receivers.Length == 0)
-            return ResolveBindings(ContextsAt(offset).Select(item => item.Bindings).ToArray(), name);
+            return ResolveBindings(ContextsAt(offset).Select(item => item.Bindings).ToArray(), name, presenter);
         var receiver = presenter.Describe("", receivers.Select(item => item.Value));
         return receiver.Members?.FirstOrDefault(item => item.Name == name);
     }
@@ -111,19 +112,21 @@ internal sealed class EditorSemanticIndex(SemanticObservationView view,
         return selected.Any(item => item.Concrete) ? selected.Where(item => item.Concrete).ToArray() : selected;
     }
 
-    private IReadOnlyList<SemanticMember> DescribeBindings(IEnumerable<ImmutableDictionary<string, SemanticBindingView>> variants)
+    private static IReadOnlyList<SemanticMember> DescribeBindings(IEnumerable<IReadOnlyDictionary<string, SemanticBindingView>> variants,
+        SemanticValuePresenter presenter)
     {
         var contexts = variants.ToArray();
         if (contexts.Length == 0) return [];
         return contexts[0].Where(pair => !pair.Key.StartsWith('$') && contexts.All(item => item.ContainsKey(pair.Key)))
-            .Select(pair => Binding(pair.Key, contexts.Select(item => item[pair.Key]).ToArray())).ToArray();
+            .Select(pair => Binding(pair.Key, contexts.Select(item => item[pair.Key]).ToArray(), presenter)).ToArray();
     }
 
-    private SemanticMember? ResolveBindings(IReadOnlyList<ImmutableDictionary<string, SemanticBindingView>> contexts, string name) =>
+    private static SemanticMember? ResolveBindings(IReadOnlyList<IReadOnlyDictionary<string, SemanticBindingView>> contexts, string name,
+        SemanticValuePresenter presenter) =>
         contexts.Count == 0 || contexts.Any(item => !item.ContainsKey(name)) ? null
-            : Binding(name, contexts.Select(item => item[name]).ToArray());
+            : Binding(name, contexts.Select(item => item[name]).ToArray(), presenter);
 
-    private SemanticMember Binding(string name, IReadOnlyList<SemanticBindingView> bindings)
+    private static SemanticMember Binding(string name, IReadOnlyList<SemanticBindingView> bindings, SemanticValuePresenter presenter)
     {
         var member = presenter.Describe(name, bindings.Select(item => item.Value));
         return bindings.All(item => item.IsParameter) && member.Type.StartsWith("Scope", StringComparison.Ordinal)

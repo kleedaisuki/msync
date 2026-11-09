@@ -9,20 +9,30 @@ internal sealed class SemanticFacts<TKey, TValue>(IReadOnlyDictionary<TKey, TVal
     : IReadOnlyDictionary<TKey, TValue> where TKey : notnull
 {
     private Dictionary<TKey, TValue>? local;
+    private Action<TKey, TValue>? changed;
+    public void ObserveChanges(Action<TKey, TValue>? observer) => changed = observer;
     public IEnumerable<KeyValuePair<TKey, TValue>> LocalEntries => local is null ? [] : local;
     public TValue this[TKey key]
     {
         get => TryGetValue(key, out var value) ? value : throw new KeyNotFoundException();
-        set => (local ??= [])[key] = value;
+        set
+        {
+            (local ??= [])[key] = value;
+            changed?.Invoke(key, value);
+        }
     }
     public IEnumerable<TKey> Keys => this.Select(pair => pair.Key);
     public IEnumerable<TValue> Values => this.Select(pair => pair.Value);
     public int Count => parent is null ? local?.Count ?? 0 : this.Count(_ => true);
-    public void Add(TKey key, TValue value) => (local ??= []).Add(key, value);
+    public void Add(TKey key, TValue value)
+    {
+        (local ??= []).Add(key, value);
+        changed?.Invoke(key, value);
+    }
     public bool TryAdd(TKey key, TValue value)
     {
         if (ContainsKey(key)) return false;
-        (local ??= []).Add(key, value);
+        Add(key, value);
         return true;
     }
     public bool ContainsKey(TKey key) => local?.ContainsKey(key) == true || parent?.ContainsKey(key) == true;

@@ -57,6 +57,59 @@ the new HintPath and artifacts path are correct. For such isolated hosts, use
 Compiler hash with the snapshot receipt before interpreting a failure. An
 apphost hash alone does not identify its managed dependency generation.
 
+### Incremental observation projection and query ownership
+
+A visibility point shares the binder's immutable lexical name-to-location map.
+The observer separately maintains persistent projected location facts and capture
+remappings. Opt-in `SemanticFacts` notifications record changed locations and
+object regions; unchanged bindings are not walked at every statement boundary.
+A region-to-root dependency index refreshes nested Scope aliases after writes,
+while earlier source points retain their previous projected value IDs. Normal
+headless analysis leaves the notification callback unset and allocates no
+observation state. Freezing detaches callbacks and publishes only immutable maps,
+IDs and presentation metadata, never a semantic context or inference dictionary.
+
+Completion and item resolution can run concurrently over one document result.
+`EditorSemanticIndex` therefore creates one query-local `SemanticValuePresenter`
+per `At`, `Resolve` or occurrence projection. Its caches and recursion sets are
+reused within that request, not shared between worker and protocol threads.
+
+The matched managed probe in `tests/Performance/HirEditor` analyzes a partial,
+uncalled generic function after ordinary Path bindings, then requests its lexical
+context and known receiver member. Both images ran on .NET 10.0.14 with
+`DOTNET_TieredCompilation=0`, three warmups and nine warm samples. Explicit frozen
+HintPaths and the loaded Compiler hashes identify the actual inputs: baseline
+`637bd09` used `cc80ad51f6bbc983e7133f0765c75bd9f15d26aa174bc3de4cd89b7fde835122`;
+the Typed HIR candidate used
+`46868919dc98d58f95b7d5b2c144ea25f643df57d8cc055f24deac27e47c35e6`.
+Source hashes and visible binding counts matched, and no build/run/publish job
+was active when the paired measurement began.
+
+| Preceding bindings | 0.8.0 warm median | Typed HIR warm median | 0.8.0 allocated bytes | Typed HIR allocated bytes |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 0.3614 ms | 0.3052 ms | 70,096 | 73,112 |
+| 80 | 4.0297 ms | 2.0765 ms | 880,248 | 1,324,464 |
+| 400 | 19.5824 ms | 23.2747 ms | 4,192,336 | 6,205,856 |
+
+Before this change, the same candidate workload at 400 bindings allocated
+13,373,072 bytes and had a 139.8788 ms exploratory median. That initial run
+included concurrent builds, so its time is not a controlled end-to-end speedup
+claim. Replacing the eager binding/point cross product materially reduced both
+work and allocation. In the quiet paired run, allocation grew 4.69 times for
+five times as many bindings, rather than quadratically. The remaining candidate
+400-binding median is 3.69 ms higher and allocates about 2 MB more than 0.8.0;
+the raw timing distributions overlap widely. This probe includes the new
+semantic pipeline's metadata as well as presentation snapshots, so it does not
+attribute all remaining allocation to the editor. Native LSP latency remains a
+separate measurement. Raw samples live in
+`.temp/hir-editor-component/comparison4.json` and `comparison5.json`.
+
+The changed representation passed the original eleven real-LSP checks and all
+47 existing standard-concept tooling contracts. Eighteen direct editor checks
+include incomplete generic bodies, nested Scope aliases before/after mutation,
+shadowed lexical identities and concurrent completion/resolution. The linked
+immutable projection checks remain at 42, including release of HIR body arenas.
+
 This is the implementation contract for completing names and members inside
 functions and Scopes in 0.8. It extends the original top-level prefix recovery;
 the focused acceptance results belong beside the implementation as they land.

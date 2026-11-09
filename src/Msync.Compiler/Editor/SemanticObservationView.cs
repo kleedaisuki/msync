@@ -1,4 +1,6 @@
+using System.Collections;
 using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
 using Msync.Core;
 using Msync.Hir;
 using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
@@ -38,7 +40,7 @@ internal readonly record struct SemanticObservation(HirSourceRange Span,
     bool IsParameter = false);
 
 internal sealed record SemanticVisibility(SourceSpan Owner, bool IncludesEnd,
-    int Point, ImmutableDictionary<string, SemanticBindingView> Bindings,
+    int Point, IReadOnlyDictionary<string, SemanticBindingView> Bindings,
     ImmutableDictionary<string, SemanticConceptView> Concepts, bool Concrete = true);
 
 internal readonly record struct SemanticReceiver(SourceSpan Span,
@@ -49,7 +51,7 @@ internal readonly record struct SemanticPathOwner(SourceSpan Span,
     SemanticConnectionView? Endpoint, bool Concrete = true);
 
 internal sealed record SemanticImport(SourceSpan Span,
-    ImmutableDictionary<string, SemanticBindingView> Bindings, bool Concrete = true);
+    IReadOnlyDictionary<string, SemanticBindingView> Bindings, bool Concrete = true);
 
 internal readonly record struct SemanticReference(SourceSpan Span,
     ImmutableArray<HirSourceRange> Definitions, bool Concrete = true);
@@ -97,4 +99,34 @@ internal sealed record SemanticObservationView(SemanticTypeTables Module, HirSou
             source, values, observations, contexts, receivers, pathOwners, imports, references) { }
 
     public SemanticValueView Value(SemanticValueId id) => Values[id.Value];
+}
+
+// Lexical membership and value facts share independently across source points.
+// Only a requested completion/lookup turns their join into named descriptions.
+internal sealed class SemanticBindingMap(ImmutableDictionary<string, HirLocationId> names,
+    ImmutableDictionary<HirLocationId, SemanticValueId> values,
+    ImmutableDictionary<HirLocationId, HirLocationId> locations,
+    ImmutableDictionary<HirLocationId, SemanticBindingView> definitions)
+    : IReadOnlyDictionary<string, SemanticBindingView>
+{
+    public int Count => names.Count;
+    public IEnumerable<string> Keys => names.Keys;
+    public IEnumerable<SemanticBindingView> Values => this.Select(pair => pair.Value);
+    public SemanticBindingView this[string name] => TryGetValue(name, out var value)
+        ? value : throw new KeyNotFoundException();
+    public bool ContainsKey(string name) => names.ContainsKey(name);
+    public bool TryGetValue(string name, [MaybeNullWhen(false)] out SemanticBindingView value)
+    {
+        if (!names.TryGetValue(name, out var original)) { value = null; return false; }
+        HirLocationId location = locations.GetValueOrDefault(original, original);
+        SemanticBindingView declaration = definitions[original];
+        value = declaration with { Name = name, Location = location,
+            Value = values.GetValueOrDefault(location, declaration.Value) };
+        return true;
+    }
+    public IEnumerator<KeyValuePair<string, SemanticBindingView>> GetEnumerator()
+    {
+        foreach (string name in names.Keys) yield return new(name, this[name]);
+    }
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 }
