@@ -60,10 +60,9 @@ a paired native-image measurement belongs after the candidate freezes.
 
 ## Acceptance evidence
 
-Implementation and integrated journey evidence will be appended once the
-corresponding source/compiler/native contracts are executable. New source being
-present is not itself acceptance of its closures, callbacks, effects or binary
-round trips.
+The following records exercise executable source/compiler/native contracts.
+New source being present is not itself acceptance of its closures, callbacks,
+effects or binary round trips.
 
 ### First integrated effect boundary
 
@@ -122,3 +121,29 @@ working directory. Their report is
 `.temp/stdlib-upgrade/snapshot3-env-concept-services.json`. Together these are
 thirty-six actual executions and 171 exact output-byte comparisons before the
 remaining corrected Regex factory routes.
+
+### Completed incremental acceptance
+
+The corrected embedded Regex source in managed producer snapshot 4 accepted all
+nine remaining O0/O2/O3 source/`.mso`/`.mexe` routes. Observations include the
+scalar index 2 and length 1 for `β` after `A🙂`, named capture selection,
+replacement text `A🙂[β]`, builder aliasing, independent construction and clearing.
+`.temp/stdlib-upgrade/snapshot4-regex.json` records the exact component identities
+and all nine successful executions.
+
+The completed independent integration set comprises:
+
+| Contract group | Accepted CLI executions | Exact output-byte comparisons |
+| --- | ---: | ---: |
+| List, Map and Set composition, producer 3 | 18 | 81 |
+| Environment and concept-backed File/Command, producer 3 | 18 | 90 |
+| Unicode Builder and corrected Regex factory, producer 4 | 9 | 81 |
+| Actual SSH File/Command composition, producer 2 | 3 | 15 |
+| Total | 48 | 267 |
+
+Only the affected nine Regex routes were rerun after the source factory fix;
+the previously accepted thirty-six local routes and unchanged SSH operations
+were retained rather than blindly repeated. These are Linux managed-product
+observations; Native AOT/platform packaging and paired native CLI latency are
+separate delivery-owner acceptance, not implied by these results. The preserved
+native baseline and opt-in benchmark are ready for that paired measurement.
