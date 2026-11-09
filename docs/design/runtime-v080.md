@@ -292,3 +292,26 @@ host Native AOT optimization from guest-bytecode feedback. The proposed first
 experiments are cheaper call resolution, guarded site caches and precompiled
 fused handlers; no native JIT, general OSR, custom GC or speculative filesystem
 proof is implemented or implied by that research.
+
+### Prepared execution metadata
+
+Executable projection builds the instruction-to-basic-block index once per
+immutable Module identity. A weak-key `ConditionalWeakTable` shares that prepared
+metadata between Interpreter instances without keeping discarded modules alive.
+The cached record contains only bytecode and block lookup arrays: singleton
+objects, captured cells, transfer results, filesystem observations and credentials
+remain owned by the interpreter or its explicit ExecutionSession. REPL image
+publication creates a new module identity; contextual projections continue to use
+the closure's captured BindingContext.
+
+This is static execution preparation, not a JIT or adaptive specialization. The
+runtime still admits each selected operation and handles its actual result.
+`tests/ArtifactCurrent` executes one cached image repeatedly to check that stores
+still run and separate interpreters do not share singleton state.
+
+The implementation uses the platform's [weak-key identity table](https://learn.microsoft.com/en-us/dotnet/api/system.runtime.compilerservices.conditionalweaktable-2)
+rather than a global strong module registry. A warmed constructor probe with
+1/128/1024 instruction bodies allocated 1,152/2,168/9,317 bytes before sharing and
+984 bytes at every size after sharing. Concurrent product builds made those first
+timing samples unsuitable for a causal latency claim; the allocation reduction
+isolates the eliminated per-PC index and temporary LINQ allocations.

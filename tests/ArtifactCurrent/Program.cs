@@ -73,4 +73,19 @@ try
     }
 }
 finally { Directory.Delete(root, recursive: true); }
+Module singleton = new([new NumberValue(0), new NumberValue(1)],
+    [new("main", 0, 1,
+    [
+        new(OpCode.GetSingleton, 1), new(OpCode.Dup), new(OpCode.IsNull), new(OpCode.JumpIfFalse, 8),
+        new(OpCode.Pop), new(OpCode.Constant, 0), new(OpCode.MakeScope, 1, Text: "count"), new(OpCode.SetSingleton, 1),
+        new(OpCode.StoreLocal, 0), new(OpCode.LoadLocal, 0), new(OpCode.LoadLocal, 0), new(OpCode.GetMember, Text: "count"),
+        new(OpCode.Constant, 1), new(OpCode.Add), new(OpCode.SetMember, Text: "count"), new(OpCode.Pop),
+        new(OpCode.LoadLocal, 0), new(OpCode.GetMember, Text: "count"), new(OpCode.Return)
+    ], TypeRef.Number)]);
+Module sharedPlan = Binding.Bind(singleton, new(Environment.CurrentDirectory, Environment.CurrentDirectory));
+Artifact.Validate(sharedPlan);
+Interpreter firstRun = new(sharedPlan);
+Require(await firstRun.ExecuteAsync() is NumberValue { Data: 1 }, "First executable singleton initialization failed");
+Require(await firstRun.ExecuteAsync() is NumberValue { Data: 2 }, "A cached plan skipped selected mutable operations");
+Require(await Interpreter.ExecuteAsync(sharedPlan) is NumberValue { Data: 1 }, "Cached executable metadata leaked singleton state into another interpreter");
 Console.WriteLine($"PASS: {assertions} current artifact and actual transfer contracts");
