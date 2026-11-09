@@ -176,7 +176,8 @@ jobs:
               if os.environ['POLISH_LINEAR'] == 'true':
                   arguments.extend(['--phase', 'linear-effect'])
               if os.environ['POLISH_MEMORY'] == 'true':
-                  arguments.extend(['--phase', 'memory-layout'])
+                  for phase in ('memory-layout', 'memory-nullable-payloads'):
+                      arguments.extend(['--phase', phase])
               if os.environ['POLISH_ARTIFACTS'] == 'true':
                   for phase in ('artifact-view', 'artifact-disassembly'):
                       arguments.extend(['--phase', phase])

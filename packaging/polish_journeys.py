@@ -43,6 +43,7 @@ def main() -> int:
             "repl-state",
             "linear-effect",
             "memory-layout",
+            "memory-nullable-payloads",
             "artifact-view",
             "artifact-disassembly",
             "navigation",
@@ -98,6 +99,7 @@ def main() -> int:
         ("repl-state", "repl_state_journey.py"),
         ("linear-effect", "linear_effect_journey.py"),
         ("memory-layout", "memory_layout_journey.py"),
+        ("memory-nullable-payloads", "mutable_state_journey.py"),
         ("artifact-view", "artifact_view_journey.py"),
         ("artifact-disassembly", "artifact_disassembly_journey.py"),
         ("navigation", "navigation_journey.py"),
@@ -129,6 +131,14 @@ def main() -> int:
                 "constructor-captured-holes",
                 "constraint-conversion",
                 "deferred-null-captures",
+            ):
+                extra.extend(["--case", case])
+            extra.extend(["--properties", "0"])
+        if name == "memory-nullable-payloads":
+            for case in (
+                "nullable-function-conditional",
+                "nullable-native-function",
+                "nullable-function-alternatives",
             ):
                 extra.extend(["--case", case])
             extra.extend(["--properties", "0"])
