@@ -40,6 +40,10 @@ that result while both process-dependent transfers remain pending; releasing the
 producer must finish both copies. Preparation may defer unknown source metadata
 to actual VM admission, but must not wait for the live producer before the caller
 can supply its completion.
+Two additional held-producer controls require both the callee and caller scalar
+prefixes to advance when the held path is in an unselected branch or the selected
+metadata belongs to an already-ready sibling file. They reject endpoint-global
+or parent-directory-wide waits for unrelated work.
 
 ## Spatial-storage discriminators
 

@@ -18,6 +18,8 @@ internal static class CallPreparationChecks
             await CheckClassification();
             await CheckMetadataFrontier();
             await CheckProcessFlowDeferral();
+            await CheckIndependentMetadata(observeSibling: false);
+            await CheckIndependentMetadata(observeSibling: true);
             foreach (string route in new[] { "module", "object", "executable" })
                 foreach (bool dispatch in new[] { false, true })
                     await CheckSelectedTarget(route, dispatch);
@@ -182,6 +184,57 @@ internal static class CallPreparationChecks
             Check(result is NullValue && counter.Data is NumberValue { Data: 1 }, "Deferring the helper copy replayed or skipped the caller prefix.");
             Check(File.ReadAllText(Path.Combine(work, "first.txt")) == "payload"
                 && File.ReadAllText(Path.Combine(work, "second.txt")) == "payload", "The promoted helper copy did not preserve its producer dependency.");
+        }
+
+        async Task CheckIndependentMetadata(bool observeSibling)
+        {
+            cases++;
+            string work = Path.Combine(root, observeSibling ? "ready-sibling-metadata" : "unselected-held-metadata");
+            Directory.CreateDirectory(work);
+            if (observeSibling) File.WriteAllText(Path.Combine(work, "ready.txt"), "ready");
+            TaskCompletionSource<ProcessValue> producer = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            ProcessValue process = new(0, "", "") { Completion = producer.Task };
+            CellValue counter = new(new NumberValue(0));
+            Instruction[] body = [new(OpCode.LoadLocal, 0), new(OpCode.Constant, 3), new(OpCode.Add), new(OpCode.StoreLocal, 0)];
+            body = body.Concat(observeSibling
+                ? new Instruction[]
+                {
+                    new(OpCode.LoadLocal, 1), new(OpCode.NativeCall, 1, Text: "fs.exists"), new(OpCode.JumpIfFalse, 9),
+                    new(OpCode.Constant, 7), new(OpCode.Return),
+                    new(OpCode.Constant, 4), new(OpCode.Return)
+                }
+                : new Instruction[]
+                {
+                    new(OpCode.False), new(OpCode.JumpIfFalse, 11), new(OpCode.LoadLocal, 1),
+                    new(OpCode.NativeCall, 1, Text: "fs.exists"), new(OpCode.Pop), new(OpCode.Constant, 4),
+                    new(OpCode.Return), new(OpCode.Constant, 4), new(OpCode.Return)
+                }).ToArray();
+            Module program = new([process, new PathValue("./held.txt"), new FunctionValue(1, [counter]),
+                new NumberValue(1), new StringValue(observeSibling ? "missing" : "unselected"), counter,
+                new PathValue(observeSibling ? "./ready.txt" : "./held.txt"), new StringValue("ready")],
+                [new("entry", 0, 2,
+                    [new(OpCode.Constant, 0), new(OpCode.GetMember, Text: "stdout"), new(OpCode.Constant, 1),
+                     new(OpCode.Transfer), new(OpCode.Pop), new(OpCode.Constant, 2), new(OpCode.Constant, 6),
+                     new(OpCode.Call, A: 1, B: 2), new(OpCode.StoreLocal, 1), new(OpCode.Constant, 5),
+                     new(OpCode.InitializeLocal, 0), new(OpCode.LoadLocal, 0), new(OpCode.Constant, 3),
+                     new(OpCode.Add), new(OpCode.StoreLocal, 0), new(OpCode.LoadLocal, 1), new(OpCode.Return)], TypeRef.String),
+                 new("observe_selected", 1, 2, body, TypeRef.String, CaptureCount: 1, ParameterTypes: [TypeRef.Path])],
+                Stage: ArtifactStage.Executable, Context: new(work, work), OptimizationLevel: 0) { ExecutionPlans = [] };
+            Task<Value> execution = Interpreter.ExecuteAsync(program, new(WorkingDirectory: work)).AsTask();
+            bool callerAdvanced = counter.Data is NumberValue { Data: 2 };
+            bool executionPending = !execution.IsCompleted;
+            bool producerHeld = !producer.Task.IsCompleted;
+            bool unpublished = !File.Exists(Path.Combine(work, "held.txt"));
+            producer.SetResult(new ProcessValue(0, "held-payload", ""));
+            Value result = await execution.WaitAsync(TimeSpan.FromSeconds(10));
+            string expected = observeSibling ? "ready" : "unselected";
+            Check(callerAdvanced, "Unselected or sibling metadata waited for an unrelated held producer before the caller could advance.");
+            Check(executionPending && producerHeld && unpublished, "The independent observer did not leave the unrelated producer pending.");
+            Check(counter.Data is NumberValue { Data: 2 }, "Independent metadata replayed a callee or caller prefix.");
+            Check(result is StringValue text && text.Data == expected, "Independent metadata selected the wrong branch or sibling content.");
+            Check(File.ReadAllText(Path.Combine(work, "held.txt")) == "held-payload", "The unrelated producer did not finish after release.");
+            if (observeSibling)
+                Check(File.ReadAllText(Path.Combine(work, "ready.txt")) == "ready", "Observing a sibling modified its existing content.");
         }
 
         async Task CheckSource(string scenario, string source, int level, string route, Dictionary<string, string> expected)
