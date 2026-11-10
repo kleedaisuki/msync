@@ -12,7 +12,7 @@ internal sealed partial class SemanticAnalyzer
         IReadOnlyList<SemanticValue> captures, SemanticContext caller)
     {
         SemanticContext context = new(new(-1)) { Queries = new(), DeferredReads = caller.DeferredReads };
-        FormalInput input = new(this, caller, context);
+        FormalInput input = new(this, caller, context, keyOnly: true);
         SemanticValue[] parameters = new SemanticValue[arguments.Count];
         SemanticValue[] environment = new SemanticValue[captures.Count];
         for (int index = 0; index < captures.Count; index++) environment[index] = input.Abstract(captures[index]);
@@ -21,7 +21,8 @@ internal sealed partial class SemanticAnalyzer
         return new(parameters, environment, context);
     }
 
-    private sealed class FormalInput(SemanticAnalyzer owner, SemanticContext caller, SemanticContext formal)
+    private sealed class FormalInput(SemanticAnalyzer owner, SemanticContext caller, SemanticContext formal,
+        bool keyOnly = false)
     {
         private readonly Dictionary<int, int> regions = [];
         private readonly Dictionary<int, int> indexedRegions = [];
@@ -40,6 +41,7 @@ internal sealed partial class SemanticAnalyzer
 
         private SemanticValue Abstract(SemanticValue value, SemanticInputRole role)
         {
+            if (keyOnly && IsKeyLeaf(value)) return value;
             if (active.TryGetValue(value, out var known)) return known;
             if (completed.TryGetValue((value, role), out known)) return known;
             // Runtime constants are not specialization facts. In particular a first
@@ -121,6 +123,18 @@ internal sealed partial class SemanticAnalyzer
             active.Remove(value);
             completed[(value, role)] = result;
             return result;
+        }
+
+        private static bool IsKeyLeaf(SemanticValue value)
+        {
+            if (value.Scope is not null || value.Element is not null || value.IndexedRegion is not null
+                || !value.IndexedAliases.IsDefaultOrEmpty || !value.DeferredEffects.IsDefaultOrEmpty
+                || value.FutureCallableDomain is not null || !value.OpenSessionCalls.IsDefaultOrEmpty) return false;
+            foreach (var callable in value.Callables.IsDefault ? [] : value.Callables)
+                if (!callable.Captures.IsDefaultOrEmpty) return false;
+            // Key writing observes types and callable identities, never runtime
+            // annotations. Executable-body abstraction still strips those facts.
+            return true;
         }
 
         private ImmutableArray<SemanticCallable> AbstractCallables(ImmutableArray<SemanticCallable> values, SemanticInputRole role)

@@ -259,6 +259,19 @@ source template's type-parameter ID. Current edge facts remain in their owning
 semantic context, not in the constraint graph. Projected cells retain both the
 fixed storage constraint and canonical declaration identity.
 
+A fresh returned cell also owns any unresolved first-write carrier variable.
+Projection alpha-renames that variable once per invocation, sharing it between
+the object's aliases and captured accesses but not between separate constructor
+results. Named singleton cells retain their definition-owned constraint.
+Member assignment checks and seals the actual field location's carrier; the
+reusable Scope layout remains a schema, so neither fresh cell identities nor
+per-object layout identities enter specialization keys.
+Cached location and field write summaries follow the same rule as direct
+assignment: validate the actual destination constraint and seal its first
+non-Null carrier. Structured event replay uses that same write handler. A
+callee's solved formal constraint is not a substitute for updating the caller's
+actual cell.
+
 Standard module locations are program-owned cells. A formal capture must consult
 the canonical completed module row, rather than freeze the first partial export
 snapshot as its namespace. Explicit program-cell replacements remain distinct

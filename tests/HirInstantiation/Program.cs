@@ -15,6 +15,7 @@ foreach (var test in new (string Name, string Source, double Expected, string Fu
     ("nullable-capture-effects", "let value? = scope { n: 1 }; fn clear() { value = null }; clear(); if value? { 7 } else { value::n }", 7, "clear", 1),
     ("fresh-field-capture-identity", "fn make() { scope { value?: 1, get: fn { value } } }; let object = make(); object::value = null; if object::get()? { 7 } else { 9 }", 7, "make", 1),
     ("fresh-field-capture-separation", "fn make() { scope { value?: 1, get: fn { value } } }; let first = make(); let second = make(); first::value = null; if second::get()? { 9 } else { 7 }", 7, "make", 1),
+    ("fresh-field-carrier-separation", "fn make() { scope { field?: null } }; let first = make(); first::field = \"text\"; let second = make(); second::field = true; if second::field { if first::field == \"text\" { 7 } else { 9 } } else { 9 }", 7, "make", 1),
     ("scalar-origin-projection", "fn identity(x) { x }; identity(false); if identity(true) { 7 } else { null::missing }", 7, "identity", 1),
     ("field-origin-projection", "fn get(x) { x::flag }; let first = scope { flag: false }; let second = scope { flag: true }; get(first); if get(second) { 7 } else { null::missing }", 7, "get", 1),
     ("named-singleton-result", "fn make() { scope State { value?: 1 }; State }; let a = make(); a::value = null; let b = make(); if b::value? { 7 } else { 9 }", 7, "make", 1),
@@ -66,6 +67,17 @@ bool fixedCarrier = false;
 try { Compiler.Analyze("let value? = null; value = 42; value = \"wrong\"; value", "fixed-carrier.msync"); }
 catch (CompileException error) { fixedCarrier = error.Diagnostic.Code == "E0203"; }
 Require(fixedCarrier, "Finalizing a nullable Number carrier allowed a later String assignment");
+if (args.Length == 0 || args.Contains("named-closure-fixed-carrier", StringComparer.Ordinal))
+{
+    bool namedCarrier = false;
+    try
+    {
+        Compiler.Analyze("fn make() { scope Saved { field?: null, set: fn(value) { field = value } }; Saved::set }; let first = make(); first(\"text\"); let second = make(); second(true)",
+            "named-closure-fixed-carrier.msync");
+    }
+    catch (CompileException error) { namedCarrier = error.Diagnostic.Code == "E0203"; }
+    Require(namedCarrier, "Closure-only singleton capture acquired a fresh first-write carrier");
+}
 Console.WriteLine($"PASS {checks} generic instance/provenance source journeys");
 
 void Require(bool condition, string message)

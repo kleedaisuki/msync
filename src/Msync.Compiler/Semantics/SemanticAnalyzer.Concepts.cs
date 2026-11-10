@@ -14,7 +14,9 @@ internal sealed partial class SemanticAnalyzer
             var parameter = hir.Locations[template.Parameters[index].Value];
             var type = hir.Types[parameter.StorageType.Value];
             if (type.Concept < 0) continue;
-            RequireConcept(arguments[index], type.Concept, source, caller,
+            var argument = arguments[index];
+            var argumentSource = argument.Node.Value >= 0 ? hir.Nodes[argument.Node.Value].Source : source;
+            RequireConcept(argument, type.Concept, argumentSource, caller,
                 parameter.AdmitsNull || type.Nullable || type.RuntimeType.Nullable);
         }
     }

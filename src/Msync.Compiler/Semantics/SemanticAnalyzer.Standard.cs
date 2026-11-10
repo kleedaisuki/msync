@@ -46,6 +46,12 @@ internal sealed partial class SemanticAnalyzer
         BoundModule bound = program.StandardModules[name];
         SemanticContext target = context.Publish ? entryState! : context;
         SemanticValue value = Analyze(bound.Body, target);
+        if (value.Scope is { } module)
+        {
+            SemanticScope named = module with { Named = true };
+            target.Objects[named.Region] = named;
+            value = value with { Scope = named };
+        }
         HirLocationId location = program.StandardLocations[name];
         if (!context.Publish)
         {

@@ -12,6 +12,10 @@ The joined-Scope case preserves a common member across two differently shaped
 branches while sharing one Bool-specialized body. Its result depends on the
 runtime branch, not retained binary-join construction history.
 
+Fresh constructor results infer independent first-write field carriers while
+sharing one code body. The closure-only named-Scope case checks the opposite:
+returning only a setter cannot turn a singleton field into a fresh constraint.
+
 Run with an isolated artifacts directory:
 
 ```text

@@ -221,7 +221,9 @@ internal sealed partial class SemanticAnalyzer
         if (offset < 0) throw SemanticDiagnosticFactory.MissingMember(hir.Sources[node.Source.Source.Value],
             new(node.Source.Start, node.Source.Length), node.Text!, scope.Fields.Keys);
         var field = hir.ScopeLayouts[scope.Layout].Fields[offset];
-        HirTypeId target = field.AdmitsNull ? Nullable(field.StorageType) : field.StorageType;
+        HirLocationId? storageLocation = scope.Locations.TryGetValue(node.Text!, out var actualField) ? actualField : null;
+        HirTypeId target = storageLocation is { } stored ? StorageType(stored, context)
+            : field.AdmitsNull ? Nullable(field.StorageType) : field.StorageType;
         try { Require(value, target, valueSource, allowImplicit: true, context: context); }
         catch (CompileException error) when (scope.Locations.TryGetValue(node.Text!, out var fieldLocation))
         {
@@ -229,6 +231,13 @@ internal sealed partial class SemanticAnalyzer
             SemanticDiagnosticFactory.FixedStorage(error, hir.Sources[definition.Source.Source.Value],
                 definition, hir.Types[target.Value].RuntimeType);
             throw;
+        }
+        if (storageLocation is { } cell)
+        {
+            var resolved = ResolveHirType(target, context);
+            if (field.AdmitsNull) resolved = Nullable(resolved);
+            if (resolved != target) SealStorage(cell, resolved, context);
+            target = resolved;
         }
         value = Convert(value, target, valueSource, context);
         CheckMemberContracts(scope, node.Text!, value, valueSource, context);

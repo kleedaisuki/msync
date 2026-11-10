@@ -8,7 +8,7 @@ internal sealed partial class SemanticAnalyzer
 {
     private FunctionInvocation ProjectInvocation(FunctionInstance instance, IReadOnlyList<SemanticValue> arguments,
         IReadOnlyList<SemanticValue> captures, ImmutableArray<SemanticCapture> captureDefinitions, SemanticContext caller,
-        bool applyEffects)
+        bool applyEffects, HirSourceRange source)
     {
         if (instance.Objects.IsEmpty && instance.Indexed.IsEmpty && instance.Cells.IsEmpty
             && instance.Result.Scope is null && instance.Result.Element is null
@@ -24,7 +24,7 @@ internal sealed partial class SemanticAnalyzer
         }
         SemanticContext target = applyEffects ? caller : new(caller.Function, caller.Output, parent: caller)
         { Queries = caller.Queries, DeferredReads = caller.DeferredReads };
-        InvocationProjection projection = new(this, instance, target, applyEffects);
+        InvocationProjection projection = new(this, instance, target, applyEffects, source);
         for (int index = 0; index < arguments.Count; index++) projection.Bind(instance.Arguments[index], arguments[index]);
         for (int index = 0; index < captures.Count; index++)
         {
@@ -56,7 +56,16 @@ internal sealed partial class SemanticAnalyzer
             Node = HirNodeId.None, Location = null, Origin = null };
     }
 
-    private sealed class InvocationProjection(SemanticAnalyzer owner, FunctionInstance instance, SemanticContext caller, bool commitEffects)
+    private HirTypeId FreshStorageParameter(HirTypeId type, Dictionary<int, int> parameters)
+    {
+        var description = hir.Types[type.Value];
+        if (!parameters.TryGetValue(description.TypeParameter, out int parameter))
+            parameters[description.TypeParameter] = parameter = program.NextTypeParameter++;
+        return hir.Type(description with { TypeParameter = parameter });
+    }
+
+    private sealed class InvocationProjection(SemanticAnalyzer owner, FunctionInstance instance, SemanticContext caller,
+        bool commitEffects, HirSourceRange source)
     {
         private readonly Dictionary<int, int> regions = [];
         private readonly Dictionary<int, int> indexedRegions = [];
@@ -67,6 +76,7 @@ internal sealed partial class SemanticAnalyzer
         private readonly Dictionary<HirLocationId, SemanticValue> origins = [];
         private readonly Dictionary<SemanticValue, SemanticValue> values = new(ReferenceEqualityComparer.Instance);
         private readonly Dictionary<SemanticCallable, SemanticCallable> callables = new(ReferenceEqualityComparer.Instance);
+        private Dictionary<int, int>? storageParameters;
         private readonly HashSet<(SemanticValue Formal, SemanticValue Actual)> bound = new(new ValuePairComparer());
         public Dictionary<HirLocationId, HirLocationId> Locations { get; } = [];
 
@@ -521,7 +531,8 @@ internal sealed partial class SemanticAnalyzer
             {
                 if (write.Kind == SemanticWriteKind.Location)
                 {
-                    owner.CheckSessionAssignment(write.Location, write.After, owner.hir.Locations[write.Location.Value].Source, context);
+                    SealWriteStorage(write.Location, write.After, context);
+                    owner.CheckSessionAssignment(write.Location, write.After, source, context);
                     context.Values[write.Location] = write.After;
                     owner.MarkProgramCell(write.Location, context);
                     context.CellWrites.Add(write.Location);
@@ -542,7 +553,10 @@ internal sealed partial class SemanticAnalyzer
                 }
                 if (!context.Objects.TryGetValue(write.Region, out var target)) continue;
                 if (target.Locations.TryGetValue(write.Field!, out var fieldLocation))
+                {
+                    SealWriteStorage(fieldLocation, write.After, context);
                     owner.CheckSessionMemberAssignment(target, write.Field!, write.After, owner.hir.Locations[fieldLocation.Value].Source, context);
+                }
                 owner.InvalidateScopeAliases(target, context);
                 target = target with { Fields = target.Fields.SetItem(write.Field!, write.After) };
                 context.Objects[write.Region] = target;
@@ -557,6 +571,22 @@ internal sealed partial class SemanticAnalyzer
                     if (ReferenceEquals(context, caller) && pair.Value == write.Region && instance.Objects.GetValueOrDefault(pair.Key)?.Named == true)
                         singletonViews[pair.Key] = target;
             }
+        }
+
+        private void SealWriteStorage(HirLocationId location, SemanticValue value, SemanticContext context)
+        {
+            var target = owner.StorageType(location, context);
+            try { owner.Require(value, target, source, allowImplicit: true, context); }
+            catch (CompileException error)
+            {
+                var declaration = owner.hir.Locations[location.Value];
+                SemanticDiagnosticFactory.FixedStorage(error, owner.hir.Sources[declaration.Source.Source.Value],
+                    declaration, owner.hir.Types[target.Value].RuntimeType);
+                throw;
+            }
+            var resolved = owner.ResolveHirType(target, context);
+            if (owner.hir.Locations[location.Value].AdmitsNull) resolved = owner.Nullable(resolved);
+            if (resolved != target) owner.SealStorage(location, resolved, context);
         }
 
         private bool TrySingleton(int region, out SemanticScope singleton) =>
@@ -588,19 +618,37 @@ internal sealed partial class SemanticAnalyzer
                 Locations[formal] = actual;
                 return actual;
             }
+            var declaration = owner.hir.Locations[formal.Value];
+            HirTypeId storage = declaration.StorageType;
+            // A shared body owns the schema variable, not the carrier inferred
+            // later for each freshly returned cell. Borrowed cells were bound above.
+            if (owner.hir.Types[storage.Value].TypeParameter >= 0 && !IsNamedField(ownerLocation))
+                storage = ProjectStorageType(storage);
+            else storage = owner.StorageType(formal, caller);
             actual = formal;
             if (caller.Publish)
             {
                 actual = new(owner.hir.Locations.Count);
-                caller.Output!.ReserveLocation(owner.hir.Locations[formal.Value] with { Owner = caller.Function, TemplateOwner = null });
+                caller.Output!.ReserveLocation(declaration with { Owner = caller.Function, TemplateOwner = null, StorageType = storage });
             }
             Locations[formal] = actual;
             Locations[ownerLocation] = actual;
-            caller.Storage[actual] = owner.StorageType(formal, caller);
+            caller.Storage[actual] = storage;
             if (instance.Definitions.TryGetValue(formal, out var definition)
                 || instance.Definitions.TryGetValue(ownerLocation, out definition)) caller.Definitions[actual] = definition;
             if (instance.Cells.TryGetValue(formal, out var value)) caller.Values[actual] = Project(value);
             return actual;
+        }
+
+        private HirTypeId ProjectStorageType(HirTypeId type) => owner.hir.Types[type.Value].TypeParameter < 0 ? type
+            : owner.FreshStorageParameter(type, storageParameters ??= []);
+
+        private bool IsNamedField(HirLocationId location)
+        {
+            if (instance.NamedCells.Contains(location)) return true;
+            foreach (var scope in instance.Objects.Values)
+                if (scope.Named && scope.Locations.Values.Contains(location)) return true;
+            return false;
         }
     }
 

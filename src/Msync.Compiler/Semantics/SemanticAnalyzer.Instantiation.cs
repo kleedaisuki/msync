@@ -25,6 +25,7 @@ internal sealed partial class SemanticAnalyzer
         public ImmutableDictionary<int, SemanticScope> Objects { get; set; } = ImmutableDictionary<int, SemanticScope>.Empty;
         public ImmutableDictionary<int, SemanticIndexed> Indexed { get; set; } = ImmutableDictionary<int, SemanticIndexed>.Empty;
         public ImmutableDictionary<HirLocationId, SemanticValue> Cells { get; set; } = ImmutableDictionary<HirLocationId, SemanticValue>.Empty;
+        public ImmutableHashSet<HirLocationId> NamedCells { get; set; } = [];
         public ImmutableDictionary<int, ImmutableHashSet<int>> AliasViews { get; set; } = ImmutableDictionary<int, ImmutableHashSet<int>>.Empty;
         public ImmutableDictionary<(int Region, string Field), ImmutableArray<SemanticMemberContract>> MemberContracts { get; set; }
             = ImmutableDictionary<(int Region, string Field), ImmutableArray<SemanticMemberContract>>.Empty;
@@ -196,7 +197,7 @@ internal sealed partial class SemanticAnalyzer
         {
             instance = BuildInstance(id, template, arguments, captureValues, actualCaptures, source, caller, cache, key);
         }
-        return ProjectInvocation(instance, arguments, captureValues, actualCaptures, caller, applyEffects);
+        return ProjectInvocation(instance, arguments, captureValues, actualCaptures, caller, applyEffects, source);
     }
 
     private FunctionInstance BuildInstance(HirTemplateId id, HirTemplate template,
@@ -359,6 +360,7 @@ internal sealed partial class SemanticAnalyzer
         Dictionary<int, SemanticScope> objects = [];
         Dictionary<int, SemanticIndexed> indexed = [];
         Dictionary<HirLocationId, SemanticValue> cells = [];
+        HashSet<HirLocationId>? namedCells = null;
         HashSet<SemanticValue> visited = new(ReferenceEqualityComparer.Instance);
         Visit(instance.Result);
         foreach (var argument in instance.Arguments) Visit(argument);
@@ -367,6 +369,7 @@ internal sealed partial class SemanticAnalyzer
         instance.Objects = objects.ToImmutableDictionary();
         instance.Indexed = indexed.ToImmutableDictionary();
         instance.Cells = cells.ToImmutableDictionary();
+        instance.NamedCells = namedCells?.ToImmutableHashSet() ?? [];
         instance.FieldWrites = context.FieldWrites.ToImmutableHashSet();
         instance.CellWrites = context.CellWrites.ToImmutableHashSet();
         instance.IndexedWrites = context.IndexedWrites.ToImmutableHashSet();
@@ -394,6 +397,14 @@ internal sealed partial class SemanticAnalyzer
         {
             if (cells.ContainsKey(location) || StorageValue(location, context) is not { } value) return;
             cells[location] = value;
+            var owner = StorageOwner(location, context);
+            if (hir.Types[hir.Locations[owner.Value].StorageType.Value].TypeParameter >= 0)
+                foreach (var scope in context.Objects.Values)
+                    if (scope.Named && scope.Locations.Values.Contains(owner))
+                    {
+                        (namedCells ??= []).Add(owner);
+                        break;
+                    }
             Visit(value);
         }
         void Visit(SemanticValue value)
