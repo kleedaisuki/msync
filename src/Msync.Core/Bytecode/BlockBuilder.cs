@@ -4,6 +4,8 @@ public static class BlockBuilder
 {
     public static Module Form(Module module) => module with
     { Blocks = module.Functions.SelectMany((function, index) => Partition(function, index)).ToArray() };
+    public static IReadOnlyList<BasicBlock> ForFunction(FunctionCode function, int functionIndex) =>
+        Partition(function, functionIndex).ToArray();
     private static IEnumerable<BasicBlock> Partition(FunctionCode function, int functionIndex)
     {
         var code = function.Instructions;

@@ -26,8 +26,9 @@ public sealed record RangeValue(IAsyncEnumerable<Value> Items, TypeRef ItemType,
     // Roots already retained by storage or a lazy producer; ownership never
     // enumerates a Range or keeps discarded snapshot inputs alive.
     public IReadOnlyList<Value>? RetainedValues { get; set; }
+    public IReadOnlyList<Value>? SnapshotValues { get; private init; }
     public RangeValue(IEnumerable<Value> items, TypeRef itemType) : this(Enumerate(items), itemType)
-        => RetainedValues = items as IReadOnlyList<Value>;
+        => RetainedValues = SnapshotValues = items as IReadOnlyList<Value>;
     private static async IAsyncEnumerable<Value> Enumerate(IEnumerable<Value> items)
     {
         foreach (var item in items) yield return item;

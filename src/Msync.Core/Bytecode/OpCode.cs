@@ -8,5 +8,6 @@ public enum OpCode : byte
     Not, Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual, IsNull, IsType,
     RegexMatch, GetIterator, IteratorNext, Add, Subtract, Multiply, Divide,
     Negate, ProcessCall, SetMember, SpecializeClosure, Nop, SelectPath, Convert, LocalTransfer, MakeLazyRange, DeferRange,
-    LoadCell, GetCapture, Barrier, Acquire, InitializeLocal, LoadStorage, Remainder, GetSingleton, SetSingleton
+    LoadCell, GetCapture, Barrier, Acquire, InitializeLocal, LoadStorage, Remainder, GetSingleton, SetSingleton,
+    ExecutePlan, PlanResult
 }

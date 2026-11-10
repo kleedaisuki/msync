@@ -10,6 +10,8 @@ public static class InstructionEffects
         OpCode.Call => InstructionEffect.Invoke | InstructionEffect.MayFail | InstructionEffect.Diverge,
         OpCode.ProcessCall => InstructionEffect.Read | InstructionEffect.Write | InstructionEffect.Invoke | InstructionEffect.MayFail,
         OpCode.Transfer or OpCode.LocalTransfer => InstructionEffect.Read | InstructionEffect.Write | InstructionEffect.MayFail,
+        OpCode.ExecutePlan => InstructionEffect.Read | InstructionEffect.Write | InstructionEffect.MayFail,
+        OpCode.PlanResult => InstructionEffect.Read | InstructionEffect.MayFail,
         OpCode.GetIterator or OpCode.IteratorNext => InstructionEffect.Read | InstructionEffect.Invoke | InstructionEffect.MayFail,
         OpCode.GetSingleton => InstructionEffect.Read,
         OpCode.SetSingleton => InstructionEffect.Write,
