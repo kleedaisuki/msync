@@ -2,6 +2,7 @@ using Msync.Core;
 using Msync.Runtime;
 
 if (args.Contains("--batch-only", StringComparer.Ordinal)) { await BatchChecks.RunAsync(); return; }
+if (args.Contains("--relay-batch-only", StringComparer.Ordinal)) { await RelayBatchChecks.RunAsync(); return; }
 if (OperatingSystem.IsWindows()) return;
 string root = Environment.GetEnvironmentVariable("MSYNC_TRANSFER_WORK") ?? Path.GetFullPath(Path.Combine(".temp", "transfer-tests", Guid.NewGuid().ToString("N")));
 Directory.CreateDirectory(root);

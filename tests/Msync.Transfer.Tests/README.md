@@ -56,6 +56,13 @@ execution. Pass `--test-dll /absolute/path/to/Msync.Transfer.Tests.dll` to reuse
 an already built coherent producer. See
 [batch ownership and framing](../../docs/design/transport-batches.md).
 
+`--relay-batch-only` uses the same owned fixture's two configured aliases. It
+keeps their two metadata leases through many cross-endpoint scalar relays,
+source/target failure continuation, directory and symbolic-link payloads, and
+opposite-direction disjoint relays. The fixture requires exactly two native
+clients, authentications and exec sessions in total, not two extra clients per
+operation.
+
 ## Compiled CLI/OpenSSH integration
 
 ```sh

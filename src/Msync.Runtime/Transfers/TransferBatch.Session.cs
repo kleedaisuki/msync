@@ -106,7 +106,7 @@ public static partial class TransferEngine
         {
             if (items.Count == 0) return [];
             BatchRoute route = Route(items[0]);
-            if (route.Direction == BatchDirection.DirectoryActions || items.Any(item => Route(item) != route))
+            if (route.Direction is BatchDirection.DirectoryActions or BatchDirection.Relay || items.Any(item => Route(item) != route))
             {
                 using var selected = UseSession(this);
                 return await TransferEngine.CopyBatchAsync(items, context, cancellationToken);

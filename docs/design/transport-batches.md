@@ -92,9 +92,16 @@ One endpoint group executes three transfer directions through one exec channel:
 * Remote Path to another destination on the same endpoint.
 
 Mixed direction frontiers are grouped before acquiring the session command gate.
-Cross-endpoint relay and generic deferred Range operations retain their existing
-operation implementation; the independent scalar frontier is the batching unit,
-not a new implicit source-language loop.
+Cross-endpoint scalar frontiers borrow one lease per endpoint. Their source
+download frames are forwarded directly into the target upload frames with one
+pooled payload buffer. The target decodes the private wire names before atomic
+installation; there is no intermediate payload file or complete-file buffer.
+Both command gates use the same connection-kind/address order, so simultaneous
+opposite-direction relays cannot acquire an A/B versus B/A lock cycle. This
+serializes only work which shares those channel resources, not every endpoint.
+Generic deferred Range operations retain their existing operation implementation;
+the independent scalar frontier is the batching unit, not a new implicit
+source-language loop.
 
 ## Framing and backpressure
 
@@ -181,3 +188,14 @@ are retained under `.temp/transfer-ssh/s-7hg_p_6g/result.json` and
 `.temp/transfer-ssh/s-f5fqs396/result.json`. These are functional/channel-topology
 observations of a managed product with a real native SSH client, not Native AOT
 or throughput measurements and not proof of every compiler/VM plan route.
+
+The two-endpoint follow-up uses immutable producer 5, Runtime SHA256
+`327aa67b6de8efe36a4003fd4712a46ab60b30d51cbb0d3d34e8dbdc36d6e239`.
+Its new relay journey passes 45 checks with exactly two native clients,
+authentications and exec sessions across metadata, 34 scalar files, a missing
+source and obstructed destination, directory/link payloads, simultaneous
+opposite-direction disjoint relays, and later metadata queries on both leases.
+The two aliases address the same owned loopback server with separate source and
+target trees; this proves channel ownership and gate ordering, not WAN throughput
+or distinct-server performance. The full report is retained at
+`.temp/transfer-ssh/s-usxz1x2m/result.json`.

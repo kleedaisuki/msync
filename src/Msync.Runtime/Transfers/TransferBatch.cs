@@ -11,8 +11,9 @@ public sealed record TransferBatchOutcome(bool Success, Exception? Error = null,
 
 public static partial class TransferEngine
 {
-    private enum BatchDirection { Local, Upload, Download, RemoteCopy, DirectoryActions, Other }
-    private readonly record struct BatchRoute(BatchDirection Direction, ConnectionValue? Connection);
+    private enum BatchDirection { Local, Upload, Download, RemoteCopy, Relay, DirectoryActions, Other }
+    private readonly record struct BatchRoute(BatchDirection Direction, ConnectionValue? Connection,
+        ConnectionValue? Target = null);
 
     // The caller supplies an independent graph frontier and owns its global I/O permit.
     // No additional worker pool or per-batch concurrency multiplier is created here.
@@ -42,6 +43,8 @@ public static partial class TransferEngine
                 ? await CopyLocalBatchAsync(selected, context, cancellationToken)
                 : route.Direction == BatchDirection.DirectoryActions
                     ? await CopyDirectoryActionsAsync(selected, context, cancellationToken)
+                : route.Direction == BatchDirection.Relay
+                    ? await CopyRelayBatchAsync(selected, route.Connection!, route.Target!, context.BufferSize, cancellationToken)
                 : await CopyRemoteBatchAsync(selected, route.Direction, route.Connection!, context, cancellationToken);
             for (int index = 0; index < indices.Count; index++) outcomes[indices[index]] = results[index];
         }
@@ -58,7 +61,7 @@ public static partial class TransferEngine
         if (source is null && target is null) return new(BatchDirection.Local, null);
         if (source is null) return new(BatchDirection.Upload, target);
         if (target is null) return new(BatchDirection.Download, source);
-        return source == target ? new(BatchDirection.RemoteCopy, source) : new(BatchDirection.Other, null);
+        return source == target ? new(BatchDirection.RemoteCopy, source) : new(BatchDirection.Relay, source, target);
     }
 
     private static async Task<TransferBatchOutcome> CopyBatchItemAsync(TransferBatchItem item,

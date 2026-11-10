@@ -58,6 +58,7 @@ public static partial class TransferEngine
         }
         publish_upload() {
             payload=$stage/payload
+            if [ "$kind" = relay ]; then payload=$stage/$basename; fi
             if [ ! -e "$payload" ] && [ ! -L "$payload" ]; then
                 printf 'The source did not produce its payload: %s\n' "$raw" >&2
                 return 1
@@ -89,7 +90,11 @@ public static partial class TransferEngine
                 status=0
                 prepare_upload 2> "$error" || status=$?
                 if [ "$status" -eq 0 ]; then
-                    tar -b1 -xpf - -C "$stage" 2>> "$error" || status=$?
+                    if [ "$kind" = relay ]; then
+                        tar -b1 --transform=__MSYNC_ARCHIVE_NAME_DECODING__ -xpf - -C "$stage" 2>> "$error" || status=$?
+                    else
+                        tar -b1 -xpf - -C "$stage" 2>> "$error" || status=$?
+                    fi
                 else
                     tar -b1 -tf - > /dev/null 2>> "$error" || :
                 fi
@@ -209,5 +214,6 @@ public static partial class TransferEngine
                 *) printf 'Unknown native batch operation: %s\n' "$command" >&2; exit 1 ;;
             esac
         done
-        """).Replace("__MSYNC_ARCHIVE_NAME_ENCODING__", Quote(ArchiveNameEncoding), StringComparison.Ordinal);
+        """).Replace("__MSYNC_ARCHIVE_NAME_ENCODING__", Quote(ArchiveNameEncoding), StringComparison.Ordinal)
+            .Replace("__MSYNC_ARCHIVE_NAME_DECODING__", Quote(ArchiveNameDecoding), StringComparison.Ordinal);
 }

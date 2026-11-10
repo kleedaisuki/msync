@@ -9,6 +9,8 @@ public static partial class TransferEngine
 {
     private static readonly AsyncLocal<SelectedQuery?> ActiveQuery = new();
 
+    internal static bool HasSelectedQuery(ConnectionValue connection) => ActiveQuery.Value?.Connection == connection;
+
     private sealed class SelectedQuery(ConnectionValue connection, Process process) : IDisposable
     {
         private readonly SemaphoreSlim serial = new(1);
