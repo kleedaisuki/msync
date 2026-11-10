@@ -8,6 +8,17 @@ offset hints, Connection/Process dispatch and selected duplicate-field errors.
 `tests/Msync.Runtime.Tests --mutable-state` independently exercises current live
 captures, obsolete-format rejection and fresh nested Scope constant instances.
 
+`--duplicate-only` selects 18 actual VM/filesystem journeys for hand-authored O0
+typed IR, including source-span ownership and pure initial entry. Duplicate
+fields are selected or skipped directly and inside a called function, with a
+preceding small text transfer when applicable. Direct modules, portable artifact
+round trips and explicitly prepared executable round trips must retain the
+concrete `ArgumentException` inside the instruction-owned `MsyncException`.
+Preparation must perform no writes; selected failure preserves earlier admitted
+work and suppresses later work, while an unselected failure leaves both writes
+intact. Source parsing is deliberately not involved: its earlier rejection of a
+duplicate declaration would not exercise backend/VM effect ordering.
+
 ## Spatial-storage discriminators
 
 `--spatial-only` runs reference-compatible Core semantics without assuming a

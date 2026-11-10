@@ -4,6 +4,12 @@ using Msync.Core;
 using Msync.Runtime;
 using Module = Msync.Core.Module;
 
+if (args.Contains("--duplicate-only", StringComparer.Ordinal))
+{
+    await DuplicateConstructionChecks.Run();
+    return;
+}
+
 if (args.Contains("--packed-isolation-only", StringComparer.Ordinal))
 {
     SpatialLayoutChecks.CheckEscapedRowIsolation();
