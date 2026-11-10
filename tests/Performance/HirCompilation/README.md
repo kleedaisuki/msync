@@ -483,3 +483,35 @@ was run, and smaller residual bytecode does not justify the construction cost.
 The matched timing window remained unused while this result was handed to the
 semantic owner for causal work. Do not repeat warm/full/retention observations
 on this image merely to reproduce the same signal.
+
+## A coordinated, three-source matched observation
+
+`matched.py` limits a matched comparison to the original scalar, List and
+unrolled 24-insert B-tree sources at O0/O2. It verifies the frozen baseline
+assemblies against the accepted baseline report, all candidate producer DLLs
+against its receipt, and each source against its original hash before invoking
+either compiler. It alternates baseline/candidate process order between
+case/level pairs; each process has the same three warmups and three default
+timed observations, with tiered compilation disabled. This compares normal
+`Compiler.Compile` including optimization, not independently summed stages.
+
+```sh
+python3 tests/Performance/HirCompilation/matched.py \
+  --baseline /absolute/frozen/baseline-probe/msync-hir-compilation \
+  --candidate /absolute/frozen/candidate-probe/msync-hir-compilation \
+  --baseline-reference .temp/typed-hir-baseline/component.json \
+  --candidate-receipt /absolute/frozen/candidate/snapshot-receipt.json \
+  --work .temp/hir-matched/inputs --output .temp/hir-matched/prepared.json \
+  --prepare-only
+```
+
+Preparation hashes files and writes inputs but starts no workload. Remove
+`--prepare-only` and choose a separate timing report only after coordinating a
+quiet observation window. Run again with `--retention-only` and a different
+report for collected heap/held/released observations: forced collections and
+the existing heap sampler do not contaminate timed observations. The reference
+report's old timings are not silently treated as newly matched samples. Every
+new result retains raw observations, actual counts and exact product/probe
+identities, with checkpoints after each completed image. This is a local
+discriminating experiment, not a CI threshold or a substitute for semantic
+acceptance of the selected frozen image.
