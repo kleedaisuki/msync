@@ -9,6 +9,13 @@ namespace Msync.Compiler.Semantics;
 internal sealed class SemanticFacts<TKey, TValue>(IReadOnlyDictionary<TKey, TValue>? parent = null)
     : IReadOnlyDictionary<TKey, TValue> where TKey : notnull
 {
+    private static class PublishedValues
+    {
+        internal static readonly IEqualityComparer<TValue> Comparer = typeof(TValue).IsValueType
+            ? EqualityComparer<TValue>.Default
+            : (IEqualityComparer<TValue>)(object)ReferenceEqualityComparer.Instance;
+    }
+
     private Dictionary<TKey, TValue>? local;
     private Action<TKey, TValue>? changed;
     public void ObserveChanges(Action<TKey, TValue>? observer) => changed = observer;
@@ -31,6 +38,9 @@ internal sealed class SemanticFacts<TKey, TValue>(IReadOnlyDictionary<TKey, TVal
             null => ImmutableDictionary<TKey, TValue>.Empty,
             _ => parent.ToImmutableDictionary()
         };
+        // Record equality can collapse distinct IEEE payloads. An assigned fact
+        // retains its exact identity, as it does in the mutable overlay.
+        inherited = inherited.WithComparers(inherited.KeyComparer, PublishedValues.Comparer);
         return local is null ? inherited : inherited.SetItems(local);
     }
     public TValue this[TKey key]

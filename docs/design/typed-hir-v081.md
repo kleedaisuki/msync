@@ -398,6 +398,12 @@ partially initialized export reconciliation and editor query isolation remain
 the same operations. The BCL's
 [immutable dictionary builder](https://learn.microsoft.com/en-us/dotnet/api/system.collections.immutable.immutabledictionary-2.tobuilder?view=net-10.0)
 provides structural sharing; no custom persistent-tree implementation is needed.
+Reference-valued fact tables preserve the assigned descriptor's identity when
+publishing; value-type location/type IDs retain ordinary value equality. Default
+record equality is not an exact replacement test for binary64 literals: it can
+identify positive/negative zero or distinct NaN payloads. The publication
+comparer is selected once per closed generic table, not during ordinary mutable
+writes or query lookups.
 
 Prompt binding descriptions project the accepted lexical roots directly through
 the same semantic value/concept presenter. They copy only immutable type and

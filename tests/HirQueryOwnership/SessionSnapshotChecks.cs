@@ -33,6 +33,24 @@ internal static class SessionSnapshotChecks
         Check(query.Count == 2 && query[0] == 9_999 && query[7] == 5,
             "Long publication histories preserve old unchanged facts without an overlay chain.");
 
+        SemanticFacts<int, SemanticValue> numbers = new();
+        numbers[0] = Number(0);
+        numbers.Detach();
+        foreach (long bits in new[] { unchecked((long)0x8000000000000000),
+            0x7ff8000000000042L, 0x7ff8000000000043L, 0x3ff0000000000000L, 0x3ff0000000000000L })
+        {
+            SemanticFacts<int, SemanticValue> next = new(numbers);
+            SemanticValue assigned = Number(bits);
+            next[0] = assigned;
+            next.Detach();
+            SemanticValue actual = next[0];
+            Check(BitConverter.DoubleToInt64Bits(actual.Literal!.Value.Number) == bits,
+                "Publication preserves signed zero and exact NaN payloads.");
+            Check(ReferenceEquals(actual, assigned),
+                "Publication retains the assigned fact identity even when records compare equal.");
+            numbers = next;
+        }
+
         SemanticContext accepted = new(new(0));
         HirLocationId location = new(3);
         accepted.Storage[location] = new(1);
@@ -50,6 +68,9 @@ internal static class SessionSnapshotChecks
         Check(pending.Storage[location] == new HirTypeId(2),
             "Queries after publication cannot mutate accepted fixed-storage facts.");
         return checks;
+
+        static SemanticValue Number(long bits) => new(new(1), HirNodeId.None,
+            new(HirLiteralKind.Number, Number: BitConverter.Int64BitsToDouble(bits)));
 
         void Check(bool valid, string message)
         {

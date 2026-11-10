@@ -24,6 +24,27 @@ class Example:
 
 EXAMPLES: tuple[Example, ...] = (
     Example(
+        "ieee-feedback",
+        (
+            "let number = 0; fn invert() { global number; number = -0; };",
+            "invert();",
+            "1 / number < 0",
+            "number = 0;",
+            "1 / number > 0",
+            "let object = scope { value: 0, set: fn { value = -0; }, read: fn { 1 / value } };",
+            "object::set(); object::read() < 0",
+            "let alias = object; alias::value = 0; object::read() > 0",
+            "alias::value = -0; object::read() < 0",
+            "let copy = object::value;",
+            "alias::value = 0; 1 / copy < 0",
+            "object::read() > 0",
+            "let nan = 0 / 0; fn hold() { nan };",
+            "hold() != hold()",
+        ),
+        ("true",) * 8,
+        errors=0,
+    ),
+    Example(
         "aged-state-snapshots",
         (
             'let value? = "before"; fn read() { value }; let object = scope { field?: "before" }; let alias = object;',
