@@ -5,6 +5,31 @@ namespace Msync.Runtime;
 
 public sealed partial class Interpreter
 {
+    private Func<PathValue, bool, bool, PlanFileSystem, ContextualReadWait?>? observationAdmission;
+
+    private ContextualReadWait? AdmitContextualObservation(PathValue path, bool followLeaf, bool subtree,
+        PlanFileSystem filesystem)
+    {
+        if (pending.Count == 0) return null;
+        string endpoint = path.Connection is { Kind: ConnectionKind.Ssh or ConnectionKind.Wsl } remote
+            ? remote.ToString() : "local";
+        if (!resources.HasPendingWriters(endpoint)) return null;
+        var endpointDependencies = resources.Dependencies([new(endpoint, "")], [], false);
+        if (endpointDependencies.Count != 0) return ReadWait(endpointDependencies);
+        var namespaceDependencies = NamespaceDependencies([path]);
+        if (namespaceDependencies is { Count: > 0 }) return ReadWait(namespaceDependencies);
+        var observed = filesystem.AdmissionResources(path, followLeaf);
+        var dependencies = resources.Dependencies(observed.Where(resource => !subtree || !resource.Subtree)
+            .Select(Key).ToArray(), [], false);
+        if (subtree) dependencies.UnionWith(resources.Dependencies(observed.Where(resource => resource.Subtree)
+            .Select(Key).ToArray(), []));
+        return dependencies.Count == 0 ? null : ReadWait(dependencies);
+    }
+
+    private ContextualReadWait ReadWait(IReadOnlyCollection<Task> dependencies) =>
+        new(dependencies.Count == 1 ? dependencies.First() : Task.WhenAll(dependencies),
+            dependencies.Any(IsUnresolvedProcessFlow));
+
     private readonly record struct PlanNodeResult(Task<IReadOnlyList<TransferBatchOutcome>> Completion, int Offset);
     private sealed record PlanSubmission(PlanNodeResult[] Results);
 
@@ -300,7 +325,16 @@ public sealed partial class Interpreter
 
     private async ValueTask<bool> AwaitNamespacePublicationsAsync(IReadOnlyList<PathValue> paths, bool deferProcessFlows = false)
     {
-        if (namespaceProducers.Count == 0) return true;
+        var dependencies = NamespaceDependencies(paths);
+        if (dependencies is null) return true;
+        if (deferProcessFlows && dependencies.Any(IsUnresolvedProcessFlow)) return false;
+        await Task.WhenAll(dependencies);
+        return true;
+    }
+
+    private List<Task>? NamespaceDependencies(IReadOnlyList<PathValue> paths)
+    {
+        if (namespaceProducers.Count == 0) return null;
         HashSet<string> entries = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
         foreach (var path in paths)
         {
@@ -316,9 +350,7 @@ public sealed partial class Interpreter
         var dependencies = namespaceProducers.Where(pair => !pair.Key.IsCompleted
             && pair.Value.Any(root => root.Endpoint == "local" && entries.Contains(root.Path)))
             .Select(pair => pair.Key).ToArray();
-        if (deferProcessFlows && dependencies.Any(IsUnresolvedProcessFlow)) return false;
-        if (dependencies.Length != 0) await Task.WhenAll(dependencies);
-        return true;
+        return dependencies.Length == 0 ? null : dependencies.ToList();
     }
 
     private bool IsUnresolvedProcessFlow(Task task) => !task.IsCompleted

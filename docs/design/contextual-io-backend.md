@@ -538,3 +538,54 @@ checks 1,505 cases/12,047 contracts; an independent DFS region oracle checks
 portable and prepared executable cases/93 contracts, including prior bytes and
 unreachable later writes. Existing ScopeLayout 109 contracts and all 24 real
 source/object/executable loop continuation journeys pass on the final Runtime.
+
+### Exact source calls without a planning continuation
+
+The distinct-reference manifest's actual call is a statically selected source
+`filename` wrapper whose body has no contextual preparation opportunity. The VM
+may execute that exact source call directly when the caller's following region
+also has no planning opportunity. This does not assert purity or elide the call:
+local mutation and opaque-native effects still execute under ordinary invocation
+and ownership. Existing B/Text target selection is reused; native, unresolved
+and open-session targets keep their original path. GetIterator, metadata and
+later I/O remain opportunities, and resource waits stay outside this decision.
+The single 8,192-row/four-scan allocation control on identical bound bytecode
+falls from 625,415,320 to 86,723,704 bytes. Cold managed timings are budget
+observations, not tail estimates; the accepted 1,000-sample window was not rerun.
+
+### Selected observation admission
+
+A focused caller-publish/callee-read test exposed a real race: entry preparation
+could start at LoadLocal and cross into `exists` before the caller's discarded
+publication completed. Waiting only at the entry instruction was too late once
+the backend had frozen a false branch. PlanFileSystem now admits physical/cache
+observations at their actual selected frontier, including transfer classification,
+directory/regex membership, batched prefetch and optional forwarding proofs.
+
+Admission belongs to the active Interpreter and is passed into each preparation,
+never retained in Module, an artifact or session-shared transport ownership. Its
+staged readiness probe first checks namespace producers; only a subsequent ready
+probe resolves referents. A returned task waits existing work only and does not
+continue into filesystem observation on its own. Ready reads complete
+synchronously. Pending metadata resumes at the exact frontier after its prefix;
+speculative call/loop evaluation falls back to the real invocation instead of
+waiting before its earlier captured writes. Unresolved process-flow transfers
+retain their ordinary schedule/defer path rather than becoming mandatory waits.
+
+An outer observation scope prevents nested prefix classification from becoming
+parent-wide waits. Entry/namespace resources retain their non-subtree scope;
+actual tree/membership observations include descendants. A scheduler-owned
+writer-endpoint summary filters unrelated endpoints before remote resolution,
+and a resolver is reused only within that one preparation. It is not a filesystem
+validity cache. A transfer's append-only draft is merged only after complete
+preparation, so blocking partway through a cohort cannot publish an unregistered
+partial operation alongside earlier sites. There is no execution rollback,
+global drain, stale-plan check or automatic replan.
+
+Final focused admission validation uses Runtime SHA256
+`4abb200b538daab27b4679c1199202d7cf9d57d2d37b6a16930afacdddac1de7`:
+22 actual VM journeys/143 contracts plus 24 real loop and 12 selected namespace,
+selection and overwrite CLI routes pass. Independent held-producer oracles check
+prefix progress without replay, no partial cohort admission, unrelated ready
+reads, unselected branches and replacement through an intermediate path. These
+are ordering/ownership checks, not another latency measurement window.

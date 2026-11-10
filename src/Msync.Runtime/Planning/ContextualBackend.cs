@@ -4,7 +4,10 @@ using Msync.Core;
 namespace Msync.Runtime;
 
 public sealed record ContextualPreparation(Module Module, int? ContinueAt,
-    IReadOnlyList<PlanResource> AwaitResources, IReadOnlyList<int>? SourcePositions = null);
+    IReadOnlyList<PlanResource> AwaitResources, IReadOnlyList<int>? SourcePositions = null)
+{
+    internal Task? PendingRead { get; init; }
+}
 
 public static partial class ContextualBackend
 {
@@ -47,11 +50,12 @@ public static partial class ContextualBackend
     }
 
     internal static Module Prepare(Module module, ExecutionOptions? options, ContextualResources resources,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Func<PathValue, bool, bool, PlanFileSystem, ContextualReadWait?>? admission = null)
     {
         if (module.ExecutionPlans is not null) return module;
         Module prepared = NeedsPreparation(module.Functions[module.EntryPoint])
-            ? PrepareNext(module, module.EntryPoint, 0, null, null, options, resources, cancellationToken).Module
+            ? PrepareNext(module, module.EntryPoint, 0, null, null, options, resources, cancellationToken, admission).Module
             : module with { ExecutionPlans = [] };
         return prepared.Blocks is null ? BlockBuilder.Form(prepared) : prepared;
     }
@@ -76,8 +80,9 @@ public static partial class ContextualBackend
 
     internal static ContextualPreparation PrepareNext(Module module, int function, int start,
         IReadOnlyList<Value>? locals, IReadOnlyList<Value>? stack, ExecutionOptions? options,
-        ContextualResources resources, CancellationToken cancellationToken = default) =>
-        new Preparation(module, function, start, locals, stack, options, resources, cancellationToken).Run();
+        ContextualResources resources, CancellationToken cancellationToken = default,
+        Func<PathValue, bool, bool, PlanFileSystem, ContextualReadWait?>? admission = null) =>
+        new Preparation(module, function, start, locals, stack, options, resources, cancellationToken, admission).Run();
 
     private static bool IsMetadata(string? name) => name is not null && name.StartsWith("fs.", StringComparison.Ordinal)
         && !NativeEvaluation.DefersFileRead(name)
@@ -111,11 +116,14 @@ public static partial class ContextualBackend
         private TransferGraph graph = new();
         private int? continuation;
         private IReadOnlyList<PlanResource> awaitResources = [];
+        private Task? pendingRead;
+        private bool blockedObservation;
         private int pc;
 
         internal Preparation(Module module, int function, int start, IReadOnlyList<Value>? locals,
             IReadOnlyList<Value>? stack, ExecutionOptions? options, ContextualResources resources,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            Func<PathValue, bool, bool, PlanFileSystem, ContextualReadWait?>? admission = null)
         {
             this.module = module;
             this.function = function;
@@ -123,7 +131,7 @@ public static partial class ContextualBackend
             context = new(options, module.Context);
             this.cancellationToken = cancellationToken;
             loopHeaders = Applicable(module.Functions[function]).LoopHeaders;
-            filesystem = new(context, resources, cancellationToken);
+            filesystem = new(context, resources, cancellationToken, admission);
             code = module.Functions[function].Instructions;
             constants = new(module.Constants);
             plans = new(module.ExecutionPlans ?? []);
@@ -138,15 +146,25 @@ public static partial class ContextualBackend
         internal ContextualPreparation Run()
         {
             pc = start;
-            while (pc < code.Count && visited.Add(pc))
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (loopHeaders.Contains(pc)) { Stop(); break; }
-                if (!Step()) break;
-                pc++;
+                while (pc < code.Count && visited.Add(pc))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (loopHeaders.Contains(pc)) { Stop(); break; }
+                    if (!Step()) break;
+                    pc++;
+                }
+            }
+            catch (ContextualObservationBlocked blocked)
+            {
+                blockedObservation = true;
+                Stop();
+                if (!blocked.Wait.ProcessFlow || code[pc].Op is not (OpCode.Transfer or OpCode.LocalTransfer))
+                    pendingRead = blocked.Wait.Completion;
             }
             Flush();
-            return Rewrite();
+            return Rewrite() with { PendingRead = pendingRead };
         }
 
         private bool Step()
@@ -396,7 +414,9 @@ public static partial class ContextualBackend
             if (graph.NamespaceMayChange(targetResource) && !filesystem.IsProjected(target)) return Stop([targetResource]);
             if (source.Value is PathValue sourcePath && graph.NamespaceMayChange(filesystem.Resource(sourcePath)))
                 if (!filesystem.IsProjected(sourcePath)) return Stop([filesystem.Resource(sourcePath)]);
-            if (!AddTransfer(source.Value, target, instruction.Span, observed, pc)) return Stop();
+            var candidate = new TransferGraph();
+            if (!AddTransfer(source.Value, target, instruction.Span, observed, pc, candidate)) return Stop();
+            foreach (var node in candidate.Nodes) graph.Add(node);
             return RegisterTransfer(source, destination, observed);
         }
 
@@ -444,6 +464,12 @@ public static partial class ContextualBackend
         }
 
         private bool TryExpandLoop(KnownValue input, IReadOnlyList<Value> values)
+        {
+            try { return ExpandKnownLoop(input, values); }
+            catch (ContextualObservationBlocked) { blockedObservation = true; return false; }
+        }
+
+        private bool ExpandKnownLoop(KnownValue input, IReadOnlyList<Value> values)
         {
             if (pc + 2 >= code.Count || code[pc + 1].Op is not (OpCode.StoreLocal or OpCode.InitializeLocal)
                 || code[pc + 2].Op != OpCode.IteratorNext) return false;
@@ -587,7 +613,7 @@ public static partial class ContextualBackend
             int index = plans.Count;
             int begin = sites[0].Instruction, end = sites[^1].LoopEnd
                 ?? sites[^1].Instruction + (sites[^1].Observed ? 1 : 2);
-            graph = FileVersionForwarding.Apply(graph, filesystem);
+            if (!blockedObservation) graph = FileVersionForwarding.Apply(graph, filesystem);
             ExecutionPlan plan = graph.Build(function, begin, end);
             if (sites.Any(site => site.Observed) && plan.ResultTransfers is null) plan = plan with { ResultTransfers = [] };
             plans.Add(plan);

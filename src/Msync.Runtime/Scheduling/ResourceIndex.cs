@@ -4,6 +4,20 @@ internal sealed record ResourceKey(string Endpoint, string Path);
 
 internal sealed class ResourceIndex
 {
+    private sealed class EndpointWrites
+    {
+        private readonly HashSet<Task> tasks = [];
+        private Task? active;
+        internal void Add(Task task) { tasks.Add(task); active = task; }
+        internal void Remove(Task task) { tasks.Remove(task); if (ReferenceEquals(active, task)) active = null; }
+        internal bool Any()
+        {
+            if (active is not null && !active.IsCompletedSuccessfully) return true;
+            tasks.RemoveWhere(static task => task.IsCompletedSuccessfully);
+            active = tasks.FirstOrDefault();
+            return active is not null;
+        }
+    }
     public sealed class Node(StringComparer comparer, Node? parent = null, string? name = null)
     {
         public readonly Dictionary<string, Node> Children = new(comparer);
@@ -14,8 +28,16 @@ internal sealed class ResourceIndex
     }
     public readonly record struct Registration(Node? Reader, Node? Writer);
     private readonly Dictionary<string, Node> roots = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, EndpointWrites> endpointWrites = new(StringComparer.Ordinal);
     private Node? unknown;
     public long NodesVisited { get; private set; }
+    internal bool HasPendingWriters(string endpoint) =>
+        endpointWrites.TryGetValue("*", out var unknownWrites) && unknownWrites.Any()
+        || endpointWrites.TryGetValue(endpoint, out var writes) && writes.Any();
+    internal void RetireTask(Task task)
+    {
+        foreach (var writes in endpointWrites.Values) writes.Remove(task);
+    }
     private static StringComparer Comparer(string endpoint) => endpoint == "local" && OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
     private Node Root(ResourceKey key)
     {
@@ -24,10 +46,11 @@ internal sealed class ResourceIndex
         return root;
     }
     private static IEnumerable<string> Parts(ResourceKey key) => key.Path.Split(key.Endpoint == "local" && OperatingSystem.IsWindows() ? ['/', '\\'] : ['/'], StringSplitOptions.RemoveEmptyEntries);
-    public HashSet<Task> Dependencies(IReadOnlyList<ResourceKey> reads, IReadOnlyList<ResourceKey> writes)
+    public HashSet<Task> Dependencies(IReadOnlyList<ResourceKey> reads, IReadOnlyList<ResourceKey> writes,
+        bool readDescendants = true)
     {
         HashSet<Task> tasks = [];
-        foreach (var key in reads) Collect(key, false, tasks);
+        foreach (var key in reads) Collect(key, false, tasks, readDescendants);
         foreach (var key in writes) Collect(key, true, tasks);
         return tasks;
     }
@@ -36,7 +59,7 @@ internal sealed class ResourceIndex
         source.RemoveWhere(task => task.IsCompletedSuccessfully);
         target.UnionWith(source);
     }
-    private void Collect(ResourceKey key, bool writing, HashSet<Task> tasks)
+    private void Collect(ResourceKey key, bool writing, HashSet<Task> tasks, bool descendants = true)
     {
         if (unknown is not null)
         {
@@ -65,7 +88,7 @@ internal sealed class ResourceIndex
             AddActive(node.Writers, tasks);
             if (writing) AddActive(node.Readers, tasks);
         }
-        CollectDescendants(node, writing, tasks);
+        if (descendants) CollectDescendants(node, writing, tasks);
     }
     private void CollectDescendants(Node node, bool writing, HashSet<Task> tasks)
     {
@@ -79,6 +102,8 @@ internal sealed class ResourceIndex
     }
     public Registration Add(Task completion, ResourceKey? read, ResourceKey write)
     {
+        if (!endpointWrites.TryGetValue(write.Endpoint, out var writes)) endpointWrites.Add(write.Endpoint, writes = new());
+        writes.Add(completion);
         var reader = read is null ? null : Leaf(read);
         var writer = Leaf(write);
         reader?.Readers.Add(completion);

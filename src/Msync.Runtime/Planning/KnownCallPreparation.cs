@@ -16,6 +16,12 @@ public static partial class ContextualBackend
 
         private bool KnownCall(Instruction instruction)
         {
+            try { return ExpandKnownCall(instruction); }
+            catch (ContextualObservationBlocked) { blockedObservation = true; return Stop(); }
+        }
+
+        private bool ExpandKnownCall(Instruction instruction)
+        {
             KnownValue[] inputs = PeekMany(instruction.A + 1);
             if (instruction.B < 0 || inputs[0].Value is not FunctionValue closure
                 || inputs.Skip(1).Any(input => !input.Known)) return Stop();

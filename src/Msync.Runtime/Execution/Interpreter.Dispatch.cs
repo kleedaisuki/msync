@@ -21,6 +21,7 @@ public sealed partial class Interpreter
         int preparedAt = -1;
         int? continuation = null;
         IReadOnlyList<PlanResource> awaiting = [];
+        Task? pendingRead = null;
         bool prepareEntry = true;
         while (pc < function.Instructions.Count)
         {
@@ -31,7 +32,14 @@ public sealed partial class Interpreter
                         or OpCode.GetIterator or OpCode.NativeCall or OpCode.Call);
             if (pc == continuation && awaiting.Count != 0)
                 await AwaitPlanResourcesAsync(awaiting);
-            if (contextualize && ContextualBackend.NeedsPreparation(function, pc))
+            if (pc == continuation && pendingRead is { } ready)
+            {
+                await ready;
+                pendingRead = null;
+                preparedAt = -1;
+            }
+            if (contextualize && ContextualBackend.NeedsPreparation(function, pc)
+                && !CanExecuteCallDirectly(function, pc, stack))
             {
                 var prepared = await PrepareContinuationAsync(image, functionIndex, pc, locals, stack, cancellationToken);
                 preparedAt = pc;
@@ -53,6 +61,7 @@ public sealed partial class Interpreter
                 preparedAt = pc;
                 continuation = prepared.ContinueAt;
                 awaiting = prepared.AwaitResources;
+                pendingRead = prepared.PendingRead;
                 if (!ReferenceEquals(prepared.Module, image))
                 {
                     image = prepared.Module;
@@ -61,6 +70,7 @@ public sealed partial class Interpreter
                     function = nextFunction;
                     if (pc >= function.Instructions.Count) break;
                 }
+                if (pc == continuation && pendingRead is not null) continue;
             }
             prepareEntry = false;
             var block = indexed[pc];
@@ -80,11 +90,21 @@ public sealed partial class Interpreter
                 preparedAt = -1;
                 continuation = null;
                 awaiting = [];
+                pendingRead = null;
                 prepareEntry = true;
             }
             else pc = outcome.Next;
         }
         return stack.Count == 0 ? Value.Null : stack[^1];
+    }
+    private bool CanExecuteCallDirectly(FunctionCode caller, int pc, OperandStack stack)
+    {
+        Instruction call = caller.Instructions[pc];
+        if (call.Op != OpCode.Call || call.B < 0 || stack.Count <= call.A
+            || pc + 1 < caller.Instructions.Count && ContextualBackend.NeedsPreparation(caller, pc + 1)) return false;
+        if (ReadValue(stack[stack.Count - call.A - 1]) is not FunctionValue { NativeName: null } function
+            || KnownCalls.Target(function, call) is not int target || (uint)target >= (uint)module.Functions.Count) return false;
+        return !ContextualBackend.NeedsPreparation(module.Functions[target]);
     }
     private static int FindRewrittenPosition(IReadOnlyList<int> positions, int source)
     {
@@ -99,7 +119,8 @@ public sealed partial class Interpreter
         if (!await AwaitContextualInputsAsync(image.Functions[function].Instructions[pc], stack, cancellationToken)) return null;
         var values = Enumerable.Range(0, stack.Count).Select(index => stack[index]).ToArray();
         return ContextualBackend.PrepareNext(image, function, pc, locals, values,
-            executionOptions, planResources, cancellationToken);
+            executionOptions, planResources, cancellationToken,
+            pending.Count == 0 ? null : observationAdmission ??= AdmitContextualObservation);
     }
     private readonly record struct BlockOutcome(int Next, Value? Value = null, bool Returned = false,
         int SubmittedPlan = -1, PlanSubmission? Submission = null);

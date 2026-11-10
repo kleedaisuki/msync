@@ -239,6 +239,7 @@ public sealed partial class Interpreter
             foreach (var item in registrations) resources.Remove(work.Completion, item);
         work.Registration = null;
         work.Registrations = null;
+        resources.RetireTask(work.Completion);
         processDependencies.Remove(work.Completion);
         namespaceProducers.Remove(work.Completion);
     }

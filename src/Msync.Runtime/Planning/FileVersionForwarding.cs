@@ -6,6 +6,12 @@ internal static class FileVersionForwarding
 {
     internal static TransferGraph Apply(TransferGraph graph, PlanFileSystem filesystem)
     {
+        try { return ApplyReady(graph, filesystem); }
+        catch (ContextualObservationBlocked) { return graph; }
+    }
+
+    private static TransferGraph ApplyReady(TransferGraph graph, PlanFileSystem filesystem)
+    {
         if (graph.Count < 2 || !HasCandidate(graph, filesystem)) return graph;
         var allWrites = new PlanResourceIndex();
         for (int index = 0; index < graph.Nodes.Count; index++)

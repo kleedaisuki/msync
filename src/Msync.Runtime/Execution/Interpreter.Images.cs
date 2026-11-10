@@ -23,17 +23,19 @@ public sealed partial class Interpreter
     private void RefreshSessionImage()
     {
         if (sessionImage is not { } image || imageGeneration == image.Generation) return;
-        (module, blocks) = image.Project(ImageContext);
+        (module, blocks) = image.Project(ImageContext, this);
         dispatchTables.Clear();
         imageGeneration = image.Generation;
     }
 
-    private (Module Module, BasicBlock[][] Blocks) ProjectImage(Module image) =>
-        ProjectImage(image, ImageContext, planResources, executionOptions, preparationCancellation);
+    internal (Module Module, BasicBlock[][] Blocks) ProjectImage(Module image) =>
+        ProjectImage(image, ImageContext, planResources, executionOptions, preparationCancellation,
+            pending.Count == 0 ? null : observationAdmission ??= AdmitContextualObservation);
 
     internal static (Module Module, BasicBlock[][] Blocks) ProjectImage(Module image, BindingContext origin,
         ContextualResources? resources = null, ExecutionOptions? options = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Func<PathValue, bool, bool, PlanFileSystem, ContextualReadWait?>? admission = null)
     {
         // Code follows mutable session identities; physical anchors belong to this invocation's origin.
         var projected = image;
@@ -41,7 +43,7 @@ public sealed partial class Interpreter
         {
             var bound = Binding.Bind(image, origin);
             projected = resources is null ? ContextualBackend.Prepare(bound, options, cancellationToken)
-                : ContextualBackend.Prepare(bound, options, resources, cancellationToken);
+                : ContextualBackend.Prepare(bound, options, resources, cancellationToken, admission);
         }
         var prepared = preparedImages.GetValue(projected, static module =>
         {

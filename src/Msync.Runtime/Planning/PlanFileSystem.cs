@@ -4,8 +4,54 @@ using Msync.Core;
 namespace Msync.Runtime;
 
 internal sealed class PlanFileSystem(RuntimeContext context, ContextualResources resources,
-    CancellationToken cancellationToken)
+    CancellationToken cancellationToken,
+    Func<PathValue, bool, bool, PlanFileSystem, ContextualReadWait?>? admission = null)
 {
+    private int observationDepth;
+    private PlanFileSystem? admissionResolver;
+
+    internal IReadOnlyList<PlanResource> AdmissionResources(PathValue path, bool followLeaf) =>
+        (admissionResolver ??= new(context, resources, cancellationToken)).ObservationResources(path, followLeaf);
+
+    private readonly struct Observation(PlanFileSystem? owner) : IDisposable
+    {
+        public void Dispose() { if (owner is not null) owner.observationDepth--; }
+    }
+
+    private Observation Observe(PathValue path, bool followLeaf = false, bool subtree = false)
+    {
+        if (admission is null) return default;
+        if (observationDepth == 0 && admission(path, followLeaf, subtree, this) is { } wait)
+            throw new ContextualObservationBlocked(wait);
+        observationDepth++;
+        return new(this);
+    }
+
+    private Observation NestedObservation()
+    {
+        if (admission is null) return default;
+        observationDepth++;
+        return new(this);
+    }
+
+    private void Admit(PathValue path, bool followLeaf, bool subtree)
+    {
+        using var observation = Observe(path, followLeaf, subtree);
+    }
+
+    private Observation ObserveLocal(string path) => admission is null ? default
+        : Observe(new(path, context.WorkingDirectory, HomeDirectory: context.HomeDirectory), true);
+
+    private IReadOnlyList<PathValue> AdmitPaths(IEnumerable<PathValue> paths)
+    {
+        List<PathValue> selected = [];
+        foreach (var path in paths)
+        {
+            using var observation = Observe(path);
+            selected.Add(path);
+        }
+        return selected;
+    }
     private readonly Dictionary<(ConnectionValue? Connection, string Path), string> kinds = [];
     private readonly Dictionary<(ConnectionValue? Connection, string Path, bool Follow), PlanResource> footprints = [];
     private readonly Dictionary<(ConnectionValue? Connection, string Path), string> projected = [];
@@ -29,6 +75,7 @@ internal sealed class PlanFileSystem(RuntimeContext context, ContextualResources
 
     internal string InitialKind(PathValue path)
     {
+        using var observation = Observe(path);
         var key = (path.Connection, Spelling(path));
         if (kinds.TryGetValue(key, out string? found)) return found;
         string kind;
@@ -41,6 +88,7 @@ internal sealed class PlanFileSystem(RuntimeContext context, ContextualResources
 
     internal PlanResource Resource(PathValue path, bool subtree = false, bool followLeaf = false)
     {
+        using var observation = Observe(path, followLeaf);
         var projectedKey = (path.Connection, Spelling(path));
         if (projectedFootprints.TryGetValue(projectedKey, out var future)
             && (!followLeaf || Kind(path) != "symlink")) return future with { Subtree = subtree };
@@ -83,6 +131,7 @@ internal sealed class PlanFileSystem(RuntimeContext context, ContextualResources
 
     internal IReadOnlyList<PlanResource> ObservationResources(PathValue path, bool followLeaf = true)
     {
+        using var observation = Observe(path, followLeaf);
         PlanResource entry = Resource(path, true);
         HashSet<PlanResource> observed = new(NamespaceResources(path, followLeaf), ResourceIdentity.Instance) { entry };
         if (followLeaf) observed.Add(Resource(path, true, true));
@@ -91,6 +140,7 @@ internal sealed class PlanFileSystem(RuntimeContext context, ContextualResources
 
     internal IReadOnlyList<PlanResource> NamespaceResources(PathValue path, bool followLeaf = false)
     {
+        using var observation = Observe(path, followLeaf);
         bool windows = path.Connection?.Kind is not (ConnectionKind.Ssh or ConnectionKind.Wsl) && OperatingSystem.IsWindows();
         string spelling = Spelling(path);
         string inspected = followLeaf ? spelling : path.Connection?.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl
@@ -116,6 +166,7 @@ internal sealed class PlanFileSystem(RuntimeContext context, ContextualResources
 
     internal IReadOnlyList<RemotePathMetadata> Tree(PathValue directory)
     {
+        using var observation = Observe(directory, true, true);
         var key = (directory.Connection, Spelling(directory));
         if (trees.TryGetValue(key, out var known)) return known;
         if (directory.Connection is { Kind: ConnectionKind.Ssh or ConnectionKind.Wsl } remote)
@@ -172,22 +223,12 @@ internal sealed class PlanFileSystem(RuntimeContext context, ContextualResources
 
     internal bool CopyFileSystem(PathValue source, PlanResource intermediate)
     {
-        string path = Resource(source).Path;
-        if (!stableMetadata.TryGetValue(path, out bool stable))
-        {
-            try
-            {
-                stable = OperatingSystem.IsWindows()
-                    ? (File.GetAttributes(path) & (FileAttributes.Compressed | FileAttributes.Encrypted | FileAttributes.SparseFile)) == 0
-                    : (NativeFileMetadata.Capture(path).Mode & (UnixFileMode.SetUser | UnixFileMode.SetGroup | UnixFileMode.StickyBit)) == 0;
-            }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { stable = false; }
-            stableMetadata.Add(path, stable);
-        }
-        if (!stable || FileSystem(path) is not { } origin) return false;
+        var origin = CopySourceFileSystem(source);
+        if (origin is null) return false;
         string? parent = Path.GetDirectoryName(intermediate.Path);
         while (!string.IsNullOrEmpty(parent))
         {
+            using var observation = ObserveLocal(parent);
             if (FileSystem(parent) is { } target)
             {
                 if (OperatingSystem.IsWindows()
@@ -201,8 +242,27 @@ internal sealed class PlanFileSystem(RuntimeContext context, ContextualResources
         return false;
     }
 
+    private NativeFileIdentity.FileSystemIdentity? CopySourceFileSystem(PathValue source)
+    {
+        using var observation = Observe(source, true);
+        string path = Resource(source).Path;
+        if (!stableMetadata.TryGetValue(path, out bool stable))
+        {
+            try
+            {
+                stable = OperatingSystem.IsWindows()
+                    ? (File.GetAttributes(path) & (FileAttributes.Compressed | FileAttributes.Encrypted | FileAttributes.SparseFile)) == 0
+                    : (NativeFileMetadata.Capture(path).Mode & (UnixFileMode.SetUser | UnixFileMode.SetGroup | UnixFileMode.StickyBit)) == 0;
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { stable = false; }
+            stableMetadata.Add(path, stable);
+        }
+        return stable ? FileSystem(path) : null;
+    }
+
     private NativeFileIdentity.FileSystemIdentity? FileSystem(string path)
     {
+        using var observation = ObserveLocal(path);
         if (devices.TryGetValue(path, out var device)) return device;
         device = NativeFileIdentity.TryFileSystem(path, out var identity) ? identity : null;
         devices.Add(path, device);
@@ -211,6 +271,7 @@ internal sealed class PlanFileSystem(RuntimeContext context, ContextualResources
 
     internal RangeValue Select(PathValue directory, string pattern, bool recursive = false)
     {
+        using var observation = Observe(directory, true, true);
         using var selectedSession = SelectSession(directory);
         var regex = new Regex(pattern, RegexOptions.CultureInvariant);
         if (directory.Connection is { Kind: ConnectionKind.Ssh or ConnectionKind.Wsl } connection)
@@ -251,6 +312,8 @@ internal sealed class PlanFileSystem(RuntimeContext context, ContextualResources
 
     internal void Prefetch(IEnumerable<PathValue> paths, bool includeKinds)
     {
+        if (admission is not null && observationDepth == 0) paths = AdmitPaths(paths);
+        using var observation = NestedObservation();
         var pending = paths.Where(path => path.Connection?.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl)
             .Where(path => !IsProjected(path))
             .Where(path => !footprints.ContainsKey((path.Connection, Spelling(path), false))
@@ -302,6 +365,9 @@ internal sealed class PlanFileSystem(RuntimeContext context, ContextualResources
     internal IReadOnlyList<PlanResource> DirectoryWrites(PathValue source, PathValue destination,
         TransferDestinationMode mode)
     {
+        Admit(source, true, true);
+        Admit(destination, mode != TransferDestinationMode.Replace, true);
+        using var observation = NestedObservation();
         PlanResource root = Resource(destination, true, mode != TransferDestinationMode.Replace);
         if (mode == TransferDestinationMode.Replace) return [root];
         if (Kind(destination) is not ("directory" or "symlink")) return [root];
@@ -319,6 +385,7 @@ internal sealed class PlanFileSystem(RuntimeContext context, ContextualResources
 
     private IEnumerable<string> Directories(PathValue source)
     {
+        using var observation = Observe(source, true, true);
         if (source.Connection is { Kind: ConnectionKind.Ssh or ConnectionKind.Wsl } remote)
         {
             var entries = Tree(source);
@@ -365,11 +432,26 @@ internal sealed class PlanFileSystem(RuntimeContext context, ContextualResources
 
     internal Value Invoke(string name, IReadOnlyList<Value> values)
     {
+        using var observation = NativeObservation(name, values);
         using var selectedSession = NativeEvaluation.RequiresPathSession(name) && values.OfType<PathValue>().FirstOrDefault(path =>
             path.Connection?.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl) is { } remote ? SelectSession(remote) : null;
         return NativeRegistry.InvokeAsync(name, values, context,
             static (_, _, _) => throw new InvalidOperationException("Contextual evaluation cannot invoke a source callback."),
             cancellationToken).AsTask().GetAwaiter().GetResult();
+    }
+
+    private Observation NativeObservation(string name, IReadOnlyList<Value> values)
+    {
+        if (admission is null || observationDepth != 0 || !NativeSignatures.TryGet(name, out var signature)
+            || signature.Effect == NativeEffect.Pure) return NestedObservation();
+        bool followLeaf = name is not ("fs.symlink_status" or "fs.is_symlink" or "fs.read_symlink");
+        bool subtree = name is "fs.directory_iterator" or "fs.recursive_directory_iterator";
+        for (int index = 0; index < values.Count && index < signature.Parameters.Count; index++)
+        {
+            if ((signature.Parameters[index].Kind & TypeKind.Path) == 0) continue;
+            using var observation = Observe(context.AsPath(values[index]), followLeaf, subtree);
+        }
+        return NestedObservation();
     }
 
 

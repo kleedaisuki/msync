@@ -11,10 +11,10 @@ internal sealed class SessionImage(Module module)
     public Interpreter? ActiveInterpreter { get; set; }
     private readonly Dictionary<BindingContext, (Module Module, BasicBlock[][] Blocks)> projections = [];
 
-    public (Module Module, BasicBlock[][] Blocks) Project(BindingContext context)
+    public (Module Module, BasicBlock[][] Blocks) Project(BindingContext context, Interpreter owner)
     {
         if (!projections.TryGetValue(context, out var projected))
-            projections.Add(context, projected = Interpreter.ProjectImage(Module, context));
+            projections.Add(context, projected = owner.ProjectImage(Module));
         return projected;
     }
 
