@@ -16,6 +16,11 @@ Fresh constructor results infer independent first-write field carriers while
 sharing one code body. The closure-only named-Scope case checks the opposite:
 returning only a setter cannot turn a singleton field into a fresh constraint.
 
+Declaration inference checks distinguish a provisional `Range<ElementVar>`
+shape from an explicit broad `Range` annotation. Inferred String fields reject
+Number elements, explicit broad bindings permit them, and separate String/Bool
+factory specializations preserve their own field carriers.
+
 Run with an isolated artifacts directory:
 
 ```text

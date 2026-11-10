@@ -56,7 +56,50 @@ await Number("nested-resource-policy-cache", """
     let second = select(lazy);
     if state::changed { 0 } else { 1 }
     """, 1);
+await Number("enumerate-nullable-row", """
+    native fn enumerate_from(values: Range, start: Number) -> Range<Scope>;
+    fn enumerate(values: Range) { enumerate_from(values, 0) };
+    let result = scope { number: 0 };
+    for row in enumerate([null]) {
+        if row::value is null { result::number = row::index + 1; };
+    };
+    result::number
+    """, 1);
+await Number("zip-nullable-row", """
+    native fn zip(left: Range, right: Range) -> Range<Scope>;
+    fn pairs(left: Range, right: Range) { zip(left, right) };
+    let result = scope { number: 0 };
+    for row in pairs([null], [2]) {
+        if row::first is null { result::number = row::second; };
+    };
+    result::number
+    """, 2);
+await Number("bottom-return-discard", "fn stop() { return; 1 + true }; stop(); 7", 7);
+await Number("bottom-break-discard", "let count = 0; for item in [1, 2] { break; count = count + 1; }; count", 0);
+await Number("ordinary-tail-discard", "if decltype({ 7; }) is Null { 9 } else { 0 }", 9);
+await Text("annotated-concat-carrier", """
+    fn append(chunks: Range<String>, text: String) -> Range<String> {
+        $std::ranges::materialize($std::ranges::concat(chunks, [text]))
+    };
+    $std::ranges::first(append([], "Klee"))
+    """, "Klee");
+await Number("broad-scope-return-shape", """
+    fn make() -> Scope { scope { item: 7 } };
+    make()::item
+    """, 7);
+RejectType("invalid-range-return-annotation", """
+    fn wrong() -> Range<String> { [1] };
+    wrong()
+    """);
 Console.WriteLine($"PASS {checks} callable write-domain journeys");
+
+void RejectType(string name, string source)
+{
+    if (args.Length != 0 && !args.Contains(name, StringComparer.Ordinal)) return;
+    try { _ = Compiler.Analyze(source, name + ".msync"); }
+    catch (CompileException error) when (error.Diagnostic.Code == "E0203") { checks++; return; }
+    throw new InvalidOperationException("An incompatible annotated Range return must be rejected.");
+}
 
 void Reject(string name, string source)
 {

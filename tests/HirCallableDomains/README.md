@@ -43,6 +43,15 @@ Range item selection. Their policy schema retains nested eagerness but not live
 resource IDs. Fresh semantic graph descriptions escaping a lazy body are
 published to its caller without applying deferred writes to borrowed state.
 
+Pure return schemes and control-flow projections preserve dependent native
+`enumerate` and `zip` record carriers. A nullable input item makes the record's
+corresponding field nullable, not the record itself. The two nullable-row
+journeys exercise source wrappers, iteration and field selection after artifact
+round-tripping. Concatenation preserves the union of its input carriers through
+eager source wrappers. Explicit result annotations bound the pure return scheme
+without discarding narrower structural rows; actual specialization still rejects
+an incompatible function body.
+
 Unknown future REPL definitions are handled separately by session signature
 obligations; this closed-source index does not pretend to predict unseen source.
 

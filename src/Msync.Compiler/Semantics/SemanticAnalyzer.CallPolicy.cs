@@ -221,11 +221,15 @@ internal sealed partial class SemanticAnalyzer
             List<ReturnShape> exits = [];
             ReturnShape result = ProjectReturn(template.Body, context, ref facts, eager, exits);
             foreach (ReturnShape returned in exits) result = JoinShape(result, returned, algebra);
-            TypeRef annotatedRuntime = hir.Types[annotation.Value].RuntimeType.WithoutNull;
-            bool pathConversion = annotatedRuntime == TypeRef.String && result.Fact.Type.WithoutNull == TypeRef.Path
-                || annotatedRuntime == TypeRef.Path && result.Fact.Type.WithoutNull == TypeRef.String;
-            if (template.ResultAnnotation is not null && (result.Fact.Type == TypeRef.Any || pathConversion))
-                result = result with { Fact = Shape(annotation).Fact };
+            if (template.ResultAnnotation is not null)
+            {
+                TypeRef declared = hir.Types[annotation.Value].RuntimeType;
+                result = result with
+                {
+                    Fact = algebra.Constrain(result.Fact,
+                    new(declared, declared, StorageSemanticType: annotation))
+                };
+            }
             returnSchemes[key] = result with
             {
                 Value = result.Value is { } callableResult
@@ -257,6 +261,12 @@ internal sealed partial class SemanticAnalyzer
                 if (result.Fact.Type.Kind == TypeKind.Never) break;
             }
             return result;
+        }
+        if (node.Kind == HirKind.Discard)
+        {
+            ReturnShape discarded = ProjectReturn(children[0], context, ref facts, eager, returns);
+            return SemanticControl.Terminates(discarded.Fact.Type) ? discarded
+                : Shape(hir.Type(SemanticControl.Discard(discarded.Fact.Type)));
         }
         if (node.Kind is HirKind.Declare or HirKind.Assign)
         {
@@ -500,7 +510,14 @@ internal sealed partial class SemanticAnalyzer
 
     private ReturnShape NativeShape(NativeSignature signature, IReadOnlyList<ReturnShape> arguments)
     {
-        FlowFact fact = signature.ResultRule switch
+        bool dependentRange = signature.ResultRule == NativeResultRule.RangeEnumerate && arguments.Count >= 1
+            || signature.ResultRule is NativeResultRule.RangeZip or NativeResultRule.RangeConcat && arguments.Count >= 2;
+        HirTypeId? structural = dependentRange ? HirNativeResultTypes.Project(signature.ResultRule,
+            arguments[0].Fact.SemanticType ?? hir.Type(arguments[0].Fact.Type),
+            signature.ResultRule is NativeResultRule.RangeZip or NativeResultRule.RangeConcat
+                ? arguments[1].Fact.SemanticType ?? hir.Type(arguments[1].Fact.Type) : default,
+            hir, new HirFlowTypeAlgebra(hir)) : null;
+        FlowFact fact = structural is { } dependent ? Shape(dependent).Fact : signature.ResultRule switch
         {
             NativeResultRule.FirstArgument when arguments.Count != 0 => arguments[0].Fact,
             NativeResultRule.RangeItem when arguments.Count != 0 => Shape(new HirFlowTypeAlgebra(hir)
@@ -514,6 +531,7 @@ internal sealed partial class SemanticAnalyzer
             NativeResultRule.RangeItem when arguments.Count != 0 && arguments[0].Value is { } range => Item(range),
             _ => null
         };
+        metadata ??= structural is { } structured ? ValueForType(structured) : null;
         NativeBehavior behavior = signature.Behavior.GetValueOrDefault();
         bool eager = (behavior & NativeBehavior.EagerRange) != 0
             || signature.ResultRule == NativeResultRule.FirstArgument && arguments.Count != 0

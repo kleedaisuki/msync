@@ -34,6 +34,8 @@ foreach (var test in new (string Name, string Source, double Expected, string Fu
     ("scope-write-projection", "fn set(x) { x::n = 7 }; let a = scope { n: 1 }; let b = scope { n: 2 }; set(a); set(b); b::n", 7, "set", 1),
     ("returned-closure-projection", "fn make(x) { fn { x } }; let first = make(2); let second = make(9); first(); second()", 9, "make", 1),
     ("joined-scope-common-member", "fn common(flag) { if flag { scope { n: 1, first: true } } else { scope { n: 2, second: true } } }; common(true); common(false)::n", 2, "common", 1),
+    ("explicit-bare-range-storage", "let values: Range = [\"text\"]; values = [1]; if values is Range { 1 } else { 0 }", 1, "unused", 0),
+    ("factory-range-field-carriers", "fn make(value) { scope { values: [value] } }; let first = make(\"text\"); let second = make(true); let total = 0; for text in first::values { if text == \"text\" { total = total + 3; }; }; for flag in second::values { if flag { total = total + 4; }; }; total", 7, "make", 2),
     ("scope-recursive-signature", "scope Math { count: fn(x) { if x == 0 { 0 } else { Math::count(x - 1) } } }; Math::count(3)", 0, "<lambda>", 1),
     ("recursive-inferred-signature", "fn count(x) { if x == 0 { 0 } else { count(x - 1) } }; count(3)", 0, "count", 1),
     ("query-does-not-publish", "fn add(x) { x + 1 }; let t = decltype(add(2)); 3", 3, "add", 0),
@@ -77,6 +79,13 @@ if (args.Length == 0 || args.Contains("named-closure-fixed-carrier", StringCompa
     }
     catch (CompileException error) { namedCarrier = error.Diagnostic.Code == "E0203"; }
     Require(namedCarrier, "Closure-only singleton capture acquired a fresh first-write carrier");
+}
+if (args.Length == 0 || args.Contains("inferred-range-field-fixed-carrier", StringComparer.Ordinal))
+{
+    bool inferredCarrier = false;
+    try { Compiler.Analyze("let object = scope { values: [\"text\"] }; object::values = [1]", "inferred-range-field-fixed-carrier.msync"); }
+    catch (CompileException error) { inferredCarrier = error.Diagnostic.Code == "E0203"; }
+    Require(inferredCarrier, "A provisional Range element hint became the inferred field constraint");
 }
 Console.WriteLine($"PASS {checks} generic instance/provenance source journeys");
 

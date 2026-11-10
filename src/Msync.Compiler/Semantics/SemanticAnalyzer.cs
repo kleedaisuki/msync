@@ -151,6 +151,7 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
     private SemanticValue Discard(HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext context)
     {
         SemanticValue value = Analyze(children[0], context);
+        if (SemanticControl.Terminates(Runtime(value))) return value;
         return new(hir.Type(TypeRef.Null), Add(node, hir.Type(TypeRef.Null), [value.Node], context));
     }
 
@@ -162,6 +163,7 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
         {
             value = Analyze(child, context);
             result.Add(value.Node);
+            if (SemanticControl.Terminates(Runtime(value))) break;
         }
         return value with { Node = Add(node, value.Type, System.Runtime.InteropServices.CollectionsMarshal.AsSpan(result), context) };
     }

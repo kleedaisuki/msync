@@ -274,6 +274,14 @@ non-Null carrier. Structured event replay uses that same write handler. A
 callee's solved formal constraint is not a substitute for updating the caller's
 actual cell.
 
+Bound declaration types can be provisional shape hints, not user constraints.
+For an unannotated declaration, the complete analyzed initializer establishes
+its storage type, including nested Range element types. An explicit annotation
+remains authoritative, and a Null-only nullable initializer keeps its pending
+first-write carrier. Inferring a cell does not substitute a compound hint type
+globally: an inferred `Range<String>` must not narrow another explicitly broad
+`Range` declaration that happens to share an interned hint.
+
 Standard module locations are program-owned cells. A formal capture must consult
 the canonical completed module row, rather than freeze the first partial export
 snapshot as its namespace. Explicit program-cell replacements remain distinct
@@ -451,3 +459,36 @@ to 143.736 MB. These are the same source and counter environment, not a claim
 about Native startup or matched warm latency. The frozen17 source-free query,
 capture/alias and common-member journeys and editor callable/type-union views
 were checked independently of the allocation observation.
+
+### Dependent native records and terminating statements
+
+Pure return schemes and flow projection share the native record-range type
+constructor. `enumerate(Range<T>)` returns `Range<Scope { index: Number,
+value: T }>`; `zip(Range<A>, Range<B>)` returns a range of non-null records whose
+fields retain A and B. A nullable field must not turn its containing record into
+`Scope?`. Falling back to the registry's generic Range loses this distinction
+and can incorrectly replace a more precise analyzed result at a wrapper call.
+Concatenation unions the two element types. Explicit function return annotations
+constrain the projected result without erasing a more precise Scope row or Range
+element; executable specialization still validates and converts the actual body.
+
+A semicolon discards a value, not control divergence: discarding Never remains
+Never, whereas discarding an ordinary value yields Null. Actual block analysis
+stops at a terminating child; pure return projection still collects the returned
+value before propagating termination. This keeps the continuing branch of an
+early-return guard refined without adding a special nullable-capture rule.
+
+The unchanged collection-policy program (`d24c541f…`, 3091 bytes) exposed both
+losses in the first Native candidate. Immutable managed snapshot 21 passed its
+O2 source, source-deleted relocatable and executable routes with 39 exact file
+observations and three policy/storage rejection checks. Focused artifact
+journeys additionally distinguish nullable record fields, return/break
+termination, ordinary value discard and source-owned missing-argument errors.
+The same policy phase's original service program (`0baedabab…`, 2853 bytes)
+subsequently passed three O2 routes, 36 exact file observations and three
+rejections on immutable snapshot 23 after declaration storage inference was
+corrected. Its fixed `chunks` contract had incorrectly retained a provisional
+Range element variable although the initializer was already `Range<String>`.
+Focused checks preserve explicit bare Range annotations, reject invalid inferred
+field writes and retain independent anonymous carriers and fixed singleton
+carriers. Native candidate acceptance remains a separate release step.

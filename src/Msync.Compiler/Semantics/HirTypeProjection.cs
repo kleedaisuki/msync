@@ -37,6 +37,12 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
             case HirKind.Block:
                 return children.Length == 0 ? Fact(hir.Type(TypeRef.Null)) : Project(children[^1], facts);
             case HirKind.Discard:
+                {
+                    HirNode operand = program.Node(children[0]);
+                    TypeRef type = operand.Kind is HirKind.Return or HirKind.Break
+                        ? new(TypeKind.Never) : Project(children[0], facts).Type;
+                    return Fact(hir.Type(SemanticControl.Discard(type)));
+                }
             case HirKind.Declare:
             case HirKind.Assign:
             case HirKind.MemberAssign:
@@ -256,6 +262,15 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
         {
             NativeBehavior behavior = signature.Behavior.GetValueOrDefault();
             bool eager = (behavior & NativeBehavior.EagerRange) != 0;
+            bool dependentRange = signature.ResultRule == NativeResultRule.RangeEnumerate && arguments.Length >= 1
+                || signature.ResultRule is NativeResultRule.RangeZip or NativeResultRule.RangeConcat && arguments.Length >= 2;
+            if (dependentRange)
+                return Fact(HirNativeResultTypes.Project(signature.ResultRule,
+                    arguments[0].SemanticType ?? hir.Type(arguments[0].Type),
+                    signature.ResultRule is NativeResultRule.RangeZip or NativeResultRule.RangeConcat
+                        ? arguments[1].SemanticType ?? hir.Type(arguments[1].Type) : default,
+                    hir, types)) with
+                { Eager = eager };
             if (signature.ResultRule == NativeResultRule.FirstArgument && arguments.Length != 0)
                 return arguments[0] with
                 {

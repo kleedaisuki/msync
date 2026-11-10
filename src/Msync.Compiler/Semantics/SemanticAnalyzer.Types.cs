@@ -138,7 +138,10 @@ internal sealed partial class SemanticAnalyzer
         var definition = hir.Locations[location.Value];
         HirTypeId type = ResolveHirType(definition.StorageType, context);
         var description = hir.Types[type.Value];
-        if (description.TypeParameter >= 0 && Runtime(value).WithoutNull.Kind != TypeKind.Never)
+        var source = context.Definitions.GetValueOrDefault(location, location);
+        bool inferredStorage = program.TryDeclaration(source, out var declaration) && declaration.Annotation is null;
+        if ((inferredStorage || description.TypeParameter >= 0)
+            && Runtime(value).WithoutNull.Kind != TypeKind.Never)
         {
             var inferred = hir.Types[value.Type.Value];
             type = hir.Type(inferred with
@@ -146,7 +149,8 @@ internal sealed partial class SemanticAnalyzer
                 RuntimeType = definition.AdmitsNull ? inferred.RuntimeType.WithNull : inferred.RuntimeType,
                 Nullable = definition.AdmitsNull || inferred.Nullable
             });
-            context.Substitutions[definition.StorageType] = type;
+            if (hir.Types[definition.StorageType.Value].TypeParameter >= 0)
+                context.Substitutions[definition.StorageType] = type;
         }
         return definition.AdmitsNull ? Nullable(type) : type;
     }
