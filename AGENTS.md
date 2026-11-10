@@ -1,6 +1,6 @@
 # Project engineering knowledge
 
-## C# staged language (v0.8.0)
+## C# staged language (product v0.8.1; language v0.8.0)
 
 - The current product is the .NET 10 Native AOT implementation in `src/Msync.*`.
   The retired Rust implementation is available in Git history at `v0.7.3`, not
@@ -41,6 +41,14 @@
   observations as reusable proofs. Binding lowers, optimizes once at the chosen
   level (default O2), then performs final contextual lowering. Executing `.mexe`
   does not rebind or reoptimize. `decltype` infers without executing effects.
+- Source compilation is `Analyze -> Typed HIR -> HirLowerer -> Optimizer`.
+  `Msync.Hir` depends only on Core and owns immutable semantic tables, pure
+  bytecode lowering and independently versioned `.mhir` format 1. Exported
+  standalone HIR can be inspected and lowered without its source files; source
+  text is optional diagnostic data, never replay input. Binding and semantic
+  analysis do not emit bytecode. `SemanticSession` separately integrates
+  persistent analysis, backend layout and runtime feedback. See the current
+  [phase ownership contract](docs/design/typed-hir-v081.md).
 - Product code never depends on Python or a Rust toolchain. Typed Python under
   `scripts/`, `packaging/` and `tests/` owns development/installation experiments.
   Keep publication payloads in `artifacts/`, archives in `dist/`, disposable work

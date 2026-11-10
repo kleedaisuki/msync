@@ -5,8 +5,10 @@
 The 0.8.1 migration separates semantic analysis from bytecode production. A
 structured, typed program is the boundary, not a renamed list of VM operations.
 The published 0.8.0 implementation and its source, artifact, REPL and editor
-journeys are the behavioral baseline. This note records the implementation
-contract; acceptance remains pending until the new pipeline exercises it.
+journeys are the behavioral baseline. This note records the implemented phase
+contract. Focused semantic, artifact and persistent-session observations are
+recorded in [the validation note](typed-hir-validation-v081.md); Native package
+and installed-editor acceptance belong to the final release receipt.
 
 ```text
 source -> syntax -> bound generic bodies -> semantic constraints/signatures
