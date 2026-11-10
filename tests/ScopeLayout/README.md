@@ -19,6 +19,28 @@ work and suppresses later work, while an unselected failure leaves both writes
 intact. Source parsing is deliberately not involved: its earlier rejection of a
 duplicate declaration would not exercise backend/VM effect ordering.
 
+`--call-preparation-only` checks the exact source-call guard against static and
+text dispatch precedence, shared callable cells, unresolved/native/session
+fallbacks, and future call/iterator/metadata/transfer opportunities. Classification
+must leave the operand stack intact and execute no effects. Actual VM journeys
+then exercise selected targets with opaque native I/O, a mutable captured counter
+whose body appends exactly once per invocation, and metadata reads depending on a
+preceding publication. O0/O2 source programs and hand-authored dispatch IR run
+directly and through portable/prepared executable round trips. Skipping redundant
+preparation must never skip or duplicate the actual function invocation.
+An additional raw-runtime fixture holds a public `ProcessValue.Completion`
+producer while its discarded stdout transfer owns the metadata target. With no
+sleep or timing threshold, the callee's captured-counter prefix must be visible
+before release while its metadata result remains pending. Releasing the producer
+must yield the published text without replaying that prefix. The live process is
+deliberately not serialized into an artifact.
+The matching process-flow discriminator calls a helper that schedules a second
+copy and returns the same held Process. The caller must advance after discarding
+that result while both process-dependent transfers remain pending; releasing the
+producer must finish both copies. Preparation may defer unknown source metadata
+to actual VM admission, but must not wait for the live producer before the caller
+can supply its completion.
+
 ## Spatial-storage discriminators
 
 `--spatial-only` runs reference-compatible Core semantics without assuming a
