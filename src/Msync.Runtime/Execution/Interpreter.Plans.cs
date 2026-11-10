@@ -5,7 +5,7 @@ namespace Msync.Runtime;
 
 public sealed partial class Interpreter
 {
-    private sealed record PlanNodeResult(Task<IReadOnlyList<TransferBatchOutcome>> Completion, int Offset);
+    private readonly record struct PlanNodeResult(Task<IReadOnlyList<TransferBatchOutcome>> Completion, int Offset);
     private sealed record PlanSubmission(PlanNodeResult[] Results);
 
     private PlanSubmission SubmitPlan(ExecutionPlan plan, CancellationToken cancellationToken)
@@ -324,11 +324,6 @@ public sealed partial class Interpreter
     private bool IsUnresolvedProcessFlow(Task task) => !task.IsCompleted
         && processDependencies.TryGetValue(task, out var processes) && processes.Count != 0;
 
-    private static BasicBlock[] IndexBlocks(FunctionCode function, int index)
-    {
-        BasicBlock[] blocks = new BasicBlock[function.Instructions.Count];
-        foreach (var block in BlockBuilder.ForFunction(function, index))
-            Array.Fill(blocks, block, block.Start, block.End - block.Start);
-        return blocks;
-    }
+    private static BasicBlock[] IndexBlocks(FunctionCode function, int index) =>
+        BlockBuilder.IndexFunction(function, index);
 }

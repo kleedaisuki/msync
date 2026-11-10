@@ -436,6 +436,7 @@ public static partial class ContextualBackend
             int header = pc + 2, exit = code[header].B, iterator = code[header].A;
             if (exit <= header || exit > code.Count || code[exit - 1] is not { Op: OpCode.Jump } back
                 || back.A != header) return false;
+            if (!KnownLoop.MayCopy(code, header + 1, exit)) return false;
             KnownLoop.Result? evaluated = new KnownLoop(module, code, constants, locals, context, filesystem,
                 ResolveKnownCapture, ReadKnownMember,
                 header + 1, header, exit, iterator).Run(values, cancellationToken);
@@ -622,8 +623,13 @@ public static partial class ContextualBackend
             }
             for (int index = module.ExecutionPlans?.Count ?? 0; index < plans.Count; index++)
                 plans[index] = plans[index] with { Start = positions[plans[index].Start], End = positions[plans[index].End] };
-            var functions = new PreparationFunctions(module.Functions, function,
-                module.Functions[function] with { Instructions = output });
+            bool identity = sources.Count == code.Count + 1;
+            for (int index = 0; identity && index < sources.Count; index++) identity &= sources[index] == index;
+            bool unchanged = identity && output.Count == code.Count;
+            for (int index = 0; unchanged && index < output.Count; index++) unchanged &= output[index] == code[index];
+            IReadOnlyList<FunctionCode> functions = unchanged ? module.Functions
+                : new PreparationFunctions(module.Functions, function,
+                    module.Functions[function] with { Instructions = output });
             Module prepared = module with
             {
                 Constants = constants,
@@ -631,8 +637,6 @@ public static partial class ContextualBackend
                 ExecutionPlans = plans,
                 Blocks = null
             };
-            bool identity = sources.Count == code.Count + 1;
-            for (int index = 0; identity && index < sources.Count; index++) identity &= sources[index] == index;
             return new(prepared, continuation is { } next ? positions[next] : null, awaitResources,
                 identity ? null : sources);
         }

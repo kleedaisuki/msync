@@ -7,6 +7,13 @@ internal sealed class KnownLoop(Module module, IReadOnlyList<Instruction> code, 
     Func<Value, Value?> resolve, Func<ScopeValue, string, Value?> member,
     int body, int header, int exit, int iterator)
 {
+    internal static bool MayCopy(IReadOnlyList<Instruction> code, int body, int exit)
+    {
+        for (int pc = body; pc < exit; pc++)
+            if (code[pc].Op is OpCode.Transfer or OpCode.LocalTransfer or OpCode.Call) return true;
+        return false;
+    }
+
     internal sealed record Copy(Value Source, PathValue Destination, SourceSpan? Span, int Instruction);
     internal sealed record Result(KnownValue[] Locals, IReadOnlyDictionary<int, bool> Stores, IReadOnlyList<Copy> Copies);
     private readonly KnownValue[] locals = inputs.ToArray();

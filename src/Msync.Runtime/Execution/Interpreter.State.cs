@@ -5,14 +5,15 @@ namespace Msync.Runtime;
 public sealed partial class Interpreter
 {
     private Dictionary<string, ScopeLayout>? scopeLayouts;
+    private ScopeAllocator? scopeAllocator;
 
-    private ScopeValue MakeScope(Instruction instruction, Value[] values)
+    private ScopeValue MakeScope(Instruction instruction, OperandStack stack)
     {
         var spelling = instruction.Text ?? "";
         var layouts = scopeLayouts ??= new(StringComparer.Ordinal);
         if (!layouts.TryGetValue(spelling, out var layout))
             layouts.Add(spelling, layout = ScopeLayout.Parse(spelling));
-        return new(layout, values) { AllocationSite = instruction.B };
+        return stack.PopScope(scopeAllocator ??= new(), layout, instruction.A, instruction.B);
     }
     private static Value ReadLocal(Value[] locals, int slot) =>
         locals[slot] is CellValue cell ? cell.Data : locals[slot];
@@ -32,15 +33,36 @@ public sealed partial class Interpreter
     private static Value StoreMember(Value receiver, string name, Value value, int hint = 0)
     {
         if (receiver is not ScopeValue scope) throw new MsyncException($"Cannot assign a field on {receiver.Type}");
-        if (hint > 0 && scope.IsField(hint - 1, name)) scope.SetField(hint - 1, value);
-        else scope.SetMember(name, value);
+        scope.SetField(ScopeOffset(scope, name, hint), value);
         return Value.Null;
     }
 
-    private static Value ScopeMember(ScopeValue scope, string name, int hint)
+    private static void StoreNumberMember(Value receiver, string name, double value, int hint)
     {
-        if (hint > 0 && scope.IsField(hint - 1, name)) return scope.GetField(hint - 1);
-        if (scope.Members.TryGetValue(name, out var member)) return member;
+        if (receiver is not ScopeValue scope) throw new MsyncException($"Cannot assign a field on {receiver.Type}");
+        scope.SetNumber(ScopeOffset(scope, name, hint), value);
+    }
+
+    private void LoadMember(OperandStack stack, string name, int hint)
+    {
+        Value receiver = stack.Pop();
+        if (receiver is not ScopeValue scope)
+        {
+            stack.Add(Member(receiver, name, hint));
+            return;
+        }
+        int offset = ScopeOffset(scope, name, hint);
+        if (scope.TryGetNumber(offset, out double number)) stack.AddNumber(number);
+        else stack.Add(scope.GetField(offset));
+    }
+
+    private static Value ScopeMember(ScopeValue scope, string name, int hint)
+        => scope.GetField(ScopeOffset(scope, name, hint));
+
+    private static int ScopeOffset(ScopeValue scope, string name, int hint)
+    {
+        if (hint > 0 && scope.IsField(hint - 1, name)) return hint - 1;
+        if (scope.TryGetFieldOffset(name, out int offset)) return offset;
         throw new MsyncException($"Scope has no member '{name}'");
     }
 

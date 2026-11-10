@@ -56,8 +56,9 @@ public sealed partial class Interpreter
                 if (!ReferenceEquals(prepared.Module, image))
                 {
                     image = prepared.Module;
-                    function = image.Functions[functionIndex];
-                    indexed = IndexBlocks(function, functionIndex);
+                    var nextFunction = image.Functions[functionIndex];
+                    if (!ReferenceEquals(function, nextFunction)) indexed = IndexBlocks(nextFunction, functionIndex);
+                    function = nextFunction;
                     if (pc >= function.Instructions.Count) break;
                 }
             }
@@ -138,7 +139,16 @@ public sealed partial class Interpreter
                             stack.Add(captures is not null && instruction.A < captures.Count ? captures[instruction.A] : Value.Null); break;
                         }
                     case OpCode.SetMember:
-                        { var value = stack.Pop(); StoreMember(stack.Pop(), instruction.Text!, value, instruction.A); stack.Add(Value.Null); break; }
+                        {
+                            if (stack.TryPopNumber(out double assignedNumber))
+                                StoreNumberMember(stack.Pop(), instruction.Text!, assignedNumber, instruction.A);
+                            else
+                            {
+                                var value = stack.Pop();
+                                StoreMember(stack.Pop(), instruction.Text!, value, instruction.A);
+                            }
+                            stack.Add(Value.Null); break;
+                        }
                     case OpCode.Pop: stack.Discard(); break;
                     case OpCode.Dup: stack.Duplicate(); break;
                     case OpCode.Jump:
@@ -209,8 +219,8 @@ public sealed partial class Interpreter
                     case OpCode.GetSingleton: stack.Add(GetSingleton(instruction.A)); break;
                     case OpCode.SetSingleton: stack.Add(SetSingleton(instruction.A, stack.Pop())); break;
                     case OpCode.MakeScope:
-                        stack.Add(MakeScope(instruction, stack.PopMany(instruction.A))); break;
-                    case OpCode.GetMember: stack.Add(Member(stack.Pop(), instruction.Text!, instruction.A)); break;
+                        stack.Add(MakeScope(instruction, stack)); break;
+                    case OpCode.GetMember: LoadMember(stack, instruction.Text!, instruction.A); break;
                     case OpCode.Qualify:
                         {
                             var item = stack.Pop(); var scope = stack.Pop();
