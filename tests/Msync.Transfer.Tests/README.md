@@ -41,6 +41,21 @@ code has no dependency on that fixture or Python. The current link/mode journeys
 run on Unix; native Windows installation, filesystem behavior and WSL transport
 are separate platform acceptance work.
 
+## Contextual transfer batches
+
+```sh
+python3 tests/Msync.Transfer.Tests/ssh_journeys.py --batch-only
+```
+
+The batch route keeps one selected native session through metadata queries,
+uploads, downloads and same-endpoint copies. It verifies per-item failure and
+continuation, directory/link and unusual-name behavior, exact output bytes and
+one actual client/authentication/exec session with external sharing disabled.
+The local cases also exercise shared-buffer UTF-8 encoding and prepared-kind
+execution. Pass `--test-dll /absolute/path/to/Msync.Transfer.Tests.dll` to reuse
+an already built coherent producer. See
+[batch ownership and framing](../../docs/design/transport-batches.md).
+
 ## Compiled CLI/OpenSSH integration
 
 ```sh

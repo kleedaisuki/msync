@@ -98,9 +98,15 @@ public static partial class NativeRegistry
     private static async IAsyncEnumerable<Value> RemoteDirectory(PathValue path, bool recursive,
         [EnumeratorCancellation] CancellationToken token)
     {
-        string script = RemotePrelude + "\n" + (recursive ? "find \"$p\" -mindepth 1 -print0" : "find \"$p\" -mindepth 1 -maxdepth 1 -print0");
+        string find = recursive ? "find -H \"$p\"" : "find -H \"$p\" -maxdepth 1";
+        string script = RemotePrelude + "\n" + """
+            printf '%s\0' "$p"
+            if [ -n "${MSYNC_OWNED_DIRECTORY_FD:-}" ]; then
+            """ + "\n" + find + " -samefile \"/proc/self/fd/$MSYNC_OWNED_DIRECTORY_FD\" -prune -o -print0\n"
+            + "else\n" + find + " -print0\nfi";
         string output = await TransferEngine.RunCommandAsync(path.Connection!, script, [path.Raw], token);
-        foreach (string name in output.Split('\0', StringSplitOptions.RemoveEmptyEntries).Order(TextSemantics.Ordinal))
+        string[] names = output.Split('\0');
+        foreach (string name in names.Skip(1).Where(name => name.Length != 0 && name != names[0]).Order(TextSemantics.Ordinal))
         {
             token.ThrowIfCancellationRequested();
             yield return path.WithRaw(name);

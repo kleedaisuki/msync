@@ -1,6 +1,7 @@
 using Msync.Core;
 using Msync.Runtime;
 
+if (args.Contains("--batch-only", StringComparer.Ordinal)) { await BatchChecks.RunAsync(); return; }
 if (OperatingSystem.IsWindows()) return;
 string root = Environment.GetEnvironmentVariable("MSYNC_TRANSFER_WORK") ?? Path.GetFullPath(Path.Combine(".temp", "transfer-tests", Guid.NewGuid().ToString("N")));
 Directory.CreateDirectory(root);
@@ -98,7 +99,7 @@ Directory.CreateDirectory(Path.Combine(root, "remote/ancestor/child"));
 await File.WriteAllTextAsync(Path.Combine(root, "remote/ancestor/child/file"), "remote survives");
 await Transfer(R("ancestor/child"), R("ancestor/."));
 Check(await File.ReadAllTextAsync(Path.Combine(root, "remote/ancestor/file")) == "remote survives", "remote ancestor replacement captures source before removal");
-string unusual = "line\nslash\\ 可莉'\n";
+string unusual = "line\nslash\\ 可莉'%0A%25\n";
 await File.WriteAllTextAsync(Path.Combine(root, unusual), "unusual filename");
 await Transfer(P(unusual), R(unusual));
 await Transfer(R(unusual), P("unusual-download"));

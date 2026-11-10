@@ -173,7 +173,7 @@ public static partial class TransferEngine
         """);
 
     private static string SelectionArchive => field ??= ShellProgram.Source("\n" + """
-        if [ "$#" -eq 0 ]; then exec tar --format=pax -cpf - --files-from /dev/null; fi
+        if [ "$#" -eq 0 ]; then exec tar --no-unquote --format=pax -cpf - --files-from /dev/null; fi
         for raw in "$@"; do
             source=$(expand "$raw"; printf .); source=${source%.}
             while [ "${source%/}" != "$source" ] && [ "$source" != / ]; do source=${source%/}; done
@@ -182,8 +182,8 @@ public static partial class TransferEngine
             shift
             set -- "$@" -C "$parent" "./$name"
         done
-        exec tar --format=pax -cpf - "$@"
-        """);
+        exec tar --no-unquote --format=pax --transform=__MSYNC_ARCHIVE_NAME_ENCODING__ -cpf - "$@"
+        """).Replace("__MSYNC_ARCHIVE_NAME_ENCODING__", Quote(ArchiveNameEncoding), StringComparison.Ordinal);
     private static string CohortInstallScript => field ??= ShellProgram.Source(ShellLibrary + "\n" + """
         destination=$(expand "$1"; printf .); destination=${destination%.}
         mode=$2

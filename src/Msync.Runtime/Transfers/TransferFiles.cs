@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Text;
+using Msync.Core;
 
 namespace Msync.Runtime;
 
@@ -7,6 +8,67 @@ internal static class TransferFiles
 {
     internal static Task CopyNodeAsync(string source, string target, CancellationToken cancellationToken, int bufferSize = 65536)
         => Task.Run(() => CopyTree(source, target, cancellationToken, bufferSize), cancellationToken);
+
+    internal static void CopyPreparedNode(string source, string target, PlannedTransferKind kind,
+        Span<byte> buffer, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(target) ?? ".");
+        if (kind == PlannedTransferKind.GenericCopy)
+        {
+            CopyNode(source, target, buffer, cancellationToken);
+            return;
+        }
+        FileMetadata metadata = NativeFileMetadata.Capture(source);
+        switch (kind)
+        {
+            case PlannedTransferKind.CopyFile:
+                CopyFile(source, target, metadata, buffer, cancellationToken);
+                break;
+            case PlannedTransferKind.CopyLink:
+                CopyLink(source, target, metadata.IsDirectory, metadata.Modified);
+                break;
+            case PlannedTransferKind.CopyDirectory:
+                Directory.CreateDirectory(target);
+                foreach (string child in Directory.EnumerateFileSystemEntries(source).Order(StringComparer.Ordinal))
+                    CopyNode(child, Path.Combine(target, Path.GetFileName(child)), buffer, cancellationToken);
+                metadata.Apply(target);
+                break;
+            default:
+                CopyNode(source, target, buffer, cancellationToken);
+                break;
+        }
+    }
+
+    internal static void WriteLiteral(string value, string target, Span<byte> buffer, CancellationToken cancellationToken)
+    {
+        string parent = Path.GetDirectoryName(target) ?? ".";
+        Directory.CreateDirectory(parent);
+        string stage = Path.Combine(parent, $".msync-{Guid.NewGuid():N}");
+        try
+        {
+            using (FileStream output = new(stage, FileMode.CreateNew, FileAccess.Write,
+                FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan))
+            {
+                Span<byte> encodingBuffer = buffer.Length >= 4 ? buffer : stackalloc byte[4];
+                ReadOnlySpan<char> remaining = value.AsSpan();
+                Encoder encoder = Encoding.UTF8.GetEncoder();
+                bool completed = false;
+                while (!completed)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    encoder.Convert(remaining, encodingBuffer, flush: true, out int characters, out int bytes, out completed);
+                    output.Write(encodingBuffer[..bytes]);
+                    remaining = remaining[characters..];
+                }
+                if (File.Exists(target) && !OperatingSystem.IsWindows())
+                    File.SetUnixFileMode(stage, File.GetUnixFileMode(target));
+                output.Flush(flushToDisk: true);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            File.Move(stage, target, overwrite: true);
+        }
+        finally { File.Delete(stage); }
+    }
 
     private static void CopyTree(string source, string target, CancellationToken cancellationToken, int bufferSize)
     {

@@ -7,6 +7,12 @@ namespace Msync.Runtime;
 
 public static partial class TransferEngine
 {
+    private const string ArchiveNameEncoding = "flags=rsh;s,%,%25,g;s,\n,%0A,g";
+    private const string ArchiveNameDecoding = "flags=rsh;s,%0A,\n,g;s,%25,%,g";
+
+    private sealed class ArchiveStreamException(IOException inner)
+        : IOException("The archive payload could not be completed on its native channel.", inner);
+
     public static async Task<bool> CopyAsync(Value source, Value destination, RuntimeContext context, CancellationToken cancellationToken = default)
     {
         PathValue target = context.AsPath(destination);
@@ -121,6 +127,8 @@ public static partial class TransferEngine
     {
         if (ActiveQuery.Value is { } selected && selected.Connection == connection)
             return await selected.InvokeAsync(script, args, cancellationToken);
+        if (CurrentSession(connection) is { } batch)
+            return await batch.QueryAsync(script, args, cancellationToken);
         using Process process = Start(connection, script, args, redirectInput: false);
         using CancellationTokenRegistration registration = cancellationToken.Register(() => Kill(process));
         string output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
@@ -204,20 +212,22 @@ public static partial class TransferEngine
         }
     }
 
-    private static async Task WriteArchiveNodeAsync(TarWriter writer, string source, string name, CancellationToken cancellationToken)
+    private static async Task WriteArchiveNodeAsync(TarWriter writer, string source, string name, CancellationToken cancellationToken,
+        PlannedTransferKind kind = PlannedTransferKind.GenericCopy)
     {
         FileMetadata metadata = NativeFileMetadata.Capture(source);
-        bool directory = metadata.IsDirectory;
-        bool link = metadata.IsLink;
+        bool directory = kind == PlannedTransferKind.CopyDirectory || kind == PlannedTransferKind.GenericCopy && metadata.IsDirectory;
+        bool link = kind == PlannedTransferKind.CopyLink || kind == PlannedTransferKind.GenericCopy && metadata.IsLink;
         TarEntryType type = link ? TarEntryType.SymbolicLink : directory ? TarEntryType.Directory : TarEntryType.RegularFile;
-        await writer.WriteEntryAsync(new PaxGlobalExtendedAttributesTarEntry([KeyValuePair.Create("mtime", metadata.Modified.Pax)]), cancellationToken);
+        try { await writer.WriteEntryAsync(new PaxGlobalExtendedAttributesTarEntry([KeyValuePair.Create("mtime", metadata.Modified.Pax)]), cancellationToken); }
+        catch (IOException error) { throw new ArchiveStreamException(error); }
         // .NET 10 rewrites local PAX mtime through 100ns DateTimeOffset. A standard
         // global PAX timestamp plus a GNU member retains the native decimal value.
         GnuTarEntry entry = new(type, name) { ModificationTime = DateTimeOffset.UnixEpoch };
         if (!OperatingSystem.IsWindows() && !link) entry.Mode = metadata.Mode;
         if (link)
         {
-            FileSystemInfo info = directory ? new DirectoryInfo(source) : new FileInfo(source);
+            FileSystemInfo info = metadata.IsDirectory ? new DirectoryInfo(source) : new FileInfo(source);
             entry.LinkName = info.LinkTarget ?? throw new IOException($"Cannot read symbolic link '{source}'.");
         }
         if (type == TarEntryType.RegularFile)
@@ -228,16 +238,19 @@ public static partial class TransferEngine
                 using MemoryStream contents = new();
                 await bytes.CopyToAsync(contents, cancellationToken);
                 contents.Position = 0; entry.DataStream = contents;
-                await writer.WriteEntryAsync(entry, cancellationToken);
+                try { await writer.WriteEntryAsync(entry, cancellationToken); }
+                catch (IOException error) { throw new ArchiveStreamException(error); }
             }
             else
             {
                 entry.DataStream = bytes;
-                await writer.WriteEntryAsync(entry, cancellationToken);
+                try { await writer.WriteEntryAsync(entry, cancellationToken); }
+                catch (IOException error) { throw new ArchiveStreamException(error); }
             }
             return;
         }
-        await writer.WriteEntryAsync(entry, cancellationToken);
+        try { await writer.WriteEntryAsync(entry, cancellationToken); }
+        catch (IOException error) { throw new ArchiveStreamException(error); }
         if (!directory || link) return;
         foreach (string child in Directory.EnumerateFileSystemEntries(source).Order(TextSemantics.Ordinal))
             await WriteArchiveNodeAsync(writer, child, name + "/" + Path.GetFileName(child), cancellationToken);
@@ -268,61 +281,13 @@ public static partial class TransferEngine
     private static async Task ReadArchiveAsync(Stream archive, PathValue target, RuntimeContext context, bool container, bool replace, CancellationToken cancellationToken)
     {
         using TarReader reader = new(archive, leaveOpen: true);
-        string? root = null;
-        string destination = target.LocalPath(context.WorkingDirectory, context.HomeDirectory);
-        if (replace) destination = Path.GetDirectoryName(destination)!;
-        bool initialized = false;
-        List<(string Path, TarEntry Entry)> directories = [];
+        ArchiveInstallation installation = new(target, context, container, replace);
         while (await reader.GetNextEntryAsync(copyData: false, cancellationToken) is { } entry)
         {
-            string name = entry.Name;
-            while (name.StartsWith("./", StringComparison.Ordinal)) name = name[2..];
-            name = name.TrimEnd('/');
-            root ??= name.Split('/')[0];
-            string relative = container || root.Length == 0 ? name : name == root ? "" : name[(root.Length + 1)..];
-            string installed = Path.Combine(destination, relative);
-            if (!initialized && replace && container)
-            {
-                TransferFiles.RemoveNode(destination);
-                Directory.CreateDirectory(destination);
-            }
-            initialized = true;
-            if (relative.Length == 0)
-            {
-                if (replace)
-                {
-                    if (entry.EntryType != TarEntryType.Directory) throw new IOException("Tree replacement requires a directory source.");
-                    TransferFiles.RemoveNode(installed);
-                }
-                else if (Directory.Exists(installed))
-                    throw new IOException($"Exact destination '{installed}' is an existing directory; append '/' or '/.'.");
-            }
-            switch (entry.EntryType)
-            {
-                case TarEntryType.Directory:
-                    Directory.CreateDirectory(installed);
-                    directories.Add((installed, entry));
-                    break;
-                case TarEntryType.RegularFile:
-                case TarEntryType.V7RegularFile:
-                case TarEntryType.ContiguousFile:
-                    await TransferFiles.WriteFileAsync(entry.DataStream ?? Stream.Null, installed, null, cancellationToken, stage => ApplyArchiveMetadata(entry, stage), context.BufferSize, expectedLength: entry.Length);
-                    break;
-                case TarEntryType.SymbolicLink:
-                    CreateArchiveLink(installed, entry.LinkName, entry);
-                    break;
-                case TarEntryType.HardLink:
-                    string linkedName = entry.LinkName;
-                    while (linkedName.StartsWith("./", StringComparison.Ordinal)) linkedName = linkedName[2..];
-                    string linkedRelative = container ? linkedName : linkedName == root ? "" : linkedName[(root.Length + 1)..];
-                    await TransferFiles.CopyNodeAsync(Path.Combine(destination, linkedRelative), installed, cancellationToken, context.BufferSize);
-                    break;
-                default:
-                    throw new IOException($"Unsupported archive entry '{entry.Name}' of type {entry.EntryType}.");
-            }
+            RestoreArchiveNames(entry);
+            await installation.WriteAsync(entry, cancellationToken);
         }
-        for (int index = directories.Count - 1; index >= 0; --index)
-            ApplyArchiveMetadata(directories[index].Entry, directories[index].Path);
+        installation.Complete();
     }
 
     private static void ApplyArchiveMetadata(TarEntry entry, string target)
@@ -525,7 +490,7 @@ public static partial class TransferEngine
             script.Append(System.Globalization.CultureInfo.InvariantCulture, $"while [ \"${{s{index}%/}}\" != \"$s{index}\" ] && [ \"$s{index}\" != / ]; do s{index}=${{s{index}%/}}; done\n");
             script.Append(System.Globalization.CultureInfo.InvariantCulture, $"p{index}=${{s{index}%/*}}; n{index}=${{s{index}##*/}}\n");
         }
-        script.Append("exec tar --format=pax -cpf -");
+        script.Append("exec tar --no-unquote --format=pax --transform=").Append(Quote(ArchiveNameEncoding)).Append(" -cpf -");
         for (int index = 0; index < count; ++index)
             script.Append(System.Globalization.CultureInfo.InvariantCulture, $" -C \"$p{index}\" \"./$n{index}\"");
         return script.ToString();
@@ -588,7 +553,7 @@ public static partial class TransferEngine
         stage=$(mktemp -d "$parent/.msync-XXXXXXXXXX")
         trap 'rm -rf -- "$stage"' EXIT HUP INT TERM
         mkdir "$stage/payload"
-        tar -xpf - -C "$stage/payload"
+        tar --transform=__MSYNC_ARCHIVE_NAME_DECODING__ -xpf - -C "$stage/payload"
         payload=$stage/payload
         if [ "$shape" = single ]; then payload=$payload/$basename; fi
         if [ "$mode" = replace ]; then
@@ -600,5 +565,5 @@ public static partial class TransferEngine
         fi
         install "$payload" "$target"
         printf 'MSYNC-DONE\n'
-        """);
+        """).Replace("__MSYNC_ARCHIVE_NAME_DECODING__", Quote(ArchiveNameDecoding), StringComparison.Ordinal);
 }

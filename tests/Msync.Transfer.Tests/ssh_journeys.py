@@ -18,6 +18,7 @@ from ssh_fixture import Fixture, lines
 def main() -> None:
     parser: argparse.ArgumentParser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--test-dll", type=Path)
+    parser.add_argument("--batch-only", action="store_true")
     options: argparse.Namespace = parser.parse_args()
     artifacts: Path = ROOT / ".temp" / "build-transfer-tests"
     test_dll: Path = (
@@ -55,7 +56,7 @@ def main() -> None:
         )
         before_log: int = len(lines(fixture.log))
         result: subprocess.CompletedProcess[bytes] = subprocess.run(
-            ["dotnet", str(test_dll.resolve())],
+            ["dotnet", str(test_dll.resolve()), *(["--batch-only"] if options.batch_only else [])],
             cwd=ROOT,
             env=environment,
             capture_output=True,
@@ -77,10 +78,11 @@ def main() -> None:
         (fixture.root / "result.json").write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps(report, indent=2))
         assert result.returncode == 0, report
-        assert calls.count("ssh") == 28, report
+        expected_clients: int = 1 if options.batch_only else 28
+        assert calls.count("ssh") == expected_clients, report
         assert calls.count("scp") == 0, report
-        assert report["authentications"] == 28, report
-        assert report["remote_sessions"] == 28, report
+        assert report["authentications"] == expected_clients, report
+        assert report["remote_sessions"] == expected_clients, report
 
 
 if __name__ == "__main__":
