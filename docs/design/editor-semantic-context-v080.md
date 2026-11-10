@@ -49,6 +49,26 @@ The accepted Compiler image was
 These are managed integration results; final Native and installed extension
 acceptance remain separate workflows.
 
+The final affected managed source-workflow slice retained the committed
+assertions and advanced only failing groups after causal fixes:
+
+| Workflow | Accepted producer | Coverage |
+| --- | --- | --- |
+| `hir_editor_journey.py` | frozen17 | Eleven real LSP generation, type, source and no-execution checks |
+| `nullable_scope_journey.py --lsp-only` | frozen18 | Six original source checks and three document versions, including exact returned-Scope field definitions |
+| `standard_concepts_tooling_journey.py` | frozen19 | Real protocol, persistent REPL, progressive skill pages and Unix PTY qualified-type completion |
+
+The nullable-member fix preserves the returned field's declaration identity
+through concrete call arguments. Standard namespace and native query roles
+come from semantic observations. A failed concept-policy argument points to the
+actual argument expression (`scope` at character 52 in the EqualitySet fixture),
+not the entire call; its related declaration remains in embedded standard source.
+The final standard-tooling Compiler image was
+`fa761090f8c015a9c1be2159e7e91cf06065ec5e4302d1f8f1be9547d2e402dd`.
+Per-producer receipts and raw workflow reports are under `.temp/hir-final-ux`;
+these managed checks do not substitute for the release lane's Native and
+installed-extension workflows.
+
 Frozen-assembly test hosts must resolve explicit HintPaths before candidate
 assemblies discovered under their project directory. SDK default candidate
 search can select an older DLL in a previous local build directory even when
