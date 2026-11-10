@@ -62,6 +62,8 @@
   rows alias; field stores, captures, lazy effects and cross-scan dependencies
   require their own proofs. Preserve every reduction's IEEE order/grouping;
   arbitrary Number arithmetic or pointer following is not automatically affine.
+  Try proven fusion before per-block memory analysis, retaining a late opportunity
+  when forwarding exposes provenance. Seed backward liveness from successor blocks.
   See [the schedule contract](docs/design/affine-layout-optimization.md).
 - Source compilation is `Analyze -> Typed HIR -> HirLowerer -> Optimizer`.
   `Msync.Hir` depends only on Core and owns immutable semantic tables, pure
@@ -71,6 +73,15 @@
   analysis do not emit bytecode. `SemanticSession` separately integrates
   persistent analysis, backend layout and runtime feedback. See the current
   [phase ownership contract](docs/design/typed-hir-v081.md).
+- Published session facts use structurally shared immutable roots; scratch query
+  overlays must not become an ever-growing submission-history lookup chain.
+  Prompt binding descriptions project accepted exports and semantic type tables,
+  not a synthetic empty compilation or a freeze of historical executable HIR.
+- Predicate havoc advances an analysis-local generation; realize invalidated
+  alias facts only on reads and joins. Canonical semantic identities, not the
+  generation counters, determine CFG convergence. Runtime preparation skips
+  positions where it must immediately stop, without skipping continuation
+  resource waits. See [tail-latency findings](docs/design/performance-tail-v081.md).
 - Product code never depends on Python or a Rust toolchain. Typed Python under
   `scripts/`, `packaging/` and `tests/` owns development/installation experiments.
   Keep publication payloads in `artifacts/`, archives in `dist/`, disposable work
