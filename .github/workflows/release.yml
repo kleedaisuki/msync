@@ -12,6 +12,14 @@ on:
         description: Publish the manifest version (main only; published releases are immutable)
         type: boolean
         default: false
+      native_phases:
+        description: Comma-separated language_upgrade.py phases (empty keeps the standard selection)
+        type: string
+        default: ''
+      editor_suites:
+        description: Comma-separated source,artifact,hir editor suites (empty runs all three)
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -26,16 +34,34 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       publish: ${{ steps.version.outputs.publish }}
+      editor_source: ${{ steps.version.outputs.editor_source }}
+      editor_artifact: ${{ steps.version.outputs.editor_artifact }}
+      editor_hir: ${{ steps.version.outputs.editor_hir }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: version
         shell: python
         env:
           PUBLISH_REQUESTED: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+          NATIVE_PHASES: ${{ inputs.native_phases || '' }}
+          EDITOR_SUITES: ${{ inputs.editor_suites || '' }}
         run: |
           import importlib.util
           import os
+          import sys
           from pathlib import Path
+          sys.path.insert(0, 'packaging')
+          from language_upgrade import JOURNEYS
+
+          phases: tuple[str, ...] = tuple(part.strip() for part in os.environ['NATIVE_PHASES'].split(',') if part.strip())
+          phase_names: set[str] = {name for name, _ in JOURNEYS}
+          unknown_phases: set[str] = set(phases) - phase_names
+          if unknown_phases:
+              raise ValueError(f'Unknown Native phases: {sorted(unknown_phases)}')
+          suites: tuple[str, ...] = tuple(part.strip() for part in os.environ['EDITOR_SUITES'].split(',') if part.strip()) or ('source', 'artifact', 'hir')
+          unknown_suites: set[str] = set(suites) - {'source', 'artifact', 'hir'}
+          if unknown_suites:
+              raise ValueError(f'Unknown editor suites: {sorted(unknown_suites)}')
           spec = importlib.util.spec_from_file_location('package_build', 'packaging/build.py')
           build = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(build)
@@ -44,6 +70,8 @@ jobs:
           publish = os.environ['GITHUB_REF'] == 'refs/heads/main' and os.environ['GITHUB_EVENT_NAME'] != 'pull_request' and os.environ['PUBLISH_REQUESTED'] == 'true'
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f'version={version}\npublish={str(publish).lower()}\n')
+              for suite in ('source', 'artifact', 'hir'):
+                  output.write(f'editor_{suite}={str(suite in suites).lower()}\n')
 
   native:
     needs: version
@@ -80,6 +108,7 @@ jobs:
         env:
           PACKAGE_VERSION: ${{ needs.version.outputs.version }}
           PACKAGE_NAME: ${{ matrix.name }}
+          NATIVE_PHASES: ${{ inputs.native_phases || '' }}
         run: |
           import os
           import subprocess
@@ -87,12 +116,13 @@ jobs:
           from pathlib import Path
 
           binary: Path = Path('artifacts/package') / f"msync-{os.environ['PACKAGE_VERSION']}-{os.environ['PACKAGE_NAME']}" / 'bin' / ('msync.exe' if os.name == 'nt' else 'msync')
-          phases: tuple[str, ...] = (
+          default_phases: tuple[str, ...] = (
               'hir-semantics', 'hir-artifact', 'contextual-io',
               'directory-plans', 'object-locality', 'affine-scans',
               'concepts-tooling', 'library-policy',
               'type-traits', 'shell-repl', 'artifact',
           )
+          phases: tuple[str, ...] = tuple(part.strip() for part in os.environ['NATIVE_PHASES'].split(',') if part.strip()) or default_phases
           arguments: list[str] = [sys.executable, 'packaging/language_upgrade.py', '--binary', str(binary.resolve())]
           for phase in phases:
               arguments.extend(('--phase', phase))
@@ -174,6 +204,7 @@ jobs:
         working-directory: editors/vscode
         run: npm ci --ignore-scripts && npm run build
       - name: Exercise current source-language editor
+        if: needs.version.outputs.editor_source == 'true'
         env:
           MSYNC_TEST_STANDARD_CONCEPTS_ONLY: '1'
         working-directory: editors/vscode
@@ -183,6 +214,7 @@ jobs:
 
           subprocess.run(['xvfb-run', '-a', 'npm', 'run', 'test:integration'], check=True, timeout=360)
       - name: Exercise read-only bytecode editor
+        if: needs.version.outputs.editor_artifact == 'true'
         env:
           MSYNC_TEST_ARTIFACT_ONLY: '1'
         working-directory: editors/vscode
@@ -192,6 +224,7 @@ jobs:
 
           subprocess.run(['xvfb-run', '-a', 'npm', 'run', 'test:integration'], check=True, timeout=360)
       - name: Exercise source-free typed HIR editor
+        if: needs.version.outputs.editor_hir == 'true'
         env:
           MSYNC_TEST_HIR_ONLY: '1'
         working-directory: editors/vscode
