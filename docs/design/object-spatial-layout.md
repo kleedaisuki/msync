@@ -99,3 +99,130 @@ actual traversal/scan output, transformation/placement evidence, captured aliase
 and retention, strict Number semantics, reference-heavy controls, optimizer cost
 and affected real source/artifact/REPL/platform journeys. A reduced allocation
 count alone is not proof of locality or a Native latency improvement.
+
+## Managed spatial Scope storage
+
+`ScopeValue` keeps one private storage union, not an additional payload reference
+in every ordinary object. Existing dictionary/array constructors remain ordinary
+Value storage. The VM's explicit `ScopeAllocator` selects numeric placement when
+constructing a Scope from its operand spans; reference-only objects retain their
+original header and reference-array representation.
+
+A numeric placement groups by logical layout, semantic allocation site and
+numeric-field shape. An immutable row descriptor maps logical member offsets to
+compact numeric or reference slots. Numeric fields occupy row-major doubles in
+managed pages; each row owns only its own reference payload. A page contains no
+GC references. Logical names, enumeration order and guarded field hints remain
+independent of this physical arrangement.
+
+The allocator owns mutable pool state separately from the immutable descriptor.
+It retains only a current page, starting at one row and growing geometrically
+toward an 8 KiB page target. This is allocation granularity, not an input-size
+limit: wide rows still have their full field count. Full pages are not retained
+in an allocator history. A live Scope owns its row/page and descriptor, never a
+back-reference to the allocator or another row's managed payload. The GC can
+therefore collect dead sibling Strings, functions, Scopes and Cells even while
+some numeric rows remain live.
+
+Raw Number get/store methods connect the page to `OperandStack`'s existing double
+sidecar. `MakeScope` consumes the reference/numeric spans before clearing its
+operands, avoiding a temporary array and initial wrappers for computed doubles.
+Public Value consumers still materialize `NumberValue` at their actual boundary.
+A numeric slot receiving a String, Null or Cell promotes only that Scope into
+ordinary Value storage; the exact captured Cell is installed and retained.
+Promotion does not change the source storage type or admit an invalid source
+assignment. Binary64 payloads, signed zero and NaN bits survive unchanged.
+
+Repeated immutable Number references already share payload. Each pool compares
+the current numeric reference pattern with its preceding row during the existing
+shape/construction passes. A wholly repeated reference pattern remains ordinary
+storage instead of duplicating literals into a page. New references and raw
+doubles remain eligible for numeric placement. Only immutable Number references
+are retained by this one-pattern policy; no global constant set, per-field boxed
+cache or nonnumeric managed payload is kept.
+
+## Preparation applicability versus physical scans
+
+The first matched source control showed why raw-VM field access alone is not an
+end-to-end allocation result. A private diagnostic Core mirror of immutable
+common1 counted 64 numeric materializations in one eight-row/four-field scan.
+The first stacks all entered `PackedScopeStorage.GetField` through
+`ReadKnownMember -> KnownLoop.Step -> TryExpandLoop`: the contextual backend had
+attempted the scalar scan twice before publishing no I/O expansion. The mirror
+records functional attribution, not a timing or allocation benchmark, under
+`.temp/spatial-box-attribution/`.
+
+Known I/O-loop expansion now checks whether the body can expose a transfer or
+source call before evaluating its elements. Scalar-only field scans remain in
+the affine/VM path. The rule does not skip source execution, prohibit a loop or
+disable contextual preparation; ordinary I/O and unknown-call wrappers retain
+their existing applicability. It also avoids adding a read memo table to a scan
+that reads each field only once.
+
+The same locality principle applies to VM plan bookkeeping. Its private
+`PlanNodeResult` is a readonly value record containing completion and offset, so
+the result array stores those hot records inline rather than one reference and
+one separate object per node. Public result/Value APIs are unchanged.
+
+## Causal common-path cost repair
+
+The first common1 source comparison retained the intended physical Scope sites
+but added allocation traffic for numeric/mixed records. The no-I/O-loop guard
+and repeated-reference placement policy removed that traffic regression in
+common3. Its reference-only control nevertheless had a large wall-time increase,
+which cannot be explained by numeric placement because those rows remain plain.
+Both diagnostic comparisons remain recorded rather than discarded.
+
+A private operation-count mirror then executes one identical reference fixture
+against frozen baseline/common3: every VM opcode and direct preparation count
+is identical (including 2,052 member reads, 514 Scope constructions, 1,026
+iterator steps and 517 preparations). The candidate removes two failed
+KnownLoop trials and their 2,048 additional field reads. It does not perform more
+source work. A single gated sampled-thread attribution pair, after compilation
+and warmup, locates 93.1%/94.6% of sampled stacks under repeated `IndexBlocks`.
+Its subpaths repeatedly partition instructions, split large Scope member text,
+create duplicate-name HashSets and copy boundary arrays. True GC pause is about
+62.8/67.5 ms; sampling-related suspension is not reported as GC or exact CPU.
+These are scoped method attribution results, not a benchmark.
+
+Large-constructor uniqueness is now a weak, immutable operand-text fact. Small
+Scopes retain their existing allocation-free span comparison. Block formation
+uses one linear marker/effect pass, and direct PC indexing avoids an intermediate
+block array and per-block LINQ rescans. A rewritten function retains its original
+identity only when every instruction, source span, jump and PC mapping is
+unchanged; the VM then reuses its block index. These caches contain no mutable
+field values, filesystem observations or plan-validity flags. Generated CFG and
+duplicate-field controls compare 1,300 cases with the original partitioner.
+
+The common4 matched managed source control (512 rows, compile/bind outside the
+timer, same SDK/runtime and TieredCompilation=0, three warmups/five samples)
+reduces approximately 10.7–10.9 MB execution allocation to 1.73–1.81 MB. Its
+descriptive medians improve from roughly 46–53 ms to 4.5–6.0 ms across computed,
+literal, mixed and reference-only records. Because the reference control benefits
+as well, the approximately 9x common-path improvement is attributed to removing
+redundant preparation/block work, not exclusively to spatial layout. The full
+raw samples, source and producer identities and earlier results are retained in
+`tests/Performance/ScopeSpatial/README.md` and `.temp/scope-spatial/`.
+
+## Independent spatial contribution
+
+A separate bounded component compares plain construction with `ScopeAllocator`
+on the same common4 Core, removing compiler/backend-version differences. It
+constructs 32,768 fresh four-Number rows with identical NumberValue/Value-array
+inputs, verifies every identity and Number bit pattern, and scans using raw
+numeric access. Five recorded samples of 32 passes give descriptive medians
+29.91 ms plain versus 17.57 ms packed (about 1.70x); both scan paths allocate
+zero bytes. The packed rows occupy 136 reference-free pages, with 1,048,576 bytes
+logical numeric payload and 1,056,736 bytes page capacity.
+
+Full-GC held-heap observations are approximately 6,554,824 versus 4,206,072 bytes
+(35.8% lower); they describe retained live object graphs, not allocation traffic
+or a cache-miss census. Supplying preboxed inputs deliberately exposes the other
+side of the boundary: construction traffic rises from 6,553,648 to 9,187,640 bytes
+(40.2%) because packed placement copies those inputs into pages and discards
+them. The VM span entry can avoid initial wrappers for raw computed operands,
+but the contextual backend may already have materialized a computed Number.
+Neither this component nor the common-path result establishes an unconditional
+constructor or whole-program speedup. The component source, exact Core hash,
+methods, samples and reproduction commands are in
+`tests/Performance/ScopeSpatial/Component/` and its parent README.
