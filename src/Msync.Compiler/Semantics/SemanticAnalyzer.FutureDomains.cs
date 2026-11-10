@@ -29,9 +29,9 @@ internal sealed partial class SemanticAnalyzer
             versions[owner] = result;
             if (borrowed && cell is { } binding && Runtime(current).WithoutNull == TypeRef.Function)
             {
-                SemanticValue selected = FutureCallables(current, binding, context, receiver);
                 SemanticCallableDomain storageDomain = current.FutureCallableDomain is { } existing
-                    && StorageOwner(existing.Owner, context) == owner ? existing : new(owner, selected.Callables, current.Callables);
+                    && StorageOwner(existing.Owner, context) == owner ? existing
+                    : new(owner, FutureCallables(current, binding, context, receiver).Callables, current.Callables);
                 result = ReferenceEquals(storageDomain, current.FutureCallableDomain)
                     ? current : current with { FutureCallableDomain = storageDomain };
             }
@@ -68,24 +68,48 @@ internal sealed partial class SemanticAnalyzer
                     if (!ReferenceEquals(enriched, storage.Element)) context.Indexed[resource] = storage with { Element = enriched };
                 }
             }
-            if (!current.Callables.IsDefaultOrEmpty && current.Callables.Any(callable => !callable.Captures.IsDefaultOrEmpty))
-                result = result with { Callables = current.Callables.Select(Callable).ToImmutableArray() };
-            if (result.FutureCallableDomain is { } domain && domain.Choices.Any(callable => !callable.Captures.IsDefaultOrEmpty))
-                result = result with { FutureCallableDomain = domain with
-                {
-                    Choices = domain.Choices.Select(Callable).ToImmutableArray(),
-                    Current = domain.Current.IsDefault ? default : domain.Current.Select(Callable).ToImmutableArray()
-                } };
-;
+            ImmutableArray<SemanticCallable> callables = Callables(current.Callables);
+            if (callables != current.Callables) result = result with { Callables = callables };
+            if (result.FutureCallableDomain is { } domain)
+            {
+                ImmutableArray<SemanticCallable> choices = Callables(domain.Choices);
+                ImmutableArray<SemanticCallable> admitted = Callables(domain.Current);
+                if (choices != domain.Choices || admitted != domain.Current)
+                    result = result with { FutureCallableDomain = domain with { Choices = choices, Current = admitted } };
+            }
             versions[owner] = result;
             return result;
         }
 
-        SemanticCallable Callable(SemanticCallable callable) => callable.Captures.IsDefaultOrEmpty ? callable
-            : callable with { Captures = callable.Captures.Select(capture => capture with
+        ImmutableArray<SemanticCallable> Callables(ImmutableArray<SemanticCallable> source)
+        {
+            if (source.IsDefaultOrEmpty) return source;
+            ImmutableArray<SemanticCallable>.Builder? changed = null;
+            for (int index = 0; index < source.Length; index++)
             {
-                Value = Visit(context.Values.GetValueOrDefault(capture.Source, capture.Value), capture.Source,
-                    capture.Mode == HirCaptureMode.Location)
-            }).ToImmutableArray() };
+                SemanticCallable original = source[index];
+                SemanticCallable updated = Callable(original);
+                if (ReferenceEquals(original, updated)) continue;
+                changed ??= source.ToBuilder();
+                changed[index] = updated;
+            }
+            return changed is null ? source : changed.ToImmutable();
+        }
+
+        SemanticCallable Callable(SemanticCallable callable)
+        {
+            if (callable.Captures.IsDefaultOrEmpty) return callable;
+            ImmutableArray<SemanticCapture>.Builder? changed = null;
+            for (int index = 0; index < callable.Captures.Length; index++)
+            {
+                SemanticCapture capture = callable.Captures[index];
+                SemanticValue updated = Visit(context.Values.GetValueOrDefault(capture.Source, capture.Value), capture.Source,
+                    capture.Mode == HirCaptureMode.Location);
+                if (ReferenceEquals(updated, capture.Value)) continue;
+                changed ??= callable.Captures.ToBuilder();
+                changed[index] = capture with { Value = updated };
+            }
+            return changed is null ? callable : callable with { Captures = changed.ToImmutable() };
+        }
     }
 }
