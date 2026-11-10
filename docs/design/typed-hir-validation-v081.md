@@ -345,3 +345,16 @@ contract; a first-caller semantic cache is not a valid shortcut. Source/image
 receipts, the phase results and parsed stacks are under
 `.temp/hir-final-cost/list-attribution/`; the only raw trace has SHA-256
 `df8a0ba4a29c3d66b36c7fe55addb3ec6147e08e51849b017dcd9120a176c76e`.
+
+Frozen18's bounded List fast paths receive one cold phase observation and one
+same-source frozen17 cold control, not a new benchmark batch. Analyze changes
+from 7,689,152 B to 7,399,576 B (−3.77%); Lower stays at 80,160 B and O0
+optimization at 68,936 B, for a total reduction of 289,576 B (−3.69%). The
+two extra type entries aside, finalized function/node/location counts and
+bytecode counts are unchanged. These first-process totals include initial
+standard-source parsing and are not compared with the warmed friend probe.
+This is a small improvement, not proof that the earlier warmed List regression
+has disappeared. Further microprofiles are not warranted by this result alone;
+the final corrected Native image still needs a targeted default-O2 user-latency
+observation. Raw records are `frozen17-list-cold-control.*` and
+`frozen18-list-trace-receipt.*` under `.temp/hir-final-cost/`.
