@@ -321,3 +321,74 @@ start of that small window and remains explicitly recorded, rather than
 replacing the samples. Direct probes, fixed source, mixed producer identities
 and raw observations are in
 `artifacts/candidates/tail-latency/repl-fact-identity/index.json`.
+
+## Final exact Native REPL window: source `604b558`
+
+The final session comparison uses source
+`604b5584e103e1fcb7c62cfee779b0dc43447cbe`, Linux Native SHA256
+`8614cfa234930f599e35b5b901ad208b3d5202ed0bf7419066680dc171463d7c`,
+against the same spatial baseline `54d591a8…`. Workflow `42869625070` passes
+the three changed Native phases (`hir-semantics`, `session-age`, `shell-repl`)
+on Linux and Windows and the source editor suite. This payload includes the
+publication-identity correction; the earlier six-case CLI window remains
+evidence for its own exact `9e5e997` payload.
+
+The frozen harness SHA256 is
+`5705620dfccfe9b4418cf9b390b7390a98d3c314942cb9545de236e307614ae4`.
+Three workloads each submit 1,024 requests per image: colored PTY fixed-state
+updates, colored PTY growing exports and a redirected growing burst. All six
+sessions finish naturally with exact numbered replies and exit code zero. The
+PTY uses `TERM=xterm-256color`, unset `NO_COLOR` and a 30-by-120 terminal, so
+lexical highlighting and hints remain enabled. Typing/render and Enter-to-next
+ready-prompt clocks are separate; burst timestamps precede the blocking write
+and include producer pipe backpressure and queueing, not isolated service time.
+
+| Session/window | Before | Corrected Native | Boundary |
+| --- | ---: | ---: | --- |
+| Fixed, all 1,024: P95 / P99 ms | 52.08 / 63.07 | 11.15 / 14.22 | Enter to result and ready prompt |
+| Fixed, submissions 769–1,024: P95 / P99 ms | 61.75 / 70.34 | 11.85 / 14.22 | Same, conditional age window |
+| Growing, submissions 769–1,024: P95 / P99 ms | 434.21 / 753.50 | 100.24 / 117.00 | Same, conditional age window |
+| Growing, submissions 769–1,024: maximum ms | 1,057.26 | 132.65 | Same window, all observations retained |
+| Growing, submissions 769–1,024: render P99 ms | 11.01 | 1.64 | Paste write to first complete input render |
+| Growing burst: final reply seconds | 54.445 | 18.502 | Common offered burst to final completion |
+
+The full fixed-workload empirical P99 has 11 observations at or above its rank.
+Each 256-request age-window P99 has only three: it is a conditional observed
+tail, not a precise stationary population-P99 guarantee. Fixed export count
+does not itself establish stationarity, so its four age windows remain beside
+the overall finite-session summary. The growing burst's final completion is
+queue drain time, not a P99 service latency. No requests, outliers or slow
+sessions were discarded or replaced.
+
+All sessions, exact binaries/receipts, command arrays, raw age-window samples,
+clock calibration and terminal/stdout logs are linked by
+`artifacts/candidates/tail-latency/604b558/repl/index.json`; the focused phase
+attribution is in
+`tests/Performance/ReplSession/README.md#isolated-compiler-attribution-2026-11-10`.
+
+## Finite completion and remaining costs
+
+The actual Native CLI and colored/queued REPL comparisons above are complete;
+there is no remaining timing window or proposed acceptance matrix in this task.
+The observations distinguish the same-Core 1.70x packing scan, redundant-header
+preparation removal, compiler-pass work and session publication/description
+cost, rather than attributing all improvements to physical layout.
+
+Material trade-offs remain recorded:
+
+* The 128-independent-scan managed optimizer control still allocates about
+  189.76 MB after the earlier 364.24 MB; its bounded warm observations improve
+  from about 489 to 259 ms, not to zero-cost or universally linear analysis.
+  See `tests/Performance/HirCompilation/README.md` and
+  `docs/design/performance-components-v080.md` for the pass/source evidence.
+* The isolated Compiler-only growing-session last-window Accept P95 rises from
+  3.40 to 6.43 ms with roughly 76 KB additional publication traffic, while its
+  Describe P95 falls from 52.98 to 12.78 ms and total P95 from 75.07 to 25.07 ms.
+  The later identity correction adds the separately recorded 0.72% traffic.
+  These stage costs are not hidden behind the final Native prompt improvement.
+* Runtime Gen1 counts rise in the reference control even as total allocation,
+  Gen2 frequency and observed tails fall. Collection count is not GC pause.
+* Light CLI P99 difference intervals include zero; the 200-pair manifest and
+  256-request age-window P99s retain their explicit sampling limits. The
+  separately identified dangling-destination Unix mode failure remains outside
+  the selected-observation admission result.
