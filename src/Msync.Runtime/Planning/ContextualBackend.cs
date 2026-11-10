@@ -94,6 +94,8 @@ public static partial class ContextualBackend
         private readonly List<KnownValue> stack;
         private readonly Dictionary<int, Instruction[]> replacements = [];
         private readonly Dictionary<ScopeValue, Dictionary<string, Value?>> fields = new(ReferenceEqualityComparer.Instance);
+        private Dictionary<CellValue, Value?>? cellValues;
+        private HashSet<int>? freshLocals;
         private readonly List<Site> sites = [];
         private readonly List<int> markers = [];
         private readonly HashSet<int> visited = [];
@@ -149,9 +151,16 @@ public static partial class ContextualBackend
                 case OpCode.True: Push(new(Value.True, pc, pc)); return true;
                 case OpCode.False: Push(new(Value.False, pc, pc)); return true;
                 case OpCode.LoadLocal:
-                case OpCode.LoadStorage: Push(locals[instruction.A].At(pc)); return true;
+                case OpCode.LoadStorage:
+                    Push((IncomingCell(instruction.A) is { } readCell
+                        ? new KnownValue(ResolveKnownCapture(readCell)) : locals[instruction.A]).At(pc));
+                    return true;
                 case OpCode.InitializeLocal:
-                case OpCode.StoreLocal: locals[instruction.A] = new(Pop().Value); return true;
+                    SetKnownLocal(instruction.A, Pop().Value, initialize: true);
+                    return true;
+                case OpCode.StoreLocal:
+                    SetKnownLocal(instruction.A, Pop().Value, initialize: false);
+                    return true;
                 case OpCode.Pop: Pop(); return true;
                 case OpCode.Dup:
                     {
@@ -199,18 +208,20 @@ public static partial class ContextualBackend
                 case OpCode.GetMember:
                     {
                         KnownValue receiver = Pop();
-                        Value? value = receiver.Value is ScopeValue scope
-                            ? fields.TryGetValue(scope, out var current) && current.TryGetValue(instruction.Text!, out var changed)
-                                ? changed : scope.Members.GetValueOrDefault(instruction.Text!) is { } member ? Read(member) : null
-                            : null;
+                        Value? value = receiver.Value is ScopeValue scope ? ReadKnownMember(scope, instruction.Text!) : null;
                         return PushComputed(value, [receiver]);
                     }
                 case OpCode.SetMember:
                     {
                         KnownValue value = Pop(), receiver = Pop();
                         if (receiver.Value is not ScopeValue scope) return Stop();
-                        if (!fields.TryGetValue(scope, out var current)) fields.Add(scope, current = new(StringComparer.Ordinal));
-                        current[instruction.Text!] = value.Value;
+                        if (scope.TryGetFieldOffset(instruction.Text!, out int offset) && scope.TryGetFieldCell(offset, out var cell))
+                            SetKnownCell(cell, value.Value);
+                        else
+                        {
+                            if (!fields.TryGetValue(scope, out var current)) fields.Add(scope, current = new(StringComparer.Ordinal));
+                            current[instruction.Text!] = value.Value;
+                        }
                         Push(new(Value.Null)); return true;
                     }
                 case OpCode.SelectPath: return Select(instruction);
@@ -450,7 +461,7 @@ public static partial class ContextualBackend
                 int index = constants.Count; constants.Add(value);
                 restores.Add(new(OpCode.Constant, index));
                 restores.Add(new(store.Value ? OpCode.InitializeLocal : OpCode.StoreLocal, store.Key));
-                locals[store.Key] = new(value);
+                SetKnownLocal(store.Key, value, store.Value);
             }
             Pop();
             foreach (var node in loopGraph.Nodes) graph.Add(node);
@@ -667,9 +678,13 @@ public static partial class ContextualBackend
             return result;
         }
         private static Value Read(Value value) => value is CellValue cell ? cell.Data : value;
-        private Value? ReadKnownMember(ScopeValue scope, string name) => fields.TryGetValue(scope, out var current)
-            && current.TryGetValue(name, out var changed) ? changed
-            : scope.Members.GetValueOrDefault(name) is { } value ? Read(value) : null;
+        private Value? ReadKnownMember(ScopeValue scope, string name)
+        {
+            if (!scope.TryGetFieldOffset(name, out int offset)) return null;
+            if (scope.TryGetFieldCell(offset, out var cell)) return ResolveKnownCapture(cell);
+            return fields.TryGetValue(scope, out var current) && current.TryGetValue(name, out var changed)
+                ? changed : scope.GetField(offset);
+        }
         private Value? Builtin(string? name) => name?.TrimStart('$') switch
         {
             "local" => new ConnectionValue(ConnectionKind.Local),

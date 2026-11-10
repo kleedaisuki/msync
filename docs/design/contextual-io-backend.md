@@ -352,6 +352,39 @@ negative diagnostics. The scoped result is retained at
 `.temp/backend-acceptance/common8-hir-o2.json`; both-platform Native acceptance
 of the corrected producer remains a separate delivery responsibility.
 
+### Captured field identity and current preparation facts
+
+Spatial-layout acceptance exposed an existing backend error independently of
+packed storage. A Scope method captured its `x` field, an alias wrote 19 through
+the method, and a later direct `object::x = 23` updated the field read while the
+captured getter still returned 19. The accepted pre-layout Native image produced
+this result at O0 and O2. `ResolveKnownCapture` had compared a Cell identity with
+`scope.Members[name]`, but that public member accessor already dereferences the
+Cell. The comparison could never find the pending virtual field write.
+
+`ScopeValue.TryGetFieldCell` exposes only the exact backing-cell identity without
+materializing numeric payloads. Preparation owns a lazy reference-identity map
+from Cell to its latest known value. Member stores, active incoming-local stores,
+member reads and known-call capture reads use that same location fact. Unknown
+values remain unknown. A fresh `InitializeLocal` detaches the previous incoming
+location when a physical slot is reused; finite-loop restore publication uses
+the same local-write policy. No real Cell or Scope is mutated during this
+analysis, and no cache crosses the preparation lifetime.
+
+The normal non-cell field path resolves its logical offset once and then reads
+the existing field/shadow value. It does not allocate a cell map or perform a
+second member-name lookup. This correction is distinct from numeric read caching
+or the layout allocator.
+
+Immutable spatial common2 (Runtime SHA256
+`a7de776ea20ca431d470c252faf32e32772f81ff14b60beee4c106821bf93fe5`)
+restores the exact original getter/field outputs to 23/23. The real object-layout
+journey passes source, source-deleted `.mso` and `.mexe` routes with 12 exact
+outputs each, including a discriminator where the creating function's frame
+still contains the captured field cell. Its direct and captured reads both
+observe 23 after the alias store. The scoped report and six-assembly identities
+are retained in `.temp/spatial-validation/common2-object.json`.
+
 ## Final contextual Native candidate and workload results
 
 The corrected validation-only source is

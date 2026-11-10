@@ -58,13 +58,27 @@ public static partial class ContextualBackend
         private Value? ResolveKnownCapture(Value value)
         {
             if (value is not CellValue cell) return value;
+            if (cellValues is not null && cellValues.TryGetValue(cell, out var current)) return current;
             if (incomingLocals is not null)
                 for (int index = 0; index < incomingLocals.Count && index < locals.Length; index++)
-                    if (ReferenceEquals(incomingLocals[index], cell)) return locals[index].Value;
-            foreach (var (scope, changes) in fields)
-                foreach (var (name, changed) in changes)
-                    if (ReferenceEquals(scope.Members.GetValueOrDefault(name), cell)) return changed;
+                    if (ReferenceEquals(IncomingCell(index), cell)) return locals[index].Value;
             return cell.Data;
+        }
+
+        private CellValue? IncomingCell(int slot) => incomingLocals is not null && slot < incomingLocals.Count
+            && freshLocals?.Contains(slot) != true ? incomingLocals[slot] as CellValue : null;
+
+        private void SetKnownCell(CellValue cell, Value? value) =>
+            (cellValues ??= new(ReferenceEqualityComparer.Instance))[cell] = value;
+
+        private void SetKnownLocal(int slot, Value? value, bool initialize)
+        {
+            if (IncomingCell(slot) is { } cell)
+            {
+                if (initialize) (freshLocals ??= []).Add(slot);
+                else SetKnownCell(cell, value);
+            }
+            locals[slot] = new(value);
         }
     }
 }
