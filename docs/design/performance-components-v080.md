@@ -346,3 +346,24 @@ before optimization: IEEE NaN equality must select the false edge, not return
 the first NaN. That independent oracle correction now checks both equality's
 false edge and inequality's true edge with original-payload preservation; no
 product comparison behavior was changed to make the test pass.
+
+A subsequent three-case changed-image calibration keeps the scaling boundary
+explicit. It uses the same fixed host, source hashes, phase API and one first
+call per case, without profiler or a tail-distribution claim:
+
+| Input | Original Optimize allocation | Lazy-havoc Optimize allocation |
+| --- | ---: | ---: |
+| 1,024 qualified bindings | 131,345,184 B | 34,378,424 B |
+| 4,096 qualified bindings | 1,851,224,648 B | 138,356,744 B |
+| 32 Number scans | 19,125,944 B | 19,125,944 B |
+| 128 Number scans | 364,367,848 B | 364,367,824 B |
+
+For qualified bindings, four times the input now requires 4.02 times the
+optimizer allocation instead of 14.09 times. This discriminates the removed
+quadratic havoc mechanism from the remaining ordinary work. The scan-pipeline
+allocation curve is unchanged and still superlinear; it is a separate analysis
+question, not an improvement attributed to this fix. Its changed first-call
+optimizer times are 988.76/1,254.59 ms at 32/128 scans, respectively. Actual Native
+user latency and stage-tail observations determine whether that remaining
+component cost merits another transformation; the call-family result is not
+generalized to all passes.
