@@ -1,7 +1,8 @@
 # Persistent REPL tail probes
 
 `../repl_tail.py` observes the actual Native product. The `prompt` mode uses the
-existing real Linux PTY journey: it types a complete expression outside timing,
+existing real Linux PTY journey with normal colors, lexical highlighting and
+hints enabled: it types a complete expression outside timing,
 then measures Enter through the checked numbered result **and the next rendered
 prompt**. This includes accepted-state feedback and completion/highlight binding
 refresh. Paste-to-first-complete-input-render is recorded separately using two

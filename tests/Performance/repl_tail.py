@@ -36,7 +36,11 @@ class PromptTerminal(Protocol):
     process: subprocess.Popen[bytes]
 
     def __init__(
-        self, binary: Path, directory: Path, arguments: tuple[str, ...]
+        self,
+        binary: Path,
+        directory: Path,
+        arguments: tuple[str, ...],
+        no_color: bool = True,
     ) -> None: ...
 
     def key(self, value: bytes) -> None: ...
@@ -126,7 +130,7 @@ def prompt_samples(
     terminal_type = load_terminal()
     started = time.perf_counter_ns()
     terminal = terminal_type(
-        binary, directory, ("--no-config", "--no-telemetry", "repl")
+        binary, directory, ("--no-config", "--no-telemetry", "repl"), no_color=False
     )
     samples: list[Sample] = []
     segments: list[bytes] = []
@@ -274,6 +278,18 @@ def main() -> None:
         },
         "mode": options.mode,
         "case": options.case,
+        "presentation": "Native default colors, lexical highlighting and hints"
+        if options.mode == "prompt"
+        else "Redirected stdout; NO_COLOR=1",
+        "presentation_environment": {
+            "TERM": "xterm-256color",
+            "NO_COLOR": None,
+            "color_policy": "auto",
+            "rows": 30,
+            "columns": 120,
+        }
+        if options.mode == "prompt"
+        else {"NO_COLOR": "1", "redirected": True},
         "measurement": "Enter to verified result and next rendered prompt; typing outside timer"
         if options.mode == "prompt"
         else "Common offered-burst instant to numbered stdout result; includes producer pipe backpressure and queue delay, not prompt readiness or service time",
