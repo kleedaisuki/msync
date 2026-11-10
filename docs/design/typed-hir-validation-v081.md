@@ -366,3 +366,36 @@ is outside the timer. In 0.8.0, `check` invokes compilation/optimization, while
 is a legitimate analysis-only user benefit but cannot resolve the measured
 normal-Compile/O2 List regression. `native_list.py` therefore defaults to
 compilation and labels an optional check-only comparison separately.
+
+## Bounded List fixed-work correction
+
+The next managed control uses immutable source snapshots 23 and 24, Compiler
+SHA-256 `4470a64112d2695202725ba742a57eade73523c730f99d8b3c8ce24d719bb9cc`
+and `cebc3525bc12635af4be873a842319bc1c2a87f4f18e9e5cd8ac2201ccbbdc68`.
+Snapshot 23 is the semantic source base of the 09ca Native candidate. Snapshot
+24 combines actual-call/callback reentry gating, read-only exact-positive key
+construction and declaration-hover metadata; unsupported key shapes retain
+the prior formal path. This is a combined candidate delta, not single-hunk
+attribution.
+
+Only the original List source (`8a668807...c1e6ff3ab`) is measured. Each frozen
+direct-reference Release host runs normal Compile at O2 once cold, three times
+for warmup and three recorded warm times, on SDK 10.0.403/.NET 10.0.14 with
+TieredCompilation=0 and NO_COLOR=1. Root, compiler and experience owners hold
+builds/tests/formatting during the short window. No tree, scalar, GC trace or
+prior matrix is repeated.
+
+| Observation | Snapshot 23 | Snapshot 24 |
+| --- | ---: | ---: |
+| Cold allocation, B | 10,713,456 | 9,875,688 |
+| Each warm allocation, B | 6,642,096 | 5,804,832 |
+| Raw warm milliseconds | 32.9527, 22.0660, 23.5037 | 13.2459, 25.3002, 13.6368 |
+| Bytecode functions / instructions / locals | 37 / 330 / 152 | 37 / 330 / 152 |
+
+The stable net allocation reduction is 837,264 B (12.61%), including the new
+call-index construction cost. Warm medians move from 23.50 to 13.64 ms, but
+three samples contain outliers and do not establish a Native latency result.
+The already observed 09ca Native regression remains open until the corrected
+same-payload Native image passes the primary actual-compile comparison. Raw
+observations and both full producer receipts are retained in
+`.temp/hir-list-23-24/comparison.json` and the two `list*-o2.json` files.
