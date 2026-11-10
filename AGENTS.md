@@ -50,6 +50,19 @@
   unknown inputs; prepared graphs are not refreshed. Mutable-loop/call inputs
   belong to their frame, never a first-iteration/shared-module specialization.
   See [the contextual backend contract](docs/design/contextual-io-backend.md).
+- Scope identity and logical field order do not promise physical contiguity.
+  VM factories may place numeric payloads in shape/allocation-site pages while
+  each row owns its managed references. Immutable descriptors contain no pool,
+  current-page or prior-input ownership; public plain constructors remain plain.
+  Raw numeric Scope operands use the VM double sidecar, with Value materialization
+  and Cell promotion only at their semantic boundaries. See
+  [spatial layout](docs/design/object-spatial-layout.md).
+- Affine scan scheduling models eager snapshot ordinals and access/dependence
+  facts before choosing fusion. Readonly numeric Scope scans may fuse even when
+  rows alias; field stores, captures, lazy effects and cross-scan dependencies
+  require their own proofs. Preserve every reduction's IEEE order/grouping;
+  arbitrary Number arithmetic or pointer following is not automatically affine.
+  See [the schedule contract](docs/design/affine-layout-optimization.md).
 - Source compilation is `Analyze -> Typed HIR -> HirLowerer -> Optimizer`.
   `Msync.Hir` depends only on Core and owns immutable semantic tables, pure
   bytecode lowering and independently versioned `.mhir` format 1. Exported

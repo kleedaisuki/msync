@@ -1,5 +1,14 @@
 # Field memory, static layouts and lifetime inference in 0.8
 
+The subsequent [object spatial-layout work](object-spatial-layout.md) extends
+the reference-array baseline below with numeric payload pages, per-row managed
+reference ownership and raw VM field operands. Logical fields and instance/Cell
+identities remain the same; physical field placement is not a source guarantee.
+[Affine scan scheduling](affine-layout-optimization.md) separately coordinates
+readonly numeric record accesses without reassociating floating reductions.
+The earlier acceptance and layout measurements in this note remain historical
+records of their named implementations, not measurements of those new changes.
+
 ## Workload and ownership
 
 The November 9 extension targets ordinary Scope construction, aliases, branch
