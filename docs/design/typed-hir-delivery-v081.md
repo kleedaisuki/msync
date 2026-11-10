@@ -316,3 +316,46 @@ merely to recover facts that should be projected at each invocation.
 Disposable reports and fixtures stay under `.temp/`. Baseline packages and final
 publication payloads belong under `artifacts/` and `dist/`. Reusable mechanisms,
 measurements and decisions belong in the focused English design notes.
+
+## Completed publication and requirement audit
+
+[0.8.1 is published](https://github.com/kleedaisuki/msync/releases/tag/v0.8.1)
+from immutable source `454b56cfbb6f0c641f0991b8014492ec9cd39eea`.
+Main was fast-forwarded to that exact accepted commit before publication.
+[Candidate run 42748756872](https://github.com/kleedaisuki/msync/actions/runs/42748756872)
+passed both OS Native jobs and the three actual VS Code suites.
+[Promotion run 42749898704](https://github.com/kleedaisuki/msync/actions/runs/42749898704)
+published the same bytes without rebuilding.
+
+| Original requirement | Completion evidence |
+| --- | --- |
+| Actual structured semantic model and phase ownership | Core-only `Msync.Hir`, typed control/call/location/effect tables, pure lowerer, and the implemented ownership/discard contract in `typed-hir-v081.md`. |
+| Analysis independent of bytecode | Default cutover `6403421` removes the old emission frontend; `Compiler.Analyze` and editor consumers analyze bound semantic bodies, without instruction/slot generation. |
+| Queries and generics without speculative emitting snapshots | Explicit output capabilities, local fact/substitution workspaces, reserved recursive identities and formal invocation projections; query ownership and source-free lowerer journeys exercise the boundary. |
+| Deferred execution without later bytecode repair | Explicit evaluation policies and captured locations, canonical program capture normalization, and the separate persistent-session signature-slot/runtime dispatch contract. Private environments remain distinct. |
+| Export, import and source-free HIR use | Independently versioned `.mhir` format 1; both-platform `hir-artifact` acceptance, the complete source-deleted Set program, and actual HIR editor-host acceptance. Live imports/resources are not silently serialized. |
+| Existing semantics and REPL | Both platforms pass `hir-semantics`, `hir-artifact`, `concepts-tooling`, `library-policy`, `type-traits`, `shell-repl` and `artifact`, including PTY/ConPTY. Focused pending/fixed storage, query isolation, recursion, aliases, captures and annotated-return controls close the observed regressions. |
+| VS Code experience | Original source/concept, bytecode and HIR suites run against the exact Native payload. Separately, a real CLI-installed VSIX activates from its installed directory, uses that Native LSP, provides source hover and opens source-deleted HIR read-only. The development extension in that last test is only the probe, not msync. |
+| Compiler time and memory | Matched phase/allocation observations, source-identified larger-workload results, and the final same-payload Native compile/LSP observations in `typed-hir-validation-v081.md`; the approximately +8 ms short-program cost and cold-hover cost remain explicit. |
+| Complete immutable delivery | Four published payloads match the accepted candidate byte-for-byte after actual public redownload. The published tag points to the frozen source; SHA256SUMS covers exactly the four payloads. Existing 0.8.0 tag and asset digests/sizes remain unchanged. |
+
+The Linux package SHA256 is
+`97476aaa6cae58cfb4ee48d13928b194c15d8a75fc650ee36776a9fd1b2fbbbc`;
+the matching VSIX SHA256 is
+`2752542aeb299404aab0ba18efd37ad4d9989ec0537f9f7104effe08d61d6fb6`.
+The complete publication receipt, all four package identities, actual public
+downloads, install/activation evidence and timing receipts are retained at
+`artifacts/candidates/v0.8.1/454b56c/`. The release uses product 0.8.1, language
+0.8.0, existing bytecode format 4 and new HIR format 1.
+
+VS Code adds an installer-owned `__metadata` property to the installed
+`package.json`. Installed verification compares the complete authored manifest
+after removing only that property, records the metadata and both raw hashes,
+and byte-compares all eight other product members. Rejecting that documented
+installation transformation would test archive spelling, not product integrity.
+The successful real installation receipt records this distinction explicitly.
+
+This post-publication record does not move the tag, modify asset bytes or change
+the accepted source. It closes the requirements above, rather than treating the
+earlier partial fixtures, rejected candidates or managed-only checks as release
+acceptance.

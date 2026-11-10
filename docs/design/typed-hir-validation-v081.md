@@ -401,3 +401,52 @@ The already observed 09ca Native regression remains open until the corrected
 same-payload Native image passes the primary actual-compile comparison. Raw
 observations and both full producer receipts are retained in
 `.temp/hir-list-23-24/comparison.json` and the two `list*-o2.json` files.
+
+## Published Native and editor observations
+
+The published 0.8.1 source is
+`454b56cfbb6f0c641f0991b8014492ec9cd39eea`; Linux executable SHA256 is
+`105e29503c74422831c8481281c617deba5356eb56f38ec9da3b23fbd89c5732`.
+The published 0.8.0 baseline executable remains
+`10d27794ccf2dd4c5638fd6d77d3510de5b6f1dd61ac0e0557382e3cf36c32ad`.
+These are actual Native images, not managed developer builds.
+
+The original short List source above is compiled with `compile SOURCE -O2 -o`
+in 15 alternating fresh-process pairs. Both images overwrite the same existing
+output; there is one untimed launch per image, warm OS file cache, no cache
+flush, `NO_COLOR=1`, and output hashing outside the timer. The infrastructure
+interpreter is Python 3.15.2; the product has no Python dependency. Build, test,
+installation-host and other development timing jobs are paused for this window.
+
+| Actual Native compile | 0.8.0 | Published 0.8.1 |
+| --- | ---: | ---: |
+| Median, ms | 48.43 | 52.80 |
+| p95, ms | 62.34 | 74.43 |
+
+The paired median difference is +7.76 ms, with the candidate slower in 12/15
+pairs. Paired p95 is +29.60 ms. All samples remain present, including a
+103.29 ms candidate launch and a 69.14 ms baseline launch. This is a measurable
+small-program cost, not parity. The architectural benefit and independently
+measured larger-workload improvements justify retaining the structured phase;
+they do not erase this result. Earlier candidate comparisons are historical
+observations from separate windows, not per-patch speedup attribution.
+
+The same published image also receives the original narrow LSP control, seven
+alternating pairs per image and case. Document open/hover starts after LSP
+initialization. Completion follows the same 16-edit burst; exact declaration
+token spans and roles are checked, including the assignment operator.
+
+| LSP observation | 0.8.0 median / p95, ms | 0.8.1 median / p95, ms |
+| --- | ---: | ---: |
+| 80 declarations: open/hover | 2.37 / 2.96 | 4.19 / 4.95 |
+| 80 declarations: burst completion | 128.89 / 152.80 | 8.24 / 9.32 |
+| 400 declarations: open/hover | 7.48 / 8.90 | 14.77 / 16.61 |
+| 400 declarations: burst completion | 159.60 / 181.23 | 33.20 / 39.43 |
+
+Each open/hover pair is slower, while each burst-completion pair is faster.
+Cold semantic work and incremental responsiveness therefore have different
+outcomes; neither is represented as a universal performance win. Exact image,
+source, command and harness identities and raw observations are retained under
+`artifacts/candidates/v0.8.1/454b56c/native-list-{paired,assessment}.json` and
+`native-lsp-{paired,summary}.json`. Publication downloads are byte-identical to
+the measured and accepted packages; see the final delivery receipt.
