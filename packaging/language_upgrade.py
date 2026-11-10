@@ -150,6 +150,8 @@ def main() -> int:
                 "scope-alias-null-prefix",
                 "--case",
                 "compile-rejection",
+                "--case",
+                "ieee-feedback",
             ]
         elif name == "stdlib-cost":
             extra = [
