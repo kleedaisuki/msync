@@ -522,6 +522,40 @@ no fixed sleeps, added production branches or relaxed cancellation checks were
 needed. Raw VT logs and completed phases accompany the JSON result. This console
 phase passed independently of the separate WSL-download failure in that job.
 
+### Selecting a qualified concept through the actual completion menu
+
+The contextual-backend candidate `f668ca0` exposed a second input-driver
+distinction in the Windows concept journey. `Terminal.key()` waits for an output
+fragment, not for an entire completion edit. Sending two Tabs and then the
+printable suffix can leave the second Tab queued with that suffix. PrettyPrompt
+deliberately recognizes a mixed queue of four or more characters as a paste;
+the pasted Tab becomes four spaces. The rejected Native transcript consequently
+contains `$std::concepts::Pro    `, not a committed concept. This was a fixture
+sequencing error rather than a backend or compiler type-resolution defect.
+
+There was also a semantic gap in the former assertion: `Pro` matches both
+`ProcessRunner` and `Product`, with ProcessRunner selected first. Merely declaring
+an unused generic function and printing `CONCEPT_READY` cannot prove that Product
+was chosen. Its body need not be instantiated, so the Linux journey could pass
+with the wrong constraint.
+
+The journey now observes the real terminal's visible cells: wait for the initial
+ProcessRunner documentation, press Down, wait for Product documentation, press
+Tab, and wait for the exact committed input line before sending the suffix and
+Enter. It then calls `identify(scope { first?: 41, second?: "kept" })` and requires
+`41`, exercising the selected structural concept rather than only a marker.
+`terminal_screen.py` interprets cursor movement and erasure in the real PTY/ConPTY
+output; it does not replace either terminal, send keys, or add production hooks.
+Visible cells are required because incremental rendering can repaint only
+`duct`, not another complete `concept Product` string in the cumulative log.
+
+The strengthened selection/invocation journey passed against the exact rejected
+Linux Native image `3b4e443b095d7b534f0797b34ddbba2a45217c801760a7ab482ac00b2bb2f9d4`.
+Its Windows ConPTY proof belongs to the subsequent Native candidate, not that
+Linux observation. The original Windows error transcript remains under
+`artifacts/candidates/contextual-io/f668ca0/acceptance-windows-x86_64/`;
+the focused Linux observation is `.temp/backend-terminal/fixed-yt3ntirq/`.
+
 ## Source-oriented language presentation (0.8.0 polish)
 
 CLI help, the short syntax guide (`msync help syntax` or REPL `/syntax`),

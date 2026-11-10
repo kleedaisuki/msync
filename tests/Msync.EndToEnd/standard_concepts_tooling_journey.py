@@ -9,12 +9,16 @@ import os
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
+from io import TextIOWrapper
 from pathlib import Path
+from typing import cast
 
 from completion_journey import apply_edit
 from language_upgrade_tooling_journey import position, request_at, token_roles
 from lsp_analysis_journey import diagnostics, notify
 from lsp_latency import Client
+from terminal_screen import Screen
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -221,6 +225,24 @@ $std::data::Result::fold($std::data::Result::ok("ok"), fn(value: String) { value
     return {"persistent_repl_qualified_contract": True, "progressive_skill_pages": True}
 
 
+def complete_product(
+    key: Callable[[str], None],
+    until: Callable[[Callable[[], bool], str], None],
+    screen: Screen,
+) -> None:
+    key("fn identify(value: $std::concepts::Pro")
+    key("\t")
+    until(lambda: screen.contains("concept ProcessRunner"), "initial concept menu")
+    key("\x1b[B")
+    until(lambda: screen.contains("concept Product"), "selected Product documentation")
+    key("\t")
+    until(
+        lambda: screen.contains("fn identify(value: $std::concepts::Product"),
+        "committed Product in the input buffer",
+    )
+    key(') { value::first }; "CONCEPT_READY"')
+
+
 def terminal(binary: Path, directory: Path) -> dict[str, object]:
     if os.name == "nt":
         from windows_terminal_journey import Terminal as WindowsTerminal
@@ -228,12 +250,11 @@ def terminal(binary: Path, directory: Path) -> dict[str, object]:
         windows = WindowsTerminal(binary, directory, color=True)
         try:
             windows.until(lambda: "> " in windows.plain, "standard concept prompt")
-            windows.key("fn identify(value: $std::concepts::Pro")
-            windows.key("\t")
-            windows.key("\t")
-            windows.key(') { value::first }; "CONCEPT_READY"')
+            screen = Screen(lambda: windows.raw)
+            complete_product(windows.key, windows.until, screen)
             windows.send("\r")
             windows.prompt(windows.line("CONCEPT_READY"))
+            windows.evaluate('identify(scope { first?: 41, second?: "kept" })', "41")
             windows.send("\x04")
             windows.exit()
         finally:
@@ -244,18 +265,22 @@ def terminal(binary: Path, directory: Path) -> dict[str, object]:
         console = Terminal(binary, directory, no_color=False)
         try:
             console.until(lambda: "> " in console.plain, "standard concept prompt")
-            console.key(b"fn identify(value: $std::concepts::Pro")
-            console.key(b"\t")
-            console.key(b"\t")
-            console.key(b') { value::first }; "CONCEPT_READY"')
+            screen = Screen(lambda: console.raw)
+            complete_product(
+                lambda text: console.key(text.encode()), console.until, screen
+            )
             console.send(b"\r")
             console.prompt(console.line("CONCEPT_READY"))
+            console.evaluate('identify(scope { first?: 41, second?: "kept" })', "41")
             console.send(b"\x04")
             console.process.wait(timeout=5)
             assert console.process.returncode == 0
         finally:
             console.finish(directory / "standard-concept-terminal.raw")
-    return {"real_terminal_qualified_type_completion": True}
+    return {
+        "real_terminal_qualified_type_completion": True,
+        "selected_product_invocation": 41,
+    }
 
 
 def main() -> None:
@@ -278,7 +303,7 @@ def main() -> None:
         arguments.output.parent.mkdir(parents=True, exist_ok=True)
         arguments.output.write_text(encoded + "\n", encoding="utf-8")
     if sys.stdout.encoding and sys.stdout.encoding.lower().replace("-", "") != "utf8":
-        sys.stdout.reconfigure(encoding="utf-8")
+        cast(TextIOWrapper, sys.stdout).reconfigure(encoding="utf-8")
     print(encoded)
 
 
