@@ -117,9 +117,9 @@ buffer, Task and global dependency scan for every bytecode instruction.
   and buffer budgets still apply inside batches; nested per-batch parallelism
   must not multiply the configured concurrency by the number of batches.
 
-Implementation and acceptance results are recorded below as they become
-available. The contract above is not evidence that an optimization is already
-on the default execution path.
+The following sections describe the implemented default execution path and its
+acceptance results. Earlier rejected candidates remain historical observations,
+not substitutes for the final Native and installed-editor evidence.
 
 ## Representation and phase ownership
 
@@ -203,24 +203,7 @@ failed; it does not seal a partially copied directory's permissions or count as
 another copied file. Directory creation/metadata have distinct diagnostic and
 trace actions, with their source spans and concrete paths retained.
 
-### Backend resource versions and projected namespaces
-
-`TransferGraph` assigns a separate definition identity to every resource written
-by an operation. Surviving resource definitions and demanded results seed
-liveness; only reaching read definitions propagate that liveness backwards.
-WAW, WAR and directional ordering do not make a dead destination version live.
-After pruning, ordering edges are rebuilt over the remaining operations. This
-also handles an operation with several physical writes: replacing its ordinary
-destination does not discard a surviving write through an out-of-tree alias.
-The path index visits relevant ancestors and overlapping descendants rather
-than scanning all previous transfers for each ordinary file.
-
-Atomic file/link publication writes a namespace entry. Directory merging can
-write through existing directory links. Captured alias-ancestor entry reads
-keep those links alive until the operation has consumed the selected physical
-path; a later root replacement must not retarget an earlier live write.
-Resource separators follow the endpoint grammar: backslash is a separator only
-for local Windows resources, not for POSIX/SSH/WSL filenames.
+## Projected namespaces and selected computation
 
 Backend filesystem facts have two owners inside one preparation: initial
 observations and predicted namespace state after preceding graph operations.
@@ -443,3 +426,39 @@ carriers, source/harness/native receipt identities and raw timing observations
 are retained under `artifacts/candidates/contextual-io/746f6b9/performance/`.
 The native installation evidence is under the same candidate's
 `installed-smoke/` directory.
+
+## Delivery closure and requirement evidence
+
+The accepted production source is `746f6b9319e336751e5486ef3071928f8a0dbcad`.
+Later documentation-only commits do not alter its payloads or measurements.
+The implementation changes the current reader to format 5; it does not retain
+an old-format execution path. The released 0.8.1 tag and asset bytes remain
+unchanged. This goal requested backend implementation, not a new public release;
+the complete validated Native packages and matching VSIX are retained as the
+candidate delivery rather than substituted for that existing release.
+
+| Requested property | Concrete implementation and acceptance |
+| --- | --- |
+| Ephemeral, inspectable, resubmittable `.mexe` | Format-5 concrete plans plus continuation bytecode; frozen membership/metadata-branch and failure/retry journeys run on both Native platforms. No timestamp comparison, stale-plan classification or automatic replan is present in the VM. |
+| Only the last meaningful write survives | Per-resource versions and data-use liveness; actual admission tests, safe copy forwarding, and the exact Native 1,024-write graph retaining one copy and eliminating 1,023. Observed Bool, alias and read-result cases preserve their logical outputs. |
+| Actual backend computation | Metadata-dependent branches, concrete path kinds and selections, finite loops and proven lexical calls are computed before submission. Unsupported inputs and effectful callbacks retain explicit continuations, not guessed values. |
+| Meaningful graph ordering and directional markers | RAW/WAR/WAW frontiers are rebuilt after pruning; acquire/release follow the table above. Actual marker-fusion and demanded-result tests check executed work, not only printed annotations. Opaque effects remain knowledge boundaries. |
+| Fewer blocks and amortized small-file work | The 1,024-file preparation control has one batch and three residual instructions/blocks; ordinary directories expand into file/create/final-metadata work with real dependency ordering, rather than a serial recursive-copy placeholder. |
+| Parallel execution and resource management in VM | Prepared dependencies, per-batch completion, global job/buffer permits, source-owned error reporting and explicit run/session transport ownership. Captured scalar mutation stays on its control owner. |
+| Connection reuse without extra authentication | Real managed transport tests cover one-client batches and two-client ordered duplex relays. Exact accepted Native CLI filtering confirms one client/authentication/session; the prior candidate's unchanged relay code confirms two clients for three cross-endpoint files. No WAN throughput claim follows from the owned loopback fixture. |
+| Correct platform and mutable-language behavior | Linux and Windows each pass nine selected Native phases, including complete HIR source/object/executable semantics and directory-link ordering/timestamps. The rejected delayed-Range and Windows-link failures have root fixes, not library bypasses. |
+| Editor, REPL and actual installation | Native PTY/ConPTY, three real editor-host suites, then a separate CLI-installed exact VSIX/native pair. A plan-containing format-5 `.mexe` has read-only custom/text views, highlighting, outline, hover and no execution effects. |
+| Optimizer overhead and useful real I/O effects | One allocation trace guides bounded span/path reuse; preparation allocation falls 43.1%. The final matched Native matrix above includes both dominant-workload improvements and independent/single-copy regressions. |
+
+The decision is to retain the measured graph-preparation cost: the dominant
+directory/selection cases improve about 2.4x and repeated overwritten work about
+7.7x, while explicit independent statements are about 5.3% slower and one-copy
+paired latency increases about 2.23 ms. These costs remain visible; they are not
+hidden by a pooled overall speedup or represented as eliminated overhead.
+
+`artifacts/candidates/contextual-io/746f6b9/delivery.json` links the exact source,
+Native jobs, all four package digests, installed receipt and payload audit.
+`performance/index.json` links every source, harness, raw paired observation and
+post-timing graph; `transport-cli/receipt.json` records the final selected-channel
+CLI proof. Both-platform execution and installed activation are completed
+evidence, not requirements deferred to a future release.
