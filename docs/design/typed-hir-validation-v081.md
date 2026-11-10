@@ -296,3 +296,14 @@ completed allocation control near the old first full O0 Compile's 151 MB;
 the normal complete compiler's matched warm time, O2 allocation and retention
 remain separate required observations. Raw records are
 `.temp/hir-final-cost/frozen17-original-tree-trace-receipt.*`.
+
+The graph-representation change is also checked through actual source execution
+on frozen17: one O2 run of the existing composed program produces all 28 exact
+outputs and no forbidden query effect. It includes independent Scope/capture
+projection, shared Buffer object identity, first-write/snapshot behavior,
+nullable flow, Some(null), delayed execution and query isolation. Three changed-
+boundary negative cases still reject an unhandled Null, a member proof
+invalidated through an alias, and a deferred Range/String source that changes
+before observation. Only this source route is repeated, not the earlier three-
+artifact or optimization matrix; its report is
+`.temp/hir-semantic-journey/snapshot17-source.json`.
