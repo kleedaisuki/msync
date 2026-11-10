@@ -157,6 +157,43 @@ Raw package retention on failed Native jobs is now explicit. Failure remains
 failure for promotion: exact source, both Native jobs, editor acceptance and
 payload receipts are still required before any public release.
 
+## Second Native candidate: editor metadata and short-program cost
+
+Validation-only run `42736530733`, from source
+`09ca9d780cc51d46dc66206f12de9393d1068262`, passed all seven selected Native
+phases on both Linux and Windows, including real terminal and Windows installer
+upgrade journeys. The subsequent actual VS Code source suite failed its
+`with_equality` hover assertion: the signature displayed `Scope` instead of the
+declared `Equality` concept constraint. Earlier managed protocol tests did not
+cover this exact packaged-editor observation. The candidate is rejected; there
+is no matching accepted VSIX or public release.
+
+The retained Linux executable also exposes a user-visible short-program cost
+regression. For the unchanged List source with SHA256
+`8a6688070adf66d76a1b4248e67f1ddee360a9e086b296d4cc07d22c1e6ff3ab`,
+15 alternating fresh-process pairs compile at O2 to the same already-existing
+output path. Published 0.8.0 has median 46.91 ms and p95 63.76 ms; this candidate
+has median 76.48 ms and p95 86.80 ms. Every candidate pair is slower; the median
+paired difference is +25.45 ms. The primary operation is `compile`, not `check`:
+the latter no longer has the same phase scope in the two implementations.
+The exact images, commands, samples and payload provenance are retained in
+`artifacts/candidates/v0.8.1/09ca9d7/native-list-paired.json`.
+
+A seven-pair `--version` control has a +2.95 ms median paired difference. It
+indicates that startup contributes, but does not explain the complete compile
+regression or identify a particular semantic function. Large-tree improvements
+likewise do not substitute for repairing this short-program result. The bounded
+follow-up removes false recursive-signature prequeries and avoidable schema
+materialization while preserving real recursive/native-callback paths and
+canonical specialization-key equality. Its effect must be measured on a new
+coherent producer and subsequently on the actual Native candidate.
+
+The editor correction belongs in the compact semantic projection: retain the
+concept constraint and useful declaration metadata without retaining HIR bodies
+or mutable inference contexts. Client text patches and weakened assertions are
+not fixes. Neither follow-up changes the release requirement for a matching
+VSIX, real isolated installation/activation, and byte-preserving promotion.
+
 ## Work ownership
 
 The compiler team owns semantic contracts, binding, specialization and lowering.
