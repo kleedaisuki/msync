@@ -92,6 +92,33 @@ def invoke(command: list[str], work: Path) -> dict[str, Any]:
 
 
 def program(case: str, rows: int) -> str:
+    if case.startswith("manifest"):
+        return """let seed = $std::io::read_text(./seed.txt) as Number;
+fn build(values: Range, directory: Path, endpoint: Connection) {
+    let records = $std::storage::Buffer::new([]);
+    for value in values {
+        let name = $std::string::concat("file-", value as String);
+        $std::storage::Buffer::push(records, scope {
+            name: name, path: directory/name, enabled: true, endpoint: endpoint,
+        });
+    };
+    $std::storage::Buffer::snapshot(records)
+};
+let endpoint = $local;
+let directory = ./files/ @ endpoint;
+let rows = build($std::ranges::iota(seed, seed + ROW_COUNT), directory, endpoint);
+let total = 0;
+let last_name = "";
+for row in rows {
+    if row::enabled
+        and ($std::path::filename(row::path) as String) == row::name {
+        total = total + 1;
+    };
+    last_name = row::name;
+};
+$std::string::concat(total as String,
+    $std::string::concat(":", last_name)) -> ./result.txt;
+""".replace("ROW_COUNT", str(rows))
     if not case.startswith(("references", "computed")):
         return '"scalar-control" -> ./result.txt;\n'
     source = """let seed = $std::io::read_text(./seed.txt) as Number;
@@ -178,7 +205,9 @@ def run_case(
     result = invoke(fixture["commands"][label], directory)
     if case != "version":
         actual = output.read_bytes()
-        if case.startswith("references"):
+        if case.startswith("manifest"):
+            expected = f"{fixture['rows']}:file-{seed + fixture['rows'] - 1}".encode()
+        elif case.startswith("references"):
             expected = str(fixture["rows"]).encode()
         elif case.startswith("computed"):
             rows = fixture["rows"]
@@ -257,8 +286,13 @@ def main() -> None:
             "references-mexe",
             "computed",
             "computed-mexe",
+            "manifest",
+            "manifest-mexe",
         ),
         default=("version", "source", "mexe", "references"),
+    )
+    parser.add_argument(
+        "--case-pairs", action="append", default=[], metavar="CASE=COUNT"
     )
     parser.add_argument("--blocks", type=int, default=20)
     parser.add_argument("--calibrate-only", action="store_true")
@@ -272,10 +306,15 @@ def main() -> None:
     output.mkdir(parents=True, exist_ok=True)
     counts = {
         case: args.reference_pairs
-        if case.startswith(("references", "computed"))
+        if case.startswith(("references", "computed", "manifest"))
         else args.pairs
         for case in args.cases
     }
+    for override in args.case_pairs:
+        case, count = override.split("=", 1)
+        if case not in counts:
+            parser.error(f"Pair override requires a selected case: {case}")
+        counts[case] = int(count)
     fixtures = prepare(binaries, work, list(counts), args.rows)
     report: dict[str, Any] = {
         "started_utc": utc(),

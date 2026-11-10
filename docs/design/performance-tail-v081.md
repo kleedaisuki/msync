@@ -124,6 +124,13 @@ same runtime-seeded source for source-run and matching prebuilt-artifact routes.
 `--reference-pairs` sets the sample budget for either Scope family. The final
 repair comparison uses the spatial image as baseline, rather than adding a
 third producer to every workload matrix.
+`manifest`/`manifest-mexe` add distinct generated filename Strings, qualified
+Paths and a Connection field, using ordinary string concatenation and filename
+operations. Their single scan writes both the count and final generated name,
+so byte checks depend on the runtime seed rather than only on a constant row
+count. `--case-pairs CASE=COUNT` permits a bounded per-case budget after cheap
+functional calibration; heavy P99 reference intervals can be finite with
+400–500 observations where 200 cannot bound the upper endpoint.
 
 The initial host is Linux x86-64 with 16 available CPUs and Python 3.15.2.
 Separate non-team network experiments and persistent Forge/Postgres services
@@ -179,7 +186,8 @@ The Runtime-only comparison for `4199e9d` uses identical Core, HIR, Compiler and
 Optimization assemblies and one shared bound artifact. Runtime changes from
 `5c9e8a5423ff32b04989aa333b21e731f09af2ea84f23b3707f5f6fe8dd2f5c1` to
 `92908c6351bf9fadefa737ae6c6e38f66d8d7795cf9122f2745ce2c7fa44bba1`.
-Two persistent managed hosts compile/bind outside timing, warm five executions,
+One producer compiles/binds outside timing; two persistent managed hosts read
+that artifact, warm five executions,
 then alternate 32-sample batches (the final batch has eight). Each of 1,000
 executions constructs 8,192 fresh reference-only Scopes and scans four times;
 the rows share three constant payloads, making this a preparation/negative
