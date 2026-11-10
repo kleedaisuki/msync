@@ -105,20 +105,34 @@ internal static class Program
                 else Write(module, options.Output);
                 return Complete(0, telemetry);
             }
-            if (options.Command == "bind-ir")
-            {
-                string? sourceFile = options.SourceFile is null ? null : Path.GetFullPath(options.SourceFile);
-                Module bound = Binding.Bind(module, new(Environment.CurrentDirectory, HostContext.HomeDirectory, sourceFile));
-                Write(bound, options.Output ?? Path.ChangeExtension(file, ".mexe"));
-                return Complete(0, telemetry);
-            }
-            if (options.Command is "plan" or "plan-ir") { PrintPlan(module, color); return Complete(0, telemetry); }
             using CancellationTokenSource cancellation = new();
             ConsoleCancelEventHandler cancel = (_, e) => { e.Cancel = true; cancellation.Cancel(); };
             Console.CancelKeyPress += cancel;
             try
             {
-                Interpreter interpreter = new(module, RuntimeOptions(options, options.SourceFile ?? (binary || file == "-" ? null : Path.GetFullPath(file)), telemetry, color, snapshot));
+                if (options.Command == "bind-ir")
+                {
+                    string? sourceFile = options.SourceFile is null ? null : Path.GetFullPath(options.SourceFile);
+                    Module bound = Binding.Bind(module, new(Environment.CurrentDirectory, HostContext.HomeDirectory, sourceFile));
+                    Module prepared = ContextualBackend.Prepare(bound,
+                        RuntimeOptions(options, sourceFile, telemetry, color, snapshot), cancellation.Token);
+                    Write(prepared, options.Output ?? Path.ChangeExtension(file, ".mexe"));
+                    return Complete(0, telemetry);
+                }
+                if (options.Command is "plan" or "plan-ir")
+                {
+                    if (module.Stage == ArtifactStage.Relocatable)
+                    {
+                        string? sourceFile = options.SourceFile is { } explicitSource ? Path.GetFullPath(explicitSource)
+                            : binary || file == "-" ? null : Path.GetFullPath(file);
+                        module = ContextualBackend.Prepare(Binding.Bind(module,
+                            new(Environment.CurrentDirectory, HostContext.HomeDirectory, sourceFile)),
+                            RuntimeOptions(options, sourceFile, telemetry, color, snapshot), cancellation.Token);
+                    }
+                    PrintPlan(module, color);
+                    return Complete(0, telemetry);
+                }
+                Interpreter interpreter = new(module, RuntimeOptions(options, options.SourceFile ?? (binary || file == "-" ? null : Path.GetFullPath(file)), telemetry, color, snapshot), cancellation.Token);
                 await interpreter.ExecuteAsync(cancellation.Token);
                 return Complete(interpreter.FailedTransfers == 0 ? 0 : 1, telemetry);
             }

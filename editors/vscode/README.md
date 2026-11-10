@@ -225,7 +225,11 @@ into apparent source. Its view distinguishes types, declaration and location
 identities, structured expressions, function identities and capture operations.
 Its own format version is independent from bytecode. The bytecode views show
 their stage, actual format and language versions, optimization level, constants,
-functions, captures, basic blocks, instructions and bound context.
+functions, captures, basic blocks, instructions and bound context. Format-5
+executable artifacts also show contextual execution plans: concrete transfer
+kinds, resource footprints, dependency edges, batches and eliminated writes.
+Plan and node references participate in the outline and navigation. Inspecting a
+plan never refreshes its observations or checks whether it is still executable.
 
 Both binary stages use independent IR highlighting: function, block, constant
 and local references have distinct roles; branches and acquire/release markers

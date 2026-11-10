@@ -92,6 +92,8 @@ internal static class BytecodeValidation
             {
                 case OpCode.Nop: break;
                 case OpCode.Barrier: break;
+                case OpCode.ExecutePlan: PopMany(instruction.B); break;
+                case OpCode.PlanResult: PopMany(instruction.B); Push(TypeRef.Bool); break;
                 case OpCode.Acquire:
                     if (instruction.A != 0) { var process = Pop(); Require(process, TypeKind.Process); stack.Add(process); }
                     break;

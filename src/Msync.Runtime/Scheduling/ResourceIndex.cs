@@ -12,7 +12,7 @@ internal sealed class ResourceIndex
         public readonly Node? Parent = parent;
         public readonly string? Name = name;
     }
-    public readonly record struct Registration(Node? Reader, Node Writer);
+    public readonly record struct Registration(Node? Reader, Node? Writer);
     private readonly Dictionary<string, Node> roots = new(StringComparer.Ordinal);
     private Node? unknown;
     public long NodesVisited { get; private set; }
@@ -85,12 +85,18 @@ internal sealed class ResourceIndex
         writer.Writers.Add(completion);
         return new(reader, writer);
     }
+    public Registration AddRead(Task completion, ResourceKey read)
+    {
+        var node = Leaf(read);
+        node.Readers.Add(completion);
+        return new(node, null);
+    }
     public void Remove(Task completion, Registration registration)
     {
         registration.Reader?.Readers.Remove(completion);
-        registration.Writer.Writers.Remove(completion);
+        registration.Writer?.Writers.Remove(completion);
         if (registration.Reader is { } reader) Prune(reader);
-        Prune(registration.Writer);
+        if (registration.Writer is { } writer) Prune(writer);
     }
     private static void Prune(Node node)
     {

@@ -6,8 +6,12 @@ public sealed partial class Interpreter
 {
     private Module module;
     private readonly RuntimeContext context;
+    private readonly ExecutionOptions? executionOptions;
+    private readonly ContextualResources planResources;
+    private readonly CancellationToken preparationCancellation;
     private BasicBlock[][] blocks;
     private readonly SemaphoreSlim slots;
+    private readonly int transferConcurrency;
     private readonly HashSet<IAsyncDisposable> iterators;
     private readonly Dictionary<string, IReadOnlyDictionary<int, int>> dispatchTables = [];
     private int failedTransfers;
@@ -15,8 +19,13 @@ public sealed partial class Interpreter
     public int FailedTransfers => failedTransfers;
 
     public Interpreter(Module module, ExecutionOptions? options = null) : this(module, options, null) { }
-    internal Interpreter(Module module, ExecutionOptions? options, Interpreter? previous)
+    public Interpreter(Module module, ExecutionOptions? options, CancellationToken cancellationToken)
+        : this(module, options, null, cancellationToken) { }
+    internal Interpreter(Module module, ExecutionOptions? options, Interpreter? previous, CancellationToken cancellationToken = default)
     {
+        executionOptions = options;
+        preparationCancellation = cancellationToken;
+        planResources = previous?.planResources ?? new();
         resources = previous?.resources ?? new();
         pending = previous?.pending ?? [];
         sessionProcesses = previous?.sessionProcesses ?? new(ReferenceEqualityComparer.Instance);
@@ -24,18 +33,29 @@ public sealed partial class Interpreter
         namespaceProducers = previous?.namespaceProducers ?? [];
         iterators = previous?.iterators ?? [];
         context = new(options, module.Context);
-        (this.module, blocks) = ProjectImage(module);
-        slots = previous?.slots ?? new(Math.Max(1, Math.Min(context.Jobs, (int)Math.Min(int.MaxValue, context.MemoryLimit / Math.Max(1, context.BufferSize)))));
+        try { (this.module, blocks) = ProjectImage(module); }
+        catch
+        {
+            if (previous is null) planResources.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            throw;
+        }
+        transferConcurrency = previous?.transferConcurrency
+            ?? Math.Max(1, Math.Min(context.Jobs, (int)Math.Min(int.MaxValue, context.MemoryLimit / Math.Max(1, context.BufferSize))));
+        slots = previous?.slots ?? new(transferConcurrency);
     }
     public static ValueTask<Value> ExecuteAsync(Module module, ExecutionOptions? options = null, CancellationToken cancellationToken = default)
-        => new Interpreter(module, options).ExecuteAsync(cancellationToken);
+        => new Interpreter(module, options, cancellationToken).ExecuteAsync(cancellationToken);
     public async ValueTask<Value> ExecuteAsync(CancellationToken cancellationToken = default)
     {
         try { return await ResolveResultAsync(await RunFunctionAsync(module.EntryPoint, [], [], cancellationToken)); }
         finally
         {
-            await DrainAsync();
-            foreach (var iterator in iterators) await iterator.DisposeAsync();
+            try
+            {
+                await DrainAsync();
+                foreach (var iterator in iterators) await iterator.DisposeAsync();
+            }
+            finally { await DisposePlanResourcesAsync(); }
         }
     }
     internal async ValueTask<Value> ExecuteEntryAsync(Value[] locals, int startInstruction, CancellationToken cancellationToken)

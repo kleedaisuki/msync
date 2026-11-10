@@ -57,14 +57,18 @@ public sealed partial class Interpreter
 
     internal async ValueTask CloseSessionAsync()
     {
-        foreach (var process in sessionProcesses)
+        try
         {
-            if (process.Control is { IsRunning: true } control) control.Kill();
-            else if (process.Completion?.IsCompleted == false) process.AbortOwnedTransport?.Invoke();
+            foreach (var process in sessionProcesses)
+            {
+                if (process.Control is { IsRunning: true } control) control.Kill();
+                else if (process.Completion?.IsCompleted == false) process.AbortOwnedTransport?.Invoke();
+            }
+            await DrainAsync();
+            foreach (var iterator in iterators) await iterator.DisposeAsync();
+            iterators.Clear();
         }
-        await DrainAsync();
-        foreach (var iterator in iterators) await iterator.DisposeAsync();
-        iterators.Clear();
+        finally { await DisposePlanResourcesAsync(); }
     }
 
     private static bool HasProcessFlows(List<PendingWork>? tasks)

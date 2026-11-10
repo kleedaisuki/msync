@@ -123,7 +123,10 @@ public sealed partial class Interpreter
                 return new DeferredValue(Complete(), resultType, inputs.SelectMany(Processes).Distinct().ToArray(), endpoint);
             }
             arguments = await ResolveArgumentsAsync(arguments);
-            await AwaitNativeDependenciesAsync(name, arguments);
+            await AwaitNativeDependenciesAsync(name, arguments, cancellationToken);
+            using var selectedSession = !NativeEvaluation.DefersFileRead(name)
+                && NativeSignatures.TryGet(name, out var operation) && operation.Effect != NativeEffect.Pure
+                    ? EnterPathSession(arguments, cancellationToken) : null;
             return await NativeRegistry.InvokeAsync(name, arguments, name == "cast" ? context.CaptureDirectory() : context, NativeCallback, cancellationToken);
         }
         catch (Exception error) when (error is not OperationCanceledException)

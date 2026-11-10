@@ -8,6 +8,12 @@ if (args is ["--dispatch-child", var marker])
 }
 
 int checks = 0;
+if (args is ["--portable-contract-only"])
+{
+    PortableContract();
+    Console.WriteLine($"PASS {checks} portable artifact/session boundary contracts");
+    return;
+}
 foreach (int level in new[] { 0, 2, 3 })
 {
     await DeferredGeneration(level);
@@ -180,8 +186,8 @@ void PortableContract()
     Artifact.Write(closed, stream);
     stream.Position = 0;
     Module loaded = Artifact.Read(stream);
-    Require(loaded.SessionDispatches is null && Artifact.FormatVersion == 4 && Artifact.LanguageVersion == "0.8.0",
-        "portable format and language semantics retain their published contract");
+    Require(loaded.SessionDispatches is null && Artifact.FormatVersion == 5 && Artifact.LanguageVersion == "0.8.0",
+        "portable artifacts use the execution-plan format without serializing live session dispatch");
     Require((InstructionEffects.Effects(new(OpCode.Call, 0, -1)) & (InstructionEffect.Read | InstructionEffect.Write))
         == (InstructionEffect.Read | InstructionEffect.Write), "open call effects cannot be treated as a pure fixed target");
     Require((InstructionEffects.Effects(new(OpCode.Call, 0, 1)) & (InstructionEffect.Read | InstructionEffect.Write)) == 0,

@@ -13,8 +13,11 @@ public sealed class ExecutionSession(ExecutionOptions? options = null) : IAsyncD
     public string WorkingDirectory => workingDirectory;
     public void ChangeWorkingDirectory(string path)
     {
-        RuntimeContext context = new((options ?? new()) with { WorkingDirectory = workingDirectory,
-            WorkingDirectoryChanged = AcceptWorkingDirectory });
+        RuntimeContext context = new((options ?? new()) with
+        {
+            WorkingDirectory = workingDirectory,
+            WorkingDirectoryChanged = AcceptWorkingDirectory
+        });
         context.ChangeWorkingDirectory(new StringValue(path));
     }
     private void AcceptWorkingDirectory(string directory)
@@ -34,7 +37,7 @@ public sealed class ExecutionSession(ExecutionOptions? options = null) : IAsyncD
         if (image is null) image = new(module);
         else image.Publish(module);
         interpreter = new Interpreter(module, (options ?? new()) with
-        { WorkingDirectory = workingDirectory, WorkingDirectoryChanged = AcceptWorkingDirectory }, interpreter);
+        { WorkingDirectory = workingDirectory, WorkingDirectoryChanged = AcceptWorkingDirectory }, interpreter, cancellationToken);
         interpreter.Attach(image);
         return interpreter.ExecuteEntryAsync(locals, startInstruction, cancellationToken);
     }

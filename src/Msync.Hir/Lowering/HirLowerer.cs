@@ -443,7 +443,7 @@ public static class HirLowerer
         private void Barrier(HirNode node)
         {
             var barrier = Hir.Barriers[node.Data];
-            if (barrier.Release) Add(OpCode.Barrier, 1, source: node.Source);
+            if (barrier.Release) Add(OpCode.Barrier, (int)BarrierDirection.Release, source: node.Source);
             if (node.Children.Count == 0)
             { if (barrier.Acquire) Add(OpCode.Acquire, source: node.Source); Add(OpCode.Null); return; }
             string? region = barrier.Acquire ? (++nextRegion).ToString(CultureInfo.InvariantCulture) : null;

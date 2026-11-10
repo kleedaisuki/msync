@@ -34,5 +34,23 @@ internal static class ArtifactCommands
             }
         }
         foreach (BasicBlock block in module.Blocks ?? []) Console.WriteLine($"block fn#{block.Function} [{block.Start},{block.End}) effects={block.HasEffects} successors=[{string.Join(',', block.Successors)}]");
+        for (int index = 0; index < (module.ExecutionPlans?.Count ?? 0); index++)
+        {
+            ExecutionPlan plan = module.ExecutionPlans![index];
+            Console.WriteLine(TerminalPresentation.Paint($"execution_plan @p{index} fn#{plan.Function} region [{plan.Start},{plan.End}) eliminated={plan.EliminatedTransfers}", TerminalPresentation.HeadingColor, color));
+            if (plan.ResultTransfers is { } results)
+                Console.WriteLine($"  result all [{string.Join(',', results.Select(result => $"@p{index}n{result}"))}]");
+            foreach (PlannedTransfer transfer in plan.Transfers)
+            {
+                string operation = TerminalPresentation.Paint(transfer.Kind.ToString(), "36", color);
+                Console.WriteLine($"  @p{index}n{transfer.Id}: {operation} mode={transfer.Mode} {transfer.Source} -> {transfer.Destination} predecessors=[{string.Join(',', transfer.Predecessors)}]");
+                foreach (PlanResource read in transfer.Reads)
+                    Console.WriteLine($"    read {read.Endpoint}:{read.Path} subtree={read.Subtree}");
+                foreach (PlanResource write in transfer.Writes)
+                    Console.WriteLine($"    write {write.Endpoint}:{write.Path} subtree={write.Subtree}");
+            }
+            foreach (ExecutionBatch batch in plan.Batches)
+                Console.WriteLine($"  batch {batch.Endpoint} transfers=[{string.Join(',', batch.Transfers)}]");
+        }
     }
 }

@@ -5,7 +5,7 @@ using Msync.Core;
 
 namespace Msync.Cli;
 
-internal sealed class ArtifactRenderer(Module module, int version, string sourceUri, CancellationToken cancellationToken)
+internal sealed partial class ArtifactRenderer(Module module, int version, string sourceUri, CancellationToken cancellationToken)
 {
     private readonly StringBuilder text = new();
     private readonly List<string> lines = [];
@@ -38,6 +38,7 @@ internal sealed class ArtifactRenderer(Module module, int version, string source
         Emit("");
         Emit($"; {module.Constants.Count} constants, {module.Functions.Count} functions");
         for (int index = 0; index < module.Constants.Count; index++) Constant(index);
+        for (int index = 0; index < (module.ExecutionPlans?.Count ?? 0); index++) Plan(index, module.ExecutionPlans![index]);
         for (int index = 0; index < module.Functions.Count; index++) Function(index);
         foreach (var (reference, target) in pending)
             if (definitions.TryGetValue(target, out var destination))
@@ -46,7 +47,8 @@ internal sealed class ArtifactRenderer(Module module, int version, string source
                 reference["targetCharacter"] = destination.Character;
                 references.Add((JsonNode)reference);
             }
-        return new(text.ToString(), version, module.Stage.ToString().ToLowerInvariant(), module.OptimizationLevel, symbols, references, hovers);
+        return new(text.ToString(), version, module.Stage.ToString().ToLowerInvariant(), module.OptimizationLevel, symbols, references, hovers,
+            ExecutionPlans: executionPlans);
     }
 
     private void Constant(int index)
@@ -117,13 +119,17 @@ internal sealed class ArtifactRenderer(Module module, int version, string source
         Emit(prefix + operation + (operands.Length == 0 ? "" : " " + operands));
         hovers.Add((JsonNode)new JsonObject { ["range"] = Range(at, prefix.Length, operation.Length), ["markdown"] = $"**{operation}**\n\n{Description(instruction)}" });
         foreach (var target in Targets(function, instruction)) Reference(at, prefix, prefix.Length, target);
-        if (instruction.Span is not { } span) return;
-        string provenance = $"      ; source {ArtifactDisassembly.Quote(span.Source)} utf16 [{span.Start}..{span.Start + span.Length})";
+        if (instruction.Span is { } span) Origin(span, 6);
+    }
+
+    private void Origin(SourceSpan span, int indent)
+    {
+        string provenance = $"{new string(' ', indent)}; source {ArtifactDisassembly.Quote(span.Source)} utf16 [{span.Start}..{span.Start + span.Length})";
         int sourceLine = line;
         Emit(provenance);
         JsonObject sourceReference = new()
         {
-            ["range"] = Range(sourceLine, 8, provenance.Length - 8),
+            ["range"] = Range(sourceLine, indent + 2, provenance.Length - indent - 2),
             ["sourceName"] = span.Source,
             ["sourceStart"] = span.Start,
             ["sourceLength"] = span.Length
@@ -147,6 +153,7 @@ internal sealed class ArtifactRenderer(Module module, int version, string source
             OpCode.Call => $"arguments {instruction.A}, dynamic callee",
             OpCode.ProcessCall => $"arguments {instruction.A}, {((module.Semantics & ModuleSemantics.DirectionalScheduling) != 0 && (instruction.B & 1) != 0 && (instruction.B & 2) == 0 ? "release" : "join")} flags {instruction.B}",
             OpCode.NativeCall => $"{Text()}, arguments {instruction.A}",
+            OpCode.ExecutePlan or OpCode.PlanResult => $"@p{instruction.A}, consume {instruction.B} operands",
             OpCode.LoadBuiltin => "$" + (instruction.Text ?? "").TrimStart('$'),
             OpCode.MakeRange => "items " + instruction.A,
             OpCode.MakeLazyRange => $"items {instruction.A}, deferred-mask {Text()}" + (instruction.B > 0 ? $", item-type @c{instruction.B - 1}" : ""),
@@ -168,11 +175,12 @@ internal sealed class ArtifactRenderer(Module module, int version, string source
     }
 
     private static string Dispatch(string value) => string.Join(", ", FunctionDispatch.Parse(value).Select(pair => $"@f{pair.Key} -> @f{pair.Value}"));
-    private static string Direction(int value) => value switch { 1 => "before (release)", 2 => "after (acquire)", 3 => "before-and-after (acqrel)", _ => "flags " + value };
+    private static string Direction(int value) => value switch { 1 => "before (acquire)", 2 => "after (release)", 3 => "before-and-after (acqrel)", _ => "flags " + value };
 
     private static IEnumerable<string> Targets(int function, Instruction instruction)
     {
         if (instruction.Op == OpCode.Constant) yield return "@c" + instruction.A;
+        if (instruction.Op is OpCode.ExecutePlan or OpCode.PlanResult) yield return "@p" + instruction.A;
         if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse) yield return Block(function, instruction.A);
         if (instruction.Op == OpCode.IteratorNext) yield return Block(function, instruction.B);
         if (instruction.Op == OpCode.MakeClosure || instruction.Op == OpCode.SpecializeClosure && instruction.Text is null) yield return "@f" + instruction.A;
@@ -229,6 +237,8 @@ internal sealed class ArtifactRenderer(Module module, int version, string source
         FunctionValue function => function.NativeName is { } native ? "native(" + ArtifactDisassembly.Quote(native) + ")"
             : $"closure(@f{function.Function}, [{string.Join(", ", (function.Captures ?? []).Select(ValueText))}])",
         ScopeValue scope => "scope { " + string.Join(", ", scope.Members.Select(pair => ArtifactDisassembly.Quote(pair.Key) + ": " + ValueText(pair.Value))) + " }",
+        RangeValue { SnapshotValues: { } snapshot, Resolve: null, Selection: null } range =>
+            $"range(item-type={range.ItemType}, items=[{string.Join(", ", snapshot.Select(ValueText))}])",
         _ => value.Type + "(" + ArtifactDisassembly.Quote(value.ToString() ?? "") + ")"
     };
 
@@ -241,6 +251,8 @@ internal sealed class ArtifactRenderer(Module module, int version, string source
         OpCode.StoreLocal => "Pop a value and update the existing local location; aliases retain the same location.",
         OpCode.InitializeLocal => "Pop a value into a fresh logical local location, rather than mutating an older captured cell.",
         OpCode.Transfer or OpCode.LocalTransfer => "Pop destination and source; schedule their transfer in dependency order and push its Bool result.",
+        OpCode.ExecutePlan => "Consume the indicated prepared operands and submit the referenced contextual transfer graph. The VM schedules its dependencies and reports operational failures; it does not test plan freshness or rebuild the graph.",
+        OpCode.PlanResult => "Consume the indicated operands, await the referenced plan's selected transfer and push its Bool result. This observes the retained transfer rather than an overwritten dead operation.",
         OpCode.Call => "Pop arguments and the callable, invoke its selected typed specialization, and push the result. Invocation-owned jobs join at its return.",
         OpCode.ProcessCall => "Pop arguments and executable, launch the native process, and push Process. The release flag controls whether launch waits for completion.",
         OpCode.MakeScope => "Pop declared field values and create a fresh lexical Scope. Raw captured cells retain their shared identities.",

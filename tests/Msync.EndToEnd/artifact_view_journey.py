@@ -80,7 +80,7 @@ def checked_range(
 def inspect_model(model: Json, stage: str) -> dict[str, int]:
     assert model["schemaVersion"] == 1, model
     assert model["languageVersion"] == "0.8.0", model
-    assert model["formatVersion"] == 4
+    assert model["formatVersion"] == 5
     assert model["stage"] == stage, model["stage"]
     assert model["optimizationLevel"] == 0, model["optimizationLevel"]
     text = str(model["text"])

@@ -917,3 +917,37 @@ it edits a policy constructor call, follows embedded declarations, checks both
 light and dark semantic roles, and checks/runs the resulting program with the
 same frozen executable. The delivery report records the final Native image and
 host run; managed development observations are not platform acceptance claims.
+
+## Contextual execution-plan inspection (format 5)
+
+Bytecode format 5 adds contextual execution plans to executable artifacts.
+`bind-ir` invokes the contextual backend after path binding; `plan` performs the
+same preparation for source and relocatable inputs, without executing transfer
+writes. Planning can discover selected filesystem kinds and freeze finite path
+selections. Reading or printing an existing `.mexe` does not refresh them.
+
+`disassemble` remains passive. Its text and JSON model show prepared transfer
+kinds, exact/merge/replacement destination modes, source/destination values,
+read/write resource footprints, predecessor
+edges, batches, eliminated-write counts and observed result indices. Plan and
+node references use `@pN`, `@pNnM` and `@pNbM`; the editor outline and definition
+links navigate the same native-rendered model. Both TextMate and custom-view
+highlighting distinguish these references, concrete transfer operations and
+resource metadata without routing generated IR through the source checker.
+
+Each operation exposes `reads` and `writes` arrays, including zero, one or many
+resource roots. This retains all sources of a replacement cohort and directory
+contents projected through existing aliases, without treating one path as the
+only authoritative footprint. The text view prints each resource explicitly.
+
+Scalar and cohort results use one optional vector of transfer indices: null is
+unobserved, a singleton is a scalar Bool, multiple indices aggregate the cohort,
+and an empty vector represents its successful empty result. Finite Range
+constants have an explicit snapshot marker; a lazy adapter's retained inputs
+are not an enumeration result and cannot become serialized selection members.
+
+The codec checks structural references on artifact intake. This is separate from
+the VM's execution contract: there is no environment snapshot comparison,
+freshness test, automatic replan or validity promise for repeated submissions.
+Missing files, changed kinds and transport failures are reported by the actual
+operations attempted. No credentials or live session resources are stored.

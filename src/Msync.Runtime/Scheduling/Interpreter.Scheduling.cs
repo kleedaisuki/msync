@@ -8,11 +8,21 @@ public sealed partial class Interpreter
     private long admittedTransfers;
     private long dependencyEdges;
     private long nativeHazardWaits;
-    public SchedulingStatistics SchedulingStatistics => new(admittedTransfers, resources.NodesVisited, dependencyEdges, nativeHazardWaits);
+    private long submittedPlans;
+    private long submittedBatches;
+    private long admittedOperations;
+    private long eliminatedTransfers;
+    public SchedulingStatistics SchedulingStatistics => new(admittedTransfers, resources.NodesVisited, dependencyEdges, nativeHazardWaits)
+    {
+        SubmittedPlans = submittedPlans,
+        SubmittedBatches = submittedBatches,
+        AdmittedOperations = admittedOperations,
+        EliminatedTransfers = eliminatedTransfers
+    };
     private readonly List<PendingWork> pending;
     private readonly HashSet<ProcessValue> sessionProcesses;
     private readonly Dictionary<Task, IReadOnlyList<ProcessValue>> processDependencies;
-    private readonly Dictionary<Task, ResourceKey> namespaceProducers;
+    private readonly Dictionary<Task, IReadOnlyList<ResourceKey>> namespaceProducers;
     private WorkOwner currentOwner = new();
     private Task standaloneOrdering = Task.CompletedTask;
     private Task ordering
@@ -85,8 +95,9 @@ public sealed partial class Interpreter
         List<Task>? namespaceDependencies = null;
         foreach (var dependency in dependencies)
         {
-            if (!namespaceProducers.TryGetValue(dependency, out var produced) || produced.Endpoint != "local") continue;
-            if (reads.Length != 0 && DescendsFrom(reads[0], produced) || DescendsFrom(writes[0], produced))
+            if (!namespaceProducers.TryGetValue(dependency, out var produced)) continue;
+            if (produced.Any(root => root.Endpoint == "local"
+                && (reads.Length != 0 && DescendsFrom(reads[0], root) || DescendsFrom(writes[0], root))))
                 (namespaceDependencies ??= []).Add(dependency);
         }
         if (namespaceDependencies is not null)
@@ -120,7 +131,7 @@ public sealed partial class Interpreter
         if (processes.Count != 0) processDependencies.Add(completion, processes);
         work.Registration = resources.Add(completion, reads.Length == 0 ? null : reads[0], writes[0]);
         if (source is PathValue || source is DeferredValue && (source.Type.Kind & TypeKind.Path) != 0)
-            namespaceProducers.Add(completion, writes[0]);
+            namespaceProducers.Add(completion, [writes[0]]);
         pending.Add(work);
         (currentOwner.Tasks ??= []).Add(work);
         return completion;
@@ -128,22 +139,39 @@ public sealed partial class Interpreter
     private static bool DescendsFrom(ResourceKey child, ResourceKey parent)
     {
         if (child.Endpoint != parent.Endpoint || child.Path.Length == 0) return false;
-        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-        var prefix = parent.Path.AsSpan().TrimEnd(Path.DirectorySeparatorChar);
+        bool windows = parent.Endpoint == "local" && OperatingSystem.IsWindows();
+        var comparison = windows ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var prefix = windows ? parent.Path.AsSpan().TrimEnd("/\\".AsSpan()) : parent.Path.AsSpan().TrimEnd('/');
         return child.Path.Length > prefix.Length && child.Path.AsSpan().StartsWith(prefix, comparison)
-            && child.Path[prefix.Length] == Path.DirectorySeparatorChar;
+            && (child.Path[prefix.Length] == '/' || windows && child.Path[prefix.Length] == '\\');
     }
-    private async ValueTask AwaitNativeDependenciesAsync(string name, IReadOnlyList<Value> arguments)
+    private async ValueTask AwaitNativeDependenciesAsync(string name, IReadOnlyList<Value> arguments,
+        CancellationToken cancellationToken = default)
     {
+        if (NativeEvaluation.DefersFileRead(name)) return;
         if (!NativeSignatures.TryGet(name, out var signature)) { await JoinTransfersAsync(); return; }
         if ((signature.Behavior.GetValueOrDefault() & NativeBehavior.LocalMemory) != 0) return;
         var effects = InstructionEffects.NativeEffects(name);
         if ((effects & (InstructionEffect.Read | InstructionEffect.Write)) == 0) return;
         await ordering;
-        var paths = arguments.Where((value, index) => index < signature.Parameters.Count
+        var operands = arguments.Where((value, index) => index < signature.Parameters.Count
             && (signature.Parameters[index].Kind & TypeKind.Path) != 0 && value is PathValue or StringValue)
-            .Select(value => Key(context.AsPath(value))).ToArray();
-        var dependencies = signature.Effect == NativeEffect.Write ? resources.Dependencies([], paths) : resources.Dependencies(paths, []);
+            .Select(context.AsPath).ToArray();
+        await AwaitNamespacePublicationsAsync(operands);
+        var filesystem = new PlanFileSystem(context, planResources, cancellationToken);
+        var entries = operands.Select(path => Key(filesystem.Resource(path, true))).ToArray();
+        var publications = signature.Effect == NativeEffect.Write
+            ? resources.Dependencies([], entries) : resources.Dependencies(entries, []);
+        if (publications.Count != 0)
+        {
+            nativeHazardWaits++;
+            await Task.WhenAll(publications);
+        }
+        bool follow = name is not ("fs.symlink_status" or "fs.is_symlink" or "fs.read_symlink"
+            or "fs.remove" or "fs.remove_all" or "fs.rename");
+        var paths = operands.SelectMany(path => filesystem.ObservationResources(path, follow)).Select(Key).ToArray();
+        var dependencies = signature.Effect == NativeEffect.Write
+            ? resources.Dependencies([], paths) : resources.Dependencies(paths, []);
         if (dependencies.Count != 0)
         {
             nativeHazardWaits++;
@@ -157,8 +185,9 @@ public sealed partial class Interpreter
             (currentOwner.AfterRegions ??= new())[region ?? ""] = currentOwner.Tasks?.Count ?? 0;
             return;
         }
+        if (region is null && direction == (int)BarrierDirection.Release) return;
         // A fence orders finite work, not unrelated live program lifetime.
-        if (direction == 1) { await ordering; await JoinTransfersAsync(includeProcessFlows: false); return; }
+        if (direction == (int)BarrierDirection.Acquire) { await ordering; await JoinTransfersAsync(includeProcessFlows: false); return; }
         var first = currentOwner.AfterRegions is { } regions && regions.Remove(region ?? "", out var boundary)
             ? boundary : currentOwner.Tasks?.Count ?? 0;
         var associated = currentOwner.Tasks?.Skip(first).Select(work => (Task)work.Completion) ?? [];
@@ -204,9 +233,12 @@ public sealed partial class Interpreter
     }
     private void Retire(PendingWork work)
     {
-        if (work.Registration is not { } registration || !work.Completion.IsCompletedSuccessfully) return;
-        resources.Remove(work.Completion, registration);
+        if (!work.Completion.IsCompletedSuccessfully) return;
+        if (work.Registration is { } registration) resources.Remove(work.Completion, registration);
+        if (work.Registrations is { } registrations)
+            foreach (var item in registrations) resources.Remove(work.Completion, item);
         work.Registration = null;
+        work.Registrations = null;
         processDependencies.Remove(work.Completion);
         namespaceProducers.Remove(work.Completion);
     }

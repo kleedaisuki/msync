@@ -5,7 +5,7 @@ namespace Msync.Cli;
 
 internal sealed record ArtifactDisassemblyResult(string Text, int FormatVersion, string Stage,
     int? OptimizationLevel, JsonArray Symbols, JsonArray References, JsonArray Hovers,
-    string ArtifactKind = "bytecode")
+    string ArtifactKind = "bytecode", JsonArray? ExecutionPlans = null)
 {
     internal JsonObject ToJson()
     {
@@ -21,6 +21,7 @@ internal sealed record ArtifactDisassemblyResult(string Text, int FormatVersion,
             ["references"] = References,
             ["hovers"] = Hovers
         };
+        if (ExecutionPlans is not null) result["executionPlans"] = ExecutionPlans;
         if (ArtifactKind != "bytecode") result["artifactKind"] = ArtifactKind;
         return result;
     }

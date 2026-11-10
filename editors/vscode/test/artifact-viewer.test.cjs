@@ -410,6 +410,13 @@ test('IR grammar colors real labels and future instruction mnemonics without sou
         ['const @c0: Path = path(raw="./可莉")', '@c0', 'constant.other.reference.msync-ir'],
         ['fn @f0 "main"(%0: Path) -> Bool', '@f0', 'entity.name.function.msync-ir'],
         ['block @b0_0000 [0..4) pure successors []:', '@b0_0000', 'entity.name.label.msync-ir'],
+        ['execution_plan @p0 owner @f0 region [0..42) eliminated 1 {', 'execution_plan', 'keyword.declaration.msync-ir'],
+        ['execution_plan @p0 owner @f0 region [0..42) eliminated 1 {', '@p0', 'entity.name.label.msync-ir'],
+        ['  transfer @p0n1 CopyFile predecessors [@p0n0]', '@p0n1', 'entity.name.label.msync-ir'],
+        ['  transfer @p0n1 CopyFile predecessors [@p0n0]', 'CopyFile', 'keyword.operator.msync-ir'],
+        ['  batch @p0b0 endpoint "ssh://forge" transfers [@p0n0]', '@p0b0', 'entity.name.label.msync-ir'],
+        ['  0042: ExecutePlan @p0, consume 0 operands', 'ExecutePlan', 'keyword.operator.msync-ir'],
+        ['  0043: PlanResult @p0, consume 0 operands', '@p0', 'entity.name.label.msync-ir'],
         ['  0042: JumpIfFalse @b0_0000', 'JumpIfFalse', 'keyword.control.msync-ir'],
         ['  0042: Barrier before-and-after (acqrel)', 'acqrel', 'keyword.control.msync-ir'],
         ['  0042: Acquire session-owned pending work', 'Acquire', 'keyword.control.msync-ir'],
@@ -424,6 +431,8 @@ test('IR grammar colors real labels and future instruction mnemonics without sou
         ['  0042: MakeScope fields ["filename", ".codex"], allocation-site 7', 'allocation-site', 'variable.other.property.layout.msync-ir'],
         ['const @c0: Path = path(raw="./可莉")', 'path', 'support.type.path.msync-ir'],
         ['const @c0: Path = path(raw="./可莉")', 'Path', 'entity.name.type.msync-ir'],
+        ['const @c0: Range<Path> = range(item-type=Path, items=[])', 'range', 'support.function.constructor.msync-ir'],
+        ['const @c0: Range<Path> = range(item-type=Path, items=[])', 'item-type', 'variable.other.property.layout.msync-ir'],
         ['const @c0: Path = path(raw="./可莉")', './可莉', 'string.quoted.double.msync-ir'],
         ['const @c0: Number = number(-0, bits=0x8000000000000000)', '-0', 'constant.numeric.msync-ir'],
         ['const @c0: Number = number(-0, bits=0x8000000000000000)', '0x8000000000000000', 'constant.numeric.msync-ir'],
@@ -449,6 +458,27 @@ test('IR grammar colors real labels and future instruction mnemonics without sou
         assert.ok(actual.scopes.includes(expected), JSON.stringify({ line, token, actual }));
     }
     registry.dispose();
+});
+
+test('contextual plan nodes and dependencies use IR highlighting in the webview', () => {
+    const text = [
+        'execution_plan @p0 owner @f0 region [0..42) eliminated 1 {',
+        '  transfer @p0n0 CopyFile predecessors []',
+        '    source = path(raw="./可莉")',
+        '    destination = path(raw="./target")',
+        '    write endpoint "local" path "/target" exact',
+        'const @c0: Range<Path> = range(item-type=Path, items=[])',
+        '  batch @p0b0 endpoint "local" transfers [@p0n0]',
+        '}',
+        '    0001: ExecutePlan @p0, consume 0 operands',
+    ].join('\n');
+    const html = renderPage(URI.file('/job.mexe'), { ...fixture(text), stage: 'executable', symbols: [], references: [], hovers: [] });
+    for (const [role, value] of [
+        ['keyword', 'execution_plan'], ['keyword', 'transfer'], ['keyword', 'batch'],
+        ['block', '@p0'], ['block', '@p0n0'], ['block', '@p0b0'],
+        ['opcode', 'CopyFile'], ['opcode', 'ExecutePlan'], ['layout', 'destination'],
+        ['constructor', 'range'], ['layout', 'item-type'],
+    ]) assert.ok(html.includes(`<span class="${role}">${value}</span>`), `${role}: ${value}`);
 });
 
 test('both binary webviews color separate IR roles through current-theme variables', () => {

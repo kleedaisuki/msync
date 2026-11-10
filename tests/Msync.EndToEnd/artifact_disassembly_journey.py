@@ -60,7 +60,7 @@ def text_range(lines: list[str], span: dict[str, Any]) -> str:
 
 def validate_model(document: dict[str, Any], stage: str) -> dict[str, int]:
     assert document["schemaVersion"] == 1
-    assert document["formatVersion"] == 4
+    assert document["formatVersion"] == 5
     assert document["languageVersion"] == "0.8.0"
     assert document["stage"] == stage
     assert document["optimizationLevel"] == 0

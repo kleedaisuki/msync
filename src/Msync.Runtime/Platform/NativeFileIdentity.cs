@@ -6,6 +6,38 @@ namespace Msync.Runtime;
 
 internal static class NativeFileIdentity
 {
+    internal readonly record struct FileSystemIdentity(ulong Device, string? WindowsVolume = null);
+
+    internal static bool TryFileSystem(string path, out FileSystemIdentity identity)
+    {
+        identity = default;
+        try
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                byte[]? status = StatBytes(path, false);
+                if (status is null) return false;
+                identity = new(OperatingSystem.IsMacOS() ? BitConverter.ToUInt32(status, 0) : BitConverter.ToUInt64(status, 0));
+                return true;
+            }
+            using SafeFileHandle handle = OpenWindows(path);
+            char[] buffer = new char[512];
+            uint length = FinalPath(handle, buffer, (uint)buffer.Length, 1);
+            if (length >= buffer.Length)
+            {
+                buffer = new char[checked((int)length + 1)];
+                length = FinalPath(handle, buffer, (uint)buffer.Length, 1);
+            }
+            if (length == 0 || length >= buffer.Length) return false;
+            string name = new(buffer, 0, (int)length);
+            int end = name.IndexOf('}');
+            if (!name.StartsWith("\\\\?\\Volume{", StringComparison.OrdinalIgnoreCase) || end < 0) return false;
+            identity = new(0, name[..(end + 1)].ToUpperInvariant());
+            return true;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { return false; }
+    }
     internal static void MoveLink(string source, string target)
     {
         // File.Move checks File.Exists, which follows directory links instead of moving their entries.
@@ -134,6 +166,8 @@ internal static class NativeFileIdentity
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetFileInformationByHandle(SafeFileHandle file, out FileInformation information);
+    [DllImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern uint FinalPath(SafeFileHandle handle, [Out] char[] buffer, uint length, uint flags);
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct RenameInformation

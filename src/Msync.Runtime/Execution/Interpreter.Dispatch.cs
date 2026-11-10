@@ -9,26 +9,108 @@ public sealed partial class Interpreter
 
     private async ValueTask<Value> RunOwnedCodeAsync(int functionIndex, Value[] locals, int startInstruction, CancellationToken cancellationToken)
     {
-        var function = module.Functions[functionIndex];
+        Module original = module;
+        Module image = original;
+        var function = image.Functions[functionIndex];
+        var indexed = blocks[functionIndex];
+        var originalBlocks = indexed;
+        IReadOnlyList<int>? positions = null;
         OperandStack stack = new();
+        Dictionary<int, PlanSubmission>? submissions = null;
         var pc = startInstruction;
+        int preparedAt = -1;
+        int? continuation = null;
+        IReadOnlyList<PlanResource> awaiting = [];
+        bool prepareEntry = true;
         while (pc < function.Instructions.Count)
         {
-            var block = blocks[functionIndex][pc];
-            var outcome = await RunBlockAsync(function, locals, stack, pc, block, cancellationToken);
+            var next = function.Instructions[pc];
+            bool contextualize = pc == continuation || preparedAt != pc
+                && (prepareEntry
+                    || next.Op is OpCode.Transfer or OpCode.LocalTransfer or OpCode.SelectPath
+                        or OpCode.GetIterator or OpCode.NativeCall or OpCode.Call);
+            if (contextualize && ContextualBackend.NeedsPreparation(function))
+            {
+                if (pc == continuation && awaiting.Count != 0)
+                    await AwaitPlanResourcesAsync(awaiting);
+                var prepared = await PrepareContinuationAsync(image, functionIndex, pc, locals, stack, cancellationToken);
+                preparedAt = pc;
+                if (prepared is null)
+                {
+                    var deferredBlock = indexed[pc];
+                    var deferred = await RunBlockAsync(image, function, locals, stack, submissions, pc, deferredBlock, cancellationToken);
+                    if (deferred.Returned) return deferred.Value!;
+                    pc = deferred.Next;
+                    continue;
+                }
+                if (prepared.SourcePositions is { } rewritten)
+                {
+                    int oldPc = pc;
+                    pc = FindRewrittenPosition(rewritten, oldPc);
+                    positions = positions is null ? rewritten
+                        : rewritten.Select(source => positions[source]).ToArray();
+                }
+                preparedAt = pc;
+                continuation = prepared.ContinueAt;
+                awaiting = prepared.AwaitResources;
+                if (!ReferenceEquals(prepared.Module, image))
+                {
+                    image = prepared.Module;
+                    function = image.Functions[functionIndex];
+                    indexed = IndexBlocks(function, functionIndex);
+                    if (pc >= function.Instructions.Count) break;
+                }
+            }
+            prepareEntry = false;
+            var block = indexed[pc];
+            var last = function.Instructions[block.End - 1];
+            var outcome = await RunBlockAsync(image, function, locals, stack, submissions, pc, block, cancellationToken);
             if (outcome.Returned) return outcome.Value!;
-            pc = outcome.Next;
+            if (outcome.Submission is { } submitted)
+                (submissions ??= [])[outcome.SubmittedPlan] = submitted;
+            bool boundary = last.Op is OpCode.Call or OpCode.ProcessCall or OpCode.NativeCall;
+            if (outcome.Next <= pc || boundary)
+            {
+                pc = positions is null ? outcome.Next : positions[outcome.Next];
+                image = original;
+                function = image.Functions[functionIndex];
+                indexed = originalBlocks;
+                positions = null;
+                preparedAt = -1;
+                continuation = null;
+                awaiting = [];
+                prepareEntry = true;
+            }
+            else pc = outcome.Next;
         }
         return stack.Count == 0 ? Value.Null : stack[^1];
     }
-    private readonly record struct BlockOutcome(int Next, Value? Value = null, bool Returned = false);
+    private static int FindRewrittenPosition(IReadOnlyList<int> positions, int source)
+    {
+        int index = 0;
+        while (index + 1 < positions.Count && positions[index] < source) index++;
+        return index;
+    }
+
+    private async ValueTask<ContextualPreparation?> PrepareContinuationAsync(Module image, int function, int pc,
+        Value[] locals, OperandStack stack, CancellationToken cancellationToken)
+    {
+        if (!await AwaitContextualInputsAsync(image.Functions[function].Instructions[pc], stack, cancellationToken)) return null;
+        var values = Enumerable.Range(0, stack.Count).Select(index => stack[index]).ToArray();
+        return ContextualBackend.PrepareNext(image, function, pc, locals, values,
+            executionOptions, planResources, cancellationToken);
+    }
+    private readonly record struct BlockOutcome(int Next, Value? Value = null, bool Returned = false,
+        int SubmittedPlan = -1, PlanSubmission? Submission = null);
     private static Instruction SpecializeBlockInstruction(Instruction instruction, OperandStack stack)
     {
         if (instruction.Op != OpCode.Transfer || stack.Count < 2) return instruction;
         static bool Local(Value value) => value is StringValue or PathValue { Connection: null or { Kind: ConnectionKind.Local } };
         return Local(stack[^1]) && Local(stack[^2]) ? instruction with { Op = OpCode.LocalTransfer } : instruction;
     }
-    private async ValueTask<BlockOutcome> RunBlockAsync(FunctionCode function, Value[] locals, OperandStack stack, int startInstruction, BasicBlock block, CancellationToken cancellationToken)
+    private async ValueTask<BlockOutcome> RunBlockAsync(Module image, FunctionCode function, Value[] locals,
+        OperandStack stack, Dictionary<int, PlanSubmission>? submissions, int startInstruction,
+        BasicBlock block, CancellationToken cancellationToken)
     {
         var code = function.Instructions;
         var pc = startInstruction;
@@ -41,7 +123,7 @@ public sealed partial class Interpreter
                 switch (instruction.Op)
                 {
                     case OpCode.Nop: break;
-                    case OpCode.Constant: stack.Add(CaptureConstant(module.Constants[instruction.A])); break;
+                    case OpCode.Constant: stack.Add(CaptureConstant(image.Constants[instruction.A])); break;
                     case OpCode.Null: stack.Add(Value.Null); break;
                     case OpCode.True: stack.Add(Value.True); break;
                     case OpCode.False: stack.Add(Value.False); break;
@@ -118,7 +200,7 @@ public sealed partial class Interpreter
                     case OpCode.MakeLazyRange:
                         {
                             var values = stack.PopMany(instruction.A);
-                            var type = instruction.B > 0 && module.Constants[instruction.B - 1] is TypeValue typed ? typed.Data : TypeRef.Any;
+                            var type = instruction.B > 0 && image.Constants[instruction.B - 1] is TypeValue typed ? typed.Data : TypeRef.Any;
                             stack.Add(new RangeValue(LazyItemsAsync(values, instruction.Text, cancellationToken), type)
                             { RetainedValues = values }); break;
                         }
@@ -159,6 +241,15 @@ public sealed partial class Interpreter
                             else stack.Add(await completion ? Value.True : Value.False);
                             break;
                         }
+                    case OpCode.ExecutePlan:
+                        for (int item = 0; item < instruction.B; item++) stack.Discard();
+                        return new(pc + 1, SubmittedPlan: instruction.A,
+                            Submission: SubmitPlan(image.ExecutionPlans![instruction.A], cancellationToken));
+                    case OpCode.PlanResult:
+                        for (int item = 0; item < instruction.B; item++) stack.Discard();
+                        stack.Add(await ReadPlanResultAsync(image.ExecutionPlans![instruction.A], submissions![instruction.A])
+                            ? Value.True : Value.False);
+                        break;
                     case OpCode.Not: stack.Add(MapValue(stack.Pop(), TypeRef.Bool, value => AsBool(value) ? Value.False : Value.True)); break;
                     case OpCode.IsNull: stack.Add(stack.Pop() is NullValue ? Value.True : Value.False); break;
                     case OpCode.IsType:

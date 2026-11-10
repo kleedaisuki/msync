@@ -2,10 +2,10 @@ using System.Text;
 
 namespace Msync.Core;
 
-public static class Artifact
+public static partial class Artifact
 {
     private static readonly byte[] Magic = "MSYNCBC\0"u8.ToArray();
-    public const ushort FormatVersion = 4;
+    public const ushort FormatVersion = 5;
     public const string LanguageVersion = "0.8.0";
     public static Module Read(string path)
     {
@@ -46,7 +46,9 @@ public static class Artifact
             });
             return new FunctionCode(name, parameters, locals, instructions, result, captures, parameterTypes);
         });
-        var module = new Module(constants, functions, entry, stage, context, optimization, Semantics: semantics);
+        var plans = ReadArray(reader, ReadExecutionPlan);
+        var module = new Module(constants, functions, entry, stage, context, optimization, Semantics: semantics)
+        { ExecutionPlans = plans.Length == 0 ? null : plans };
         Validate(module);
         return BlockBuilder.Form(module);
     }
@@ -83,6 +85,7 @@ public static class Artifact
                 if (instruction.Span is { } span) { iw.Write(span.Source); iw.Write(span.Start); iw.Write(span.Length); }
             });
         });
+        WriteArray(writer, module.ExecutionPlans ?? [], WriteExecutionPlan);
     }
     public static void Validate(Module module)
     {
@@ -90,9 +93,11 @@ public static class Artifact
         if (module.EntryPoint < 0 || module.EntryPoint >= module.Functions.Count) throw new MsyncException("Bytecode entrypoint does not identify a function");
         if ((module.Stage == ArtifactStage.Executable) != (module.Context is not null)) throw new MsyncException("Bytecode stage and binding context disagree");
         ValidateSessionDispatches(module);
+        ValidateExecutionPlans(module);
         foreach (var constant in module.Constants) ValidateConstant(constant, module);
-        foreach (var function in module.Functions)
+        for (int functionIndex = 0; functionIndex < module.Functions.Count; functionIndex++)
         {
+            var function = module.Functions[functionIndex];
             if (function.ParameterCount < 0 || function.CaptureCount < 0 || function.LocalCount < function.ParameterCount + function.CaptureCount)
                 throw new MsyncException($"Invalid local layout for function '{function.Name}'");
             if (function.ParameterTypes is { } parameterTypes && parameterTypes.Count != function.ParameterCount)
@@ -103,6 +108,12 @@ public static class Artifact
                     throw new MsyncException($"Invalid local index {instruction.A} in '{function.Name}'", instruction.Span);
                 if (instruction.Op == OpCode.Constant && (instruction.A < 0 || instruction.A >= module.Constants.Count))
                     throw new MsyncException($"Invalid constant index {instruction.A}", instruction.Span);
+                if (instruction.Op is OpCode.ExecutePlan or OpCode.PlanResult && (module.ExecutionPlans is not { } executionPlans
+                    || (uint)instruction.A >= (uint)executionPlans.Count || executionPlans[instruction.A].Function != functionIndex
+                    || instruction.B < 0))
+                    throw new MsyncException($"Invalid execution plan reference {instruction.A} in '{function.Name}'", instruction.Span);
+                if (instruction.Op == OpCode.PlanResult && module.ExecutionPlans![instruction.A].ResultTransfers is null)
+                    throw new MsyncException("An execution plan result requires an observed transfer", instruction.Span);
                 if ((instruction.Op == OpCode.MakeClosure || instruction.Op == OpCode.SpecializeClosure && instruction.A >= 0)
                     && (instruction.A < 0 || instruction.A >= module.Functions.Count))
                     throw new MsyncException($"Invalid function index {instruction.A}", instruction.Span);
@@ -164,6 +175,11 @@ public static class Artifact
             case ConnectionValue connection when !Enum.IsDefined(connection.Kind):
                 throw new MsyncException($"Bytecode connection kind {(byte)connection.Kind} is not defined");
             case PathValue { Connection: not null } path: ValidateConstant(path.Connection, module); break;
+            case RangeValue range:
+                if (range.Resolve is not null || range.Selection is not null || range.SnapshotValues is null)
+                    throw new MsyncException("Only explicit finite Range snapshots can be embedded in bytecode; lazy inputs must remain executable operations");
+                foreach (Value item in range.SnapshotValues) ValidateConstant(item, module);
+                break;
         }
     }
     private static T[] ReadArray<T>(BinaryReader reader, Func<BinaryReader, T> read)
@@ -193,8 +209,14 @@ public static class Artifact
         6 => new TypeValue(ReadType(reader)),
         7 => new FunctionValue(reader.ReadInt32(), ReadArray(reader, ReadValue), ReadOptional(reader)),
         8 => new ScopeValue(ReadArray(reader, r => KeyValuePair.Create(r.ReadString(), ReadValue(r))).ToDictionary()),
+        9 => ReadRangeSnapshot(reader),
         var tag => throw new MsyncException($"Unknown bytecode constant kind {tag}")
     };
+    private static RangeValue ReadRangeSnapshot(BinaryReader reader)
+    {
+        TypeRef itemType = ReadType(reader);
+        return new(ReadArray(reader, ReadValue), itemType);
+    }
     private static ConnectionValue ReadConnection(BinaryReader reader) => new((ConnectionKind)reader.ReadByte(), reader.ReadString());
     private static void WriteValue(BinaryWriter writer, Value value)
     {
@@ -211,6 +233,8 @@ public static class Artifact
             case TypeValue t: writer.Write((byte)6); WriteType(writer, t.Data); break;
             case FunctionValue f: writer.Write((byte)7); writer.Write(f.Function); WriteArray(writer, f.Captures ?? [], WriteValue); WriteOptional(writer, f.NativeName); break;
             case ScopeValue s: writer.Write((byte)8); WriteArray(writer, s.Members.ToArray(), (w, pair) => { w.Write(pair.Key); WriteValue(w, pair.Value); }); break;
+            case RangeValue { SnapshotValues: { } snapshot, Resolve: null, Selection: null } range:
+                writer.Write((byte)9); WriteType(writer, range.ItemType); WriteArray(writer, snapshot, WriteValue); break;
             default: throw new MsyncException($"Runtime-owned {value.Type} values cannot be embedded in a bytecode constant table");
         }
     }

@@ -47,6 +47,8 @@ public sealed partial class Interpreter
     private Value CaptureConstant(Value value) => value switch
     {
         ScopeValue scope => scope.MapFields(CaptureConstant),
+        RangeValue { SnapshotValues: { } values } range =>
+            new RangeValue(values.Select(CaptureConstant).ToArray(), range.ItemType),
         FunctionValue { Captures: not null } function => function with { Captures = function.Captures.Select(CaptureConstant).ToArray() },
         _ => Capture(value)
     };

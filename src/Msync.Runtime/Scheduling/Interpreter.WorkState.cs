@@ -17,5 +17,6 @@ public sealed partial class Interpreter
     private sealed record PendingWork(Task<bool> Completion, IReadOnlyList<ProcessValue> Processes, bool RequireSuccess)
     {
         public ResourceIndex.Registration? Registration;
+        public IReadOnlyList<ResourceIndex.Registration>? Registrations;
     }
 }
