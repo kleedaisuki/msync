@@ -92,9 +92,11 @@ internal sealed class KnownLoop(Module module, IReadOnlyList<Instruction> code, 
                     if (instruction.Text == "_core.iterator_close") return Push(Value.Null);
                     if (arguments.Any(value => value is null) || !NativeSignatures.TryGet(instruction.Text!, out var signature)
                         || signature.Effect != NativeEffect.Pure
-                        || (signature.Behavior.GetValueOrDefault() & (NativeBehavior.Invokes | NativeBehavior.Enumerates | NativeBehavior.LocalMemory)) != 0)
+                        || (signature.Behavior.GetValueOrDefault() & (NativeBehavior.Invokes | NativeBehavior.LocalMemory)) != 0)
                         return false;
-                    try { return Push(filesystem.Invoke(instruction.Text!, arguments.Select(value => value!).ToArray())); }
+                    Value[] known = arguments.Select(value => value!).ToArray();
+                    if (!NativeEvaluation.CanEnumerate(signature, known)) return false;
+                    try { return Push(filesystem.Invoke(instruction.Text!, known)); }
                     catch (Exception error) when (error is MsyncException or ArgumentException or InvalidOperationException
                         or FormatException or OverflowException)
                     { return false; }

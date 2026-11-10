@@ -321,3 +321,50 @@ receipt are under `.temp/backend-prepare-perf/`; the unchanged before control an
 single after control are `.temp/backend-acceptance/common4-preparation-cost.json`
 and `common5-preparation-1024.json`. No second allocation trace or repeated
 three-size timing batch is required by these findings.
+
+### Windows directory-link timestamp application
+
+The first Native candidate (`f668ca0`) passed the Linux directory journeys but
+failed Windows `metadata-order/source`: the merged directory referent retained
+its recent write time instead of the second source directory's recorded time.
+This is a native operation target issue, not missing graph ordering. In
+[.NET 10's Windows path timestamp setter](https://github.com/dotnet/runtime/blob/v10.0.0/src/libraries/System.Private.CoreLib/src/System/IO/FileSystem.Windows.cs#L212-L232),
+`OpenHandleToWriteAttributes` always uses `FILE_FLAG_OPEN_REPARSE_POINT`.
+Consequently `Directory.SetLastWriteTimeUtc` updates the final directory link
+itself, whereas the merge and its effect footprint concern the referent.
+
+Directory metadata now uses the existing native attributes handle with
+`FILE_FLAG_BACKUP_SEMANTICS` and without `FILE_FLAG_OPEN_REPARSE_POINT`; explicit
+link metadata retains the reparse-point flag. Both paths share the timestamp
+write implementation, with one handle open and one write and no extra discovery,
+snapshot check or graph serialization. Windows execution acceptance belongs to
+the next Native candidate; the Linux result alone does not prove this repair.
+
+### Native consumers and captured Range producers
+
+A native consumer's `Pure` classification does not describe the computation
+hidden behind a runtime Range. Enumerating `Items` or invoking `Resolve` can
+enter its captured interpreter directly, independently of the callback argument
+supplied to the native registry. The rejected `f668ca0` Native candidate exposed
+this distinction: a delayed producer incremented its captured `calls` cell at
+first demand, but backend consumption retained the old scalar fact. The reduced
+program produced before/first/second/after values `0/1/1/0`, rather than
+`0/1/1/1`, on the actual Linux Native image; the full journey failed on both OSes.
+
+`NativeEvaluation.CanEnumerate` is the shared capability boundary for the main
+partial evaluator, known source calls and finite-loop evaluation. A native with
+`Enumerates` behavior may consume a Range during preparation only when explicit
+`SnapshotValues` membership exists and both `Resolve` and `Selection` are absent.
+Other `Invokes` and `LocalMemory` restrictions remain independent. Literal and
+recorded snapshots still support partial computation; a live producer stays in
+the ordinary native continuation, whose execution boundary supplies fresh
+mutable-location facts afterwards. No standard-library check, global
+partial-evaluation disable switch or VM plan-validity mechanism is involved.
+The existing `hir_semantic_journey.py` delayed-demand case remains the end-to-end
+regression contract, including source and source-free object/executable routes.
+
+Managed common8 passes that complete O2 journey through source, relocatable
+and executable routes: 28 exact outputs per route, including `0/1/1/1`, and six
+negative diagnostics. The scoped result is retained at
+`.temp/backend-acceptance/common8-hir-o2.json`; both-platform Native acceptance
+of the corrected producer remains a separate delivery responsibility.

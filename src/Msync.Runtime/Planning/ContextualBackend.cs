@@ -312,6 +312,8 @@ public static partial class ContextualBackend
             if (!pure && !metadata) return Stop();
             KnownValue[] inputs = PeekMany(instruction.A);
             if (inputs.Any(value => !value.Known)) return Stop();
+            Value[] arguments = inputs.Select(value => value.Value!).ToArray();
+            if (!NativeEvaluation.CanEnumerate(signature, arguments)) return Stop();
             if (metadata)
             {
                 bool follows = instruction.Text is not ("fs.symlink_status" or "fs.is_symlink" or "fs.read_symlink");
@@ -324,7 +326,7 @@ public static partial class ContextualBackend
                 .FirstOrDefault(path => path.Connection?.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl) is { } selected
                     ? filesystem.SelectSession(selected) : null;
             Value result;
-            try { result = filesystem.Invoke(instruction.Text!, inputs.Select(value => value.Value!).ToArray()); }
+            try { result = filesystem.Invoke(instruction.Text!, arguments); }
             catch (Exception error) when (error is MsyncException or IOException or UnauthorizedAccessException
                 or ArgumentException or InvalidOperationException or FormatException or OverflowException)
             { return Stop(); }

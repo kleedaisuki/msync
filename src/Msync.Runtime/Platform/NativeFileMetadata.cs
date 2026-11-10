@@ -30,6 +30,11 @@ internal readonly record struct NativeTimestamp(long Seconds, long Nanoseconds)
             if (OperatingSystem.IsWindows()) NativeFileMetadata.SetWindowsLinkTimestamp(target, this);
             return;
         }
+        if (directory && OperatingSystem.IsWindows())
+        {
+            NativeFileMetadata.SetWindowsDirectoryTimestamp(target, this);
+            return;
+        }
         if (directory) Directory.SetLastWriteTimeUtc(target, UtcDateTime);
         else File.SetLastWriteTimeUtc(target, UtcDateTime);
     }
@@ -88,12 +93,21 @@ internal static partial class NativeFileMetadata
         if (UtimensAt(-100, path, in times, link ? 0x100 : 0) != 0)
             throw new IOException($"Cannot set modification time on '{path}': {new Win32Exception(Marshal.GetLastPInvokeError()).Message}");
     }
-    internal static void SetWindowsLinkTimestamp(string path, NativeTimestamp timestamp)
+    internal static void SetWindowsLinkTimestamp(string path, NativeTimestamp timestamp) =>
+        SetWindowsTimestamp(path, timestamp, link: true);
+
+    internal static void SetWindowsDirectoryTimestamp(string path, NativeTimestamp timestamp) =>
+        SetWindowsTimestamp(path, timestamp, link: false);
+
+    private static void SetWindowsTimestamp(string path, NativeTimestamp timestamp, bool link)
     {
-        using SafeFileHandle handle = OpenWindowsLink(WindowsPath(path), 0x100, 7, 0, 3, 0x02200000, 0);
+        // Directory merges modify the referent; .NET's path timestamp setter
+        // opens the final reparse point itself on Windows.
+        uint flags = 0x02000000u | (link ? 0x00200000u : 0);
+        using SafeFileHandle handle = OpenWindowsAttributes(WindowsPath(path), 0x100, 7, 0, 3, flags, 0);
         long modified = timestamp.UtcDateTime.ToFileTimeUtc();
         if (handle.IsInvalid || !SetFileTime(handle, 0, 0, in modified))
-            throw new IOException($"Cannot set link modification time on '{path}': {new Win32Exception(Marshal.GetLastPInvokeError()).Message}");
+            throw new IOException($"Cannot set {(link ? "link" : "directory")} modification time on '{path}': {new Win32Exception(Marshal.GetLastPInvokeError()).Message}");
     }
     internal static string WindowsPath(string path)
     {
@@ -122,7 +136,7 @@ internal static partial class NativeFileMetadata
     [LibraryImport("libc", EntryPoint = "utimensat", StringMarshalling = StringMarshalling.Utf8, SetLastError = true)]
     private static partial int UtimensAt(int directory, string path, in FileTimes times, int flags);
     [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
-    private static partial SafeFileHandle OpenWindowsLink(string path, uint access, uint share, nint security, uint creation, uint flags, nint template);
+    private static partial SafeFileHandle OpenWindowsAttributes(string path, uint access, uint share, nint security, uint creation, uint flags, nint template);
     [LibraryImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool SetFileTime(SafeFileHandle handle, nint creation, nint accessed, in long modified);

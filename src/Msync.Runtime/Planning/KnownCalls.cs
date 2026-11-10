@@ -62,9 +62,7 @@ internal sealed class KnownCalls(Module module, RuntimeContext context, PlanFile
             || !NativeSignatures.TryGet(name, out var signature) || signature.Effect != NativeEffect.Pure
             || (signature.Behavior.GetValueOrDefault() & (NativeBehavior.Invokes | NativeBehavior.LocalMemory)) != 0)
             return null;
-        if ((signature.Behavior.GetValueOrDefault() & NativeBehavior.Enumerates) != 0
-            && arguments.OfType<RangeValue>().Any(value => value is not
-            { Resolve: null, Selection: null, SnapshotValues: not null })) return null;
+        if (!NativeEvaluation.CanEnumerate(signature, arguments)) return null;
         try { return files.Invoke(name, arguments); }
         catch (Exception error) when (error is MsyncException or ArgumentException or InvalidOperationException
             or FormatException or OverflowException)
