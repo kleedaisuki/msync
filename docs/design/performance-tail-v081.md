@@ -240,3 +240,23 @@ global job drain nor freshness checking of a recorded prepared plan. Exact
 baseline Runtime/Core/Optimization binaries, probe source, commands, raw result
 and the fresh-empty-fixture precondition are preserved in
 `artifacts/candidates/tail-latency/admission/reviewer-held-process-baseline/`.
+
+The corrected selected-observation admission passes that same compiled oracle:
+the result is `present` and the prefix counter stays one before and after
+producer release. Independent controls also preserve whole-cohort preparation
+while admitting an earlier unrelated copy, and avoid waiting for an unselected
+pending path. The exact-entry-before-referent correction (`c73a78a`, Runtime
+`cb9080b6…`) additionally passes the same compiled old-versus-new oracle:
+entry replacement and reading `new` complete while the old-referent producer
+remains held; the old image cannot complete that read before its release.
+Receipts and review are under
+`admission/reviewer-final-4abb200b/` and
+`admission/reviewer-entry-cb9080b6/` within the same artifact directory.
+
+One separately recorded dangling-destination variant does not test stale
+observation admission: its producer fails before publication in the existing
+`WriteLiteral`/`WriteFileAsync:171` Unix mode-inheritance path.
+`File.Exists` succeeds for the dangling entry, then `GetUnixFileMode` follows
+its missing target and fails. Exact stack and resource keys remain in the
+entry review records; this tail investigation does not turn that publication
+failure into an admission result or expand into a general filesystem audit.
