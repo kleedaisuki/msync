@@ -153,6 +153,11 @@ The whole-block resampling intervals for paired-median differences are
 +0.243–+0.562 ms (`--version`), +0.209–+0.643 ms (source) and +0.423–+0.772 ms
 (`.mexe`). Thus a small common-path cost remains consistent across blocks; the
 new window does not justify dismissing every observed difference as noise.
+An untimed `strace` pair subsequently reports an identical 281-syscall count
+vector for both `--version` images, including 56 reads, 28 `openat` calls and
+22 mappings. No additional I/O syscall work is observed; the common-path cost
+is still not attributed. Commands, image hashes and summaries are retained in
+`artifacts/candidates/tail-latency/baseline-5d36d5b/loader-check/report.json`.
 
 The reference median and P99 move down while P95 moves up. Only 105/200 pairs
 favor the candidate and the block paired medians have both signs. Its P99 rank
