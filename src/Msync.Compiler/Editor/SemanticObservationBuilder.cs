@@ -237,14 +237,31 @@ internal sealed partial class SemanticObservationBuilder
         values[id.Value] = new(value.Type, Template: template, TypeValue: value.DenotedType,
             NativeName: native, IsNamedScope: scope?.Named == true, IsUnknown: unknown,
             Members: fields,
-            Alternatives: value.Alternatives.IsDefaultOrEmpty ? default
-                : value.Alternatives.Select(item => Value(item, context)).ToImmutableArray(),
             Element: element, CurrentType: currentType,
             Connection: connection, Path: path,
             Text: value.Observation?.Text
                 ?? (value.Literal is { Kind: HirLiteralKind.String } text ? text.Text : null),
             Signature: nativeSignature is null ? null : NativeSignature(nativeSignature),
             Documentation: nativeSignature is null ? null : Documentation(nativeSignature.Source));
+        if (!value.Callables.IsDefault && value.Callables.Length > 1)
+            values[id.Value] = values[id.Value] with
+            {
+                Alternatives = value.Callables.Select(candidate => Callable(values[id.Value], candidate)).ToImmutableArray()
+            };
+        return id;
+    }
+
+    private SemanticValueId Callable(SemanticValueView value, SemanticCallable callable)
+    {
+        BoundNativeSignature? declaration = callable.NativeName is { } native
+            ? program.NativeSignatures.GetValueOrDefault(native) : null;
+        SemanticValueId id = new(values.Count);
+        values.Add(value with
+        {
+            Template = callable.Template, NativeName = callable.NativeName, Alternatives = default,
+            Signature = declaration is null ? null : NativeSignature(declaration),
+            Documentation = declaration is null ? null : Documentation(declaration.Source)
+        });
         return id;
     }
 

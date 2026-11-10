@@ -118,6 +118,30 @@ through fields, elements and captures. It refreshes only dependent roots. The
 current element is read from each live resource description; an old embedded
 `SemanticValue.Element` is not a fallback when resource identities are present.
 
+Semantic joins retain their real finite facets rather than a historical binary
+`first`/`second` graph. The observer reads the joined Scope fields, Range element,
+callable candidates, indexed resources and their captures directly. Dependency
+tracking likewise follows only those reachable facts. Multiple callable
+signatures are projected from the finite `Callables` set into presentation-only
+`SemanticValueView.Alternatives`; those UI variants do not retain semantic join
+history. Native variants keep their own source parameter names and result types.
+
+Actual type alternatives remain in `HirType.Alternatives`. When no explicit
+merged Scope fields are present, the presenter intersects the finite type rows
+and retains each common field's alternative type keys, including nested rows.
+Null alternatives do not remove a nullable Scope's capabilities, while a
+Function-or-Scope union does not gain Scope-only fields. Recursive presentation
+still terminates by type/value identity rather than by discarding variants or
+imposing a depth limit.
+
+After semantic history removal, managed Compiler
+`bb4456050510f8d81411f5c925bb5cf7c4cddd0aaff732b2cf9f1d07b0ecdfc0`
+passed 35 source-editor checks: the previous 29 plus distinct source/native
+callable signatures and nullable callable narrowing. The strict frozen host's
+loaded Compiler hash matched the producer receipt. The linked projection checks
+passed 45 assertions, adding nested true-union common fields, nullable Scope
+capabilities and rejection of Scope-only fields on a Function-or-Scope union.
+
 The projected `CurrentType` is read-only presentation metadata. It can express a
 fresh Range element or the union of several resource elements without interning
 a type into a sealed HIR module or re-entering semantic analysis. Stable HIR type

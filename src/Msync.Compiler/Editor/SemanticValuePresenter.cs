@@ -11,8 +11,11 @@ internal sealed class SemanticValuePresenter(SemanticObservationView view,
 {
     private enum ValueKind : byte { Value, Type, RuntimeType }
     private readonly record struct ValueKey(ValueKind Kind, int Id, bool Nullable = false, TypeRef? RuntimeType = null);
-    private readonly record struct Field(string Name, ValueKey Value);
-    private sealed record Fields(ImmutableArray<Field> Ordered, IReadOnlyDictionary<string, ValueKey> Named);
+    private readonly record struct Field(string Name, ValueKey Value, ImmutableArray<ValueKey> Alternatives = default)
+    {
+        public IEnumerable<ValueKey> Choices => Alternatives.IsDefault ? [Value] : Alternatives;
+    }
+    private sealed record Fields(ImmutableArray<Field> Ordered, IReadOnlyDictionary<string, Field> Named);
 
     private readonly Dictionary<(ValueKey Value, string Name), SemanticMember> descriptions = [];
     private readonly Dictionary<ValueKey, Fields?> fields = [];
@@ -119,7 +122,8 @@ internal sealed class SemanticValuePresenter(SemanticObservationView view,
 
     private bool HasFields(ValueKey key, TypeRef type, SemanticValueView? value) =>
         value is not null && !value.Members.IsDefault || type.WithoutNull == TypeRef.Process
-        || key.Kind != ValueKind.RuntimeType && view.Module.Types[TypeId(key).Value].Shape >= 0;
+        || key.Kind != ValueKind.RuntimeType && (view.Module.Types[TypeId(key).Value].Shape >= 0
+            || !view.Module.Types[TypeId(key).Value].Alternatives.IsDefaultOrEmpty);
 
     private SemanticMember[]? CommonFields(IReadOnlyList<ValueKey> values)
     {
@@ -131,7 +135,7 @@ internal sealed class SemanticValuePresenter(SemanticObservationView view,
         foreach (var field in variants[0]!.Ordered)
         {
             if (variants.Any(item => !item!.Named.ContainsKey(field.Name))) continue;
-            ValueKey[] choices = variants.Select(item => item!.Named[field.Name]).Distinct().ToArray();
+            ValueKey[] choices = variants.SelectMany(item => item!.Named[field.Name].Choices).Distinct().ToArray();
             result.Add(Present(field.Name, choices));
         }
         return result.ToArray();
@@ -154,11 +158,26 @@ internal sealed class SemanticValuePresenter(SemanticObservationView view,
         else
         {
             HirType? type = key.Kind == ValueKind.RuntimeType ? null : view.Module.Types[TypeId(key).Value];
-            if (type is null || type.Shape < 0) return fields[key] = null;
+            if (type is null) return fields[key] = null;
+            if (!type.Alternatives.IsDefaultOrEmpty) return UnionFields(key, type.Alternatives);
+            if (type.Shape < 0) return fields[key] = null;
             members = view.Module.ScopeLayouts[type.Shape].Fields.Select(field => new Field(field.Name,
                 new(ValueKind.Type, field.StorageType.Value, field.AdmitsNull))).ToImmutableArray();
         }
-        return fields[key] = new(members, members.ToDictionary(field => field.Name, field => field.Value, StringComparer.Ordinal));
+        return fields[key] = new(members, members.ToDictionary(field => field.Name, StringComparer.Ordinal));
+    }
+
+    private Fields? UnionFields(ValueKey key, ImmutableArray<HirTypeId> alternatives)
+    {
+        fields[key] = null;
+        var variants = alternatives.Where(type => view.Module.RuntimeType(type) != TypeRef.Null)
+            .Select(type => ValueFields(new(ValueKind.Type, type.Value))).ToArray();
+        if (variants.Length == 0 || variants.Any(variant => variant is null)) return null;
+        var members = variants[0]!.Ordered.Where(field => variants.All(variant => variant!.Named.ContainsKey(field.Name)))
+            .Select(field => new Field(field.Name, default,
+                variants.SelectMany(variant => variant!.Named[field.Name].Choices).Distinct().ToImmutableArray()))
+            .ToImmutableArray();
+        return fields[key] = new(members, members.ToDictionary(field => field.Name, StringComparer.Ordinal));
     }
 
     private string Signature(string name, ValueKey key, SemanticValueView? value, NativePresentation? native)

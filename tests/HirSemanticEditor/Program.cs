@@ -36,4 +36,5 @@ Require(recovery.Diagnostic is not null, "Invalid annotation diagnostic");
 Require(recovery.Resolve(invalid.Length, "kept")?.Type == "Number", "Semantic error retains earlier bindings");
 ObservationChecks.Run(Require);
 IndexedObservationChecks.Run(Require);
+CallableObservationChecks.Run(Require);
 Console.WriteLine($"PASS {checks} typed semantic editor contracts");

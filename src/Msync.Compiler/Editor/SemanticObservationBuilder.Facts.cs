@@ -83,7 +83,7 @@ internal sealed partial class SemanticObservationBuilder
             values = values.SetItem(location, owner.Value(value, context));
             if (dependencies.TryGetValue(location, out var previous))
                 foreach (var region in previous) dependents[region].Remove(location);
-            if (IndexedResourceCount(value) == 0 && value.Scope is null && value.Element is null && value.Alternatives.IsDefaultOrEmpty
+            if (IndexedResourceCount(value) == 0 && value.Scope is null && value.Element is null
                 && (value.Callables.IsDefaultOrEmpty || value.Callables.All(callable => callable.Captures.IsDefaultOrEmpty)))
             {
                 dependencies.Remove(location);
@@ -117,8 +117,6 @@ internal sealed partial class SemanticObservationBuilder
                 if (regions.Add(new(region, Indexed: true))) Collect(context.Indexed[region].Element, regions, visited);
             }
             if (indexed == 0 && value.Element is { } element) Collect(element, regions, visited);
-            if (!value.Alternatives.IsDefault)
-                foreach (var alternative in value.Alternatives) Collect(alternative, regions, visited);
             CollectCaptures(value.Callables, regions, visited);
         }
 

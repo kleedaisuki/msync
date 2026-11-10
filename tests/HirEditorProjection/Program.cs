@@ -28,6 +28,19 @@ HirTypeId recursiveType = builder.Type(new HirType(TypeRef.Scope, Shape: 0));
 Require(recursiveType.Value == builder.ScopeLayouts[0].Fields[0].StorageType.Value, "Recursive type construction");
 builder.ScopeLayouts.Add(new([new("optional", number, AdmitsNull: true)]));
 HirTypeId optionalType = builder.Type(new HirType(TypeRef.Scope, Shape: 1));
+builder.ScopeLayouts.Add(new([new("shared", number), new("only_a", boolean)]));
+HirTypeId childTypeA = builder.Type(new HirType(TypeRef.Scope, Shape: 2));
+builder.ScopeLayouts.Add(new([new("shared", text), new("only_b", boolean)]));
+HirTypeId childTypeB = builder.Type(new HirType(TypeRef.Scope, Shape: 3));
+builder.ScopeLayouts.Add(new([new("nested", childTypeA)]));
+HirTypeId outerTypeA = builder.Type(new HirType(TypeRef.Scope, Shape: 4));
+builder.ScopeLayouts.Add(new([new("nested", childTypeB)]));
+HirTypeId outerTypeB = builder.Type(new HirType(TypeRef.Scope, Shape: 5));
+HirTypeId unionScopeType = builder.Type(new HirType(TypeRef.Scope, Alternatives: [outerTypeA, outerTypeB]));
+HirTypeId optionalUnionType = builder.Type(new HirType(TypeRef.Scope.WithNull,
+    Alternatives: [outerTypeA, outerTypeB, builder.Type(TypeRef.Null)]));
+HirTypeId functionOrScopeType = builder.Type(new HirType(TypeRef.Union(TypeRef.Function, TypeRef.Scope),
+    Alternatives: [function, outerTypeA]));
 
 List<SemanticValueView> values = [];
 SemanticValueId Add(SemanticValueView value)
@@ -52,6 +65,9 @@ SemanticValueId missing = Add(new(unknown, IsUnknown: true));
 SemanticValueId typeValue = Add(new(type, TypeValue: nullablePath));
 SemanticValueId shape = Add(new(recursiveType));
 SemanticValueId optional = Add(new(optionalType));
+SemanticValueId unionScope = Add(new(unionScopeType));
+SemanticValueId optionalUnion = Add(new(optionalUnionType));
+SemanticValueId functionOrScope = Add(new(functionOrScopeType));
 SemanticValueId childProcess = Add(new(process));
 SemanticValueId cycleA = new(values.Count);
 values.Add(new(scope, Members: [new("self", cycleA), new("leaf", num)]));
@@ -102,6 +118,12 @@ Require(cycles.Members!.Single(item => item.Name == "self").Members is null, "Re
 Require(cycles.Members!.Single(item => item.Name == "leaf").Type == "String | Number", "Recursive intersection retains ordinary fields");
 Require(presenter.Describe("record", [optional]).Members!.Single().Type == "Number?", "Shape-only nullable field admission");
 Require(presenter.Describe("contract", [optionalContract]).Members!.Single().Type == "Number?", "Constraint-only nullable field admission");
+Require(presenter.Describe("union", [unionScope]).Members!.Single().Members!.Single() is
+    { Name: "shared", Type: "String | Number" }, "True HIR type unions preserve nested common fields");
+Require(presenter.Describe("optional_union", [optionalUnion]).Members!.Single().Members!.Single().Name == "shared",
+    "Null alternatives do not erase valid Scope capabilities");
+Require(presenter.Describe("callable_or_scope", [functionOrScope]).Members is null,
+    "A Function-or-Scope union does not expose Scope-only members");
 Require(presenter.Describe("process", [childProcess]).Members!.Select(item => item.Name).SequenceEqual(["stdout", "stderr", "exit_code", "success"]), "Process fields require no extra HIR type entries");
 Require(presenter.Describe("get", [alias]).Signature.StartsWith("native fn get(items:", StringComparison.Ordinal), "Native aliases retain actual parameter names");
 Require(nativeQueries == 0, "Provided native documentation does not reload source");
