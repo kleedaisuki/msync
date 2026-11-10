@@ -152,7 +152,33 @@ def measure(
         tokens, token_time = client.request(
             "textDocument/semanticTokens/full", {"textDocument": {"uri": uri}}
         )
-        assert len(tokens["data"]) // 5 == rows * 3, len(tokens["data"])
+        legend = initialized["capabilities"]["semanticTokensProvider"]["legend"][
+            "tokenTypes"
+        ]
+        actual_tokens: list[tuple[int, int, int, str]] = []
+        line = 0
+        column = 0
+        for index in range(0, len(tokens["data"]), 5):
+            delta, offset, length, kind, _ = tokens["data"][index : index + 5]
+            line += delta
+            column = offset if delta else column + offset
+            actual_tokens.append((line, column, length, legend[kind]))
+        expected_tokens: list[tuple[int, int, int, str]] = []
+        for row in range(rows):
+            name = f"item_{row}"
+            assignment = 4 + len(name) + 1
+            expected_tokens.extend(
+                [
+                    (row, 0, 3, "keyword"),
+                    (row, 4, len(name), "variable"),
+                    (row, assignment, 1, "operator"),
+                    (row, assignment + 2, len(str(row)), "number"),
+                ]
+            )
+        assert actual_tokens == expected_tokens, (
+            actual_tokens[:8],
+            expected_tokens[:8],
+        )
         repeated, repeat_time = client.request(
             "textDocument/semanticTokens/full", {"textDocument": {"uri": uri}}
         )
