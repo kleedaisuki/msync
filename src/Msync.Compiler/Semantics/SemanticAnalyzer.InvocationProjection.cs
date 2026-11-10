@@ -12,7 +12,7 @@ internal sealed partial class SemanticAnalyzer
     {
         if (instance.Objects.IsEmpty && instance.Indexed.IsEmpty && instance.Cells.IsEmpty
             && instance.Result.Scope is null && instance.Result.Element is null
-            && instance.Result.Callables.IsDefaultOrEmpty && instance.Result.Alternatives.IsDefaultOrEmpty
+            && instance.Result.Callables.IsDefaultOrEmpty
             && instance.Result.DeferredEffects.IsDefaultOrEmpty && instance.Result.OpenSessionCalls.IsDefaultOrEmpty
             && instance.CallableContracts.IsEmpty && instance.WriteEvents.IsDefault)
         {
@@ -243,8 +243,6 @@ internal sealed partial class SemanticAnalyzer
                 if (location != future.Owner || choices != future.Choices || current != future.Current)
                     result = result with { FutureCallableDomain = new(location, choices, current) };
             }
-            if (!value.Alternatives.IsDefaultOrEmpty)
-                result = result with { Alternatives = value.Alternatives.Select(Project).ToImmutableArray() };
             if (value.IndexedRegion is { } indexed)
             {
                 if (!indexedRegions.TryGetValue(indexed, out var region)) indexedRegions[indexed] = region = ++owner.nextRegion;

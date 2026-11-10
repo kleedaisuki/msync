@@ -26,18 +26,19 @@ internal sealed partial class SemanticAnalyzer
         private readonly Dictionary<int, int> regions = [];
         private readonly Dictionary<int, int> indexedRegions = [];
         private readonly Dictionary<SemanticValue, SemanticValue> active = new(ReferenceEqualityComparer.Instance);
-        private readonly Dictionary<(SemanticValue Value, string Role), SemanticValue> completed = new(ReferenceRoleComparer<SemanticValue>.Instance);
-        private readonly Dictionary<(SemanticCallable Value, string Role), SemanticCallable> callables = new(ReferenceRoleComparer<SemanticCallable>.Instance);
+        private readonly Dictionary<(SemanticValue Value, SemanticInputRole Role), SemanticValue> completed = new(ReferenceRoleComparer<SemanticValue>.Instance);
+        private readonly Dictionary<(SemanticCallable Value, SemanticInputRole Role), SemanticCallable> callables = new(ReferenceRoleComparer<SemanticCallable>.Instance);
         private readonly Dictionary<SemanticCallable, SemanticCallable> locationCallables = new(SemanticCallableIdentity.Instance);
-        private readonly Dictionary<string, int> scopeRoles = new(StringComparer.Ordinal);
-        private readonly Dictionary<string, int> resourceRoles = new(StringComparer.Ordinal);
+        private readonly Dictionary<SemanticInputRole, int> scopeRoles = [];
+        private readonly Dictionary<SemanticInputRole, int> resourceRoles = [];
+        private readonly SemanticInputRoles roles = new();
         private readonly List<(int Formal, ImmutableHashSet<int> Sources)> scopeViews = [];
         private int nextRoot;
         public Dictionary<HirLocationId, HirLocationId> Locations { get; } = [];
 
-        public SemanticValue Abstract(SemanticValue value) => Abstract(value, "r" + nextRoot++);
+        public SemanticValue Abstract(SemanticValue value) => Abstract(value, roles.Root(nextRoot++));
 
-        private SemanticValue Abstract(SemanticValue value, string role)
+        private SemanticValue Abstract(SemanticValue value, SemanticInputRole role)
         {
             if (active.TryGetValue(value, out var known)) return known;
             if (completed.TryGetValue((value, role), out known)) return known;
@@ -45,7 +46,7 @@ internal sealed partial class SemanticAnalyzer
             // Bool argument must not delete the other caller's branch from shared code.
             var result = value with { Node = HirNodeId.None, Location = null,
                 Literal = value.DenotedType is null ? null : value.Literal,
-                Callables = [], Scope = null, Element = null, Alternatives = [], IndexedRegion = null, Origin = null, Observation = null, DeferredEffects = [], IndexedAliases = [], FutureCallableDomain = null };
+                Callables = [], Scope = null, Element = null, IndexedRegion = null, Origin = null, Observation = null, DeferredEffects = [], IndexedAliases = [], FutureCallableDomain = null };
             active[value] = result;
             if (value.Scope is { } scope)
             {
@@ -66,10 +67,14 @@ internal sealed partial class SemanticAnalyzer
                     formal.Objects[region] = symbolic;
                     result = result with { Scope = symbolic };
                     active[value] = result;
-                    var fields = scope.Fields.ToImmutableDictionary(pair => pair.Key,
-                        pair => Abstract(scope.Locations.TryGetValue(pair.Key, out var location)
-                            ? caller.Values.GetValueOrDefault(location, pair.Value) : pair.Value, role + "." + pair.Key), StringComparer.Ordinal);
-                    symbolic = symbolic with { Fields = fields };
+                    var fields = ImmutableDictionary.CreateBuilder<string, SemanticValue>(StringComparer.Ordinal);
+                    foreach (var (name, original) in scope.Fields)
+                    {
+                        var field = scope.Locations.TryGetValue(name, out var location)
+                            ? caller.Values.GetValueOrDefault(location, original) : original;
+                        fields.Add(name, Abstract(field, roles.Field(role, name)));
+                    }
+                    symbolic = symbolic with { Fields = fields.ToImmutable() };
                     formal.Objects[region] = symbolic;
                     foreach (var field in scope.Fields.Keys)
                         foreach (int source in sources)
@@ -79,14 +84,12 @@ internal sealed partial class SemanticAnalyzer
                     result = result with { Scope = symbolic };
                 }
             }
-            if (value.Element is { } element) result = result with { Element = Abstract(element, role + "[]") };
+            if (value.Element is { } element) result = result with { Element = Abstract(element, roles.Element(role)) };
             if (!value.Callables.IsDefaultOrEmpty)
                 result = result with { Callables = AbstractCallables(value.Callables, role) };
             if (value.FutureCallableDomain is { } future)
                 result = result with { FutureCallableDomain = new(FormalLocation(future.Owner),
                     AbstractCallables(future.Choices, role), AbstractCallables(future.Current, role)) };
-            if (!value.Alternatives.IsDefaultOrEmpty && value.Scope is null && value.Element is null)
-                result = result with { Alternatives = value.Alternatives.Select(alternative => Abstract(alternative, role + "|" + alternative.Type.Value)).ToImmutableArray() };
             if (value.IndexedRegion is { } indexed)
             {
                 if (!indexedRegions.TryGetValue(indexed, out var region))
@@ -94,7 +97,7 @@ internal sealed partial class SemanticAnalyzer
                     region = ++owner.nextRegion;
                     indexedRegions[indexed] = region;
                     if (caller.Indexed.TryGetValue(indexed, out var description))
-                        formal.Indexed[region] = description with { Element = Abstract(description.Element, role + "[]") };
+                        formal.Indexed[region] = description with { Element = Abstract(description.Element, roles.Element(role)) };
                 }
                 result = result with { IndexedRegion = region };
             }
@@ -103,8 +106,8 @@ internal sealed partial class SemanticAnalyzer
             if (!value.DeferredEffects.IsDefaultOrEmpty)
                 result = result with { DeferredEffects = value.DeferredEffects.Select(write => write with
                 {
-                    After = Abstract(write.After, role + "!after"),
-                    IndexedStorage = write.IndexedStorage is { } storage ? storage with { Element = Abstract(storage.Element, role + "!element") } : null,
+                    After = Abstract(write.After, roles.WriteValue(role)),
+                    IndexedStorage = write.IndexedStorage is { } storage ? storage with { Element = Abstract(storage.Element, roles.WriteElement(role)) } : null,
                     Location = write.Kind == SemanticWriteKind.Location ? FormalLocation(write.Location) : write.Location,
                     Region = write.Kind == SemanticWriteKind.Field ? MapSourceRegion(write.Region)
                         : write.Kind == SemanticWriteKind.Indexed ? MapIndexedRegion(write.Region) : write.Region
@@ -120,7 +123,7 @@ internal sealed partial class SemanticAnalyzer
             return result;
         }
 
-        private ImmutableArray<SemanticCallable> AbstractCallables(ImmutableArray<SemanticCallable> values, string role)
+        private ImmutableArray<SemanticCallable> AbstractCallables(ImmutableArray<SemanticCallable> values, SemanticInputRole role)
         {
             if (values.IsDefaultOrEmpty) return [];
             ImmutableArray<SemanticCallable>.Builder? rewritten = null;
@@ -138,15 +141,14 @@ internal sealed partial class SemanticAnalyzer
             return rewritten is null ? values : rewritten.MoveToImmutable();
         }
 
-        private SemanticCallable AbstractCallable(SemanticCallable callable, string role)
+        private SemanticCallable AbstractCallable(SemanticCallable callable, SemanticInputRole role)
         {
             if (callable.Captures.IsDefaultOrEmpty) return callable;
             // Location captures name the same environment through every path in this
             // operation. Value captures retain their structural selection role.
-            bool sharedEnvironment = callable.Captures.All(capture => capture.Mode == HirCaptureMode.Location
-                && caller.Values.ContainsKey(capture.Source));
+            bool sharedEnvironment = SharesEnvironment(callable.Captures);
             if (sharedEnvironment && locationCallables.TryGetValue(callable, out var shared)) return shared;
-            string environment = sharedEnvironment ? "" : role;
+            SemanticInputRole environment = sharedEnvironment ? SemanticInputRole.SharedEnvironment : role;
             if (callables.TryGetValue((callable, environment), out var known)) return known;
             var captures = ImmutableArray.CreateBuilder<SemanticCapture>(callable.Captures.Length);
             foreach (var capture in callable.Captures)
@@ -154,7 +156,7 @@ internal sealed partial class SemanticAnalyzer
                 var source = FormalLocation(capture.Source);
                 var captured = Abstract(capture.Mode == HirCaptureMode.Location
                     ? caller.Values.GetValueOrDefault(capture.Source, capture.Value) : capture.Value,
-                    capture.Mode == HirCaptureMode.Location ? "capture." + source.Value : role + "@value." + source.Value);
+                    capture.Mode == HirCaptureMode.Location ? roles.Capture(source) : roles.ValueCapture(role, source));
                 formal.Values[source] = captured;
                 formal.Storage[source] = owner.StorageType(capture.Source, caller);
                 captures.Add(capture with { Source = source, Value = captured });
@@ -165,16 +167,23 @@ internal sealed partial class SemanticAnalyzer
             return result;
         }
 
-        private sealed class ReferenceRoleComparer<T> : IEqualityComparer<(T Value, string Role)> where T : class
+        private bool SharesEnvironment(ImmutableArray<SemanticCapture> captures)
         {
-            public static readonly ReferenceRoleComparer<T> Instance = new();
-            public bool Equals((T Value, string Role) first, (T Value, string Role) second) =>
-                ReferenceEquals(first.Value, second.Value) && StringComparer.Ordinal.Equals(first.Role, second.Role);
-            public int GetHashCode((T Value, string Role) key) => HashCode.Combine(
-                System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.Value), StringComparer.Ordinal.GetHashCode(key.Role));
+            foreach (var capture in captures)
+                if (capture.Mode != HirCaptureMode.Location || !caller.Values.ContainsKey(capture.Source)) return false;
+            return true;
         }
 
-        private int MapResourceView(ImmutableArray<int> sources, string role)
+        private sealed class ReferenceRoleComparer<T> : IEqualityComparer<(T Value, SemanticInputRole Role)> where T : class
+        {
+            public static readonly ReferenceRoleComparer<T> Instance = new();
+            public bool Equals((T Value, SemanticInputRole Role) first, (T Value, SemanticInputRole Role) second) =>
+                ReferenceEquals(first.Value, second.Value) && first.Role == second.Role;
+            public int GetHashCode((T Value, SemanticInputRole Role) key) => HashCode.Combine(
+                System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.Value), key.Role.Value);
+        }
+
+        private int MapResourceView(ImmutableArray<int> sources, SemanticInputRole role)
         {
             if (resourceRoles.TryGetValue(role, out var existing)) return existing;
             int region = ++owner.nextRegion;
@@ -182,7 +191,7 @@ internal sealed partial class SemanticAnalyzer
             var storage = caller.Indexed[sources[0]];
             for (int index = 1; index < sources.Length; index++) storage = owner.JoinIndexed(storage, caller.Indexed[sources[index]]);
             formal.Indexed[region] = storage with { Element = owner.ValueForType(storage.Element.Type) };
-            formal.Indexed[region] = storage with { Element = Abstract(storage.Element, role + "[]") };
+            formal.Indexed[region] = storage with { Element = Abstract(storage.Element, roles.Element(role)) };
             return region;
         }
 
@@ -191,7 +200,7 @@ internal sealed partial class SemanticAnalyzer
             if (indexedRegions.TryGetValue(source, out var region)) return region;
             indexedRegions[source] = region = ++owner.nextRegion;
             if (caller.Indexed.TryGetValue(source, out var storage))
-                formal.Indexed[region] = storage with { Element = Abstract(storage.Element, "external.resource." + storage.Element.Type.Value) };
+                formal.Indexed[region] = storage with { Element = Abstract(storage.Element, roles.ExternalResource(storage.Element.Type)) };
             return region;
         }
 
@@ -231,7 +240,8 @@ internal sealed partial class SemanticAnalyzer
                     formal.AliasViews[b.Formal] = formal.AliasViews.GetValueOrDefault(b.Formal, ImmutableHashSet<int>.Empty).Add(a.Formal);
                 }
             foreach (var pair in Locations.ToArray())
-                if (caller.Values.TryGetValue(pair.Key, out var value)) formal.Values[pair.Value] = Abstract(value);
+                if (caller.Values.TryGetValue(pair.Key, out var value))
+                    formal.Values[pair.Value] = Abstract(value, roles.Capture(pair.Value));
         }
 
         private HirLocationId FormalLocation(HirLocationId source)

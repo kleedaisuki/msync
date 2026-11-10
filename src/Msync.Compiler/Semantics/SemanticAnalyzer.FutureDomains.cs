@@ -9,7 +9,7 @@ internal sealed partial class SemanticAnalyzer
     private SemanticValue EnrichFutureDomains(SemanticValue value, SemanticContext context,
         HirLocationId? location = null, bool rootStorage = false)
     {
-        if (value.Scope is null && value.Element is null && value.Alternatives.IsDefaultOrEmpty
+        if (value.Scope is null && value.Element is null
             && (value.Callables.IsDefaultOrEmpty || value.Callables.All(callable => callable.Captures.IsDefaultOrEmpty))
             && (!rootStorage || Runtime(value).WithoutNull != TypeRef.Function))
             return value.FutureCallableDomain is null ? value : value with { FutureCallableDomain = null };
@@ -20,7 +20,7 @@ internal sealed partial class SemanticAnalyzer
         SemanticValue Visit(SemanticValue current, HirLocationId? cell, bool borrowed, SemanticScope? receiver = null)
         {
             if (current.Scope is null && current.Element is null && current.Callables.IsDefaultOrEmpty
-                && current.Alternatives.IsDefaultOrEmpty && current.FutureCallableDomain is null) return current;
+                && current.FutureCallableDomain is null) return current;
             HirLocationId owner = borrowed && cell is { } source ? StorageOwner(source, context) : new(-1);
             if (!values.TryGetValue(current, out var versions)) values.Add(current, versions = []);
             if (versions.TryGetValue(owner, out SemanticValue? known)) return known;
@@ -76,8 +76,7 @@ internal sealed partial class SemanticAnalyzer
                     Choices = domain.Choices.Select(Callable).ToImmutableArray(),
                     Current = domain.Current.IsDefault ? default : domain.Current.Select(Callable).ToImmutableArray()
                 } };
-            if (!current.Alternatives.IsDefaultOrEmpty)
-                result = result with { Alternatives = current.Alternatives.Select(item => Visit(item, cell, borrowed, receiver)).ToImmutableArray() };
+;
             versions[owner] = result;
             return result;
         }

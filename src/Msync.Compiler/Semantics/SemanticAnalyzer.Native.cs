@@ -244,7 +244,7 @@ internal sealed partial class SemanticAnalyzer
         if ((signature.Behavior.GetValueOrDefault() & NativeBehavior.PreservesIdentity) != 0)
             return value with { Node = HirNodeId.None, Location = null };
         return value with { Node = HirNodeId.None, Location = null, IndexedRegion = null,
-            IndexedAliases = [], Origin = null, Observation = null, Alternatives = [], EagerRange = false };
+            IndexedAliases = [], Origin = null, Observation = null, EagerRange = false };
     }
 
     private ImmutableArray<SemanticValue> CheckNativeArguments(NativeSignature signature,

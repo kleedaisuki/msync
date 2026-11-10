@@ -417,3 +417,22 @@ initialization placeholder into the language's nullable flow facts. The actual
 CLI shell prelude plus stdin/TTY `first`, `transform` and late-callable workflows
 passed against frozen snapshot 12; a bare CompilerSession alone did not exercise
 this initialization boundary.
+
+### Discarding join history
+
+A semantic join retains its product of facts: the joined type, common Scope
+members, Range element, finite callable environments, indexed resource domains,
+pending effects and open-call obligations. Its predecessor values are not an
+additional semantic fact. `SemanticValue` therefore has no `Alternatives`
+member and does not retain the binary tree of earlier joins. Actual type
+alternatives remain in `HirType`, and editor signature variants are a finite
+projection of the callable domain into editor-owned value views.
+
+Keeping the predecessor tree had made a small canonical object/type graph hide
+tens of thousands of historical values. Rewriters then repeatedly traversed
+that history. Removing it, rather than memoizing it indefinitely, restored the
+original expanded-tree workload's cold Analyze allocation from about 1.479 GB
+to 143.736 MB. These are the same source and counter environment, not a claim
+about Native startup or matched warm latency. The frozen17 source-free query,
+capture/alias and common-member journeys and editor callable/type-union views
+were checked independently of the allocation observation.

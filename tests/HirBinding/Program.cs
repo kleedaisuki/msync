@@ -5,6 +5,11 @@ using Msync.Core;
 using Msync.Hir;
 using Msync.Runtime;
 
+if (args.Contains("--input-roles", StringComparer.Ordinal))
+{
+    RoleChecks.Run();
+    return;
+}
 if (args.Contains("--callable-identity", StringComparer.Ordinal))
 {
     CallableIdentityChecks.Run();

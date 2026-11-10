@@ -32,7 +32,7 @@ internal sealed partial class SemanticAnalyzer
 
     private static bool IsScalarSchema(SemanticValue value) => value.Scope is null
         && value.Element is null && value.Callables.IsDefaultOrEmpty && value.IndexedRegion is null
-        && value.Alternatives.IsDefaultOrEmpty && value.DeferredEffects.IsDefaultOrEmpty && value.IndexedAliases.IsDefaultOrEmpty
+        && value.DeferredEffects.IsDefaultOrEmpty && value.IndexedAliases.IsDefaultOrEmpty
         && value.FutureCallableDomain is null;
 
     private string ValueKey(SemanticValue value)

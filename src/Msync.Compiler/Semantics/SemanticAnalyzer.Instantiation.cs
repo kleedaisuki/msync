@@ -442,8 +442,6 @@ internal sealed partial class SemanticAnalyzer
             foreach (var callable in Choices(value))
                 if (!callable.Captures.IsDefault)
                     foreach (var capture in callable.Captures) { VisitCell(capture.Source); Visit(capture.Value); }
-            if (!value.Alternatives.IsDefault)
-                foreach (var alternative in value.Alternatives) Visit(alternative);
             if (value.IndexedRegion is { } region && context.Indexed.TryGetValue(region, out var storage)
                 && indexed.TryAdd(region, storage)) Visit(storage.Element);
         }

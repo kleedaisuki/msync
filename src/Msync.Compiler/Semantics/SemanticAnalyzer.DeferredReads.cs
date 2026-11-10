@@ -75,13 +75,13 @@ internal sealed partial class SemanticAnalyzer
             return value;
         if (value.FutureCallableDomain is { } admitted
             && StorageOwner(admitted.Owner, context) == StorageOwner(source, context))
-            return value with { Callables = admitted.Choices, Alternatives = default };
+            return value with { Callables = admitted.Choices };
         HirLocationId definition = program.Original(context.Definitions.GetValueOrDefault(source, source));
         var choices = Choices(value).ToList();
         HashSet<HirLocationId> active = [];
         Collect(definition);
         ImmutableArray<SemanticCallable> admittedChoices = choices.Distinct(SemanticCallableIdentity.Instance).ToImmutableArray();
-        return value with { Callables = admittedChoices, Alternatives = default,
+        return value with { Callables = admittedChoices,
             FutureCallableDomain = new(StorageOwner(source, context), admittedChoices, value.Callables) };
 
         void Collect(HirLocationId target)

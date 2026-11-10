@@ -33,7 +33,6 @@ internal sealed partial class SemanticAnalyzer
         var callables = Choices(first).Concat(Choices(second)).Distinct(SemanticCallableIdentity.Instance).ToImmutableArray();
         return new(type, first.Node, first.Literal == second.Literal ? first.Literal : null,
             callables, scope, element, EagerRange: first.EagerRange && second.EagerRange,
-            Alternatives: [first, second],
             IndexedRegion: payload?.IndexedRegion ?? (first.IndexedRegion == second.IndexedRegion ? first.IndexedRegion : null),
             DenotedType: first.DenotedType == second.DenotedType ? first.DenotedType : null,
             DeferredEffects: CombineDeferredEffects(first.DeferredEffects, second.DeferredEffects),
