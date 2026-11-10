@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>msync-repl-session-probe</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Msync.Core" HintPath="$(FrozenAssemblies)/Msync.Core.dll" />
+    <Reference Include="Msync.Compiler" HintPath="$(FrozenAssemblies)/Msync.Compiler.dll" />
+    <Reference Include="Msync.Hir" HintPath="$(FrozenAssemblies)/Msync.Hir.dll" />
+    <Reference Include="Msync.Optimization" HintPath="$(FrozenAssemblies)/Msync.Optimization.dll" />
+    <Reference Include="Msync.Runtime" HintPath="$(FrozenAssemblies)/Msync.Runtime.dll" />
+  </ItemGroup>
+  <Target Name="RequireFrozenAssemblies" BeforeTargets="ResolveReferences" Condition="'$(FrozenAssemblies)' == ''">
+    <Error Text="Set FrozenAssemblies to an immutable product assembly directory." />
+  </Target>
+</Project>
