@@ -230,8 +230,12 @@ internal sealed partial class SourceBinder
         if (environment.Captures.TryGetValue(sourceLocation, out var saved)) return saved;
         var original = hir.Locations[sourceLocation.Value];
         HirLocationId target = new(hir.Locations.Count);
-        hir.Locations.Add(original with { Owner = new(-1), Kind = HirLocationKind.Import,
-            TemplateOwner = environment.Template });
+        hir.Locations.Add(original with
+        {
+            Owner = new(-1),
+            Kind = HirLocationKind.Import,
+            TemplateOwner = environment.Template
+        });
         program.Declare(new(target, name, DeclarationKind.Capture, original.Source,
             CapturedFrom: sourceLocation, Template: environment.Template));
         environment.Captures.Add(sourceLocation, target);

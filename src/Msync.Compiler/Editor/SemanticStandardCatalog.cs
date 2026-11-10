@@ -74,7 +74,8 @@ internal static class SemanticStandardCatalog
             if (members.Length != 0) description += "\n\nRequired members:\n"
                 + string.Join('\n', members.Select(item => $"- `{item.Signature}`"));
             return new SemanticMember("$std::concepts::" + concept.Name, "Type", $"concept {concept.Name}",
-                description, members, SemanticRole: "type") { IsConstraint = true };
+                description, members, SemanticRole: "type")
+            { IsConstraint = true };
         }).ToArray();
     }
 

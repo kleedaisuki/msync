@@ -17,12 +17,12 @@ internal sealed partial class SemanticAnalyzer
                 return new(hir.Type(TypeRef.Type), Add(node, hir.Type(TypeRef.Type), [], context),
                     new(HirLiteralKind.Type, Type: hir.Types[node.Data].RuntimeType), DenotedType: new(node.Data));
             case HirKind.TypeOf:
-            {
-                var value = Analyze(children[0], context.QueryFork());
-                var result = node with { Kind = HirKind.TypeValue, Data = value.Type.Value };
-                return new(hir.Type(TypeRef.Type), Add(result, hir.Type(TypeRef.Type), [], context),
-                    new(HirLiteralKind.Type, Type: Runtime(value)), DenotedType: value.Type);
-            }
+                {
+                    var value = Analyze(children[0], context.QueryFork());
+                    var result = node with { Kind = HirKind.TypeValue, Data = value.Type.Value };
+                    return new(hir.Type(TypeRef.Type), Add(result, hir.Type(TypeRef.Type), [], context),
+                        new(HirLiteralKind.Type, Type: Runtime(value)), DenotedType: value.Type);
+                }
             case HirKind.Builtin:
                 return Builtin(node, context);
             case HirKind.Binary:
@@ -30,27 +30,27 @@ internal sealed partial class SemanticAnalyzer
             case HirKind.MemberRead:
                 return MemberRead(id, node, Analyze(children[0], context), context);
             case HirKind.MemberAssign:
-            {
-                var receiver = Analyze(children[0], context);
-                var value = Analyze(children[1], context);
-                return MemberAssign(node, receiver, value, context, program.Node(children[1]).Source);
-            }
-            case HirKind.IsType:
-            {
-                var value = Analyze(children[0], context);
-                var type = Analyze(children[1], context);
-                Require(type, hir.Type(TypeRef.Type), program.Node(children[1]).Source, context: context);
-                bool? known = null;
-                if (type.DenotedType is { } target
-                    && (value.DenotedType is not null || (Runtime(value).Kind & TypeKind.Type) == 0))
                 {
-                    TypeRef actual = value.DenotedType is { } denoted ? hir.Types[denoted.Value].RuntimeType : Runtime(value);
-                    TypeRef required = hir.Types[target.Value].RuntimeType;
-                    known = required.Accepts(actual) ? true : (required.Kind & actual.Kind) == 0 ? false : null;
+                    var receiver = Analyze(children[0], context);
+                    var value = Analyze(children[1], context);
+                    return MemberAssign(node, receiver, value, context, program.Node(children[1]).Source);
                 }
-                return new(hir.Type(TypeRef.Bool), Add(node with { Data = type.DenotedType?.Value ?? -1 }, hir.Type(TypeRef.Bool), [value.Node, type.Node], context),
-                    known is { } result ? new(HirLiteralKind.Bool, Boolean: result) : null);
-            }
+            case HirKind.IsType:
+                {
+                    var value = Analyze(children[0], context);
+                    var type = Analyze(children[1], context);
+                    Require(type, hir.Type(TypeRef.Type), program.Node(children[1]).Source, context: context);
+                    bool? known = null;
+                    if (type.DenotedType is { } target
+                        && (value.DenotedType is not null || (Runtime(value).Kind & TypeKind.Type) == 0))
+                    {
+                        TypeRef actual = value.DenotedType is { } denoted ? hir.Types[denoted.Value].RuntimeType : Runtime(value);
+                        TypeRef required = hir.Types[target.Value].RuntimeType;
+                        known = required.Accepts(actual) ? true : (required.Kind & actual.Kind) == 0 ? false : null;
+                    }
+                    return new(hir.Type(TypeRef.Bool), Add(node with { Data = type.DenotedType?.Value ?? -1 }, hir.Type(TypeRef.Bool), [value.Node, type.Node], context),
+                        known is { } result ? new(HirLiteralKind.Bool, Boolean: result) : null);
+                }
             case HirKind.Convert:
             case HirKind.Coerce:
                 return Cast(node, Analyze(children[0], context), context);
@@ -193,8 +193,11 @@ internal sealed partial class SemanticAnalyzer
         }
         if (Runtime(receiver).Nullable) throw Error(node.Source, "Handle Null before selecting a member.", "E0201");
         if (Runtime(receiver) == TypeRef.Process && ProcessCapabilities.Members.TryGetValue(node.Text!, out var processType))
-            return new(hir.Type(processType), Add(node with { Data = -1,
-                Effects = node.Effects | NativeEffects(NativeSignatures.Get("process." + node.Text)) },
+            return new(hir.Type(processType), Add(node with
+            {
+                Data = -1,
+                Effects = node.Effects | NativeEffects(NativeSignatures.Get("process." + node.Text))
+            },
                 hir.Type(processType), [receiver.Node], context));
         if (Runtime(receiver) != TypeRef.Scope)
             throw Error(node.Source, $"Cannot select '{node.Text}' from {Runtime(receiver)}; '::' requires Scope or Process.", "E0206");

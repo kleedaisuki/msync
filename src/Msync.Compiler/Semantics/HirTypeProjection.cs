@@ -26,13 +26,14 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
                     ? hir.Literals[node.Data].Boolean : null);
             case HirKind.ReadLocation:
             case HirKind.ReadStorage:
-            {
-                HirLocationId location = context.Location(new(node.Data));
-                if (facts.Contains(location)) return facts.Read(location);
-                if (context.Values.TryGetValue(location, out var current)) return Fact(current.Type, current.KnownBool)
-                    with { Eager = current.EagerRange };
-                return Fact(Resolve(hir.Locations[location.Value].StorageType));
-            }
+                {
+                    HirLocationId location = context.Location(new(node.Data));
+                    if (facts.Contains(location)) return facts.Read(location);
+                    if (context.Values.TryGetValue(location, out var current)) return Fact(current.Type, current.KnownBool)
+                        with
+                    { Eager = current.EagerRange };
+                    return Fact(Resolve(hir.Locations[location.Value].StorageType));
+                }
             case HirKind.Block:
                 return children.Length == 0 ? Fact(hir.Type(TypeRef.Null)) : Project(children[^1], facts);
             case HirKind.Discard:
@@ -45,79 +46,81 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
             case HirKind.Break:
                 return children.Length == 0 ? Fact(hir.Type(TypeRef.Null)) : Project(children[0], facts);
             case HirKind.If:
-            {
-                FlowFact condition = Project(children[0], facts);
-                if (condition.Boolean is { } selected) return Project(children[selected ? 1 : 2], facts);
-                return types.Join(Project(children[1], facts), Project(children[2], facts));
-            }
+                {
+                    FlowFact condition = Project(children[0], facts);
+                    if (condition.Boolean is { } selected) return Project(children[selected ? 1 : 2], facts);
+                    return types.Join(Project(children[1], facts), Project(children[2], facts));
+                }
             case HirKind.Match:
-            {
-                FlowFact result = Fact(hir.Type(new TypeRef(TypeKind.Never)));
-                foreach (var arm in hir.Matches[node.Data].Arms) result = types.Join(result, Project(arm.Value, facts));
-                return result;
-            }
+                {
+                    FlowFact result = Fact(hir.Type(new TypeRef(TypeKind.Never)));
+                    foreach (var arm in hir.Matches[node.Data].Arms) result = types.Join(result, Project(arm.Value, facts));
+                    return result;
+                }
             case HirKind.Unary:
                 return Fact(hir.Type((HirUnaryOperator)node.Data == HirUnaryOperator.Not ? TypeRef.Bool : TypeRef.Number),
                     (HirUnaryOperator)node.Data == HirUnaryOperator.Not && Project(children[0], facts).Boolean is { } known ? !known : null);
             case HirKind.Binary:
-            {
-                var operation = (HirBinaryOperator)node.Data;
-                if (operation >= HirBinaryOperator.Equal) return Fact(hir.Type(TypeRef.Bool));
-                TypeRef left = Project(children[0], facts).Type, right = Project(children[1], facts).Type;
-                return Fact(hir.Type(operation == HirBinaryOperator.Add && left == TypeRef.String && right == TypeRef.String
-                    ? TypeRef.String : operation == HirBinaryOperator.Divide && (left != TypeRef.Number || right != TypeRef.Number)
-                        ? TypeRef.Path : TypeRef.Number));
-            }
+                {
+                    var operation = (HirBinaryOperator)node.Data;
+                    if (operation >= HirBinaryOperator.Equal) return Fact(hir.Type(TypeRef.Bool));
+                    TypeRef left = Project(children[0], facts).Type, right = Project(children[1], facts).Type;
+                    return Fact(hir.Type(operation == HirBinaryOperator.Add && left == TypeRef.String && right == TypeRef.String
+                        ? TypeRef.String : operation == HirBinaryOperator.Divide && (left != TypeRef.Number || right != TypeRef.Number)
+                            ? TypeRef.Path : TypeRef.Number));
+                }
             case HirKind.IsNull:
-            {
-                TypeRef operand = Project(children[0], facts).Type;
-                return Fact(hir.Type(TypeRef.Bool), operand == TypeRef.Null ? true : !operand.Nullable ? false : null);
-            }
+                {
+                    TypeRef operand = Project(children[0], facts).Type;
+                    return Fact(hir.Type(TypeRef.Bool), operand == TypeRef.Null ? true : !operand.Nullable ? false : null);
+                }
             case HirKind.IsType:
                 return TypeTest(children, facts);
             case HirKind.RegexMatch:
             case HirKind.Transfer:
                 return Fact(hir.Type(TypeRef.Bool));
             case HirKind.TypeOf:
-            {
-                FlowFact operand = Project(children[0], facts);
-                return Fact(hir.Type(TypeRef.Type)) with { Denotations = new([operand.SemanticType ?? hir.Type(operand.Type)]) };
-            }
+                {
+                    FlowFact operand = Project(children[0], facts);
+                    return Fact(hir.Type(TypeRef.Type)) with { Denotations = new([operand.SemanticType ?? hir.Type(operand.Type)]) };
+                }
             case HirKind.TypeValue:
                 return Fact(hir.Type(TypeRef.Type)) with { Denotations = new([Resolve(new(node.Data))]) };
             case HirKind.Convert:
             case HirKind.Coerce:
-            {
-                FlowFact converted = Fact(Resolve(new(node.Data)));
-                return converted with { Eager = converted.Type.Kind == TypeKind.Range && Project(children[0], facts).Eager };
-            }
+                {
+                    FlowFact converted = Fact(Resolve(new(node.Data)));
+                    return converted with { Eager = converted.Type.Kind == TypeKind.Range && Project(children[0], facts).Eager };
+                }
             case HirKind.PathJoin:
             case HirKind.Qualify:
                 return Fact(hir.Type(TypeRef.Path));
             case HirKind.Range:
             case HirKind.LazyRange:
-            {
-                HirTypeId element = hir.Type(new TypeRef(TypeKind.Never));
-                FlowDenotationDomain? denotations = null;
-                bool first = true;
-                foreach (var child in children)
                 {
-                    FlowFact item = Project(child, facts);
-                    element = types.Union(element, item.SemanticType ?? hir.Type(item.Type));
-                    denotations = first ? item.Denotations : FlowDenotationDomain.Join(denotations, item.Denotations);
-                    first = false;
+                    HirTypeId element = hir.Type(new TypeRef(TypeKind.Never));
+                    FlowDenotationDomain? denotations = null;
+                    bool first = true;
+                    foreach (var child in children)
+                    {
+                        FlowFact item = Project(child, facts);
+                        element = types.Union(element, item.SemanticType ?? hir.Type(item.Type));
+                        denotations = first ? item.Denotations : FlowDenotationDomain.Join(denotations, item.Denotations);
+                        first = false;
+                    }
+                    return Fact(hir.Type(new HirType(new(TypeKind.Range, hir.Types[element.Value].RuntimeType), Element: element.Value)))
+                        with
+                    { Denotations = denotations };
                 }
-                return Fact(hir.Type(new HirType(new(TypeKind.Range, hir.Types[element.Value].RuntimeType), Element: element.Value)))
-                    with { Denotations = denotations };
-            }
             case HirKind.MemberRead:
-            {
-                if (places?.Invoke(id) is { } field && facts.Contains(field))
-                    return facts.Read(field);
-                FlowFact receiver = Project(children[0], facts);
-                return Fact(types.Member(receiver.SemanticType ?? hir.Type(receiver.Type), node.Text!))
-                    with { Eager = Value(id)?.EagerRange == true };
-            }
+                {
+                    if (places?.Invoke(id) is { } field && facts.Contains(field))
+                        return facts.Read(field);
+                    FlowFact receiver = Project(children[0], facts);
+                    return Fact(types.Member(receiver.SemanticType ?? hir.Type(receiver.Type), node.Text!))
+                        with
+                    { Eager = Value(id)?.EagerRange == true };
+                }
             case HirKind.Scope:
                 return Scope(node, children, facts);
             case HirKind.TemplateClosure:
@@ -254,11 +257,15 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
             NativeBehavior behavior = signature.Behavior.GetValueOrDefault();
             bool eager = (behavior & NativeBehavior.EagerRange) != 0;
             if (signature.ResultRule == NativeResultRule.FirstArgument && arguments.Length != 0)
-                return arguments[0] with { Eager = eager
-                    || (behavior & NativeBehavior.PreservesIdentity) != 0 && arguments[0].Eager };
+                return arguments[0] with
+                {
+                    Eager = eager
+                    || (behavior & NativeBehavior.PreservesIdentity) != 0 && arguments[0].Eager
+                };
             if (signature.ResultRule == NativeResultRule.RangeItem && arguments.Length != 0)
                 return Fact(types.Element(arguments[0].SemanticType ?? hir.Type(arguments[0].Type)))
-                    with { Eager = Value(children[1])?.Element?.EagerRange == true };
+                    with
+                { Eager = Value(children[1])?.Element?.EagerRange == true };
             if (signature.ResultRule == NativeResultRule.CastTarget && children.Length > 2)
             {
                 HirNode target = program.Node(children[2]);

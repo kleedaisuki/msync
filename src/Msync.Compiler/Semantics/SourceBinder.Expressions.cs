@@ -94,7 +94,9 @@ internal sealed partial class SourceBinder
             {
                 string? module = binary.Right switch
                 {
-                    NameExpr name => name.Name, StringExpr text => text.Value, _ => null
+                    NameExpr name => name.Name,
+                    StringExpr text => text.Value,
+                    _ => null
                 };
                 if (module is not null)
                 {
@@ -147,13 +149,20 @@ internal sealed partial class SourceBinder
                 [left], text: selection[1..^1], effects: HirEffects.ReadExternal | HirEffects.Enumerate | HirEffects.MayFail);
         var operation = binary.Operator switch
         {
-            "+" => HirBinaryOperator.Add, "-" => HirBinaryOperator.Subtract,
-            "*" => HirBinaryOperator.Multiply, "/" => HirBinaryOperator.Divide,
-            "%" => HirBinaryOperator.Remainder, "**" => HirBinaryOperator.Power,
-            "==" => HirBinaryOperator.Equal, "!=" => HirBinaryOperator.NotEqual,
-            "<" => HirBinaryOperator.Less, "<=" => HirBinaryOperator.LessEqual,
-            ">" => HirBinaryOperator.Greater, ">=" => HirBinaryOperator.GreaterEqual,
-            "and" => HirBinaryOperator.And, "or" => HirBinaryOperator.Or,
+            "+" => HirBinaryOperator.Add,
+            "-" => HirBinaryOperator.Subtract,
+            "*" => HirBinaryOperator.Multiply,
+            "/" => HirBinaryOperator.Divide,
+            "%" => HirBinaryOperator.Remainder,
+            "**" => HirBinaryOperator.Power,
+            "==" => HirBinaryOperator.Equal,
+            "!=" => HirBinaryOperator.NotEqual,
+            "<" => HirBinaryOperator.Less,
+            "<=" => HirBinaryOperator.LessEqual,
+            ">" => HirBinaryOperator.Greater,
+            ">=" => HirBinaryOperator.GreaterEqual,
+            "and" => HirBinaryOperator.And,
+            "or" => HirBinaryOperator.Or,
             _ => throw Error($"Unknown operator '{binary.Operator}'.", binary.Span)
         };
         bool boolean = operation >= HirBinaryOperator.Equal;
@@ -185,7 +194,10 @@ internal sealed partial class SourceBinder
             var receiver = Expression(member.Left);
             string? selected = member.Right switch
             {
-                NameExpr item => item.Name, PathExpr item => item.Path, StringExpr item => item.Value, _ => null
+                NameExpr item => item.Name,
+                PathExpr item => item.Path,
+                StringExpr item => item.Value,
+                _ => null
             };
             if (selected is null) throw Error("A lexical member assignment requires a name.", member.Right.Span, "E0205");
             var value = Expression(assignment.Value);

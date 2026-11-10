@@ -8,16 +8,16 @@ internal sealed partial class SemanticAnalyzer
 {
     private SemanticValue Control(HirNodeId id, HirNode node, ReadOnlySpan<HirNodeId> children,
         SemanticContext context) => node.Kind switch
-    {
-        HirKind.If => Conditional(node, children, context),
-        HirKind.Match => Match(node, children, context),
-        HirKind.For => For(id, node, children, context),
-        HirKind.Loop => Loop(id, node, children, context),
-        HirKind.Break => Break(node, children, context),
-        HirKind.Return => Return(node, children, context),
-        HirKind.Barrier => Barrier(node, children, context),
-        _ => throw new InvalidOperationException($"Not a control expression: {node.Kind}")
-    };
+        {
+            HirKind.If => Conditional(node, children, context),
+            HirKind.Match => Match(node, children, context),
+            HirKind.For => For(id, node, children, context),
+            HirKind.Loop => Loop(id, node, children, context),
+            HirKind.Break => Break(node, children, context),
+            HirKind.Return => Return(node, children, context),
+            HirKind.Barrier => Barrier(node, children, context),
+            _ => throw new InvalidOperationException($"Not a control expression: {node.Kind}")
+        };
 
     private SemanticValue Conditional(HirNode node, ReadOnlySpan<HirNodeId> children,
         SemanticContext context)
@@ -32,8 +32,11 @@ internal sealed partial class SemanticAnalyzer
             MergeContexts(context, selected);
             AppendExits(context, selected);
             HirNodeId ignored = Null(node.Source, context).Node;
-            return value with { Node = Add(node, value.Type,
-                known ? [condition.Node, value.Node, ignored] : [condition.Node, ignored, value.Node], context) };
+            return value with
+            {
+                Node = Add(node, value.Type,
+                known ? [condition.Node, value.Node, ignored] : [condition.Node, ignored, value.Node], context)
+            };
         }
         SemanticContext yes = ForkFlow(context), no = ForkFlow(context);
         RefineCondition(children[0], true, yes);
@@ -45,8 +48,11 @@ internal sealed partial class SemanticAnalyzer
         else MergeContexts(context, yes, no);
         AppendExits(context, yes, no);
         SemanticValue result = Join(accepted, rejected);
-        return result with { Node = Add(node, result.Type,
-            [condition.Node, accepted.Node, rejected.Node], context) };
+        return result with
+        {
+            Node = Add(node, result.Type,
+            [condition.Node, accepted.Node, rejected.Node], context)
+        };
     }
 
     private SemanticValue Match(HirNode node, ReadOnlySpan<HirNodeId> children,

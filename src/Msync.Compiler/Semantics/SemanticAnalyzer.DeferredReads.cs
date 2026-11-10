@@ -22,8 +22,13 @@ internal sealed partial class SemanticAnalyzer
     private SemanticValue FutureRead(SemanticValue value, HirTypeId storage,
         SemanticContext context, HashSet<int> active)
     {
-        SemanticValue result = value with { Type = storage, Literal = null, Observation = null,
-            DenotedType = null };
+        SemanticValue result = value with
+        {
+            Type = storage,
+            Literal = null,
+            Observation = null,
+            DenotedType = null
+        };
         if (value.Element is { } element)
         {
             HirType descriptor = hir.Types[storage.Value];
@@ -81,8 +86,11 @@ internal sealed partial class SemanticAnalyzer
         HashSet<HirLocationId> active = [];
         Collect(definition);
         ImmutableArray<SemanticCallable> admittedChoices = choices.Distinct(SemanticCallableIdentity.Instance).ToImmutableArray();
-        return value with { Callables = admittedChoices,
-            FutureCallableDomain = new(StorageOwner(source, context), admittedChoices, value.Callables) };
+        return value with
+        {
+            Callables = admittedChoices,
+            FutureCallableDomain = new(StorageOwner(source, context), admittedChoices, value.Callables)
+        };
 
         void Collect(HirLocationId target)
         {

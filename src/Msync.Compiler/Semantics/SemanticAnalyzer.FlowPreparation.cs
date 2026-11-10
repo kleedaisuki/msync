@@ -96,10 +96,15 @@ internal sealed partial class SemanticAnalyzer
             || type != value.Type && !hir.Types[type.Value].Alternatives.IsDefaultOrEmpty)
             result = RetypeFlowValue(value, type, []);
         bool stable = facts.Domain(location).StableForLifetime;
-        result = result with { Type = type, Literal = fact.Boolean is { } boolean
+        result = result with
+        {
+            Type = type,
+            Literal = fact.Boolean is { } boolean
             ? new(HirLiteralKind.Bool, Boolean: boolean) : stable && Runtime(value) != TypeRef.Type ? value.Literal : null,
             DenotedType = fact.Denotations is { Types.Length: 1 } denotations ? denotations.Types[0] : null,
-            Observation = stable ? value.Observation : null, EagerRange = fact.Eager };
+            Observation = stable ? value.Observation : null,
+            EagerRange = fact.Eager
+        };
         if (result.DenotedType is { } denoted)
             result = result with { Literal = new(HirLiteralKind.Type, Type: hir.Types[denoted.Value].RuntimeType) };
         if (result.Scope is { } scope)
@@ -111,10 +116,14 @@ internal sealed partial class SemanticAnalyzer
                 FlowFact fieldFact = facts.Read(field);
                 if (!fieldFact.Assigned || fieldFact.Type.Kind == TypeKind.Never) continue;
                 SemanticValue fieldValue = context.Values.GetValueOrDefault(field, fields[name]);
-                fieldValue = fieldValue with { Type = fieldFact.SemanticType ?? hir.Type(fieldFact.Type),
+                fieldValue = fieldValue with
+                {
+                    Type = fieldFact.SemanticType ?? hir.Type(fieldFact.Type),
                     Literal = fieldFact.Boolean is { } fieldBoolean ? new(HirLiteralKind.Bool, Boolean: fieldBoolean) : null,
                     DenotedType = fieldFact.Denotations is { Types.Length: 1 } fieldTypes ? fieldTypes.Types[0] : null,
-                    Observation = null, EagerRange = fieldFact.Eager };
+                    Observation = null,
+                    EagerRange = fieldFact.Eager
+                };
                 if (fieldValue.DenotedType is { } fieldType)
                     fieldValue = fieldValue with { Literal = new(HirLiteralKind.Type, Type: hir.Types[fieldType.Value].RuntimeType) };
                 if (fieldFact.Callables is { } fieldCallables)
@@ -176,9 +185,19 @@ internal sealed partial class SemanticAnalyzer
             if (existing.Fields.TryGetValue(name, out var previous) && Runtime(target).Accepts(Runtime(previous)))
                 fields = fields.SetItem(name, RetypeFlowValue(previous, target.Type, active));
         if (existing.Region >= 0) active.Remove(existing.Region);
-        return value with { Type = type, Literal = null, DenotedType = null, Observation = null,
-            Scope = existing with { Layout = shape.Layout, Fields = fields,
+        return value with
+        {
+            Type = type,
+            Literal = null,
+            DenotedType = null,
+            Observation = null,
+            Scope = existing with
+            {
+                Layout = shape.Layout,
+                Fields = fields,
                 Locations = existing.Locations.Where(pair => fields.ContainsKey(pair.Key))
-                    .ToImmutableDictionary(StringComparer.Ordinal) } };
+                    .ToImmutableDictionary(StringComparer.Ordinal)
+            }
+        };
     }
 }

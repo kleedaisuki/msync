@@ -46,9 +46,21 @@ internal sealed partial class SemanticAnalyzer
             if (completed.TryGetValue((value, role), out known)) return known;
             // Runtime constants are not specialization facts. In particular a first
             // Bool argument must not delete the other caller's branch from shared code.
-            var result = value with { Node = HirNodeId.None, Location = null,
+            var result = value with
+            {
+                Node = HirNodeId.None,
+                Location = null,
                 Literal = value.DenotedType is null ? null : value.Literal,
-                Callables = [], Scope = null, Element = null, IndexedRegion = null, Origin = null, Observation = null, DeferredEffects = [], IndexedAliases = [], FutureCallableDomain = null };
+                Callables = [],
+                Scope = null,
+                Element = null,
+                IndexedRegion = null,
+                Origin = null,
+                Observation = null,
+                DeferredEffects = [],
+                IndexedAliases = [],
+                FutureCallableDomain = null
+            };
             active[value] = result;
             if (value.Scope is { } scope)
             {
@@ -64,8 +76,14 @@ internal sealed partial class SemanticAnalyzer
                     var sources = scope.Aliases.IsDefaultOrEmpty ? (scope.Region >= 0 ? ImmutableHashSet.Create(scope.Region) : [])
                         : scope.Aliases.ToImmutableHashSet();
                     if (summary || scope.Dynamic) scopeViews.Add((region, sources));
-                    var symbolic = scope with { Region = region, Fields = ImmutableDictionary<string, SemanticValue>.Empty,
-                        Locations = ImmutableDictionary<string, HirLocationId>.Empty, Aliases = [], Dynamic = scope.Dynamic || summary };
+                    var symbolic = scope with
+                    {
+                        Region = region,
+                        Fields = ImmutableDictionary<string, SemanticValue>.Empty,
+                        Locations = ImmutableDictionary<string, HirLocationId>.Empty,
+                        Aliases = [],
+                        Dynamic = scope.Dynamic || summary
+                    };
                     formal.Objects[region] = symbolic;
                     result = result with { Scope = symbolic };
                     active[value] = result;
@@ -90,8 +108,11 @@ internal sealed partial class SemanticAnalyzer
             if (!value.Callables.IsDefaultOrEmpty)
                 result = result with { Callables = AbstractCallables(value.Callables, role) };
             if (value.FutureCallableDomain is { } future)
-                result = result with { FutureCallableDomain = new(FormalLocation(future.Owner),
-                    AbstractCallables(future.Choices, role), AbstractCallables(future.Current, role)) };
+                result = result with
+                {
+                    FutureCallableDomain = new(FormalLocation(future.Owner),
+                    AbstractCallables(future.Choices, role), AbstractCallables(future.Current, role))
+                };
             if (value.IndexedRegion is { } indexed)
             {
                 if (!indexedRegions.TryGetValue(indexed, out var region))
@@ -106,20 +127,26 @@ internal sealed partial class SemanticAnalyzer
             if (!value.IndexedAliases.IsDefaultOrEmpty)
                 result = result with { IndexedAliases = [MapResourceView(value.IndexedAliases, role)] };
             if (!value.DeferredEffects.IsDefaultOrEmpty)
-                result = result with { DeferredEffects = value.DeferredEffects.Select(write => write with
+                result = result with
                 {
-                    After = Abstract(write.After, roles.WriteValue(role)),
-                    IndexedStorage = write.IndexedStorage is { } storage ? storage with { Element = Abstract(storage.Element, roles.WriteElement(role)) } : null,
-                    Location = write.Kind == SemanticWriteKind.Location ? FormalLocation(write.Location) : write.Location,
-                    Region = write.Kind == SemanticWriteKind.Field ? MapSourceRegion(write.Region)
+                    DeferredEffects = value.DeferredEffects.Select(write => write with
+                    {
+                        After = Abstract(write.After, roles.WriteValue(role)),
+                        IndexedStorage = write.IndexedStorage is { } storage ? storage with { Element = Abstract(storage.Element, roles.WriteElement(role)) } : null,
+                        Location = write.Kind == SemanticWriteKind.Location ? FormalLocation(write.Location) : write.Location,
+                        Region = write.Kind == SemanticWriteKind.Field ? MapSourceRegion(write.Region)
                         : write.Kind == SemanticWriteKind.Indexed ? MapIndexedRegion(write.Region) : write.Region
-                }).ToImmutableArray() };
+                    }).ToImmutableArray()
+                };
             if (!value.OpenSessionCalls.IsDefaultOrEmpty)
-                result = result with { OpenSessionCalls = [.. value.OpenSessionCalls.Select(binding => binding with
+                result = result with
+                {
+                    OpenSessionCalls = [.. value.OpenSessionCalls.Select(binding => binding with
                 {
                     Callee = binding.Callee with { Root = FormalLocation(binding.Callee.Root) },
                     Arguments = [.. binding.Arguments.Select(source => source is null ? null : source with { Root = FormalLocation(source.Root) })]
-                })] };
+                })]
+                };
             active.Remove(value);
             completed[(value, role)] = result;
             return result;
@@ -235,9 +262,15 @@ internal sealed partial class SemanticAnalyzer
             var result = value with { Origin = origin };
             if (value.Scope is not { } scope || !active.Add(scope.Region)) return result;
             scope = formal.Objects.GetValueOrDefault(scope.Region, scope);
-            scope = scope with { Fields = scope.Fields.ToImmutableDictionary(pair => pair.Key,
-                pair => AttachOrigin(pair.Value, origin with { Fields = origin.Fields.IsDefault
-                    ? [pair.Key] : origin.Fields.Add(pair.Key) }, active), StringComparer.Ordinal) };
+            scope = scope with
+            {
+                Fields = scope.Fields.ToImmutableDictionary(pair => pair.Key,
+                pair => AttachOrigin(pair.Value, origin with
+                {
+                    Fields = origin.Fields.IsDefault
+                    ? [pair.Key] : origin.Fields.Add(pair.Key)
+                }, active), StringComparer.Ordinal)
+            };
             formal.Objects[scope.Region] = scope;
             active.Remove(scope.Region);
             return result with { Scope = scope };
@@ -265,9 +298,13 @@ internal sealed partial class SemanticAnalyzer
             if (formal.Publish)
             {
                 target = new(owner.hir.Locations.Count);
-                formal.Output!.ReserveLocation(owner.hir.Locations[source.Value] with { Owner = formal.Function, TemplateOwner = null,
+                formal.Output!.ReserveLocation(owner.hir.Locations[source.Value] with
+                {
+                    Owner = formal.Function,
+                    TemplateOwner = null,
                     StorageType = owner.ResolveHirType(caller.Storage.GetValueOrDefault(source,
-                        owner.hir.Locations[source.Value].StorageType), caller) });
+                        owner.hir.Locations[source.Value].StorageType), caller)
+                });
             }
             Locations[source] = target;
             if (caller.CallableContracts.TryGetValue(source, out var contracts)) formal.CallableContracts[target] = contracts;

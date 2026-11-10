@@ -67,7 +67,8 @@ internal sealed record EditorSyntaxIndex(
             if (node is ConceptDeclaration concept)
                 yield return (concept.Span, concept.Types.Where(type => type.NameSpan is { Length: > 0 })
                     .Select(type => new SemanticMember(type.Name, "Type", $"typename {type.Name}",
-                    "An associated type selected from the constrained Scope.", SemanticRole: "type") { IsConstraint = true }).ToArray());
+                    "An associated type selected from the constrained Scope.", SemanticRole: "type")
+                    { IsConstraint = true }).ToArray());
             foreach (var scope in ConceptTypeScopes(SyntaxTraversal.Children(node))) yield return scope;
         }
     }

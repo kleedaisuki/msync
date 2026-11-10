@@ -96,7 +96,8 @@ internal sealed record SemanticObservationView(SemanticTypeTables Module, HirSou
         ImmutableArray<SemanticPathOwner> pathOwners,
         ImmutableArray<SemanticImport> imports,
         ImmutableArray<SemanticReference> references) : this(SemanticTypeTables.From(module),
-            source, values, observations, contexts, receivers, pathOwners, imports, references) { }
+            source, values, observations, contexts, receivers, pathOwners, imports, references)
+    { }
 
     public SemanticValueView Value(SemanticValueId id) => Values[id.Value];
 }
@@ -120,8 +121,12 @@ internal sealed class SemanticBindingMap(ImmutableDictionary<string, HirLocation
         if (!names.TryGetValue(name, out var original)) { value = null; return false; }
         HirLocationId location = locations.GetValueOrDefault(original, original);
         SemanticBindingView declaration = definitions[original];
-        value = declaration with { Name = name, Location = location,
-            Value = values.GetValueOrDefault(location, declaration.Value) };
+        value = declaration with
+        {
+            Name = name,
+            Location = location,
+            Value = values.GetValueOrDefault(location, declaration.Value)
+        };
         return true;
     }
     public IEnumerator<KeyValuePair<string, SemanticBindingView>> GetEnumerator()

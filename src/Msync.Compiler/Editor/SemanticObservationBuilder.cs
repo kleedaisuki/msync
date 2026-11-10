@@ -276,7 +276,9 @@ internal sealed partial class SemanticObservationBuilder
         SemanticValueId id = new(values.Count);
         values.Add(value with
         {
-            Template = callable.Template, NativeName = callable.NativeName, Alternatives = default,
+            Template = callable.Template,
+            NativeName = callable.NativeName,
+            Alternatives = default,
             Signature = declaration is null ? null : NativeSignature(declaration),
             Documentation = declaration is null ? null : Documentation(declaration.Source)
         });
@@ -403,9 +405,12 @@ internal sealed partial class SemanticObservationBuilder
         else if (program.TryDeclaration(location, out var moduleDeclaration)
             && moduleDeclaration.Kind == DeclarationKind.StandardModule
             && program.StandardModules.TryGetValue(moduleDeclaration.Name, out var module))
-            value = value with { Scope = new(-1, program.Hir.Types[program.Node(module.Body).Type.Value].Shape,
+            value = value with
+            {
+                Scope = new(-1, program.Hir.Types[program.Node(module.Body).Type.Value].Shape,
                 module.Exports.ToImmutableDictionary(pair => pair.Key, pair => BoundValue(pair.Value), StringComparer.Ordinal),
-                module.Exports, Named: true) };
+                module.Exports, Named: true)
+            };
         else if (initializers.TryGetValue(location, out var initializer))
             value = BoundExpression(initializer);
         boundValues[location] = value;

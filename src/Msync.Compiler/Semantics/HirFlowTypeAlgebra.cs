@@ -126,12 +126,20 @@ internal sealed class HirFlowTypeAlgebra(SemanticArena hir) : IFlowTypeAlgebra
         int element = projected.Element;
         if (storage.Element >= 0 && (element < 0
             || !hir.Types[storage.Element].RuntimeType.Accepts(hir.Types[element].RuntimeType))) element = storage.Element;
-        HirTypeId result = hir.Type(projected with { RuntimeType = runtime, Nullable = runtime.Nullable,
+        HirTypeId result = hir.Type(projected with
+        {
+            RuntimeType = runtime,
+            Nullable = runtime.Nullable,
             Shape = projected.Shape >= 0 ? projected.Shape : storage.Shape,
             Signature = projected.Signature >= 0 ? projected.Signature : storage.Signature,
-            Element = element });
-        return value with { Type = runtime, SemanticType = result,
-            Denotations = (runtime.Kind & (TypeKind.Type | TypeKind.Range)) != 0 ? value.Denotations : null };
+            Element = element
+        });
+        return value with
+        {
+            Type = runtime,
+            SemanticType = result,
+            Denotations = (runtime.Kind & (TypeKind.Type | TypeKind.Range)) != 0 ? value.Denotations : null
+        };
     }
 
     public HirTypeId Member(HirTypeId source, string name)

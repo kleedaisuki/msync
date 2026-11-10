@@ -107,7 +107,7 @@ internal sealed partial class SourceBinder
             {
                 var type = parameter.Type is null ? OpenType(parameter.Name) : Type(parameter.Type);
                 return parameter.Nullable ? hir.Type(hir.Types[type.Value] with
-                    { RuntimeType = hir.Types[type.Value].RuntimeType.WithNull, Nullable = true }) : type;
+                { RuntimeType = hir.Types[type.Value].RuntimeType.WithNull, Nullable = true }) : type;
             }).ToImmutableArray();
             var result = Type(member.ReturnType!);
             int signature = hir.Signatures.Count;

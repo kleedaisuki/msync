@@ -35,8 +35,11 @@ public static class EditorCompiler
         return new(occurrences.Values.OrderBy(item => item.Span.Start).ThenBy(item => item.Span.Length).ToArray(),
             parsed.Error?.Diagnostic ?? semantic.Diagnostic)
         {
-            SemanticContexts = contexts, RegexSpans = parsed.RegexSpans, Symbols = syntax.Symbols,
-            TypeSpans = syntax.TypeSpans, AssociatedTypes = syntax.AssociatedTypes,
+            SemanticContexts = contexts,
+            RegexSpans = parsed.RegexSpans,
+            Symbols = syntax.Symbols,
+            TypeSpans = syntax.TypeSpans,
+            AssociatedTypes = syntax.AssociatedTypes,
             AssociatedDefinitions = syntax.AssociatedDefinitions
         };
     }

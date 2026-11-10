@@ -49,8 +49,11 @@ internal sealed partial class SemanticAnalyzer
             values[value] = projected;
             if (value.Scope is { Region: < 0 } structural)
             {
-                structural = structural with { Fields = structural.Fields.ToImmutableDictionary(pair => pair.Key,
-                    pair => Visit(pair.Value), StringComparer.Ordinal) };
+                structural = structural with
+                {
+                    Fields = structural.Fields.ToImmutableDictionary(pair => pair.Key,
+                    pair => Visit(pair.Value), StringComparer.Ordinal)
+                };
                 projected = projected with { Scope = structural };
                 if (!structural.Aliases.IsDefault)
                     foreach (int alias in structural.Aliases)
@@ -65,8 +68,11 @@ internal sealed partial class SemanticAnalyzer
                 {
                     caller.Objects[scope.Region] = scope;
                     foreach (var field in scope.Locations.Values) PublishCell(field);
-                    scope = scope with { Fields = scope.Fields.ToImmutableDictionary(pair => pair.Key,
-                        pair => Visit(pair.Value), StringComparer.Ordinal) };
+                    scope = scope with
+                    {
+                        Fields = scope.Fields.ToImmutableDictionary(pair => pair.Key,
+                        pair => Visit(pair.Value), StringComparer.Ordinal)
+                    };
                     caller.Objects[scope.Region] = scope;
                     foreach (var field in scope.Fields.Keys)
                         if (produced.MemberContracts.TryGetValue((scope.Region, field), out var contracts))
@@ -83,13 +89,18 @@ internal sealed partial class SemanticAnalyzer
             int count = IndexedResourceCount(value);
             for (int index = 0; index < count; index++) PublishResource(IndexedResourceAt(value, index));
             if (!value.Callables.IsDefaultOrEmpty)
-                projected = projected with { Callables = value.Callables.Select(callable => callable with
+                projected = projected with
                 {
-                    Captures = callable.Captures.IsDefault ? [] : callable.Captures.Select(capture => capture with
-                    { Source = PublishCell(capture.Source), Value = Visit(capture.Value) }).ToImmutableArray()
-                }).ToImmutableArray() };
+                    Callables = value.Callables.Select(callable => callable with
+                    {
+                        Captures = callable.Captures.IsDefault ? [] : callable.Captures.Select(capture => capture with
+                        { Source = PublishCell(capture.Source), Value = Visit(capture.Value) }).ToImmutableArray()
+                    }).ToImmutableArray()
+                };
             if (value.FutureCallableDomain is { } future)
-                projected = projected with { FutureCallableDomain = new(PublishCell(future.Owner),
+                projected = projected with
+                {
+                    FutureCallableDomain = new(PublishCell(future.Owner),
                     future.Choices.Select(callable => callable with
                     {
                         Captures = callable.Captures.IsDefault ? [] : callable.Captures.Select(capture => capture with
@@ -98,7 +109,8 @@ internal sealed partial class SemanticAnalyzer
                     {
                         Captures = callable.Captures.IsDefault ? [] : callable.Captures.Select(capture => capture with
                         { Source = PublishCell(capture.Source), Value = Visit(capture.Value) }).ToImmutableArray()
-                    }).ToImmutableArray()) };
+                    }).ToImmutableArray())
+                };
             if (!value.DeferredEffects.IsDefaultOrEmpty)
                 projected = projected with { DeferredEffects = value.DeferredEffects.Select(VisitWrite).ToImmutableArray() };
             values[value] = projected;

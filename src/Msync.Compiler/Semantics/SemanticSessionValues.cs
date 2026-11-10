@@ -53,9 +53,13 @@ internal sealed class SemanticSessionValues(BoundProgram program, HirLoweringLay
             },
             TypeValue type => new(program.Hir.Type(TypeRef.Type), HirNodeId.None,
                 DenotedType: program.Hir.Type(type.Data)),
-            RangeValue range => hint with { Type = program.Hir.Type(range.Type), Node = HirNodeId.None,
+            RangeValue range => hint with
+            {
+                Type = program.Hir.Type(range.Type),
+                Node = HirNodeId.None,
                 Element = hint.Element is { } element ? element with { Type = program.Hir.Type(range.ItemType) }
-                    : new(program.Hir.Type(range.ItemType), HirNodeId.None) },
+                    : new(program.Hir.Type(range.ItemType), HirNodeId.None)
+            },
             _ => new(program.Hir.Type(actual.Type), HirNodeId.None)
         };
         observed[actual] = value;

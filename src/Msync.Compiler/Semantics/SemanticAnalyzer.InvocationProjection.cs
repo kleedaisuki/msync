@@ -52,8 +52,15 @@ internal sealed partial class SemanticAnalyzer
             literal = new(HirLiteralKind.String, Text: path.Text);
         else if (literal is { Kind: HirLiteralKind.String } text && Runtime(formal).WithoutNull == TypeRef.Path)
             literal = new(HirLiteralKind.Path, Text: text.Text);
-        return formal with { Literal = literal, DenotedType = actual.DenotedType, Observation = actual.Observation,
-            Node = HirNodeId.None, Location = null, Origin = null };
+        return formal with
+        {
+            Literal = literal,
+            DenotedType = actual.DenotedType,
+            Observation = actual.Observation,
+            Node = HirNodeId.None,
+            Location = null,
+            Origin = null
+        };
     }
 
     private HirTypeId FreshStorageParameter(HirTypeId type, Dictionary<int, int> parameters)
@@ -197,11 +204,14 @@ internal sealed partial class SemanticAnalyzer
                 }
                 else if (shape.Region < 0)
                 {
-                    result = result with { Scope = shape with
+                    result = result with
                     {
-                        Fields = shape.Fields.ToImmutableDictionary(pair => pair.Key, pair => Project(pair.Value), StringComparer.Ordinal),
-                        Aliases = ExpandScopeAliases(shape.Aliases)
-                    } };
+                        Scope = shape with
+                        {
+                            Fields = shape.Fields.ToImmutableDictionary(pair => pair.Key, pair => Project(pair.Value), StringComparer.Ordinal),
+                            Aliases = ExpandScopeAliases(shape.Aliases)
+                        }
+                    };
                 }
                 else
                 {
@@ -217,13 +227,20 @@ internal sealed partial class SemanticAnalyzer
                     if (existing && caller.Objects.TryGetValue(region, out var live)) result = result with { Scope = live };
                     else
                     {
-                        var symbolic = shape with { Region = region, Fields = ImmutableDictionary<string, SemanticValue>.Empty,
+                        var symbolic = shape with
+                        {
+                            Region = region,
+                            Fields = ImmutableDictionary<string, SemanticValue>.Empty,
                             Locations = shape.Locations.ToImmutableDictionary(pair => pair.Key, pair => MapLocation(pair.Value), StringComparer.Ordinal),
-                            Aliases = ExpandScopeAliases(shape.Aliases) };
+                            Aliases = ExpandScopeAliases(shape.Aliases)
+                        };
                         result = result with { Scope = symbolic };
                         values[value] = result;
-                        symbolic = symbolic with { Fields = shape.Fields.ToImmutableDictionary(pair => pair.Key,
-                            pair => Project(pair.Value), StringComparer.Ordinal) };
+                        symbolic = symbolic with
+                        {
+                            Fields = shape.Fields.ToImmutableDictionary(pair => pair.Key,
+                            pair => Project(pair.Value), StringComparer.Ordinal)
+                        };
                         caller.Objects[region] = symbolic;
                         foreach (int alias in symbolic.Aliases)
                             caller.AliasViews[alias] = caller.AliasViews.GetValueOrDefault(alias, ImmutableHashSet<int>.Empty).Add(region);
@@ -265,11 +282,14 @@ internal sealed partial class SemanticAnalyzer
             if (!value.DeferredEffects.IsDefaultOrEmpty)
                 result = result with { DeferredEffects = value.DeferredEffects.SelectMany(write => ProjectWrite(write)).ToImmutableArray() };
             if (!value.OpenSessionCalls.IsDefaultOrEmpty)
-                result = result with { OpenSessionCalls = [.. value.OpenSessionCalls.Select(binding => binding with
+                result = result with
+                {
+                    OpenSessionCalls = [.. value.OpenSessionCalls.Select(binding => binding with
                 {
                     Callee = binding.Callee with { Root = MapLocation(binding.Callee.Root) },
                     Arguments = [.. binding.Arguments.Select(source => source is null ? null : source with { Root = MapLocation(source.Root) })]
-                })] };
+                })]
+                };
             values[value] = result;
             return result;
         }
@@ -462,7 +482,8 @@ internal sealed partial class SemanticAnalyzer
                     {
                         var branch = new SemanticContext(destination.Function, destination.Output, destination)
                         {
-                            Queries = destination.Queries, DeferredReads = destination.DeferredReads,
+                            Queries = destination.Queries,
+                            DeferredReads = destination.DeferredReads,
                             InitializedSingletons = destination.InitializedSingletons,
                             MaybeInitializedSingletons = destination.MaybeInitializedSingletons,
                             ActiveSingletonGuards = destination.ActiveSingletonGuards
@@ -544,9 +565,12 @@ internal sealed partial class SemanticAnalyzer
                     if (context.Indexed.TryGetValue(write.Region, out var storage))
                         context.Indexed[write.Region] = write.IndexedStorage is { } summarized
                             ? owner.JoinIndexed(storage, summarized) with { Element = write.After }
-                            : storage with { Element = write.After,
+                            : storage with
+                            {
+                                Element = write.After,
                                 FixedCarrier = storage.FixedCarrier ?? (storage.CarrierConstraints.IsDefaultOrEmpty
-                                    && owner.Runtime(write.After).Kind != TypeKind.Never ? write.After.Type : null) };
+                                    && owner.Runtime(write.After).Kind != TypeKind.Never ? write.After.Type : null)
+                            };
                     context.IndexedWrites.Add(write.Region);
                     context.RecordWrite(write);
                     continue;

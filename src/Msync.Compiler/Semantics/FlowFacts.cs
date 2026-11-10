@@ -242,8 +242,11 @@ internal sealed class FlowFacts
     {
         if (types is null || left.SemanticType is null && right.SemanticType is null) return FlowFact.Join(left, right);
         FlowFact joined = types.Join(left, right);
-        return joined with { Assigned = left.Assigned && right.Assigned,
-            Boolean = left.Boolean == right.Boolean ? left.Boolean : null };
+        return joined with
+        {
+            Assigned = left.Assigned && right.Assigned,
+            Boolean = left.Boolean == right.Boolean ? left.Boolean : null
+        };
     }
 
     private static HirTypeId? DeferredSemanticType(FlowLocationDomain domain) =>

@@ -81,6 +81,6 @@ public sealed partial class HirBuilder
         Signatures.ToImmutableArray(), Calls.ToImmutableArray(), Closures.ToImmutableArray(),
         Scopes.ToImmutableArray(), Fors.ToImmutableArray(), Matches.ToImmutableArray(),
         Barriers.ToImmutableArray(), Ranges.ToImmutableArray(), Adaptations.ToImmutableArray(), entry, Exports.ToImmutableArray(), isSession, TemplateClosures.ToImmutableArray(), Concepts.ToImmutableArray())
-    { UnresolvedImports = UnresolvedImports.ToImmutableArray() };
+        { UnresolvedImports = UnresolvedImports.ToImmutableArray() };
     }
 }

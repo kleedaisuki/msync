@@ -58,9 +58,12 @@ internal sealed partial class SemanticAnalyzer
             openCalls = CombineSessionCalls(openCalls, nested.OpenSessionCalls);
         }
         if ((behavior & NativeBehavior.Deferred) != 0)
-            value = value with { DeferredEffects = pending,
+            value = value with
+            {
+                DeferredEffects = pending,
                 EagerRange = (behavior & NativeBehavior.PreservesIdentity) != 0 && value.EagerRange,
-                OpenSessionCalls = CombineSessionCalls(value.OpenSessionCalls, openCalls) };
+                OpenSessionCalls = CombineSessionCalls(value.OpenSessionCalls, openCalls)
+            };
         else if ((behavior & (NativeBehavior.Enumerates | NativeBehavior.Invokes)) != 0)
         {
             ApplySessionCallEffects(openCalls, context);
@@ -79,7 +82,8 @@ internal sealed partial class SemanticAnalyzer
         return value with
         {
             Node = EmitCall(emittedCall, callee, inputs, value.Type, source, context, NativeEffects(signature)),
-            Location = null, OpenSessionCalls = slot >= 0 ? AddSessionCall(value.OpenSessionCalls, SessionBinding(slot, callee, inputs, context)) : value.OpenSessionCalls
+            Location = null,
+            OpenSessionCalls = slot >= 0 ? AddSessionCall(value.OpenSessionCalls, SessionBinding(slot, callee, inputs, context)) : value.OpenSessionCalls
         };
     }
 
@@ -128,8 +132,11 @@ internal sealed partial class SemanticAnalyzer
             int slot = OpenSessionCall(callable, arguments, output.Type, source, context);
             int adaptation = hir.Adaptations.Count;
             context.Output!.AddAdaptation(new(targets.ToImmutable()) { SessionSlot = slot });
-            callable = callable with { Node = context.Output!.Add(HirKind.AdaptFunction, callable.Type, source, [callable.Node], adaptation),
-                OpenSessionCalls = slot >= 0 ? AddSessionCall(callable.OpenSessionCalls, SessionBinding(slot, callable, arguments, context)) : callable.OpenSessionCalls };
+            callable = callable with
+            {
+                Node = context.Output!.Add(HirKind.AdaptFunction, callable.Type, source, [callable.Node], adaptation),
+                OpenSessionCalls = slot >= 0 ? AddSessionCall(callable.OpenSessionCalls, SessionBinding(slot, callable, arguments, context)) : callable.OpenSessionCalls
+            };
         }
         return (output, callable, effects.ToImmutable());
     }
@@ -243,8 +250,16 @@ internal sealed partial class SemanticAnalyzer
     {
         if ((signature.Behavior.GetValueOrDefault() & NativeBehavior.PreservesIdentity) != 0)
             return value with { Node = HirNodeId.None, Location = null };
-        return value with { Node = HirNodeId.None, Location = null, IndexedRegion = null,
-            IndexedAliases = [], Origin = null, Observation = null, EagerRange = false };
+        return value with
+        {
+            Node = HirNodeId.None,
+            Location = null,
+            IndexedRegion = null,
+            IndexedAliases = [],
+            Origin = null,
+            Observation = null,
+            EagerRange = false
+        };
     }
 
     private ImmutableArray<SemanticValue> CheckNativeArguments(NativeSignature signature,
@@ -432,14 +447,27 @@ internal sealed partial class SemanticAnalyzer
         {
             var fields = scope.Fields.ToImmutableDictionary(pair => pair.Key,
                 pair => DynamicElement(pair.Value, context), StringComparer.Ordinal);
-            scope = scope with { Region = ++nextRegion, Fields = fields, Dynamic = true,
-                Aliases = ScopeAliases(scope).ToImmutableArray(), Locations = ImmutableDictionary<string, HirLocationId>.Empty };
+            scope = scope with
+            {
+                Region = ++nextRegion,
+                Fields = fields,
+                Dynamic = true,
+                Aliases = ScopeAliases(scope).ToImmutableArray(),
+                Locations = ImmutableDictionary<string, HirLocationId>.Empty
+            };
             context.Objects[scope.Region] = scope;
             foreach (int alias in scope.Aliases)
                 context.AliasViews[alias] = context.AliasViews.GetValueOrDefault(alias, ImmutableHashSet<int>.Empty).Add(scope.Region);
         }
-        return value with { Scope = scope, Element = element, Literal = null, DenotedType = null,
-            Location = null, Node = HirNodeId.None };
+        return value with
+        {
+            Scope = scope,
+            Element = element,
+            Literal = null,
+            DenotedType = null,
+            Location = null,
+            Node = HirNodeId.None
+        };
     }
 
     private SemanticValue RefreshIndexed(SemanticValue value, SemanticContext context)

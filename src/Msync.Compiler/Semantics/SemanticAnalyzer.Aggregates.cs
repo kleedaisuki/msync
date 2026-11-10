@@ -31,8 +31,10 @@ internal sealed partial class SemanticAnalyzer
         // flow effects on a path where this singleton is already initialized.
         if (initialized) context = new(context.Function, context.Output, context)
         {
-            Queries = context.Queries, DeferredReads = context.DeferredReads,
-            ExpectedReturn = context.ExpectedReturn, FlowAnalysis = context.FlowAnalysis,
+            Queries = context.Queries,
+            DeferredReads = context.DeferredReads,
+            ExpectedReturn = context.ExpectedReturn,
+            FlowAnalysis = context.FlowAnalysis,
             InitializedSingletons = context.InitializedSingletons,
             MaybeInitializedSingletons = context.MaybeInitializedSingletons
         };
@@ -96,7 +98,7 @@ internal sealed partial class SemanticAnalyzer
                 if (context.Publish)
                 {
                     context.Output!.SetLocation(fieldLocation, hir.Locations[fieldLocation.Value] with
-                        { StorageType = field.StorageType });
+                    { StorageType = field.StorageType });
                     var declaration = hir.Nodes[initializers[index].Value];
                     initializers[index] = context.Output!.Add(HirKind.Declare, hir.Type(TypeRef.Null), declaration.Source,
                         [converted.Node], fieldLocation.Value);

@@ -158,15 +158,20 @@ public static class HirSealer
             var rewrittenNodes = nodes.Copy(module.Nodes, node => RewriteNode(node, edges));
             return module with
             {
-                Nodes = rewrittenNodes, Edges = edges.MoveToImmutable(),
+                Nodes = rewrittenNodes,
+                Edges = edges.MoveToImmutable(),
                 Functions = [.. module.Functions.Select(function => function with { Body = Node(function.Body), Captures = RewriteCaptures(function.Captures) })],
                 Templates = [.. module.Templates.Select(template => template with { Body = Node(template.Body), Captures = RewriteCaptures(template.Captures) })],
-                Literals = literals.Copy(module.Literals), Calls = calls.Copy(module.Calls),
+                Literals = literals.Copy(module.Literals),
+                Calls = calls.Copy(module.Calls),
                 Closures = closures.Copy(module.Closures, closure => closure with { Captures = RewriteCaptures(closure.Captures) }),
                 TemplateClosures = templates.Copy(module.TemplateClosures, closure => closure with { Captures = RewriteCaptures(closure.Captures) }),
-                Scopes = scopes.Copy(module.Scopes), Fors = fors.Copy(module.Fors),
-                Matches = matches.Copy(module.Matches, RewriteMatch), Barriers = barriers.Copy(module.Barriers),
-                Ranges = ranges.Copy(module.Ranges), Adaptations = adaptations.Copy(module.Adaptations)
+                Scopes = scopes.Copy(module.Scopes),
+                Fors = fors.Copy(module.Fors),
+                Matches = matches.Copy(module.Matches, RewriteMatch),
+                Barriers = barriers.Copy(module.Barriers),
+                Ranges = ranges.Copy(module.Ranges),
+                Adaptations = adaptations.Copy(module.Adaptations)
             };
         }
 
@@ -183,12 +188,17 @@ public static class HirSealer
             foreach (var child in module.Children(node)) edges.Add(Node(child));
             int data = node.Kind switch
             {
-                HirKind.Literal => literals.Map[node.Data], HirKind.Call => calls.Map[node.Data],
-                HirKind.Closure => closures.Map[node.Data], HirKind.TemplateClosure => templates.Map[node.Data],
-                HirKind.Scope => scopes.Map[node.Data], HirKind.For => fors.Map[node.Data],
-                HirKind.Match => matches.Map[node.Data], HirKind.Barrier => barriers.Map[node.Data],
+                HirKind.Literal => literals.Map[node.Data],
+                HirKind.Call => calls.Map[node.Data],
+                HirKind.Closure => closures.Map[node.Data],
+                HirKind.TemplateClosure => templates.Map[node.Data],
+                HirKind.Scope => scopes.Map[node.Data],
+                HirKind.For => fors.Map[node.Data],
+                HirKind.Match => matches.Map[node.Data],
+                HirKind.Barrier => barriers.Map[node.Data],
                 HirKind.Range or HirKind.LazyRange => ranges.Map[node.Data],
-                HirKind.AdaptFunction => adaptations.Map[node.Data], _ => node.Data
+                HirKind.AdaptFunction => adaptations.Map[node.Data],
+                _ => node.Data
             };
             return node with { Children = children, Data = data };
         }

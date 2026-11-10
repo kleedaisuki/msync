@@ -79,17 +79,24 @@ internal sealed partial class SemanticAnalyzer
             result = FutureRead(result, result.Type, context) with
             { OpenSessionCalls = AddSessionCall(result.OpenSessionCalls, SessionBinding(slot, callee, arguments, context)) };
         }
-        SemanticValue emitted = result! with { Node = EmitCall(call, callee, arguments, result!.Type, source, context), Location = null,
+        SemanticValue emitted = result! with
+        {
+            Node = EmitCall(call, callee, arguments, result!.Type, source, context),
+            Location = null,
             DeferredEffects = result.DeferredEffects.IsDefaultOrEmpty ? deferredEffects.ToImmutable()
-                : result.DeferredEffects.AddRange(deferredEffects) };
+                : result.DeferredEffects.AddRange(deferredEffects)
+        };
         return closedResult is { } requiredResult ? Convert(emitted, requiredResult, source, context) : emitted;
     }
 
     private static SemanticContext CallAlternative(SemanticContext context) => new(context.Function, context.Output, context)
     {
-        DeferredReads = context.DeferredReads, Queries = context.Queries,
-        ExpectedReturn = context.ExpectedReturn, FlowAnalysis = context.FlowAnalysis,
-        NextRegion = context.NextRegion, InitializedSingletons = context.InitializedSingletons,
+        DeferredReads = context.DeferredReads,
+        Queries = context.Queries,
+        ExpectedReturn = context.ExpectedReturn,
+        FlowAnalysis = context.FlowAnalysis,
+        NextRegion = context.NextRegion,
+        InitializedSingletons = context.InitializedSingletons,
         MaybeInitializedSingletons = context.MaybeInitializedSingletons,
         ActiveSingletonGuards = context.ActiveSingletonGuards,
         WriteEvents = context.WriteEvents is null ? null : new(context.WriteEvents)

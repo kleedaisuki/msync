@@ -279,8 +279,13 @@ internal sealed partial class SemanticAnalyzer
             if (coercion && context.Publish)
             {
                 incoming = new(hir.Locations.Count);
-                context.Output!.ReserveLocation(definition with { Name = "<input:" + definition.Name + ">", Owner = function,
-                    TemplateOwner = null, StorageType = argument.Type });
+                context.Output!.ReserveLocation(definition with
+                {
+                    Name = "<input:" + definition.Name + ">",
+                    Owner = function,
+                    TemplateOwner = null,
+                    StorageType = argument.Type
+                });
                 var read = context.Output!.Add(HirKind.ReadLocation, argument.Type, definition.Source, data: incoming.Value);
                 argument = argument with { Node = read };
             }
@@ -316,7 +321,8 @@ internal sealed partial class SemanticAnalyzer
             Result = recursiveSignature is null
                 ? ValueForType(context.ExpectedReturn ?? hir.Type(new TypeRef(TypeKind.Never)))
                 : input.Abstract(recursiveSignature),
-            Arguments = formalArguments.ToImmutable(), Captures = formalCaptures.ToImmutable(),
+            Arguments = formalArguments.ToImmutable(),
+            Captures = formalCaptures.ToImmutable(),
             CaptureTargets = captureTargets.ToImmutable()
         };
         // Both query and code generation reserve before examining a recursive body.
@@ -335,8 +341,11 @@ internal sealed partial class SemanticAnalyzer
             if (context.Publish && parameterInitializers.Count != 0)
             {
                 parameterInitializers.Add(body.Node);
-                body = body with { Node = context.Output!.Add(HirKind.Block, body.Type, template.Source,
-                    System.Runtime.InteropServices.CollectionsMarshal.AsSpan(parameterInitializers)) };
+                body = body with
+                {
+                    Node = context.Output!.Add(HirKind.Block, body.Type, template.Source,
+                    System.Runtime.InteropServices.CollectionsMarshal.AsSpan(parameterInitializers))
+                };
             }
             instance.Result = result with { Location = null };
             FreezeSummary(instance, context);

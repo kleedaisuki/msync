@@ -112,8 +112,20 @@ internal sealed partial class SemanticContext(HirFunctionId function, SemanticOu
     {
         if (Output is null) return QueryFork();
         SemanticContext fork = new(Function, Output)
-        { ActivatedModules = ActivatedModules, ReplacedProgramCells = ReplacedProgramCells, DeferredReads = DeferredReads, ExpectedReturn = ExpectedReturn, Queries = Queries, FlowAnalysis = FlowAnalysis, FieldWrites = FieldWrites, NextRegion = NextRegion, InitializedSingletons = InitializedSingletons, MaybeInitializedSingletons = MaybeInitializedSingletons,
-            ActiveSingletonGuards = ActiveSingletonGuards, WriteEvents = WriteEvents is null ? null : new(WriteEvents) };
+        {
+            ActivatedModules = ActivatedModules,
+            ReplacedProgramCells = ReplacedProgramCells,
+            DeferredReads = DeferredReads,
+            ExpectedReturn = ExpectedReturn,
+            Queries = Queries,
+            FlowAnalysis = FlowAnalysis,
+            FieldWrites = FieldWrites,
+            NextRegion = NextRegion,
+            InitializedSingletons = InitializedSingletons,
+            MaybeInitializedSingletons = MaybeInitializedSingletons,
+            ActiveSingletonGuards = ActiveSingletonGuards,
+            WriteEvents = WriteEvents is null ? null : new(WriteEvents)
+        };
         foreach (var pair in SingletonWriteFacts) fork.SingletonWriteFacts.Add(pair.Key, pair.Value);
         foreach (var pair in SingletonSchemas) fork.SingletonSchemas.Add(pair.Key, pair.Value);
         foreach (var pair in Locations) fork.Locations.Add(pair.Key, pair.Value);
@@ -131,8 +143,18 @@ internal sealed partial class SemanticContext(HirFunctionId function, SemanticOu
     }
 
     public SemanticContext QueryFork() => new(Function, parent: this)
-    { DeferredReads = DeferredReads, ExpectedReturn = ExpectedReturn, Queries = Queries ?? new(), FlowAnalysis = FlowAnalysis, ReturnPlaces = ReturnPlaces, NextRegion = NextRegion, InitializedSingletons = InitializedSingletons, MaybeInitializedSingletons = MaybeInitializedSingletons,
-            ActiveSingletonGuards = ActiveSingletonGuards, WriteEvents = WriteEvents is null ? null : new(WriteEvents) };
+    {
+        DeferredReads = DeferredReads,
+        ExpectedReturn = ExpectedReturn,
+        Queries = Queries ?? new(),
+        FlowAnalysis = FlowAnalysis,
+        ReturnPlaces = ReturnPlaces,
+        NextRegion = NextRegion,
+        InitializedSingletons = InitializedSingletons,
+        MaybeInitializedSingletons = MaybeInitializedSingletons,
+        ActiveSingletonGuards = ActiveSingletonGuards,
+        WriteEvents = WriteEvents is null ? null : new(WriteEvents)
+    };
 
     public HirLocationId Location(HirLocationId source) => Locations.GetValueOrDefault(source, source);
 }

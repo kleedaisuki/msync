@@ -85,7 +85,11 @@ internal static class ScopeScalarization
                     case OpCode.Nop: case OpCode.Barrier: break;
                     case OpCode.GetSingleton: stack.Add(new()); break;
                     case OpCode.SetSingleton: Escape(Pop()); stack.Add(new()); break;
-                    case OpCode.Constant: case OpCode.Null: case OpCode.True: case OpCode.False: case OpCode.LoadBuiltin:
+                    case OpCode.Constant:
+                    case OpCode.Null:
+                    case OpCode.True:
+                    case OpCode.False:
+                    case OpCode.LoadBuiltin:
                         stack.Add(new()); break;
                     case OpCode.LoadLocal: stack.Add(ReadStorage(Local(instruction.A))); break;
                     case OpCode.LoadStorage:
@@ -159,14 +163,16 @@ internal static class ScopeScalarization
                         else
                             stack.Add(specialized);
                         break;
-                    case OpCode.Call: case OpCode.ProcessCall:
+                    case OpCode.Call:
+                    case OpCode.ProcessCall:
                         foreach (var value in PopMany(instruction.A + 1)) Escape(value);
                         Invalidate(); stack.Add(new()); break;
                     case OpCode.NativeCall:
                         foreach (var value in PopMany(instruction.A)) Escape(value);
                         if ((InstructionEffects.NativeEffects(instruction.Text) & InstructionEffect.Invoke) != 0) Invalidate();
                         stack.Add(new()); break;
-                    case OpCode.MakeRange: case OpCode.MakeLazyRange:
+                    case OpCode.MakeRange:
+                    case OpCode.MakeLazyRange:
                         foreach (var value in PopMany(instruction.A)) Escape(value);
                         stack.Add(new()); break;
                     case OpCode.Acquire:
@@ -176,8 +182,13 @@ internal static class ScopeScalarization
                     case OpCode.JumpIfFalse: case OpCode.JumpIfTrue: Escape(Pop()); break;
                     case OpCode.Jump: break;
                     case OpCode.Return: if (stack.Count > 0) Escape(Pop()); break;
-                    case OpCode.GetIterator: case OpCode.Not:
-                    case OpCode.IsNull: case OpCode.Negate: case OpCode.Convert: case OpCode.SelectPath: case OpCode.DeferRange:
+                    case OpCode.GetIterator:
+                    case OpCode.Not:
+                    case OpCode.IsNull:
+                    case OpCode.Negate:
+                    case OpCode.Convert:
+                    case OpCode.SelectPath:
+                    case OpCode.DeferRange:
                         Escape(Pop()); stack.Add(new()); break;
                     case OpCode.RegexMatch:
                         foreach (var value in PopMany(instruction.Text is null ? 2 : 1)) Escape(value);

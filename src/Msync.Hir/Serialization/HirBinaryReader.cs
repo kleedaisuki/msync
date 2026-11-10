@@ -188,7 +188,8 @@ internal sealed class HirBinaryReader(BinaryReader reader)
     private HirSignature Signature() => new(Array("signature parameters", 4, () => new HirTypeId(reader.ReadInt32())),
         new(reader.ReadInt32()), Boolean());
     private HirCall Call() => new(Defined((HirCallKind)reader.ReadByte()), new(reader.ReadInt32()), Optional(),
-        Array("dispatch targets", 9, Target), reader.ReadInt32()) { SessionSlot = reader.ReadInt32() };
+        Array("dispatch targets", 9, Target), reader.ReadInt32())
+    { SessionSlot = reader.ReadInt32() };
     private HirDispatchTarget Target() => new(new(reader.ReadInt32(), Boolean()), new(reader.ReadInt32()));
     private HirScopeConstruction Scope()
     {

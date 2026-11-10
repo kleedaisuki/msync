@@ -302,11 +302,16 @@ public static class HirLowerer
             if (operation == HirBinaryOperator.Power) { Add(OpCode.NativeCall, 2, text: "math.pow", source: node.Source); return; }
             Add(operation switch
             {
-                HirBinaryOperator.Add => OpCode.Add, HirBinaryOperator.Subtract => OpCode.Subtract,
-                HirBinaryOperator.Multiply => OpCode.Multiply, HirBinaryOperator.Divide => OpCode.Divide,
-                HirBinaryOperator.Remainder => OpCode.Remainder, HirBinaryOperator.Equal => OpCode.Equal,
-                HirBinaryOperator.NotEqual => OpCode.NotEqual, HirBinaryOperator.Less => OpCode.Less,
-                HirBinaryOperator.LessEqual => OpCode.LessEqual, HirBinaryOperator.Greater => OpCode.Greater,
+                HirBinaryOperator.Add => OpCode.Add,
+                HirBinaryOperator.Subtract => OpCode.Subtract,
+                HirBinaryOperator.Multiply => OpCode.Multiply,
+                HirBinaryOperator.Divide => OpCode.Divide,
+                HirBinaryOperator.Remainder => OpCode.Remainder,
+                HirBinaryOperator.Equal => OpCode.Equal,
+                HirBinaryOperator.NotEqual => OpCode.NotEqual,
+                HirBinaryOperator.Less => OpCode.Less,
+                HirBinaryOperator.LessEqual => OpCode.LessEqual,
+                HirBinaryOperator.Greater => OpCode.Greater,
                 HirBinaryOperator.GreaterEqual => OpCode.GreaterEqual,
                 _ => throw new InvalidOperationException($"Invalid binary operation {operation}.")
             }, source: node.Source);

@@ -104,8 +104,12 @@ internal sealed partial class SemanticAnalyzer
         int descriptor = hir.Closures.Count;
         caller.Output.AddClosure(new(deferred.Function, captures.ToImmutable()));
         HirNodeId closure = caller.Output.Add(HirKind.Closure, hir.Type(TypeRef.Function), node.Source, data: descriptor);
-        return result with { Node = caller.Output.Add(HirKind.DeferRange, result.Type, node.Source, [closure]),
-            Location = null, DeferredEffects = effects };
+        return result with
+        {
+            Node = caller.Output.Add(HirKind.DeferRange, result.Type, node.Source, [closure]),
+            Location = null,
+            DeferredEffects = effects
+        };
     }
 
     private FlowFact? SourceFlowReturn(SemanticCallable callable, IReadOnlyList<FlowFact> arguments,
@@ -222,9 +226,12 @@ internal sealed partial class SemanticAnalyzer
                 || annotatedRuntime == TypeRef.Path && result.Fact.Type.WithoutNull == TypeRef.String;
             if (template.ResultAnnotation is not null && (result.Fact.Type == TypeRef.Any || pathConversion))
                 result = result with { Fact = Shape(annotation).Fact };
-            returnSchemes[key] = result with { Value = result.Value is { } callableResult
+            returnSchemes[key] = result with
+            {
+                Value = result.Value is { } callableResult
                 && !callableResult.Callables.IsDefaultOrEmpty
-                    ? CallableShapeValue(callableResult, new(ReferenceEqualityComparer.Instance)) : null };
+                    ? CallableShapeValue(callableResult, new(ReferenceEqualityComparer.Instance)) : null
+            };
             return result;
         }
         finally { activeReturnSchemes.Remove(key); }

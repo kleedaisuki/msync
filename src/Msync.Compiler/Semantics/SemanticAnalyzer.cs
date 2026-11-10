@@ -26,8 +26,11 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
         if (entryPrelude.Count != 0)
         {
             entryPrelude.Add(body.Node);
-            body = body with { Node = output.Add(HirKind.Block, body.Type,
-                program.Node(program.Body).Source, System.Runtime.InteropServices.CollectionsMarshal.AsSpan(entryPrelude)) };
+            body = body with
+            {
+                Node = output.Add(HirKind.Block, body.Type,
+                program.Node(program.Body).Source, System.Runtime.InteropServices.CollectionsMarshal.AsSpan(entryPrelude))
+            };
         }
         RefreshSessionCalls(context);
         output.SealFunction(program.Entry, new("<main>", [], [], body.Type, body.Node));
