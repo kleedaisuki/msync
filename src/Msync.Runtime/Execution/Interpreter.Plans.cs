@@ -18,6 +18,9 @@ public sealed partial class Interpreter
         if (endpointDependencies.Count != 0) return ReadWait(endpointDependencies);
         var namespaceDependencies = NamespaceDependencies([path]);
         if (namespaceDependencies is { Count: > 0 }) return ReadWait(namespaceDependencies);
+        var entry = filesystem.AdmissionEntry(path);
+        var entryDependencies = resources.Dependencies([Key(entry)], [], false);
+        if (entryDependencies.Count != 0) return ReadWait(entryDependencies);
         var observed = filesystem.AdmissionResources(path, followLeaf);
         var dependencies = resources.Dependencies(observed.Where(resource => !subtree || !resource.Subtree)
             .Select(Key).ToArray(), [], false);

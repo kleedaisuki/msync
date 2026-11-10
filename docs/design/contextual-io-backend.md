@@ -589,3 +589,14 @@ selection and overwrite CLI routes pass. Independent held-producer oracles check
 prefix progress without replay, no partial cohort admission, unrelated ready
 reads, unselected branches and replacement through an intermediate path. These
 are ordering/ownership checks, not another latency measurement window.
+
+Selected read admission has three ordered stages: namespace publication, exact
+entry publication without following the leaf, then current referent/subtree
+resolution. An entry replacement can make the old symlink referent irrelevant;
+collecting both dependencies before waiting would incorrectly retain that old
+wait. A controlled Jobs=1 oracle holds an old-target producer and queues a
+prepared WriteText replacement of the symlink entry. Releasing only the job
+permit must let the observer return `new` before the unrelated old producer is
+released. This passes on Runtime
+`cb9080b66b196ba29f2d0a747456f53f2e999f7a067891959577c3abe444955d`;
+no task continues filesystem work after a pending admission stage.

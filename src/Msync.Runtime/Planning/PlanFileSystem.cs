@@ -10,6 +10,9 @@ internal sealed class PlanFileSystem(RuntimeContext context, ContextualResources
     private int observationDepth;
     private PlanFileSystem? admissionResolver;
 
+    internal PlanResource AdmissionEntry(PathValue path) =>
+        (admissionResolver ??= new(context, resources, cancellationToken)).Resource(path);
+
     internal IReadOnlyList<PlanResource> AdmissionResources(PathValue path, bool followLeaf) =>
         (admissionResolver ??= new(context, resources, cancellationToken)).ObservationResources(path, followLeaf);
 
