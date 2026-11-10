@@ -23,6 +23,23 @@ class Example:
 
 EXAMPLES: tuple[Example, ...] = (
     Example(
+        "planned-repl-io",
+        (
+            '"one" -> ./shared;',
+            "$std::io::read_text(./shared)",
+            '"two" -> ./shared;',
+            "$std::io::read_text(./shared)",
+            "let destination = ./first-output;",
+            '"one" -> destination;',
+            "destination = ./second-output;",
+            '"two" -> destination;',
+            "$std::io::read_text(./first-output)",
+            "$std::io::read_text(./second-output)",
+        ),
+        ("one", "two", "one", "two"),
+        errors=0,
+    ),
+    Example(
         "nullable-prefix",
         (
             'let value? = "before";',

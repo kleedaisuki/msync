@@ -6,6 +6,41 @@ string scratch = Path.Combine(Directory.GetCurrentDirectory(), ".temp", "schedul
 Directory.CreateDirectory(scratch);
 try
 {
+    if (args.Contains("--plan-prepare-1024", StringComparer.Ordinal))
+    {
+        await PreparationCostProbe.RunAsync(scratch, [1024]);
+        return;
+    }
+    if (args.Contains("--plan-prepare-observe", StringComparer.Ordinal))
+    {
+        await PreparationCostProbe.RunAsync(scratch);
+        return;
+    }
+    if (args.Contains("--plan-versions-only", StringComparer.Ordinal))
+    {
+        await PlanVersionProperties.RunAsync(scratch);
+        return;
+    }
+    if (args.Contains("--plan-forwarding-only", StringComparer.Ordinal))
+    {
+        await ContextualIoChecks.RunForwardingAsync(scratch);
+        return;
+    }
+    if (args.Contains("--plan-helper-only", StringComparer.Ordinal))
+    {
+        await ContextualIoChecks.RunHelperAsync(scratch);
+        return;
+    }
+    if (args.Contains("--plan-batch-failure-only", StringComparer.Ordinal))
+    {
+        await ContextualIoChecks.RunBatchFailureAsync(scratch);
+        return;
+    }
+    if (args.Contains("--contextual-io-only", StringComparer.Ordinal))
+    {
+        await ContextualIoChecks.RunAsync(scratch);
+        return;
+    }
     if (args.Contains("--retirement-only", StringComparer.Ordinal) || args.Contains("--retirement-observe", StringComparer.Ordinal))
     {
         await FrontierRetirementChecks.RunAsync(scratch, observe: args.Contains("--retirement-observe", StringComparer.Ordinal));
