@@ -6,23 +6,44 @@ public static class BlockBuilder
     { Blocks = module.Functions.SelectMany((function, index) => Partition(function, index)).ToArray() };
     public static IReadOnlyList<BasicBlock> ForFunction(FunctionCode function, int functionIndex) =>
         Partition(function, functionIndex).ToArray();
+
+    public static BasicBlock[] IndexFunction(FunctionCode function, int functionIndex)
+    {
+        var index = new BasicBlock[function.Instructions.Count];
+        foreach (var block in Partition(function, functionIndex))
+            Array.Fill(index, block, block.Start, block.End - block.Start);
+        return index;
+    }
+
     private static IEnumerable<BasicBlock> Partition(FunctionCode function, int functionIndex)
     {
         var code = function.Instructions;
         if (code.Count == 0) yield break;
-        var starts = new SortedSet<int> { 0, code.Count };
+        const byte boundary = 1, effect = 2;
+        var marks = new byte[code.Count + 1];
+        marks[0] = marks[^1] = boundary;
         for (var index = 0; index < code.Count; index++)
         {
             var instruction = code[index];
-            if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue) starts.Add(instruction.A);
-            if (instruction.Op == OpCode.IteratorNext) starts.Add(instruction.B);
-            if (IsBoundary(instruction)) { starts.Add(index); starts.Add(index + 1); }
+            if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue) marks[instruction.A] |= boundary;
+            if (instruction.Op == OpCode.IteratorNext) marks[instruction.B] |= boundary;
+            bool hasEffects = InstructionEffects.Effects(instruction) != InstructionEffect.None;
+            if (hasEffects) marks[index] |= effect;
+            if (hasEffects || instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.IteratorNext or OpCode.Return)
+            {
+                marks[index] |= boundary;
+                marks[index + 1] |= boundary;
+            }
         }
-        var boundaries = starts.ToArray();
-        for (var i = 0; i + 1 < boundaries.Length; i++)
+        var start = 0;
+        bool effects = (marks[0] & effect) != 0;
+        for (var end = 1; end <= code.Count; end++)
         {
-            var start = boundaries[i]; var end = boundaries[i + 1];
-            if (start == end) continue;
+            if ((marks[end] & boundary) == 0)
+            {
+                effects |= (marks[end] & effect) != 0;
+                continue;
+            }
             var last = code[end - 1];
             IReadOnlyList<int> next = last.Op switch
             {
@@ -32,9 +53,9 @@ public static class BlockBuilder
                 OpCode.IteratorNext => [last.B, end],
                 _ => end < code.Count ? [end] : []
             };
-            yield return new(functionIndex, start, end, next, code.Skip(start).Take(end - start).Any(IsEffect));
+            yield return new(functionIndex, start, end, next, effects);
+            start = end;
+            effects = (marks[end] & effect) != 0;
         }
     }
-    private static bool IsBoundary(Instruction i) => IsEffect(i) || i.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.IteratorNext or OpCode.Return;
-    private static bool IsEffect(Instruction i) => InstructionEffects.Effects(i) != InstructionEffect.None;
 }

@@ -1,7 +1,12 @@
+using System.Runtime.CompilerServices;
+
 namespace Msync.Core;
 
 public static class InstructionEffects
 {
+    private sealed record ScopeNames(bool HasDuplicates);
+    private static readonly ConditionalWeakTable<string, ScopeNames> scopeNames = new();
+
     public static InstructionEffect Effects(Instruction instruction) => instruction.Op switch
     {
         OpCode.NativeCall => NativeEffects(instruction.Text),
@@ -30,12 +35,7 @@ public static class InstructionEffects
     {
         if (instruction.A < 2 || instruction.Text is not { } names) return false;
         if (instruction.A > 4)
-        {
-            var seen = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var name in names.Split('\0', StringSplitOptions.RemoveEmptyEntries))
-                if (!seen.Add(name)) return true;
-            return false;
-        }
+            return scopeNames.GetValue(names, static names => AnalyzeScopeNames(names)).HasDuplicates;
         // Most source-owned scopes have only a few fields. Compare their slices
         // directly; large standard namespaces use the linear set path above.
         var source = names.AsSpan();
@@ -54,6 +54,16 @@ public static class InstructionEffects
             start = end + 1;
         }
         return false;
+    }
+
+    private static ScopeNames AnalyzeScopeNames(string names)
+    {
+        // Rewrites retain immutable operand text even when they create new
+        // instructions. The weak key lets this syntax fact die with its code.
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var name in names.Split('\0', StringSplitOptions.RemoveEmptyEntries))
+            if (!seen.Add(name)) return new(true);
+        return new(false);
     }
 
     // Enumeration is an invocation of the range's deferred source and callbacks,
