@@ -4,16 +4,17 @@ namespace Msync.Core;
 
 public sealed record ScopeValue : Value, IReadOnlyDictionary<string, Value>
 {
-    private readonly Value[] fields;
+    private object fields;
     public bool Equals(ScopeValue? other) => ReferenceEquals(this, other);
     public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
 
     public ScopeValue(IReadOnlyDictionary<string, Value> members)
     {
         var names = new string[members.Count];
-        fields = new Value[members.Count];
+        Value[] values = new Value[members.Count];
+        fields = values;
         int index = 0;
-        foreach (var member in members) { names[index] = member.Key; fields[index++] = member.Value; }
+        foreach (var member in members) { names[index] = member.Key; values[index++] = member.Value; }
         Layout = ScopeLayout.Own(names);
     }
     public ScopeValue(ScopeLayout layout, Value[] fields)
@@ -22,13 +23,19 @@ public sealed record ScopeValue : Value, IReadOnlyDictionary<string, Value>
         Layout = layout;
         this.fields = fields;
     }
+    internal ScopeValue(ScopeLayout layout, PackedScopeStorage fields)
+    {
+        Layout = layout;
+        this.fields = fields;
+    }
+    internal bool IsPacked => fields is PackedScopeStorage;
     public ScopeValue(IReadOnlyDictionary<string, Value> members, int allocationSite) : this(members) => AllocationSite = allocationSite;
     public ScopeLayout Layout { get; }
     public IReadOnlyDictionary<string, Value> Members => this;
     public int AllocationSite { get; init; }
     public int Count => Layout.Count;
     public IEnumerable<string> Keys => Layout.Names;
-    public IEnumerable<Value> Values => fields.Select(Read);
+    public IEnumerable<Value> Values => Enumerable.Range(0, Count).Select(GetField);
     public Value this[string name] => GetField(Layout.GetOffset(name));
     public bool ContainsKey(string name) => Layout.TryGetOffset(name, out _);
     public bool TryGetValue(string name, out Value value)
@@ -36,14 +43,42 @@ public sealed record ScopeValue : Value, IReadOnlyDictionary<string, Value>
         if (Layout.TryGetOffset(name, out int offset)) { value = GetField(offset); return true; }
         value = Value.Null; return false;
     }
-    public Value GetField(int offset) => Read(fields[offset]);
+    public Value GetField(int offset) => Read(fields is Value[] direct ? direct[offset]
+        : ((PackedScopeStorage)fields).GetField(offset));
+    public bool TryGetNumber(int offset, out double number)
+    {
+        if (fields is PackedScopeStorage packed) return packed.TryGetNumber(offset, out number);
+        Value value = Read(((Value[])fields)[offset]);
+        if (value is NumberValue numeric) { number = numeric.Data; return true; }
+        number = 0;
+        return false;
+    }
+    public void SetNumber(int offset, double number)
+    {
+        if (fields is PackedScopeStorage packed) { packed.SetNumber(offset, number); return; }
+        SetField(offset, new NumberValue(number));
+    }
     public bool IsField(int offset, string name) => (uint)offset < (uint)Layout.Count
         && string.Equals(Layout.Names[offset], name, StringComparison.Ordinal);
     public bool TryGetFieldOffset(string name, out int offset) => Layout.TryGetOffset(name, out offset);
+    public bool TryGetFieldCell(int offset, out CellValue cell)
+    {
+        CellValue? captured = fields is Value[] direct ? direct[offset] as CellValue
+            : ((PackedScopeStorage)fields).GetCell(offset);
+        cell = captured!;
+        return captured is not null;
+    }
     public void SetField(int offset, Value value)
     {
-        if (fields[offset] is CellValue cell) cell.Data = value;
-        else fields[offset] = value;
+        if (fields is PackedScopeStorage packed)
+        {
+            if (!packed.IsNumeric(offset)) { packed.SetField(offset, value); return; }
+            if (value is NumberValue number) { packed.SetNumber(offset, number.Data); return; }
+            fields = packed.Materialize();
+        }
+        Value[] direct = (Value[])fields;
+        if (direct[offset] is CellValue cell) cell.Data = value;
+        else direct[offset] = value;
     }
     public void SetMember(string name, Value value)
     {
@@ -52,7 +87,7 @@ public sealed record ScopeValue : Value, IReadOnlyDictionary<string, Value>
     }
     public ScopeValue MapFields(Func<Value, Value> transform)
     {
-        var values = new Value[fields.Length];
+        var values = new Value[Count];
         for (int index = 0; index < values.Length; index++) values[index] = transform(GetField(index));
         return new(Layout, values) { AllocationSite = AllocationSite };
     }
