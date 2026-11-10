@@ -300,3 +300,38 @@ Windows installer and VSIX. This task does not publish or replace any release.
 The public 0.8.1 tag/assets remain unchanged, bytecode format remains 5, HIR
 format remains 1 and the source language remains 0.8.0. Documentation-only
 closure commits do not change the accepted production source or payloads.
+
+## Tail-latency follow-up
+
+The subsequent [tail investigation](performance-tail-v081.md) retains the original
+seven-pair observations above, but separates them from larger process controls
+and power-user execution/session measurements. A 1,000-pair diagnostic comparison
+does not reproduce the original scalar +3.04 ms magnitude; its smaller common
+startup cost is not attributed to object packing. Reference-only slow-end changes
+also do not establish a stable regression in that diagnostic window.
+
+The useful fixes remove work at its owning phase rather than tuning the collector:
+
+| Owner | Avoided work |
+| --- | --- |
+| Predicate analysis | Eagerly walking every possible alias and allocating an identity at every opaque call; invalidation is now realized on demand. |
+| Scan optimizer | Expensive per-block memory analysis before proved fusion, and forward-seeded worklists for backward liveness. Late provenance-dependent fusion remains available. |
+| Persistent sessions | Submission-history lookup chains and synthetic empty compilation/full executable-HIR freezing to describe accepted bindings. |
+| VM/backend boundary | Structurally empty preparation, per-instruction emitter arrays, and whole-caller rewriting for exact source calls with neither callee nor remaining-region preparation opportunities. Actual function execution remains intact. |
+| Selected filesystem observations | Reading before an earlier submitted publication is admitted; the runtime now yields at selected namespace, exact-entry and current-referent frontiers without revalidating prepared plans. |
+
+The isolated same-bytecode 8,192-row/four-scan runtime control retains all 1,000
+samples per producer: P95 changes from 252.00 to 162.06 ms, P99 from 276.59 to
+187.49 ms, and allocation from about 99.04 to 4.66 MB per execution. These are
+execution-component observations for the loop-header repair, not Native launch
+latencies or an attribution to cache locality alone. The initial-block protocol
+caveat, full raw samples, block sensitivity and non-uniform GC-count changes are
+retained in the tail note. The distinct-filename manifest, colored terminal and
+final exact-Native comparisons have their own clocks and producer identities.
+
+Compiler allocation is not universally linear: the 4,096-binding alias-havoc
+family improves from 1.85 GB to 138 MB with approximately linear growth, whereas
+128 independent reductions still allocate about 190 MB after the bounded phase
+ordering/worklist repairs. Likewise, persistent-root publication has a measurable
+dense-update cost even though complete prompt preparation improves. Those costs
+remain visible in the linked component/session records.
