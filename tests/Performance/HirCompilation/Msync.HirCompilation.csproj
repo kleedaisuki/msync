@@ -16,6 +16,7 @@
   </ItemGroup>
   <ItemGroup Condition="'$(HirPhaseProbe)' != 'true'">
     <Compile Remove="CandidateProgram.cs" />
+    <Compile Remove="CompilerTailProbe.cs" />
   </ItemGroup>
   <Target Name="RequireFrozenAssemblies" BeforeTargets="ResolveReferences" Condition="'$(FrozenAssemblies)' == ''">
     <Error Text="Set FrozenAssemblies to an immutable product assembly directory." />

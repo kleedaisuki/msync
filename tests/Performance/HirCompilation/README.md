@@ -1,5 +1,64 @@
 # Typed HIR compiler-cost observations
 
+## Power-user phase tails
+
+The HIR-enabled frozen-reference host also accepts:
+
+```text
+msync-hir-compilation --compiler-tail SOURCE LEVEL SAMPLES
+```
+
+It measures the production `Analyze`, pure `HirLowerer.Lower`, and
+`Optimizer.Optimize` APIs separately. Each warm observation is one invocation,
+not the average of a calibrated batch. The first call of each phase is reported
+separately, followed by five untimed warmups. It is not a fresh-process Native
+startup measurement, and a later phase's first call is not cold with respect to
+the process or the earlier phase's output.
+
+Raw observations retain elapsed time, current-thread allocation traffic, and
+Gen0/1/2 collection-count deltas. Reporting objects are built after the sample
+loop; samples retain fixed-size value records rather than each returned Module.
+There is no forced GC, sampler thread or product tracing in the timing path.
+Percentiles use nearest rank (`ceil(N*p)`) and include P50, P95 and P99. Keep the
+sample count visible: seven samples cannot establish a useful P99; even 301
+observations leave only three above the reported nearest-rank P99. This is an
+empirical distribution, not a latency bound. For managed attribution controls,
+use the same `DOTNET_TieredCompilation=0` setting on both frozen images; do not
+present those values as Native AOT user latency.
+
+`tail_inputs.py` writes reproducible input families outside timing:
+
+| Family | Scaling dimension | Question |
+| --- | --- | --- |
+| `bindings` | 1,024 to 4,096 source bindings and generic Scope-qualified calls | Does retained semantic/lowering/optimizer state scale with the actual script? |
+| `number_scans` | 8 to 128 independent reductions over one materialized Number range | What does proving and scheduling a composed scan pipeline cost? |
+| `scope_scans` | Same scan count, numeric Scope fields with actual constructor provenance | Does field/schema analysis add avoidable work? |
+
+The binding generator matches the existing component workload's semantics.
+Scan fixtures obtain a seed from `io.read_text` so compilation cannot replace
+the entire program with constants. Compile-phase measurement does not execute
+that I/O. Their final sum keeps all reduction outputs semantically live, without
+adding closures which would change fusion legality. Vary scan count separately
+from row count: optimizer overhead depends on program structure, whereas runtime
+scanning depends primarily on data volume. Full CLI/REPL experiments must still
+check actual outputs and selected artifacts rather than use this probe as their
+substitute.
+
+```sh
+python3 tests/Performance/HirCompilation/tail_inputs.py \
+  --output .temp/tail-compiler/inputs
+dotnet build tests/Performance/HirCompilation/Msync.HirCompilation.csproj \
+  -c Release -m:1 -nr:false -p:HirPhaseProbe=true \
+  -p:FrozenAssemblies=/absolute/frozen/assemblies \
+  -p:ArtifactsPath=/absolute/probe-build -o /absolute/probe
+DOTNET_TieredCompilation=0 /absolute/probe/msync-hir-compilation \
+  --compiler-tail .temp/tail-compiler/inputs/bindings-1024.msync 2 301
+```
+
+Coordinate the heavy observation window with the Native and REPL owners. Start
+with one functional sample and a small scaling probe, then spend a larger tail
+budget only on the discriminating cases. Do not add timing thresholds to CI.
+
 ## Final Native user-latency control
 
 `native_list.py` pairs only the original short List source on the published

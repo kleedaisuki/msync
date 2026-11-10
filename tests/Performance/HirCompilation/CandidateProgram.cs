@@ -7,6 +7,8 @@ using System.Text.Json.Nodes;
 using Msync.Hir;
 using SourceCompiler = Msync.Compiler.Compiler;
 
+if (CompilerTailProbe.TryRun(args)) return;
+
 if (args.Length < 2)
     throw new ArgumentException("Usage: msync-hir-compilation SOURCE LEVEL [SAMPLES] [--retention-only | --trace-once]");
 
