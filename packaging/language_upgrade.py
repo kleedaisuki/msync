@@ -25,6 +25,7 @@ JOURNEYS: tuple[tuple[str, Path], ...] = (
     ("hir-artifact", END_TO_END / "hir_artifact_journey.py"),
     ("contextual-io", END_TO_END / "contextual_io_journey.py"),
     ("directory-plans", END_TO_END / "directory_plan_journey.py"),
+    ("loop-continuations", END_TO_END / "loop_continuation_journey.py"),
     ("object-locality", END_TO_END / "object_locality_journey.py"),
     ("affine-scans", END_TO_END / "affine_scan_journey.py"),
     ("tooling", END_TO_END / "language_upgrade_tooling_journey.py"),
@@ -44,6 +45,7 @@ JOURNEYS: tuple[tuple[str, Path], ...] = (
     ("type-traits", END_TO_END / "type_traits_journey.py"),
     ("terminal-library", END_TO_END / "terminal_library_journey.py"),
     ("shell-repl", END_TO_END / "repl_shell_journey.py"),
+    ("session-age", END_TO_END / "repl_state_journey.py"),
     ("stdlib-cost", ROOT / "tests/Performance/stdlib_expansion.py"),
     ("console-encoding", END_TO_END / "windows_console_encoding_probe.py"),
     ("remote-library", END_TO_END / "stdlib_upgrade_journey.py"),
@@ -136,6 +138,19 @@ def main() -> int:
             ]
         elif name == "object-locality":
             extra = ["--output", str(output / "object-locality.json")]
+        elif name == "loop-continuations":
+            extra = ["--output", str(output / "loop-continuations.json")]
+        elif name == "session-age":
+            extra = [
+                "--case",
+                "aged-state-snapshots",
+                "--case",
+                "accepted-capture-location",
+                "--case",
+                "scope-alias-null-prefix",
+                "--case",
+                "compile-rejection",
+            ]
         elif name == "stdlib-cost":
             extra = [
                 "--samples",
