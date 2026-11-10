@@ -8,6 +8,10 @@ returned closures, fresh object field/capture identity, recursive type queries
 and inferred signatures. Parameter Path/String conversion is checked both
 directly and through a returned closure.
 
+The joined-Scope case preserves a common member across two differently shaped
+branches while sharing one Bool-specialized body. Its result depends on the
+runtime branch, not retained binary-join construction history.
+
 Run with an isolated artifacts directory:
 
 ```text

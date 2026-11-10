@@ -32,6 +32,7 @@ foreach (var test in new (string Name, string Source, double Expected, string Fu
     ("nested-range-no-admission", "native fn transform(values: Range, operation: Function) -> Range; native fn materialize(values: Range) -> Range; let state = scope { changed: false }; let inner = transform([1], fn(v) { state::changed = true; v }); let outer = [inner]; materialize(outer); if state::changed { 9 } else { 7 }", 7, "unused", 0),
     ("scope-write-projection", "fn set(x) { x::n = 7 }; let a = scope { n: 1 }; let b = scope { n: 2 }; set(a); set(b); b::n", 7, "set", 1),
     ("returned-closure-projection", "fn make(x) { fn { x } }; let first = make(2); let second = make(9); first(); second()", 9, "make", 1),
+    ("joined-scope-common-member", "fn common(flag) { if flag { scope { n: 1, first: true } } else { scope { n: 2, second: true } } }; common(true); common(false)::n", 2, "common", 1),
     ("scope-recursive-signature", "scope Math { count: fn(x) { if x == 0 { 0 } else { Math::count(x - 1) } } }; Math::count(3)", 0, "<lambda>", 1),
     ("recursive-inferred-signature", "fn count(x) { if x == 0 { 0 } else { count(x - 1) } }; count(3)", 0, "count", 1),
     ("query-does-not-publish", "fn add(x) { x + 1 }; let t = decltype(add(2)); 3", 3, "add", 0),
