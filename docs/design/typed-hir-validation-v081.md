@@ -358,3 +358,11 @@ has disappeared. Further microprofiles are not warranted by this result alone;
 the final corrected Native image still needs a targeted default-O2 user-latency
 observation. Raw records are `frozen17-list-cold-control.*` and
 `frozen18-list-trace-receipt.*` under `.temp/hir-final-cost/`.
+
+The final Native comparison must execute the actual `compile SOURCE -O2 -o`
+command on both products, overwriting the same output path; artifact hashing
+is outside the timer. In 0.8.0, `check` invokes compilation/optimization, while
+0.8.1 checks HIR without bytecode lowering or optimization. A faster new check
+is a legitimate analysis-only user benefit but cannot resolve the measured
+normal-Compile/O2 List regression. `native_list.py` therefore defaults to
+compilation and labels an optional check-only comparison separately.

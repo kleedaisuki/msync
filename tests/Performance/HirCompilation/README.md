@@ -4,17 +4,25 @@
 
 `native_list.py` pairs only the original short List source on the published
 Native executable and the exact release-candidate Native image. Every
-observation starts a fresh `check SOURCE` process with the product's default O2;
-one untimed launch per image warms OS file caches. Pair order alternates,
+observation starts a fresh `compile SOURCE -O2 -o WORK/output.mso` process;
+both images overwrite the same existing output path. One untimed launch per
+image warms OS file caches. Pair order alternates,
 and raw times, paired differences, source/image hashes and the candidate's
 receipt are retained. This is user-facing process latency, not managed component
 time, and has no CI threshold or automatic promotion decision.
+
+Artifact hashes and sizes are read after the timed subprocess completes.
+The optional `--command check` measures that command's user experience only:
+0.8.0 check compiles and optimizes, whereas 0.8.1 check is analysis-only. It
+cannot establish the O2 compiler-cost trade-off; compilation is the primary
+comparison.
 
 ```sh
 python3 tests/Performance/HirCompilation/native_list.py \
   --baseline /absolute/published/bin/msync \
   --candidate /absolute/candidate/bin/msync \
   --source .temp/hir-final-cost/inputs/list.msync \
+  --work .temp/hir-final-cost/native-list-work \
   --candidate-receipt /absolute/candidate-receipt.json \
   --output .temp/hir-final-cost/native-list.json
 ```
