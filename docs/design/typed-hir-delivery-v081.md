@@ -235,6 +235,43 @@ account rather than be hidden by those improvements. The unresolved editor
 semantic defect, matching VSIX installation and immutable publication still
 prevent completion independently of that cost decision.
 
+### Complete-fixture corrections before the fourth freeze
+
+The unchanged 1,015-byte editor program (SHA256
+`ffac7323348ab1f3875b02c24ee044652cbeffd10e0b0ebc0528244afe091a3d`)
+exposed three successive compiler defects, rather than three presentation
+problems:
+
+* A genuinely pending nullable field can learn its concrete concept storage
+  constraint. Already-fixed broad or incompatible storage cannot be retyped;
+  query checks own their substitutions and sealing effects.
+* Future callable environments retain the actual logical capture location of a
+  provably single program/module-owned declaration. Synthesizing another cell
+  for that same declaration lost method identities. This normalization belongs
+  at future-environment construction, not at member lookup. Private factory
+  captures remain distinct, and a shared root capture reads current storage
+  after reassignment rather than freezing the initial singleton value.
+* An executable function body is not its joined return-value summary. Explicit
+  returns are converted at their own control-flow edges; the fallthrough body
+  is checked and converted independently. Joining return facts must never replace
+  the body with an inner return operand. The defect had reduced an annotated
+  loop function to a read of an uninitialized local. Cached return summaries now
+  retain no executable node.
+
+Immutable producer 27 (Compiler SHA256
+`50621becc03bd1f8e31d0f42a74381423d650780a45267a991cad8895647ba57`)
+passes the entire original fixture: completion applies the exact edit, the new
+document generation has zero diagnostics, all six hovers and three definitions
+are correct, the 17 semantic roles and qualified concept completion agree, and
+the original check/run commands produce `Klee`, `3,1` and `1,3,4`. The same
+program also exports to `.mhir`, survives deletion of its original source, lowers
+to `.mso` without executing effects, and produces the same three outputs.
+
+These observations close the local full-fixture failure, including actual
+execution, rather than merely repairing each displayed hover in isolation.
+They authorize a new immutable Native/editor candidate; they do not establish
+that its platform packages or installed extension have already passed.
+
 ## Work ownership
 
 The compiler team owns semantic contracts, binding, specialization and lowering.
