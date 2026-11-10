@@ -38,6 +38,7 @@ dotnet run --project tests/HirSemanticTyping -c Release -- --indexed-cast
 dotnet run --project tests/HirSemanticTyping -c Release -- --range-identity
 dotnet run --project tests/HirSemanticTyping -c Release -- --nested-effects
 dotnet run --project tests/HirSemanticTyping -c Release -- --native-effects
+dotnet run --project tests/HirSemanticTyping -c Release -- --concept-pending
 ```
 
 Use an isolated artifacts path while other implementation lanes build the shared
@@ -81,3 +82,7 @@ Process path without running it, inspect the Process read's semantic effects,
 and retain a discarded invalid native cast's actual error through O2 execution.
 The registry supplies complete effect metadata to both semantic and bytecode
 consumers rather than requiring frontend bytecode queries.
+
+Pending-concept checks distinguish a genuinely unsolved Null-only field from a
+fixed nullable storage domain. They exercise cell aliases, cached source wrappers,
+isolated metadata queries and fresh constructor instances with different carriers.

@@ -14,6 +14,21 @@ bool rangeIdentityOnly = args.Contains("--range-identity", StringComparer.Ordina
 bool rangeViewsOnly = args.Contains("--range-views", StringComparer.Ordinal);
 bool nestedEffectsOnly = args.Contains("--nested-effects", StringComparer.Ordinal);
 bool nativeEffectsOnly = args.Contains("--native-effects", StringComparer.Ordinal);
+bool conceptPendingOnly = args.Contains("--concept-pending", StringComparer.Ordinal);
+if (conceptPendingOnly)
+{
+    const string contract = "concept Order { sample?: typename Self, less: fn(a: Self, b: Self) -> Bool }; fn need(value: Order) { value }; ";
+    const string policy = "let policy = scope { Self: Number, sample?: null, less: fn(a: Number, b: Number) { a < b } }; ";
+    await Number(contract + policy + "need(policy); policy::sample = 3; policy::sample", 3);
+    RejectCarrier(contract + policy + "let alias = policy; need(policy); alias::sample = true;");
+    RejectCarrier(contract + policy + "fn wrap(value) { need(value); value }; wrap(policy); wrap(policy); policy::sample = true;");
+    await Boolean(contract + policy + "$std::meta::is_invocable(fn { need(policy) }); policy::sample = true; policy::sample", true);
+    RejectCarrier(contract + "let policy = scope { Self: Number, sample?: \"fixed\", less: fn(a: Number, b: Number) { a < b } }; policy::sample = null; need(policy);");
+    RejectCarrier(contract + "let policy = scope { Self: Number, sample?: if exists ./concept-selector { true } else { 1 }, less: fn(a: Number, b: Number) { a < b } }; policy::sample = null; need(policy);");
+    await Text(contract + "fn make() { scope { Self: Number, sample?: null, less: fn(a, b) { a < b } } }; let first = make(); need(first); let second = make(); second::Self = String; need(second); second::sample = \"independent\"; second::sample", "independent");
+    Console.WriteLine($"PASS {checks} concept pending storage journeys");
+    return;
+}
 if (nativeEffectsOnly)
 {
     Check(NativeSignatures.All.All(signature => signature.Behavior is not null),
@@ -195,7 +210,7 @@ async Task<Value> Execute(string source, ArtifactStage stage, int optimizationLe
     {
         Check(!HasRuntimeDependentMeta(hir), "Dependent metadata must not survive as a runtime native call");
     }
-    if (metadataOnly || typeIdentityOnly || resourceUnionOnly || indexedCastOnly || indexedCurrentOnly || indexedFreshOnly || rangeIdentityOnly || nestedEffectsOnly)
+    if (metadataOnly || typeIdentityOnly || resourceUnionOnly || indexedCastOnly || indexedCurrentOnly || indexedFreshOnly || rangeIdentityOnly || nestedEffectsOnly || conceptPendingOnly)
     {
         using MemoryStream graph = new();
         HirArtifact.Write(hir, graph);
@@ -283,6 +298,17 @@ void Reject(string source, string code)
     try { Compiler.Analyze(source, "hir-typing-error.msync"); }
     catch (CompileException error) { Check(error.Diagnostic.Code == code, error.Diagnostic.Message); return; }
     throw new InvalidOperationException("Expected " + code + ": " + source);
+}
+void RejectCarrier(string source)
+{
+    try { Compiler.Analyze(source, "hir-concept-storage-error.msync"); }
+    catch (CompileException error)
+    {
+        Check(error.Diagnostic.Code is "E0203" or "E0214"
+            && error.Diagnostic.Message.Contains("Number", StringComparison.Ordinal), error.Diagnostic.Message);
+        return;
+    }
+    throw new InvalidOperationException("Expected a fixed Number carrier rejection: " + source);
 }
 void Check(bool condition, string description)
 {

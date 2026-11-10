@@ -297,6 +297,24 @@ first-write carrier. Inferring a cell does not substitute a compound hint type
 globally: an inferred `Range<String>` must not narrow another explicitly broad
 `Range` declaration that happens to share an interned hint.
 
+Concept admission can supply concrete evidence for a Null-only field whose
+storage carrier is still open. `RequiredMember` consults the actual field cell's
+`StorageType` before the resolved layout schema; it does not interpret an open
+inference variable's `Any?` approximation as a fixed user annotation. A concrete
+associated carrier seals that cell through `StorageConstraintGraph`, retaining
+the current Null value. The object's structural view interns the resulting
+constraint row so location-free formal views preserve it. This changes a
+semantic constraint, not an object identity or runtime write effect.
+
+Already fixed String/Any/union domains are checked, not narrowed because their
+current value is Null. Unresolved compound requirements do not become purported
+concrete carriers. Query workspaces own their cell obligations and structural
+views, while sparse member contracts continue across aliases and cached source
+wrappers. Immutable snapshot 25 passed ten focused `--concept-pending` checks
+through binary HIR round-trips and relocatable/executable bytecode execution:
+pending admission, alias and cached-wrapper rejection, query isolation, fixed
+String/broad-domain rejection and independent fresh Number/String instances.
+
 Standard module locations are program-owned cells. A formal capture must consult
 the canonical completed module row, rather than freeze the first partial export
 snapshot as its namespace. Explicit program-cell replacements remain distinct

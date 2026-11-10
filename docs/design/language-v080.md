@@ -216,6 +216,14 @@ Checking does not execute operations or insert implicit field conversions.
 Missing members, unresolved associated types and wrong signatures relate the
 diagnostic to the concept declaration (`E0214`).
 
+A Null-only nullable field may still have an unsolved storage carrier. Concrete
+associated-type evidence can establish that carrier when the object satisfies a
+concept; the current field value remains Null. The obligation belongs to the
+actual cell and its structural view, not a global substitution for every fresh
+instance of the constructor. Already fixed String/Any/union domains are checked
+rather than narrowed because their current value happens to be Null. Metadata
+queries establish such obligations only in their isolated semantic workspace.
+
 There is no `requires`, `trait`, `impl`, global instance search, operator
 overloading or additional runtime TypeKind. Different Scope dictionaries may
 express different algebras over the same carrier. Structural checking cannot
