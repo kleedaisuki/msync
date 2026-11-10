@@ -189,6 +189,15 @@ location projection: `object::field = value` and a getter capturing that field
 must observe the same cell, without sharing cells with another constructor call.
 Scalar-only results bypass graph projection allocation.
 
+An advance recursive signature query requires a possible invocation cycle, not
+merely a capture graph containing the function. Class members naturally capture
+their containing class, including themselves. A program-owned bound call graph
+therefore checks source calls and native Function-parameter callbacks before
+the existing capture-identity test; unknown callees retain the promise path.
+A shallow input check keeps scalar-only instances out of this graph analysis.
+The graph and its memo contain template identities, never caller objects or
+semantic environments.
+
 The result scheme also carries formal root/field-path provenance. Projection
 substitutes each caller's scalar literals, denoted types and Path/String metadata;
 these values are not part of shared code identity. Assignment and ordinary
@@ -225,9 +234,15 @@ conversion is necessary, including native callbacks and returned captures.
 
 ### Finite formal resource views
 
-Code keys and published instances use the same `FormalInput` normalization.
-`CodeSchema` builds an output-free semantic view before cache lookup; a miss
-materializes the corresponding typed formal body. Root/field/element roles are
+Code keys encode the same normalization as published `FormalInput` instances.
+Exact-identity graphs are read directly by the canonical key writer, retaining
+every field, capture and member contract without constructing a second semantic
+arena. Structural/MAY graphs, indexed resources, value captures and deferred
+effects retain the output-free `CodeSchema` normalization. Neither path caches
+a caller environment. Differential properties compare exact key bytes and
+verify that real List constructor captures take the direct path without formal
+region allocation. A miss still materializes the typed formal body.
+Root/field/element roles are
 kept separate, so two same-typed buffers in different fields are not identified.
 A MAY-resource role joins readable elements and intersects writable carrier
 admission, rather than enumerating every possible runtime buffer in the code

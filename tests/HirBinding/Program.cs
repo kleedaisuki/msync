@@ -5,6 +5,18 @@ using Msync.Core;
 using Msync.Hir;
 using Msync.Runtime;
 
+if (args.Contains("--key-schemas", StringComparer.Ordinal))
+{
+    KeySchemaChecks.Run();
+    return;
+}
+
+if (args.Contains("--invocation-reachability", StringComparer.Ordinal))
+{
+    InvocationReachabilityChecks.Run();
+    return;
+}
+
 if (args.Contains("--input-roles", StringComparer.Ordinal))
 {
     RoleChecks.Run();

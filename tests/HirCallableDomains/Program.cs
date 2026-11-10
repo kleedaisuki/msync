@@ -91,6 +91,25 @@ RejectType("invalid-range-return-annotation", """
     fn wrong() -> Range<String> { [1] };
     wrong()
     """);
+await Number("direct-recursive-promise", """
+    fn sum(value: Number) { if value == 0 { 0 } else { value + sum(value - 1) } };
+    sum(3)
+    """, 6);
+await Number("mutual-recursive-promise", """
+    scope Recursive {
+        first: fn(value: Number) { if value == 0 { 1 } else { Recursive::second(value - 1) } },
+        second: fn(value: Number) { Recursive::first(value) },
+    };
+    Recursive::first(3)
+    """, 1);
+await Number("callback-recursive-promise", """
+    fn recurse(value: Number) {
+        if value == 0 { true } else {
+            $std::ranges::any([value - 1], fn(next: Number) { recurse(next) })
+        }
+    };
+    if recurse(3) { 1 } else { 0 }
+    """, 1);
 Console.WriteLine($"PASS {checks} callable write-domain journeys");
 
 void RejectType(string name, string source)

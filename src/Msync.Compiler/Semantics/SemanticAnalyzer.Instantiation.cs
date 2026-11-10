@@ -207,7 +207,9 @@ internal sealed partial class SemanticAnalyzer
     {
         SemanticValue? recursiveSignature = null;
         if (caller.Publish && template.ResultAnnotation is null
-            && captureValues.Concat(arguments).Any(value => ContainsCallable(value, id, caller, new(ReferenceEqualityComparer.Instance))))
+            && (MayContainCallable(captureValues) || MayContainCallable(arguments))
+            && (futureCallableWrites ??= new(program)).MayReenter(id)
+            && ContainsCallableInput(captureValues, arguments, id, caller))
         {
             SemanticValue callable = new(hir.Type(TypeRef.Function), HirNodeId.None,
                 Callables: [new(id, Captures: captured)]);
@@ -465,6 +467,27 @@ internal sealed partial class SemanticAnalyzer
             if (value.IndexedRegion is { } region && context.Indexed.TryGetValue(region, out var storage)
                 && indexed.TryAdd(region, storage)) Visit(storage.Element);
         }
+    }
+
+    private static bool MayContainCallable(IReadOnlyList<SemanticValue> values)
+    {
+        for (int index = 0; index < values.Count; index++)
+        {
+            SemanticValue value = values[index];
+            if (value.Scope is not null || value.Element is not null || !value.Callables.IsDefaultOrEmpty) return true;
+        }
+        return false;
+    }
+
+    private static bool ContainsCallableInput(IReadOnlyList<SemanticValue> captures,
+        IReadOnlyList<SemanticValue> arguments, HirTemplateId template, SemanticContext context)
+    {
+        HashSet<SemanticValue> visited = new(ReferenceEqualityComparer.Instance);
+        for (int index = 0; index < captures.Count; index++)
+            if (ContainsCallable(captures[index], template, context, visited)) return true;
+        for (int index = 0; index < arguments.Count; index++)
+            if (ContainsCallable(arguments[index], template, context, visited)) return true;
+        return false;
     }
 
     private static bool ContainsCallable(SemanticValue value, HirTemplateId template, SemanticContext context,

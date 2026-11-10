@@ -7,7 +7,11 @@ namespace Msync.Compiler.Semantics;
 internal sealed partial class SemanticAnalyzer
 {
     private string InstanceKey(HirTemplateId id, IReadOnlyList<SemanticValue> arguments,
-        IReadOnlyList<SemanticValue> captures, SemanticContext caller)
+        IReadOnlyList<SemanticValue> captures, SemanticContext caller) =>
+        InstanceKey(id, arguments, captures, caller, readOnlyInput: true);
+
+    private string InstanceKey(HirTemplateId id, IReadOnlyList<SemanticValue> arguments,
+        IReadOnlyList<SemanticValue> captures, SemanticContext caller, bool readOnlyInput)
     {
         StringBuilder key = new();
         key.Append(id.Value).Append(caller.DeferredReads ? 'd' : 'i').Append(':');
@@ -18,16 +22,34 @@ internal sealed partial class SemanticAnalyzer
             foreach (var value in captures) AppendScalarKey(value);
             return key.ToString();
         }
+        int prefix = key.Length;
+        if (readOnlyInput && AppendInputKey(key, arguments, captures, caller, new(readOnlyInput: true)))
+            return key.ToString();
+        key.Length = prefix;
         SemanticInputSchema schema = CodeSchema(arguments, captures, caller);
-        HashSet<SemanticValue> active = new(ReferenceEqualityComparer.Instance);
-        KeyProvenance provenance = new();
-        foreach (var value in schema.Arguments) { AppendValueKey(key, value, schema.Context, active, provenance); key.Append(';'); }
-        key.Append('|');
-        foreach (var value in schema.Captures) { AppendValueKey(key, value, schema.Context, active, provenance); key.Append(';'); }
+        AppendInputKey(key, schema.Arguments, schema.Captures, schema.Context, new());
         return key.ToString();
 
         void AppendScalarKey(SemanticValue value) => key.Append(value.Type.Value).Append('T')
             .Append(value.DenotedType?.Value ?? -1).Append(';');
+    }
+
+    private bool AppendInputKey(StringBuilder key, IReadOnlyList<SemanticValue> arguments,
+        IReadOnlyList<SemanticValue> captures, SemanticContext context, KeyProvenance provenance)
+    {
+        HashSet<SemanticValue> active = new(ReferenceEqualityComparer.Instance);
+        for (int index = 0; index < arguments.Count && provenance.Supported; index++)
+        {
+            AppendValueKey(key, arguments[index], context, active, provenance);
+            key.Append(';');
+        }
+        key.Append('|');
+        for (int index = 0; index < captures.Count && provenance.Supported; index++)
+        {
+            AppendValueKey(key, captures[index], context, active, provenance);
+            key.Append(';');
+        }
+        return provenance.Supported;
     }
 
     private static bool IsScalarSchema(SemanticValue value) => value.Scope is null
@@ -45,20 +67,36 @@ internal sealed partial class SemanticAnalyzer
     private void AppendValueKey(StringBuilder key, SemanticValue value, SemanticContext? context,
         HashSet<SemanticValue> active, KeyProvenance provenance)
     {
+        if (!provenance.Supported) return;
+        if (provenance.ReadOnlyInput && (value.IndexedRegion is not null
+            || !value.IndexedAliases.IsDefaultOrEmpty || !value.DeferredEffects.IsDefaultOrEmpty))
+        {
+            provenance.Supported = false;
+            return;
+        }
         key.Append(value.Type.Value).Append(value.EagerRange ? '!' : '.');
         if (value.DenotedType is { } denoted) key.Append('T').Append(denoted.Value);
-        if (!active.Add(value)) { key.Append('^'); return; }
+        if (!active.Add(value))
+        {
+            if (provenance.ReadOnlyInput) provenance.Supported = false;
+            else key.Append('^');
+            return;
+        }
         AppendCallableKey(key, Choices(value), context, active, provenance);
+        if (!provenance.Supported) return;
         if (value.FutureCallableDomain is { } future)
         {
             key.Append("U(");
             AppendCallableKey(key, future.Choices, context, active, provenance);
+            if (!provenance.Supported) return;
             key.Append("|C(");
             if (!future.Current.IsDefaultOrEmpty) AppendCallableKey(key, future.Current, context, active, provenance);
             key.Append("))");
         }
+        if (!provenance.Supported) return;
         if (value.Scope is { } scope)
             AppendScopeKey(key, context?.Objects.GetValueOrDefault(scope.Region, scope) ?? scope, context, active, provenance);
+        if (!provenance.Supported) return;
         if (value.Element is { } element) { key.Append('['); AppendValueKey(key, element, context, active, provenance); key.Append(']'); }
         if (value.IndexedRegion is { } region && context?.Indexed.TryGetValue(region, out var indexed) == true)
         {
@@ -101,6 +139,12 @@ internal sealed partial class SemanticAnalyzer
             if (!callable.Captures.IsDefault)
                 foreach (var capture in callable.Captures)
                 {
+                    if (provenance.ReadOnlyInput && (capture.Mode != HirCaptureMode.Location || context is null
+                        || StorageOwner(capture.Source, context) != capture.Source || !context.Values.ContainsKey(capture.Source)))
+                    {
+                        provenance.Supported = false;
+                        return;
+                    }
                     key.Append('C').Append(provenance.Location(capture.Source));
                     if (context is not null && context.Values.TryGetValue(capture.Source, out var captured))
                     {
@@ -108,6 +152,7 @@ internal sealed partial class SemanticAnalyzer
                         else key.Append('^');
                     }
                     else AppendValueKey(key, capture.Value, context, active, provenance);
+                    if (!provenance.Supported) return;
                 }
             key.Append(')');
         }
@@ -116,6 +161,11 @@ internal sealed partial class SemanticAnalyzer
     private void AppendScopeKey(StringBuilder key, SemanticScope scope, SemanticContext? context,
         HashSet<SemanticValue> active, KeyProvenance provenance)
     {
+        if (provenance.ReadOnlyInput && (scope.Region < 0 || scope.Dynamic || !scope.Aliases.IsDefaultOrEmpty))
+        {
+            provenance.Supported = false;
+            return;
+        }
         key.Append('{').Append(scope.Region >= 0 ? 'S' : 'V')
             .Append(scope.Region >= 0 ? provenance.Region(scope.Region) : provenance.Structural(scope));
         if (!provenance.DefineScope(scope))
@@ -131,6 +181,7 @@ internal sealed partial class SemanticAnalyzer
             var member = scope.Locations.TryGetValue(field.Key, out var location)
                 ? context?.Values.GetValueOrDefault(location, field.Value) ?? field.Value : field.Value;
             AppendValueKey(key, member, context, active, provenance);
+            if (!provenance.Supported) return;
             if (context?.MemberContracts.TryGetValue((scope.Region, field.Key), out var contracts) == true)
                 foreach (var contract in contracts)
                 {
@@ -146,8 +197,10 @@ internal sealed partial class SemanticAnalyzer
     // Canonical alias partitions contain no allocation identities: two unrelated
     // calls with the same alias topology share code. Aliased and disjoint inputs
     // cannot share flow proofs after writes to nullable fields or captured cells.
-    private sealed class KeyProvenance
+    private sealed class KeyProvenance(bool readOnlyInput = false)
     {
+        public bool ReadOnlyInput { get; } = readOnlyInput;
+        public bool Supported { get; set; } = true;
         private Dictionary<int, int>? regions;
         private Dictionary<HirLocationId, int>? locations;
         private HashSet<int>? definedScopes;

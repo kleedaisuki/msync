@@ -18,6 +18,8 @@ internal sealed class BoundCallableWrites
     private readonly HashSet<string> memberNames = new(StringComparer.Ordinal);
     private readonly HashSet<string> possibleMemberNames = new(StringComparer.Ordinal);
     private bool resolved;
+    private readonly Dictionary<HirTemplateId, (HirTemplateId[] Targets, bool Unknown)> invocationEdges = [];
+    private readonly Dictionary<HirTemplateId, bool> recursiveInvocations = [];
     private readonly HashSet<HirTemplateId> reachable = [];
     private readonly Dictionary<(HirLocationId Location, HirNodeId Value), HashSet<HirNodeId>> receivers = [];
     private readonly Dictionary<HirLocationId, HashSet<HirNodeId>> arguments = [];
@@ -115,6 +117,77 @@ internal sealed class BoundCallableWrites
 
     internal IEnumerable<HirNodeId> CallSites(HirTemplateId template) =>
         callSites.TryGetValue(template, out var values) ? values : [];
+
+    internal bool MayReenter(HirTemplateId template)
+    {
+        if (recursiveInvocations.TryGetValue(template, out bool known)) return known;
+        Resolve();
+        HashSet<HirTemplateId> visited = [];
+        bool result = Reaches(template);
+        recursiveInvocations[template] = result;
+        return result;
+
+        bool Reaches(HirTemplateId current)
+        {
+            if (!visited.Add(current)) return false;
+            var edges = InvocationEdges(current);
+            if (edges.Unknown) return true;
+            foreach (HirTemplateId next in edges.Targets)
+                if (next == template || Reaches(next)) return true;
+            return false;
+        }
+    }
+
+    private (HirTemplateId[] Targets, bool Unknown) InvocationEdges(HirTemplateId template)
+    {
+        if (invocationEdges.TryGetValue(template, out var known)) return known;
+        HashSet<HirTemplateId> targets = [];
+        bool unknown = false;
+        VisitCalls(program.Hir.Templates[template.Value].Body);
+        var result = (targets.ToArray(), unknown);
+        invocationEdges[template] = result;
+        return result;
+
+        void VisitCalls(HirNodeId id)
+        {
+            if (id.IsNone) return;
+            HirNode node = program.Node(id);
+            if (node.Kind is HirKind.TemplateClosure or HirKind.Closure or HirKind.TypeOf) return;
+            var children = program.Children(id);
+            if (node.Kind == HirKind.Call)
+            {
+                HirCall call = program.Hir.Calls[node.Data];
+                string? native = call.NativeName ?? Native(children[0]);
+                if (SemanticAnalyzer.IsDependentMeta(native))
+                {
+                    VisitCalls(children[0]);
+                    return;
+                }
+                HirTemplateId[] callees = FunctionValues(children[0], []).ToArray();
+                targets.UnionWith(callees);
+                if (native is not null && NativeSignatures.TryGet(native, out var signature))
+                {
+                    for (int index = 0; index < signature.Parameters.Count && index + 1 < children.Length; index++)
+                    {
+                        if (signature.Parameters[index].WithoutNull != TypeRef.Function) continue;
+                        HirTemplateId[] callbacks = FunctionValues(children[index + 1], []).ToArray();
+                        targets.UnionWith(callbacks);
+                        unknown |= callbacks.Length == 0 && Native(children[index + 1]) is null;
+                    }
+                }
+                else unknown |= callees.Length == 0 && call.Kind != HirCallKind.Path;
+            }
+            if (node.Kind == HirKind.If && KnownBoolean(children[0]) is { } selected)
+            {
+                VisitCalls(children[0]);
+                VisitCalls(children[selected ? 1 : 2]);
+                return;
+            }
+            foreach (HirNodeId child in children) VisitCalls(child);
+            if (node.Kind == HirKind.Match)
+                foreach (HirMatchArm arm in program.Hir.Matches[node.Data].Arms) VisitCalls(arm.Value);
+        }
+    }
 
     private bool Reach(HirNodeId id)
     {
