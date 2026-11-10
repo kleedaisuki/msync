@@ -81,6 +81,7 @@ for (int sample = 0; sample < 1500; sample++)
 }
 
 Console.WriteLine($"Preparation code emission: {cases} cases, {assertions} exact/provenance contracts passed.");
+RegionsChecks.Run();
 
 static Instruction Generate(Random random, int length, int index, int offset = 0)
 {
