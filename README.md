@@ -400,7 +400,7 @@ The current checkout and packages contain only the C# implementation. Historical
 Rust sources, standard modules and tests remain available at the immutable
 [`v0.7.3` tag](https://github.com/kleedaisuki/msync/tree/v0.7.3); they are not a
 build or execution dependency. There is no legacy command or executable routing.
-Current development bytecode artifacts use format 5; the published 0.8.1
+Version 0.8.5 bytecode artifacts use format 5; the earlier 0.8.1
 format-4 packages remain unchanged. Recompile earlier bytecode with the current
 compiler rather than treating it as the new plan representation. Scripts use
 `fn`, `let`, brace blocks and semicolons instead of

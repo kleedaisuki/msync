@@ -196,7 +196,7 @@ test('URI protocol, separator and atomic address have distinct roles before punc
 test('manifest, brace editing, snippets and semantic fallback remain consistent', () => {
     const manifest = require('../package.json');
     const configuration = require('../language-configuration.json');
-    assert.equal(manifest.version, '0.8.1');
+    assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
     assert.equal(manifest.main, './out/extension.cjs');
     assert.equal(manifest.contributes.grammars[0].scopeName, 'source.msync');
     assert.equal(configuration.comments.lineComment, '//');

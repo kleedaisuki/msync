@@ -10,11 +10,11 @@ by the extension.
 ## Install and develop
 
 Requires VS Code 1.91 or newer and the matching msync executable on PATH.
-Install `msync-language-0.8.1.vsix` from the release with **Extensions: Install
+Install `msync-language-0.8.5.vsix` from the release with **Extensions: Install
 from VSIX**, or:
 
 ```sh
-code --install-extension msync-language-0.8.1.vsix
+code --install-extension msync-language-0.8.5.vsix
 ```
 
 The VSIX does not bundle the executable. Set `msync.serverPath` to its absolute

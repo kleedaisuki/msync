@@ -1,6 +1,6 @@
 # Project engineering knowledge
 
-## C# staged language (product v0.8.1; language v0.8.0)
+## C# staged language (product v0.8.5; language v0.8.0)
 
 - The current product is the .NET 10 Native AOT implementation in `src/Msync.*`.
   The retired Rust implementation is available in Git history at `v0.7.3`, not
