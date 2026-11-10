@@ -335,3 +335,37 @@ family improves from 1.85 GB to 138 MB with approximately linear growth, whereas
 ordering/worklist repairs. Likewise, persistent-root publication has a measurable
 dense-update cost even though complete prompt preparation improves. Those costs
 remain visible in the linked component/session records.
+
+### Native power-user tail results
+
+The standalone CLI comparison uses the exact `9e5e997` Native candidate; the
+final session comparison uses `604b558`, whose only subsequent product-source
+change preserves assigned fact identity and IEEE payloads during publication.
+These are separate frozen producers, not a claim that both tables measured one
+binary. No complete CLI timing batch was repeated for the session-only change.
+
+| Native workload | Previous P95/P99 ms | Changed P95/P99 ms | Boundary |
+| --- | ---: | ---: | --- |
+| Fixed-state colored REPL, 1,024 requests | 52.08 / 63.07 | 11.15 / 14.22 | Enter through result and next rendered prompt |
+| Growing colored REPL, requests 769–1,024 | 434.21 / 753.50 | 100.24 / 117.00 | Same boundary; 770–1,025 user exports, nonstationary age window |
+
+For CLI power workloads, the 8,192-row reference `.mexe` P99 is 147.98 versus
+100.68 ms (400 pairs), and the distinct-filename manifest `.mexe` P99 is
+1,349.37 versus 354.14 ms (200 pairs). The latter is an empirical slow-end
+observation with an unbounded upper population-quantile reference interval, not
+a precise P99 guarantee. Light startup cases do not establish a stable P99
+improvement. The full tables, block intervals and raw observations belong to the
+[tail record](performance-tail-v081.md), not a pooled speedup.
+
+Each 256-request growing-session window has only three observations at or above
+its empirical P99. Typing/render response is measured separately; burst enqueue
+through completion is queue latency, not prompt readiness or independent service
+time. All 6,144 REPL replies were checked and all six processes exited normally.
+
+[CLI candidate 42863498904](https://github.com/kleedaisuki/msync/actions/runs/42863498904)
+passes the eight selected Native contracts on Linux and Windows.
+[Session candidate 42869625070](https://github.com/kleedaisuki/msync/actions/runs/42869625070)
+passes the three changed session/HIR contracts on both platforms. Both include
+the actual source editor host and Windows installer upgrade acceptance; neither
+publishes or replaces the existing release. Exact package receipts remain under
+`artifacts/candidates/tail-latency/9e5e997/` and `604b558/`.
