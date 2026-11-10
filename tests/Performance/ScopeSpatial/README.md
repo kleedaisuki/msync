@@ -1,5 +1,10 @@
 # Scope spatial-layout execution probe
 
+The complementary `native_tail.py` runs fresh-process Native launch/source/mexe
+controls with paired blocks and observed P95/P99 ranks. Its boundaries, sample
+design and shared-host interpretation are documented in
+[the tail-latency note](../../../docs/design/performance-tail-v081.md).
+
 This probe compares immutable product assembly sets without rebuilding the
 product. It compiles and binds each source outside the timer, then executes the
 same bound program on both runtimes. Each source constructs escaping records in
