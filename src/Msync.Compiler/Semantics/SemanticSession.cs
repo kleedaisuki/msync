@@ -71,13 +71,15 @@ internal sealed class SemanticSession(string sourceName, int optimization)
 
     public IReadOnlyList<SemanticMember> DescribeBindings()
     {
-        descriptions ??= AnalyzeEditor("").View;
+        if (accepted is null || facts is null) return [];
+        descriptions ??= SemanticObservationBuilder.DescribeSession(accepted, facts);
         return new EditorSemanticIndex(descriptions).At(0).Bindings;
     }
 
     public IReadOnlyList<SemanticMember> DescribeConcepts()
     {
-        descriptions ??= AnalyzeEditor("").View;
+        if (accepted is null || facts is null) return [];
+        descriptions ??= SemanticObservationBuilder.DescribeSession(accepted, facts);
         return new EditorSemanticIndex(descriptions).ConceptsAt(0);
     }
 
@@ -90,6 +92,7 @@ internal sealed class SemanticSession(string sourceName, int optimization)
         acceptedSites = new(accepted, acceptedLayout);
         facts = submission.Facts.QueryFork();
         if (resolve is not null) Refresh(submission.Layout, resolve);
+        facts.DetachFacts();
         pending = null;
         descriptions = null;
     }
@@ -111,6 +114,7 @@ internal sealed class SemanticSession(string sourceName, int optimization)
         acceptedSites = new(accepted, acceptedLayout);
         facts = submission.Facts.QueryFork();
         if (resolve is not null) Refresh(submission.Layout, resolve);
+        facts.DetachFacts();
         pending = null;
         descriptions = null;
     }

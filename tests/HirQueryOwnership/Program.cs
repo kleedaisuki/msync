@@ -10,6 +10,7 @@ if (args is ["--allocations", var path])
 }
 
 int checks = TransactionChecks.Run();
+checks += SessionSnapshotChecks.Run();
 BindingRollback();
 await Query("decltype(match true { true => 1, _ => 2 }); 7", 7);
 await Query("decltype(for item in [1] { item }); 7", 7);

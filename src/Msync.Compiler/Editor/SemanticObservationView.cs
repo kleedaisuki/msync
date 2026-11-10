@@ -79,6 +79,17 @@ internal sealed record SemanticTypeTables(ImmutableArray<HirSource> Sources,
                 ?? (template.Body.IsNone ? null : module.Node(template.Body).Type))).ToImmutableArray(),
         module.Concepts.IsDefault ? [] : module.Concepts.Select(concept => concept.Name).ToImmutableArray());
 
+    public static SemanticTypeTables From(HirBuilder builder) => new(
+        builder.Sources.ToImmutableArray(), builder.Types.ToImmutableArray(),
+        builder.Locations.ToImmutableArray(), builder.ScopeLayouts.ToImmutableArray(),
+        builder.Signatures.ToImmutableArray(),
+        builder.Functions.Select(function => new SemanticFunctionSignature(function.Name,
+            function.Parameters, function.Result)).ToImmutableArray(),
+        builder.Templates.Select(template => new SemanticTemplateSignature(template.Name,
+            template.Parameters, template.ResultAnnotation
+                ?? (template.Body.IsNone ? null : builder.Nodes[template.Body.Value].Type))).ToImmutableArray(),
+        builder.Concepts.Select(concept => concept.Name).ToImmutableArray());
+
     public TypeRef RuntimeType(HirTypeId type) => Types[type.Value].RuntimeType;
     public string TypeName(HirTypeId type, bool nullable = false, bool omitNull = false) =>
         SemanticTypeNames.Format(type, Types, ConceptNames, AssociatedTypes, nullable, omitNull);

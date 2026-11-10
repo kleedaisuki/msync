@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 
 namespace Msync.Compiler.Semantics;
@@ -12,6 +13,26 @@ internal sealed class SemanticFacts<TKey, TValue>(IReadOnlyDictionary<TKey, TVal
     private Action<TKey, TValue>? changed;
     public void ObserveChanges(Action<TKey, TValue>? observer) => changed = observer;
     public IEnumerable<KeyValuePair<TKey, TValue>> LocalEntries => local is null ? [] : local;
+
+    // A published session generation owns a persistent root, not a chain of
+    // every earlier query/analysis overlay. Ordinary query forks stay borrowed.
+    public void Detach()
+    {
+        parent = Snapshot();
+        local = null;
+    }
+
+    private ImmutableDictionary<TKey, TValue> Snapshot()
+    {
+        var inherited = parent switch
+        {
+            SemanticFacts<TKey, TValue> facts => facts.Snapshot(),
+            ImmutableDictionary<TKey, TValue> root => root,
+            null => ImmutableDictionary<TKey, TValue>.Empty,
+            _ => parent.ToImmutableDictionary()
+        };
+        return local is null ? inherited : inherited.SetItems(local);
+    }
     public TValue this[TKey key]
     {
         get => TryGetValue(key, out var value) ? value : throw new KeyNotFoundException();

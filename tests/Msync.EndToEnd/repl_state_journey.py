@@ -19,9 +19,35 @@ class Example:
     submissions: tuple[str, ...]
     expected: tuple[str, ...]
     errors: int = 1
+    timeout: float = 30
 
 
 EXAMPLES: tuple[Example, ...] = (
+    Example(
+        "aged-state-snapshots",
+        (
+            'let value? = "before"; fn read() { value }; let object = scope { field?: "before" }; let alias = object;',
+            *(
+                f'let aged_{index} = scope {{ text: "row", path: ./item, flag: true }};'
+                for index in range(1, 1025)
+            ),
+            'decltype({ value = "query-only"; value })',
+            "read()",
+            "value = null; read() is null",
+            f'value = "prefix"; object::field = "prefix"; {FAIL} value = "unreached";',
+            "read()",
+            "alias::field",
+            "aged_1::text",
+            "aged_1024::flag",
+            "value = true;",
+            "read()",
+            "let value = 0; read()",
+            "value",
+        ),
+        ("String", "before", "true", "prefix", "prefix", "row", "true", "prefix", "prefix", "0"),
+        errors=2,
+        timeout=120,
+    ),
     Example(
         "planned-repl-io",
         (
@@ -231,7 +257,7 @@ def run(binary: Path, example: Example, work: Path) -> None:
         input=source,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=example.timeout,
         check=False,
     )
     actual = tuple(result.stdout.splitlines())

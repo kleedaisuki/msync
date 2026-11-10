@@ -2,6 +2,12 @@ using Msync.Compiler;
 using Msync.Core;
 using Msync.Runtime;
 
+if (args.Contains("--descriptions", StringComparer.Ordinal))
+{
+    await SessionDescriptionChecks.Run();
+    return;
+}
+
 if (args.Contains("--optimization", StringComparer.Ordinal))
 {
     await SessionOptimizationChecks.Run();

@@ -386,6 +386,29 @@ from semantic location/function identities to physical slots/code indices.
 Runtime value feedback crosses that mapping; the binder does not infer identity
 by comparing a new value against a template's old AST or prototype location.
 
+Accepted and reconciled generations detach their fact overlays after runtime
+feedback. Each table merges changed entries into a structurally shared
+`ImmutableDictionary` root; an unchanged table retains its root. The next
+submission borrows that root rather than retaining every preceding submission's
+query/analysis parent chain. Ordinary within-analysis queries still use O(1)
+mutable overlays and never enumerate the lexical world merely to fork. This is
+a publication ownership boundary, not periodic whole-table compaction or a
+threshold on REPL history. Runtime export feedback, fixed storage types,
+partially initialized export reconciliation and editor query isolation remain
+the same operations. The BCL's
+[immutable dictionary builder](https://learn.microsoft.com/en-us/dotnet/api/system.collections.immutable.immutabledictionary-2.tobuilder?view=net-10.0)
+provides structural sharing; no custom persistent-tree implementation is needed.
+
+Prompt binding descriptions project the accepted lexical roots directly through
+the same semantic value/concept presenter. They copy only immutable type and
+signature tables, not executable HIR or all historical/private declaration
+observations, and do not bind/analyze an artificial empty submission. Runtime
+feedback still precedes projection, and accepted descriptions remain immutable
+while speculative editor queries use separate overlays. Focused equivalence
+checks compare direct descriptions with the existing editor-query route for
+named/anonymous Scopes, generic functions, concepts, nullable/indexed metadata,
+Path/Connection values, shadowing and query isolation.
+
 Editor queries project immutable semantic observations, lexical visibility,
 receiver/callable/type views and source links. Error nodes retain usable types
 and context. Uncalled generic bodies use their bound constraints/type variables,
