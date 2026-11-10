@@ -200,11 +200,16 @@ Run `42740109409` validates source
 `9f4856adeb8f70b38a1446b458be619893096fe8`. Both Native jobs again passed
 all seven selected phases. The original Equality hover assertion now passes,
 but the same actual VS Code suite reaches a further failure: the initialized
-`tree` binding is displayed as `unknown` rather than `Scope`. This is another
-semantic-observation defect, not a reason to weaken the existing assertion.
-The candidate remains rejected; the subsequent editor suites and VSIX packaging
-have not run. The next local editor check must replay all assertions belonging
-to this exact small fixture before another Native freeze.
+`tree` binding is displayed as `unknown` rather than `Scope`. Replaying the
+complete fixture through the actual Native LSP exposes an earlier E0214 at
+`Set::new`: the `StrictOrder` contract requires `sample: Number?`, but its
+inferred actual field has degraded to `Any?`. Analysis stops there, so the
+unknown hover is a bound fallback, not a presentation defect. The compiler must
+retain the policy field's type; forcing the hover to say Scope would hide the
+underlying error. The candidate remains rejected; the subsequent editor suites
+and VSIX packaging have not run. The next local check must replay every assertion
+and require zero diagnostics and successful check/run for this exact small
+fixture before another Native freeze.
 
 The Linux payload's SHA256 is
 `83f9c206904dfdd4ee1a1eae7d066d0fe59faa85caf210aa7b46139f8ddc7494`.
