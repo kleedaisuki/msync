@@ -13,6 +13,13 @@ public static partial class ContextualBackend
 
     public static bool NeedsPreparation(FunctionCode function) => Applicable(function).Required;
 
+    internal static bool NeedsPreparation(FunctionCode function, int start)
+    {
+        Applicability facts = Applicable(function);
+        // Preparation stops before backward-edge targets without interpreting an instruction.
+        return facts.Required && !facts.LoopHeaders.Contains(start);
+    }
+
     private static Applicability Applicable(FunctionCode function) => applicability.GetValue(function, static code =>
     {
         HashSet<int> headers = [];

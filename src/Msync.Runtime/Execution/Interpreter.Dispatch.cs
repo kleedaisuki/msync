@@ -29,10 +29,10 @@ public sealed partial class Interpreter
                 && (prepareEntry
                     || next.Op is OpCode.Transfer or OpCode.LocalTransfer or OpCode.SelectPath
                         or OpCode.GetIterator or OpCode.NativeCall or OpCode.Call);
-            if (contextualize && ContextualBackend.NeedsPreparation(function))
+            if (pc == continuation && awaiting.Count != 0)
+                await AwaitPlanResourcesAsync(awaiting);
+            if (contextualize && ContextualBackend.NeedsPreparation(function, pc))
             {
-                if (pc == continuation && awaiting.Count != 0)
-                    await AwaitPlanResourcesAsync(awaiting);
                 var prepared = await PrepareContinuationAsync(image, functionIndex, pc, locals, stack, cancellationToken);
                 preparedAt = pc;
                 if (prepared is null)
