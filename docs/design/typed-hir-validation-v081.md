@@ -307,3 +307,41 @@ invalidated through an alias, and a deferred Range/String source that changes
 before observation. Only this source route is repeated, not the earlier three-
 artifact or optimization matrix; its report is
 `.temp/hir-semantic-journey/snapshot17-source.json`.
+
+## Matched compiler cost and the remaining List construction work
+
+The completed three-source O0/O2 cost-control observations and independent
+module-retention results are recorded in
+`tests/Performance/HirCompilation/README.md` and
+`.temp/hir-final-cost/frozen17/matched-{timing,retention}.json`. Their source
+bytes, SDK/runtime, TieredCompilation=0 policy, warmups and sample counts match.
+They establish a large BTree improvement but also a real List regression:
+O0 allocation grows from about 0.928 MB to 3.816 MB, and O2 from 4.432 MB to
+7.375 MB. The BTree benefit does not cancel an independent ordinary-case cost.
+
+A focused reuse of `SemanticAllocationProbe` on the same List source separates
+554,368 B of binding from 3,102,016 B of semantic work. Public Analyze agrees
+with the split to 24 B. Re-freezing and sealing cost only 42,376 B and 46,088 B;
+the final result still has 623 nodes, six functions and 34 templates. Binding
+and the final arena sizes are essentially unchanged from the earlier control,
+while semantic construction has grown.
+
+One allocation-only `gc-verbose` collection of the existing normal-Compile
+probe then uses O0, one cold call, three warmups and 50 calls to obtain enough
+ticks. These repetitions are a sampling mechanism, **not** another timing
+measurement. The 1,970 recorded ticks all have stacks and carry 213,281,232 B
+of allocation weights. The nearest compiler owners include FormalInput
+(56.63 MB), EnrichFutureDomains (20.99 MB), and InvocationProjection (2.99 MB).
+The largest individual frames are FormalInput.Abstract (36.58 MB),
+EnrichFutureDomains.Visit (15.34 MB), FormalInput.AbstractCallable (7.25 MB)
+and FutureCallables (7.24 MB). CodeSchema's inclusive 27.91 MB and Enrich's
+inclusive 43.62 MB overlap their descendant frames and must not be added to
+those nearest-owner totals.
+
+This narrows the short List's remaining cost to formal class/callable schema
+construction and future-callable enrichment rather than HIR sealing or the
+bytecode optimizer. Sharing fixes still need the actual carrier/alias/capture
+contract; a first-caller semantic cache is not a valid shortcut. Source/image
+receipts, the phase results and parsed stacks are under
+`.temp/hir-final-cost/list-attribution/`; the only raw trace has SHA-256
+`df8a0ba4a29c3d66b36c7fe55addb3ec6147e08e51849b017dcd9120a176c76e`.
