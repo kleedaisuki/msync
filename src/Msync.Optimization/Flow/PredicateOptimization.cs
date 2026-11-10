@@ -14,9 +14,12 @@ internal static class PredicateOptimization
     {
         internal static readonly Fact Bottom = new(new(TypeKind.Never), 0);
     }
-    private sealed record State(List<Fact> Stack, Fact[] Locals)
+    private sealed record State(List<Fact> Stack, Fact[] Locals, int[] Generations)
     {
-        internal State Copy() => new(Stack.ToList(), Locals.ToArray());
+        internal int Generation;
+        internal int InvalidatedAt;
+        internal State Copy() => new(Stack.ToList(), Locals.ToArray(), Generations.ToArray())
+        { Generation = Generation, InvalidatedAt = InvalidatedAt };
     }
 
     private sealed class Analysis(Module module, FunctionCode function, List<Value> constants, ConstantInterner interner)
@@ -28,7 +31,7 @@ internal static class PredicateOptimization
         private readonly bool[] starts = new bool[function.Instructions.Count + 1];
         private readonly bool[] queued = new bool[function.Instructions.Count + 1];
         private readonly Queue<int> work = new();
-        private readonly int[] aliasable = CaptureAliases(function);
+        private readonly (int[] Indices, int Count) aliases = AliasIndices(function);
         private readonly Dictionary<(int Block, int Slot, bool Stack, bool Invalidation), int> identities = [];
         private int nextIdentity = -function.LocalCount - 1;
 
@@ -83,7 +86,7 @@ internal static class PredicateOptimization
             for (var slot = 0; slot < function.CaptureCount; slot++) locals[slot] = new(TypeRef.Any, -slot - 1);
             for (var parameter = 0; parameter < function.ParameterCount; parameter++)
                 locals[function.CaptureCount + parameter] = new(function.ParameterTypes?[parameter] ?? TypeRef.Any, -function.CaptureCount - parameter - 1);
-            states[0] = new([], locals); Enqueue(0);
+            states[0] = new([], locals, new int[aliases.Count]); Enqueue(0);
             while (work.TryDequeue(out var start))
             {
                 queued[start] = false;
@@ -100,11 +103,10 @@ internal static class PredicateOptimization
                     Fact Unknown(TypeRef type) => new(type, identity);
                     void Invalidate()
                     {
-                        foreach (var slot in aliasable)
-                        {
-                            if (state.Locals[slot].Type.Kind == TypeKind.Never) continue;
-                            state.Locals[slot] = new(TypeRef.Any, Identity(pc, slot, invalidation: true));
-                        }
+                        // Generations defer work; canonical PC identities, not
+                        // these counters, participate in the CFG fixed point.
+                        state.Generation++;
+                        state.InvalidatedAt = pc;
                     }
                     switch (instruction.Op)
                     {
@@ -115,12 +117,17 @@ internal static class PredicateOptimization
                         case OpCode.Null: Push(new(TypeRef.Null, identity, Value.Null)); break;
                         case OpCode.True: Push(new(TypeRef.Bool, identity, Value.True)); break;
                         case OpCode.False: Push(new(TypeRef.Bool, identity, Value.False)); break;
-                        case OpCode.LoadLocal: Push(state.Locals[instruction.A]); break;
-                        case OpCode.LoadCell: case OpCode.LoadStorage: Push(Unknown(state.Locals[instruction.A].Type)); break;
+                        case OpCode.LoadLocal: Push(Local(state, instruction.A)); break;
+                        case OpCode.LoadCell: case OpCode.LoadStorage: Push(Unknown(Local(state, instruction.A).Type)); break;
                         case OpCode.StoreLocal:
                         case OpCode.InitializeLocal:
                             state.Locals[instruction.A] = Pop();
-                            if (instruction.Op == OpCode.StoreLocal && Array.IndexOf(aliasable, instruction.A) >= 0) Invalidate();
+                            int alias = aliases.Count == 0 ? -1 : aliases.Indices[instruction.A];
+                            if (alias >= 0)
+                            {
+                                state.Generations[alias] = state.Generation;
+                                if (instruction.Op == OpCode.StoreLocal) Invalidate();
+                            }
                             break;
                         case OpCode.Pop: Pop(); break;
                         case OpCode.Dup: var duplicate = Pop(); state.Stack.Add(duplicate); Push(duplicate); break;
@@ -207,6 +214,17 @@ internal static class PredicateOptimization
             }
         }
 
+        private Fact Local(State state, int slot)
+        {
+            Fact value = state.Locals[slot];
+            if (aliases.Count == 0) return value;
+            int alias = aliases.Indices[slot];
+            if (alias < 0 || state.Generations[alias] == state.Generation) return value;
+            state.Generations[alias] = state.Generation;
+            if (value.Type.Kind == TypeKind.Never) return value;
+            return state.Locals[slot] = new(TypeRef.Any, Identity(state.InvalidatedAt, slot, invalidation: true));
+        }
+
         private int Identity(int block, int slot, bool stack = false, bool invalidation = false)
         {
             var key = (block, slot, stack, invalidation);
@@ -234,7 +252,7 @@ internal static class PredicateOptimization
                     _ => value
                 };
             }
-            for (var slot = 0; slot < state.Locals.Length; slot++) state.Locals[slot] = Refine(state.Locals[slot]);
+            for (var slot = 0; slot < state.Locals.Length; slot++) state.Locals[slot] = Refine(Local(state, slot));
             for (var slot = 0; slot < state.Stack.Count; slot++) state.Stack[slot] = Refine(state.Stack[slot]);
         }
 
@@ -258,7 +276,7 @@ internal static class PredicateOptimization
             }
             for (var slot = 0; slot < previous.Locals.Length; slot++)
             {
-                var joined = Join(previous.Locals[slot], incoming.Locals[slot], slot);
+                var joined = Join(Local(previous, slot), Local(incoming, slot), slot);
                 changed |= !Same(joined, previous.Locals[slot]); previous.Locals[slot] = joined;
             }
             if (changed) Enqueue(target);
@@ -357,6 +375,16 @@ internal static class PredicateOptimization
             };
             return consumed >= 0;
         }
+    }
+
+    private static (int[] Indices, int Count) AliasIndices(FunctionCode function)
+    {
+        int[] slots = CaptureAliases(function);
+        if (slots.Length == 0) return ([], 0);
+        int[] indices = new int[function.LocalCount];
+        Array.Fill(indices, -1);
+        for (int index = 0; index < slots.Length; index++) indices[slots[index]] = index;
+        return (indices, slots.Length);
     }
 
     // Raw locations flow separately from payload facts: LoadLocal dereferences,

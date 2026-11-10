@@ -15,6 +15,19 @@ with a String or discard its endpoint/context provenance.
 The test invokes the internal pass directly so its own evidence does not depend
 on dead-code elimination or inlining. No external effect is evaluated by the pass.
 
+Run with `--invalidation` for location-version checks around sparse/lazy
+invalidation. Actual `exists` inputs select both CFG arms. A saved predicate and
+ordinary copied Bool keep their value after a captured call changes the original
+cell; a predicate over the old value cannot refine the new location version.
+The returned-value boundary retains a copied payload rather than importing its
+callee's binding cell. Raw-location bytecode separately covers aliases joined
+through CFG edges and Range iteration retaining raw locations.
+`StoreLocal` mutates the shared cell while `InitializeLocal` detaches that slot.
+Repeated calls at the same bytecode PC additionally check captured-cell flips,
+old-value predicates and CFG convergence across one to four loop iterations.
+Every expected Bool field is checked before optimization, after the pass, and
+through source-free relocatable and executable serialization.
+
 `dotnet run --project tests/PredicateOptimization -c Release -- --performance`
 reports nine-sample median component time and thread allocation for 100, 500 and
 2,000 straight-line bindings and reads, after three warmups. It measures this

@@ -261,3 +261,88 @@ The original full Map fixture also completed nine CLI executions at those three
 levels, writing the expected replacement value `3` in each source/`.mso`/`.mexe`
 journey. Artifact execution ran from a different working directory after source
 removal; records and binaries are under `.temp/compiler-map-cost/cli`.
+
+## Power-user predicate invalidation (2026-11-10)
+
+The tail investigation adds reproducible compiler-only families under
+`tests/Performance/HirCompilation/tail_inputs.py`. Bindings retain a Scope-qualified
+generic path call per declaration; scan pipelines retain independent reductions
+and a runtime-derived seed. Program structure, not just runtime row count, is the
+scaling variable. The phase host uses frozen product assemblies and separates
+analysis, pure HIR lowering and machine-independent optimization.
+
+Initial single-pass managed Release observations use .NET 10.0.14 with tiered
+compilation disabled, frozen spatial image `spatial-common-4`, and O2. These first
+calls include JIT work and are diagnostic calibration, not Native user latency
+or a tail distribution. The allocation geometry is nevertheless discriminating:
+
+| Input | Unoptimized instructions | Optimize first-call ms | Optimize allocated bytes |
+| --- | ---: | ---: | ---: |
+| 1,024 qualified calls/bindings | 11,297 | 1,726.73 | 131,345,184 |
+| 4,096 qualified calls/bindings | 45,089 | 19,827.47 | 1,851,224,648 |
+| 32 Number scans | 1,179 | 835.06 | 19,125,944 |
+| 128 Number scans | 4,443 | 1,275.51 | 364,367,848 |
+
+One separate EventPipe sampled-thread-time trace of 4,096 bindings attributes
+21,381 ms of 22,933 ms sampled optimizer time (93.2%) to
+`PredicateOptimization.Analysis.Discover.Invalidate`. The instrumented run takes
+22,954 ms and allocates 1,851,215,328 bytes. Its wall-clock timing is not substituted
+for the uninstrumented observation. `GraphOptimization` accounts for only about
+251 ms (1.1%), rejecting the initial hypothesis that the dominant work was copying
+CFG frames around inlined final-return jumps. That speculative inliner patch was
+not adopted.
+
+The actual mechanism is eager havoc of potential locations. `CaptureAliases`
+tracks raw `LoadCell`, `LoadStorage`, `GetCapture`, call-result and iterator
+possibilities. This change preserves that conservative raw-storage flow rather
+than deriving a new no-alias rule from the payload type. Every opaque call formerly
+walked all potentially aliased locals initialized so far and interned a new
+`(invalidation PC, slot)` identity. N retained call results therefore created
+quadratic traversal and identity-table traffic even when those results were
+never exposed to another operation. Ordinary returned payloads and copied scalar
+values remain distinct from raw storage reached through a capture or iterator.
+
+The replacement uses analysis-local lazy invalidation. Each CFG state owns
+generation stamps only for its potential aliases. Havoc advances a state-local
+generation and records the invalidating PC in constant time; actual reads,
+assumptions and joins materialize the existing unknown payload fact and its
+canonical PC/slot identity on demand. Stores and fresh initialization stamp the
+new fact. Copying a state copies its stamps. A repeated execution of the same PC
+still advances the generation, but only canonical semantic identities participate
+in fixed-point comparison. Old operand-stack values and saved predicates remain
+snapshots of their original values, not references retroactively widened by a
+later call. InitializeLocal can detach a new location while StoreLocal through a
+raw alias still invalidates the shared location.
+
+LLVM's [MemorySSA design](https://llvm.org/docs/MemorySSA.html#use-and-def-optimization)
+likewise makes expensive clobber refinement demand-driven: eagerly optimizing
+every MemoryDef can be quadratic. Its
+[pass-manager discussion](https://llvm.org/docs/NewPassManager.html#using-analyses)
+also identifies repeated outer-scope analysis in inner passes as a compile-time
+scaling hazard. Here the smaller application is delayed realization of one
+predicate analysis's havoc facts; it does not add LLVM machinery, alter program
+effects, or cache runtime filesystem state.
+
+Trace, frozen assembly hashes, source hashes and calibration reports are under
+`.temp/tail-compiler`; the maintained host and input generator reproduce the
+question independently of those disposable files. Focused raw-location and
+saved-predicate journeys live in `tests/PredicateOptimization/InvalidationChecks.cs`.
+
+The isolated changed image replaces only `Msync.Optimization.dll` (SHA256
+`6354688ac7167ac7c342c8145adb0c2adcb4b3d7370480283a4e57070dd74e78`)
+while retaining the same Core/Compiler/HIR assemblies. One uninstrumented
+4,096-binding discriminator completes optimization in 1,462.67 ms and allocates
+138,356,744 bytes, versus the original first-call 19,827.47 ms and 1,851,224,648
+bytes. This removes 92.5% of optimization allocation traffic. Both retain 45,089
+unoptimized and 28,691 optimized instructions. The remaining 138 MB is still
+visible; this one discriminator does not establish a P99 or complete linear
+scaling of all optimizer passes.
+
+The changed image passes 112 new actual-value raw-location, saved-predicate,
+InitializeLocal/StoreLocal, CFG-join and repeated-call-PC loop contracts through
+direct, serialized relocatable and serialized bound execution. It also passes
+87 existing predicate controls. Running the latter exposed a stale test oracle
+before optimization: IEEE NaN equality must select the false edge, not return
+the first NaN. That independent oracle correction now checks both equality's
+false edge and inequality's true edge with original-payload preservation; no
+product comparison behavior was changed to make the test pass.

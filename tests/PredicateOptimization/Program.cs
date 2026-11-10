@@ -37,6 +37,12 @@ async Task<string> Run(Module module)
 }
 try
 {
+    if (args.Contains("--invalidation", StringComparer.Ordinal))
+    {
+        contracts += await InvalidationChecks.Run(root, Optimize);
+        Console.WriteLine($"Predicate invalidation: {contracts} contracts passed.");
+        return;
+    }
     if (args.Contains("--performance", StringComparer.Ordinal))
     {
         foreach (int count in new[] { 100, 500, 2000 })
