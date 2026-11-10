@@ -260,3 +260,43 @@ observation admission: its producer fails before publication in the existing
 its missing target and fails. Exact stack and resource keys remain in the
 entry review records; this tail investigation does not turn that publication
 failure into an admission result or expand into a general filesystem audit.
+
+## Exact Native integration window: source `9e5e997`
+
+The single completed window compares spatial image `54d591a8…` with Native
+image `d5f05123a397d05d663979d1526f0b46c12974de6d82a864b7e6ad9697b02cc3`,
+workflow source `9e5e997721a813d207c0cdca7fdbee0fe87e696f`, run `42863498904`.
+That run passed the selected eight Native phases on Linux and Windows and the
+source editor suite. The Linux timing window spans 2026-11-10 17:25:59 to
+17:35:21 UTC, with 20 interleaved blocks and all output bytes verified.
+
+| CLI case | Pairs | Median ms, before → candidate | P95 ms | P99 ms | Paired median delta ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `--version` | 1,000 | 15.60 → 14.85 | 19.30 → 18.40 | 21.39 → 20.35 | -0.67 |
+| Scalar source | 1,000 | 22.27 → 21.14 | 25.94 → 25.78 | 28.21 → 27.59 | -1.06 |
+| Scalar `.mexe` | 1,000 | 19.83 → 19.01 | 23.52 → 22.69 | 25.84 → 25.74 | -0.91 |
+| Reference Scope source, 8,192 rows | 400 | 138.10 → 111.35 | 162.70 → 127.58 | 171.59 → 136.58 | -27.50 |
+| Reference Scope `.mexe`, 8,192 rows | 400 | 118.20 → 82.41 | 140.78 → 97.06 | 147.98 → 100.68 | -36.75 |
+| Distinct-file manifest `.mexe`, 8,192 rows | 200 | 1,010.26 → 261.38 | 1,157.75 → 317.17 | 1,349.37 → 354.14 | -751.39 |
+
+Every light-control paired-median block-resampling interval is negative, while
+its marginal-P99 difference interval includes zero. Thus the small common-path
+median improves in this window, without establishing a light-control P99 gain.
+The two reference routes have negative marginal-P99 resampling intervals and
+finite iid population-quantile rank references (392–400 for P99 rank 396).
+
+All 200 manifest pairs favor the candidate, but its P99 remains descriptive:
+the upper population-quantile rank reference is 201 for only 200 observations.
+The manifest uses distinct generated Strings, qualified Paths and a Connection
+field, checking filename operations during one scan and writing a seed-dependent
+summary. It is in-memory manifest processing with one seed read and one output,
+not throughput over 8,192 actual files. These combined CLI results do not isolate
+the numeric-page packing mechanism or substitute for the managed allocation
+experiment.
+
+Exact binaries, receipts, source, bound artifacts, tool bytes, all raw samples,
+stdout/stderr and block-resampling analysis are linked by
+`artifacts/candidates/tail-latency/9e5e997/performance/native-final/index.json`.
+This batch is preserved unchanged. It precedes a later CompilerSession-only
+publication-comparer correctness correction; final REPL evidence belongs to
+that corrected Native payload, not to an unrun REPL session on this image.
