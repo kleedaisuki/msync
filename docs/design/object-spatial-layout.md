@@ -226,3 +226,44 @@ Neither this component nor the common-path result establishes an unconditional
 constructor or whole-program speedup. The component source, exact Core hash,
 methods, samples and reproduction commands are in
 `tests/Performance/ScopeSpatial/Component/` and its parent README.
+
+## Exact Native source-run comparison
+
+The final Linux Native comparison uses the accepted contextual-backend image
+(`7d1d2856e75631f162bdded1f7258dc7b1d71620afcd2ae28ae42939a08865f4`)
+and spatial candidate source `a0cebdf6c5f31dd0b3650fd534cbbee7ac1d7ddd`
+(image SHA256
+`54d591a87ab831c07459333d3e06acc39a1164b37beaae0eb83cccfd9df21bfc`).
+Each case has seven alternating AB/BA fresh-process pairs after one untimed
+functional launch per image. Commands use `run SOURCE -O2 --no-config
+--no-telemetry` and `NO_COLOR=1`. Source and runtime seed files are prepared
+outside timing; each pair reads the same seed, and every output byte is checked
+after timing. There is no global cache flush or concurrent build/profile work.
+The measured interval includes startup, source compilation, contextual
+preparation and execution, not just a physical field scan.
+
+| Source workload | Baseline median ms | Candidate median ms | Median paired delta ms | Faster pairs |
+| --- | ---: | ---: | ---: | ---: |
+| Computed numeric Scope build/scan, 512 rows | 61.84 | 55.39 | -7.20 | 6/7 |
+| Reference-heavy Scope control, 512 rows | 67.49 | 64.15 | -4.14 | 4/7 |
+| Two numeric Scope scans, 256 rows | 143.44 | 140.48 | +1.78 | 3/7 |
+| Scalar output, no Scope | 20.73 | 24.08 | +3.04 | 1/7 |
+
+Paired deltas are candidate minus baseline; the median of paired differences
+need not equal the difference of independent medians. The computed case shows
+a combined Native implementation benefit, not isolated numeric-page attribution.
+The reference control is mixed: candidate p95 rises from 72.17 to 75.40 ms.
+The scalar control retains a visible +3.04 ms paired-median regression, with six
+of seven pairs slower; this comparison does not establish its cause.
+
+Disassembly confirms real affine fusion: the two-scan portable artifact changes
+from two `IteratorNext` instructions to one. Nevertheless, its source-run pairs
+do not establish an end-to-end latency improvement. This mechanism result, the
+same-Core packing component's 1.70x scan result, and the managed common-path
+preparation improvement above answer different questions and are not
+interchangeable speedup claims.
+
+Exact commands, native/receipt/harness/source identities, all raw samples,
+stdout/stderr, checked results and both affine disassemblies are retained under
+`artifacts/candidates/spatial-layout/a0cebdf/performance/`; `index.json` links the
+records. No outliers were removed and no replacement timing batch was run.
