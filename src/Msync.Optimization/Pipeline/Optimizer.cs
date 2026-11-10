@@ -38,7 +38,9 @@ public static class Optimizer
                     ? CrossBlockMemoryOptimization.Optimize(context, predicated, constants) : predicated;
                 var scalar = (features & FunctionFeatures.Scope) != 0 ? ScopeScalarization.Optimize(context, memory, constants) : memory;
                 var tail = (features & FunctionFeatures.Call) != 0 ? TailCallOptimization.Optimize(context, scalar, index) : scalar;
-                var result = (features & FunctionFeatures.Iteration) != 0 ? LoopOptimization.Optimize(context, tail, constants, level) : tail;
+                var affine = (features & FunctionFeatures.Iteration) != 0
+                    ? AffineLoopOptimization.Optimize(context, tail, level) : tail;
+                var result = (features & FunctionFeatures.Iteration) != 0 ? LoopOptimization.Optimize(context, affine, constants, level) : affine;
                 result = Unchanged(function, result);
                 preparation[index].Add(function, result);
                 return result;
