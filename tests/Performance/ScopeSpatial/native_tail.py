@@ -84,10 +84,10 @@ def invoke(command: list[str], work: Path) -> dict[str, Any]:
     }
 
 
-def program(case: str) -> str:
-    if case != "references":
+def program(case: str, rows: int) -> str:
+    if not case.startswith(("references", "computed")):
         return '"scalar-control" -> ./result.txt;\n'
-    return """let seed = $std::io::read_text(./seed.txt) as Number;
+    source = """let seed = $std::io::read_text(./seed.txt) as Number;
 fn build(values: Range) {
     let records = $std::storage::Buffer::new([]);
     for value in values {
@@ -104,17 +104,26 @@ for row in rows {
 };
 (total as String) -> ./result.txt;
 """
+    if case.startswith("computed"):
+        source = source.replace(
+            'label: "kept", path: ./fixed, flag: true',
+            "x: value + 1, y: value * 2, z: value - 3, w: value / 2",
+        ).replace(
+            'if row::label == "kept" and row::flag { total = total + 1; };',
+            "total = total + row::x + row::y + row::z + row::w;",
+        )
+    return source.replace("seed + 512", f"seed + {rows}")
 
 
 def prepare(
-    binaries: dict[str, Path], work: Path, cases: Sequence[str]
+    binaries: dict[str, Path], work: Path, cases: Sequence[str], rows: int
 ) -> dict[str, Any]:
     fixtures: dict[str, Any] = {}
     for case in cases:
         directory = work / case
         directory.mkdir(parents=True, exist_ok=True)
         source = directory / "program.msync"
-        source.write_text(program(case), encoding="utf-8", newline="\n")
+        source.write_text(program(case, rows), encoding="utf-8", newline="\n")
         (directory / "seed.txt").write_text("11", encoding="utf-8")
         commands: dict[str, list[str]] = {}
         artifacts: dict[str, Any] = {}
@@ -122,7 +131,7 @@ def prepare(
             prefix = [str(binary), "--no-config", "--no-telemetry"]
             if case == "version":
                 command = [*prefix, "--version"]
-            elif case == "mexe":
+            elif case.endswith("mexe"):
                 portable = directory / f"{label}.mso"
                 executable = directory / f"{label}.mexe"
                 invoke(
@@ -143,6 +152,7 @@ def prepare(
             commands[label] = command
         fixtures[case] = {
             "directory": str(directory),
+            "rows": rows,
             "source": source.read_text(),
             "source_sha256": digest(source),
             "commands": commands,
@@ -161,7 +171,14 @@ def run_case(
     result = invoke(fixture["commands"][label], directory)
     if case != "version":
         actual = output.read_bytes()
-        expected = b"512" if case == "references" else b"scalar-control"
+        if case.startswith("references"):
+            expected = str(fixture["rows"]).encode()
+        elif case.startswith("computed"):
+            rows = fixture["rows"]
+            total = 4.5 * (rows * seed + rows * (rows - 1) // 2) - 2 * rows
+            expected = format(total, ".15g").encode()
+        else:
+            expected = b"scalar-control"
         if actual != expected:
             raise AssertionError((case, label, expected, actual))
         result["output"] = actual.decode()
@@ -221,6 +238,21 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--pairs", type=int, default=1000)
     parser.add_argument("--reference-pairs", type=int, default=200)
+    parser.add_argument("--rows", type=int, default=512)
+    parser.add_argument(
+        "--cases",
+        nargs="+",
+        choices=(
+            "version",
+            "source",
+            "mexe",
+            "references",
+            "references-mexe",
+            "computed",
+            "computed-mexe",
+        ),
+        default=("version", "source", "mexe", "references"),
+    )
     parser.add_argument("--blocks", type=int, default=20)
     parser.add_argument("--calibrate-only", action="store_true")
     args = parser.parse_args()
@@ -231,9 +263,13 @@ def main() -> None:
     work = args.work.resolve()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    counts = dict.fromkeys(("version", "source", "mexe"), args.pairs)
-    counts["references"] = args.reference_pairs
-    fixtures = prepare(binaries, work, list(counts))
+    counts = {
+        case: args.reference_pairs
+        if case.startswith(("references", "computed"))
+        else args.pairs
+        for case in args.cases
+    }
+    fixtures = prepare(binaries, work, list(counts), args.rows)
     report: dict[str, Any] = {
         "started_utc": utc(),
         "scope": "fresh child processes, warm OS caches; no cache flush",
@@ -261,7 +297,7 @@ def main() -> None:
         }
     if args.calibrate_only:
         (output / "calibration.json").write_text(json.dumps(report, indent=2) + "\n")
-        print("Functional calibration passed for both images and all four phases.")
+        print("Functional calibration passed for both images and selected cases.")
         return
     noop = shutil.which("true")
     report["host_noop"] = (

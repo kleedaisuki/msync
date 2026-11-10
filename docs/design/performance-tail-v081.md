@@ -118,6 +118,12 @@ and spatial Native SHA256
 `--baseline`, `--candidate`, `--work` and `--output` select later frozen producers
 and independent record directories. `raw.jsonl` is append-only within a window;
 `report.json` contains complete setup, all blocks and descriptive statistics.
+`--rows` selects the Scope population. `--cases` admits scalar controls plus
+`references`/`references-mexe` and `computed`/`computed-mexe`; the latter use the
+same runtime-seeded source for source-run and matching prebuilt-artifact routes.
+`--reference-pairs` sets the sample budget for either Scope family. The final
+repair comparison uses the spatial image as baseline, rather than adding a
+third producer to every workload matrix.
 
 The initial host is Linux x86-64 with 16 available CPUs and Python 3.15.2.
 Separate non-team network experiments and persistent Forge/Postgres services
