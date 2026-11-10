@@ -222,3 +222,21 @@ future coordinator now fences both initial READY messages before any RUN.
 Exact frozen images, shared artifact, original runner bytes, raw samples,
 stdout/stderr and block/tail-rank analysis are retained in
 `artifacts/candidates/tail-latency/runtime-4199e9d/references-final/`.
+
+## Observation admission is distinct from pure-call eligibility
+
+The realistic manifest controls also expose an existing filesystem-observation
+ordering defect, not an effect of admitting the metadata callee through the new
+exact-target guard: that guard does not match this callee. An independent probe
+holds a producer's `ProcessValue.Completion` deterministically. A captured Cell
+counter reaches one before producer release and execution remains pending, but
+the function eventually returns `missing` although the published bytes are
+`present`. No sleeps or transfer-size race are needed to reproduce it.
+
+The required boundary is the selected backend filesystem observation: reuse the
+VM's namespace-to-referent dependencies, yield if its producer is unfinished,
+and resume without replaying the already effective prefix. This is neither a
+global job drain nor freshness checking of a recorded prepared plan. Exact
+baseline Runtime/Core/Optimization binaries, probe source, commands, raw result
+and the fresh-empty-fixture precondition are preserved in
+`artifacts/candidates/tail-latency/admission/reviewer-held-process-baseline/`.
