@@ -130,6 +130,33 @@ Frozen16 repeats the same 14 semantic assertions after combining projection
 sharing with role interning and enrichment changes. The combined candidate's
 cost observation cannot be attributed to projection alone.
 
+## First Native candidate: rejection and shared semantic corrections
+
+The validation-only package run `42730780886`, from frozen source `d7c1de5`,
+built Linux and Windows Native executables successfully. Both platforms passed
+six selected boundaries, including the actual terminal journeys, but rejected
+the same custom-Map library-policy input. No version tag or public asset was
+created, and the installed-editor job did not run after its prerequisite failed.
+
+The failure also reproduced in the managed compiler. The dependent result of
+Range enumeration had been degraded from a non-null record with a possibly-null
+payload to a generic nullable item. Further acceptance of that same library
+phase exposed two other semantic boundaries: discarding a value must preserve
+`Never`, and an unannotated storage declaration must infer its complete analyzed
+initializer type rather than freeze a provisional compound binder hint.
+
+`c44b487` centralizes the dependent native result rules and bottom-type law and
+preserves the distinction between inferred storage and explicit constraints.
+The unchanged collections and services inputs then passed their three O2
+source/object/executable routes each: 75 exact file observations and six negative
+cases in total. Immutable build-input manifests and matching PDB checksums
+identify these corrected producers. These managed results authorize a new
+Native candidate; they do not replace its platform and installed-editor tests.
+
+Raw package retention on failed Native jobs is now explicit. Failure remains
+failure for promotion: exact source, both Native jobs, editor acceptance and
+payload receipts are still required before any public release.
+
 ## Work ownership
 
 The compiler team owns semantic contracts, binding, specialization and lowering.
