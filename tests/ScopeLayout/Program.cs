@@ -4,6 +4,25 @@ using Msync.Core;
 using Msync.Runtime;
 using Module = Msync.Core.Module;
 
+if (args.Contains("--packed-isolation-only", StringComparer.Ordinal))
+{
+    SpatialLayoutChecks.CheckEscapedRowIsolation();
+    return;
+}
+
+if (args.Contains("--spatial-vm-only", StringComparer.Ordinal))
+{
+    await SpatialVmChecks.Run();
+    return;
+}
+
+if (args.Contains("--spatial-only", StringComparer.Ordinal)
+    || args.Contains("--packed-spatial-only", StringComparer.Ordinal))
+{
+    SpatialLayoutChecks.Run(args.Contains("--packed-spatial-only", StringComparer.Ordinal));
+    return;
+}
+
 int assertions = 0;
 void Check(bool condition, string message)
 {

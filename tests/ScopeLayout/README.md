@@ -8,11 +8,60 @@ offset hints, Connection/Process dispatch and selected duplicate-field errors.
 `tests/Msync.Runtime.Tests --mutable-state` independently exercises current live
 captures, obsolete-format rejection and fresh nested Scope constant instances.
 
+## Spatial-storage discriminators
+
+`--spatial-only` runs reference-compatible Core semantics without assuming a
+physical representation. `--packed-spatial-only` uses one explicit
+`ScopeAllocator` and additionally requires the numeric storage mechanism:
+multiple rows share fewer GC-reference-free double arrays, and warmed raw
+numeric reads/writes allocate no per-operation Number wrappers. These are
+mechanism checks, not a promise that Scope handles have adjacent addresses.
+Wide sparse numeric fields include offsets 0, 64 and 129.
+
+The checks retain IEEE bit patterns, declaration-order enumeration, instance
+identity and hash membership, visible-value cloning, exact captured-cell
+identity, and numeric/reference/Null transitions. Promotion of one row must not
+change a neighbor. Weak-reference checks keep one mixed row and one numeric row
+alive while 514 unrelated row handles and 257 reference payloads become
+collectable. This distinguishes a numeric-only shared page from a slab retaining
+unrelated managed data.
+
+`--packed-isolation-only` keeps an early numeric row after dropping its allocator
+and later rows. The unrelated final page and previous input Number boxes must
+be collectable. This discriminator fails the first packed prototype, in which
+row storage retained a mutable shape/pool and its unrelated current page; the
+split immutable-mapping/current-pool implementation passes.
+
+`--spatial-vm-only` constructs actual rows through compiler/VM Buffer programs,
+rather than only calling an allocator in a microbenchmark. Computed rows must
+use numeric storage; shared-literal and small mixed/reference-tail rows report
+their representation without forcing a policy that could make them slower.
+The reference suffix is longer than the numeric operand sidecar, and must not
+be truncated or demand nonexistent numeric slots.
+
+The real CLI companions are
+`tests/Msync.EndToEnd/object_locality_journey.py` and
+`affine_scan_journey.py`. They exercise runtime-derived values through source,
+source-deleted `.mso` and `.mexe` execution. The affine positive explicitly
+requires fewer portable iterator sites; dependent, lazy-effectful and irregular
+controls derive their expected values independently. Floating reductions retain
+their own per-accumulator order even when interleaving two independent scans is
+legal.
+
+The frozen common4 producer passed the object journey at O2 through all three
+routes (12 exact outputs each). The existing HIR semantic journey passed its
+three O2 routes (28 outputs each, six rejection diagnostics, no query effects),
+and the selected mixed-observation batch-failure journey retained successful
+work and the concrete failure with `Jobs=1`. The unchanged numeric mechanism
+checks were accepted on common3: 94 packed Core checks and 32 actual VM checks.
+
 ## Ownership and layout
 
 `ScopeLayout` owns immutable declaration-order names and a single ordinal
-name-to-slot dictionary. `ScopeValue` owns a fresh `Value[]` for each instance;
-the layout/array constructor transfers that array to the new instance. The
+name-to-slot dictionary. Ordinary `ScopeValue` instances own a fresh `Value[]`;
+the layout/array constructor transfers that array to the new instance. Packed
+instances instead own a row descriptor and private reference payload while
+sharing only a numeric page with other rows. The
 public dictionary constructor snapshots member values. `Members` retains its
 `IReadOnlyDictionary<string, Value>` interface and now references the Scope
 itself, without allocating a per-instance member-view object. A field containing
