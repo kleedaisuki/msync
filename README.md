@@ -72,7 +72,9 @@ let succeeded = copy_one(codex, destination);
 
 The transfer operator returns `Bool`. Filesystem failures are reported with the
 actual cause and produce `false`; cancellation remains cancellation. A discarded
-failed transfer makes the command fail. A regular file uses an owned temporary
+failed transfer that remains in the execution plan makes the command fail.
+Unobserved transfers overwritten before any read can disappear before execution.
+A regular file uses an owned temporary
 file beside its destination and atomic replacement, with at most one file sync.
 Directory or finite-cohort failures may leave completed members in place; retry
 is an ordinary new transfer, not a recovery or rollback transaction.
@@ -323,11 +325,11 @@ optimization policy.
                                                              |
                                                      relocatable .mso
                                                              |
-                                         context binding / lowering
+                                   contextual computation / I/O graph optimization
                                                              |
                                                       executable .mexe
                                                              |
-                                            interpreter + native scheduler
+                                       VM execution / parallel scheduling / resources
 ```
 
 ```sh
@@ -354,16 +356,23 @@ its source. Its source text is optional diagnostic data, not executable input;
 live session values and credentials are not stored in it. HIR cannot be
 reconstructed from `.mso` or `.mexe`: export it before bytecode lowering.
 
-Both bytecode formats execute without the original source. A `.mso` binds to the
-execution context when loaded. A `.mexe` captures working directory/home/source
-context; it does not persist open handles, authentication, filesystem snapshots,
-or validity proofs. Loading checks the bytecode format and executable contract.
-The runtime executes bytecode, never debug source or serialized AST.
+Both bytecode formats execute without the original source. A `.mso` is prepared
+for the selected execution context. The contextual backend computes known values
+and control flow, expands selections, removes unobserved overwritten transfers,
+and forms a dependency graph and batches. A `.mexe` carries the resulting plan
+and any continuations whose inputs are not known yet. It can be inspected and
+submitted repeatedly, but its filesystem observations are not validity promises.
+Prepared selections are frozen: adding a matching file later does not add it to
+that recorded transfer. VM executes the received operations, schedules parallel
+work and reports actual errors; it does not detect stale plans or automatically
+replan them. Live handles and credentials are never stored. The runtime executes
+typed IR, never debug source or serialized AST. See the
+[contextual backend contract](docs/design/contextual-io-backend.md).
 
 The six C# projects separate model, analysis and execution responsibilities:
 `Core` owns types and bytecode; `Hir` owns semantic programs, persistence and pure
 lowering; `Compiler` owns source semantics; `Optimization` owns IR transforms;
-`Runtime` owns execution and resources; `Cli` owns commands and editor/terminal
+`Runtime` contains the contextual backend and owns execution/resources; `Cli` owns commands and editor/terminal
 hosting. The graph is acyclic and Native AOT still links one native executable.
 See [Typed HIR and phase ownership](docs/design/typed-hir-v081.md) for the
 information retained and discarded at each boundary, and the
@@ -391,8 +400,10 @@ The current checkout and packages contain only the C# implementation. Historical
 Rust sources, standard modules and tests remain available at the immutable
 [`v0.7.3` tag](https://github.com/kleedaisuki/msync/tree/v0.7.3); they are not a
 build or execution dependency. There is no legacy command or executable routing.
-Current artifacts use binary format 4 and must be compiled with the current
-language. Scripts use `fn`, `let`, brace blocks and semicolons instead of
+Current development bytecode artifacts use format 5; the published 0.8.1
+format-4 packages remain unchanged. Recompile earlier bytecode with the current
+compiler rather than treating it as the new plan representation. Scripts use
+`fn`, `let`, brace blocks and semicolons instead of
 `symbol`/`boolean`/`macro`, indentation, `:=`, and `=>` bindings. `async`, `await`,
 and `delete` are not language keywords; deletion is an ordinary native function.
 

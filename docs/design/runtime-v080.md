@@ -1,5 +1,13 @@
 # C# typed bytecode and execution (0.8.0)
 
+The [contextual I/O backend contract](contextual-io-backend.md) supersedes this
+note's context-only executable binding and directional-marker descriptions.
+The new backend uses format 5 and computes selected filesystem facts, control
+flow, frozen selections and execution graphs. VM executes those graphs and
+manages their parallel work; it performs no whole-plan revalidation, staleness
+check or automatic replan. The detailed implementation history below explains
+the preceding format-4 runtime and preserved resource/transfer mechanisms.
+
 ## Representation and ownership
 
 `Msync.Core` owns the type/value algebra and stack bytecode contract. A module

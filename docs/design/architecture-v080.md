@@ -4,6 +4,9 @@ The current 0.8.1 semantic boundary is specified in
 [Typed HIR and compiler phase ownership](typed-hir-v081.md). The 0.8.0
 organization-only acceptance near the end of this note remains a historical
 baseline, not the description of the former emission frontend as current code.
+The subsequent [contextual I/O backend](contextual-io-backend.md) defines the
+current executable-plan contract, including ephemeral filesystem observations,
+format 5, graph optimization and execution-only VM ownership.
 
 ## Scope and ownership
 
@@ -17,11 +20,11 @@ The root build uses .NET 10. The implementation boundaries are:
 
 | Component | Owns | Must not own |
 | --- | --- | --- |
-| `Msync.Core` | Semantic types, values, typed bytecode, artifact codec, instruction effects and block formation | Source parser, optimizer passes, authenticated sessions |
+| `Msync.Core` | Semantic types, values, typed bytecode, execution-plan data, artifact codec, instruction effects and block formation | Source parser, optimizer passes, authenticated sessions |
 | `Msync.Hir` | Immutable typed semantic programs, source/definition/location identities, HIR persistence/printing and pure bytecode lowering | Source binding, type inference, live session objects or native execution |
 | `Msync.Optimization` | Machine-independent passes, function/effect analyses, constant evaluation, contextual IR binding/lowering | Source syntax, filesystem observations or authenticated execution |
 | `Msync.Compiler` | Tokens/AST, lexical binding, type inference, refinement, specialization, semantic generations and editor observations | Bytecode emission, physical frame layout or executing filesystem/process effects |
-| `Msync.Runtime` | Native operations, interpretation, scheduling and process/transfer lifetime | Source parsing, a second optimizer implementation |
+| `Msync.Runtime` | Contextual I/O backend, native operations, VM execution/scheduling and process/transfer lifetime | Source parsing or duplicating portable optimizer passes; VM does not assess plan freshness |
 | `Msync.Cli` | Commands, REPL, diagnostics, LSP transport and native process entrypoint | A second implementation of source semantics |
 
 Compilers, interpreters and native registries share semantic types rather than
@@ -55,7 +58,7 @@ loading managed components at runtime.
 | Hir | `Model/`, `Sealing/`, `Lowering/`, `Serialization/`, `Printing/` |
 | Optimization | `Pipeline/`, `Analysis/`, `Flow/`, `Memory/`, `Interprocedural/`, `Evaluation/`, `Contextual/` |
 | Compiler | Public compiler/session facades; `Syntax/`, `Semantics/`, `Editor/`, `StandardLibrary/`, `Diagnostics/` |
-| Runtime | `Execution/`, `Scheduling/`, `Transfers/`, `Native/`, `Context/`, `Platform/`, `Text/`, `Generated/` |
+| Runtime | `Planning/`, `Execution/`, `Scheduling/`, `Transfers/`, `Native/`, `Context/`, `Platform/`, `Text/`, `Generated/` |
 | CLI | `Program` routing; `Commands/`, `Terminal/`, `LanguageServer/`, `Artifacts/`, `Configuration/`, `Diagnostics/`, `Telemetry/` |
 
 Classes follow state ownership rather than file-count targets. `SourceBinder`
@@ -103,9 +106,10 @@ context; it does not perform filesystem observations or authentication.
    -> pure bytecode lowering
    -> machine-independent optimization and control/effect blocks (-O level)
    -> *.mso
-        -> contextual binding + runtime lowering of selected work
+        -> context binding + selected metadata/control computation
+        -> resource graph optimization + executable batch formation
         -> *.mexe
-             -> interpreter / native operation admission / execution
+             -> VM dependency scheduling / native execution / resource management
 ```
 
 The `.mhir` container independently versions the typed semantic program. Its
@@ -115,14 +119,18 @@ are not serialized into the file.
 
 Bytecode artifacts contain operations, types, constants, symbolic context and source
 locations, not source to evaluate later. Source locations are diagnostic data.
-The current binary contract is format 4, language 0.8.0 (semantic flags 3).
-Readers reject earlier C# formats 1/2/3; compatibility code and old builtin
+The current binary contract is format 5, language 0.8.0 (semantic flags 3).
+Readers reject earlier C# formats 1/2/3/4; compatibility code and old builtin
 alias identities are not retained. Historical versioning discussions describe
 previous releases, not a requirement to maintain their readers.
 Relocatable artifacts capture no live authentication, filesystem snapshots,
 handles or optimizer proofs about a previous execution. Executable artifacts
-freeze context, not remote credentials or a claim that external files still
-exist. Loading an artifact does not authorize reusing stale observations.
+capture contextual operations and selected observations, not remote credentials
+or a claim that external files still exist. VM executes the recorded graph;
+it does not compare observations with the environment or repair an obsolete
+plan. Unknown-effect continuations are prepared when selected with actual
+inputs, not as a staleness fallback. Planner state belongs to each selected
+frame/region rather than a shared mutable module.
 
 ## Language decisions
 

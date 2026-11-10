@@ -5,7 +5,7 @@
 - The current product is the .NET 10 Native AOT implementation in `src/Msync.*`.
   The retired Rust implementation is available in Git history at `v0.7.3`, not
   in this checkout or a product compatibility path. Current readers accept
-  artifact format 4 only; formats 1/2/3 and historical Rust artifacts are
+  bytecode artifact format 5 only; formats 1/2/3/4 and historical Rust artifacts are
   rejected, not reinterpreted or delegated to another executable.
 - Braces own blocks, `;` discards values, and a block tail is its result.
   Binding values are mutable but inferred/declared storage types are immutable;
@@ -34,13 +34,22 @@
   Endpoint qualification retains raw path
   provenance; path separators follow the selected endpoint's grammar, so a
   POSIX backslash is filename data even on a Windows interpreter.
-- `.mso` and `.mexe` contain typed binary bytecode, never AST/debug-source replay.
-  Format version and language-semantic version are independent. Relocatable
-  bytecode is machine independent; executable lowering freezes context and
-  specializes operations, but never stores live credentials or stale filesystem
-  observations as reusable proofs. Binding lowers, optimizes once at the chosen
-  level (default O2), then performs final contextual lowering. Executing `.mexe`
-  does not rebind or reoptimize. `decltype` infers without executing effects.
+- `.mso` contains machine-independent typed bytecode. `.mexe` additionally carries
+  contextual execution graphs and continuation recipes, never AST/debug-source
+  replay. Format version and language-semantic version are independent. Backend
+  preparation may observe selected filesystem state, compute known control flow
+  and freeze regex membership; those observations are not reusable validity
+  proofs. Live credentials and handles are not serialized. Repeat submission
+  executes the recorded work: VM does not compare snapshots, revalidate the
+  whole plan, detect staleness or automatically replan on operational failure.
+  `decltype` still infers without executing effects.
+- `Runtime/Planning` owns contextual computation, resource-version dependencies,
+  dead overwritten I/O elimination and batch formation. VM owns execution,
+  parallel scheduling, admission, lifetimes and concrete errors. Only selected
+  unprepared continuations request backend computation after opaque effects or
+  unknown inputs; prepared graphs are not refreshed. Mutable-loop/call inputs
+  belong to their frame, never a first-iteration/shared-module specialization.
+  See [the contextual backend contract](docs/design/contextual-io-backend.md).
 - Source compilation is `Analyze -> Typed HIR -> HirLowerer -> Optimizer`.
   `Msync.Hir` depends only on Core and owns immutable semantic tables, pure
   bytecode lowering and independently versioned `.mhir` format 1. Exported
@@ -57,8 +66,9 @@
   0.8 language/runtime/tooling/validation notes before revisiting these decisions.
   [Mutable state and effects](docs/design/mutable-state-and-effects-v080.md)
   supersedes the earlier immutable binding/capture decision and fixes the
-  dataflow, escape and directional barrier invariants. Its older binary
-  compatibility discussion is superseded by the current format-4-only contract.
+  dataflow and escape invariants. Its older barrier direction and binary
+  compatibility discussion is superseded by the contextual backend's explicit
+  acquire/release contract and current format-5-only reader.
 
 ## Normal-user transfer model (2026-11-01)
 
@@ -114,7 +124,7 @@
   source/compiler/editor/runtime entrypoints. User-declared lexical names are
   still ordinary values. Preserve source-owned operand diagnostics. Historical
   capability negotiation in [the old type contract](docs/design/type-system-v065.md)
-  does not impose old-format compatibility on current format 4.
+  does not impose old-format compatibility on current format 5.
 - An implicit finite Range transfer is one selected transfer operation, not an
   implicit source-level `for`. Normal collision preflight can precede writes;
   failed multi-file work may be retried without a persistent rollback protocol.
