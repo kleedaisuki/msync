@@ -31,15 +31,20 @@ fn build(length: Number) {
 let rows = build(count);
 """
 
-REFERENCE_SCAN: str = BUILD + """
+REFERENCE_SCAN: str = (
+    BUILD
+    + """
 let total = 0;
 for row in rows {
     if row::label == "kept" and row::flag { total = total + 1; };
 };
 (total as String) -> ./total.txt;
 """
+)
 
-METADATA_SCAN: str = BUILD + """
+METADATA_SCAN: str = (
+    BUILD
+    + """
 let existing = 0;
 let total = 0;
 for row in rows {
@@ -55,15 +60,22 @@ for row in rows {
 (existing as String) -> ./existing.txt;
 (total as String) -> ./total.txt;
 """
+)
 
-PUBLISHED_READ: str = "./input.txt -> ./published.txt;\n" + BUILD + """
+PUBLISHED_READ: str = (
+    "./input.txt -> ./published.txt;\n"
+    + BUILD
+    + """
 for row in rows {
     $std::io::read_text(./published.txt) -> row::path;
 };
 acquire;
 """
+)
 
-MID_LOOP_FAILURE: str = BUILD + """
+MID_LOOP_FAILURE: str = (
+    BUILD
+    + """
 for row in rows {
     let text = $std::io::read_text(row::path);
     let number = text as Number;
@@ -73,6 +85,7 @@ for row in rows {
 };
 "unreachable" -> ./after.txt;
 """
+)
 
 
 def invoke(
@@ -117,7 +130,9 @@ def assert_text(work: Path, filename: str, expected: str) -> None:
     assert actual == expected, (filename, expected, actual)
 
 
-def run_scan(binary: Path, work: Path, route: str, count: int, metadata: bool) -> Report:
+def run_scan(
+    binary: Path, work: Path, route: str, count: int, metadata: bool
+) -> Report:
     work.mkdir()
     (work / "count.txt").write_text(str(count), encoding="utf-8")
     source: str = METADATA_SCAN if metadata else REFERENCE_SCAN
