@@ -37,6 +37,7 @@ foreach (var test in new (string Name, string Source, double Expected, string Fu
     ("explicit-bare-range-storage", "let values: Range = [\"text\"]; values = [1]; if values is Range { 1 } else { 0 }", 1, "unused", 0),
     ("factory-range-field-carriers", "fn make(value) { scope { values: [value] } }; let first = make(\"text\"); let second = make(true); let total = 0; for text in first::values { if text == \"text\" { total = total + 3; }; }; for flag in second::values { if flag { total = total + 4; }; }; total", 7, "make", 2),
     ("scope-recursive-signature", "scope Math { count: fn(x) { if x == 0 { 0 } else { Math::count(x - 1) } } }; Math::count(3)", 0, "<lambda>", 1),
+    ("annotated-loop-return-effects", "let calls = 0; fn minimum(start: Number) -> Number { calls = calls + 1; let index = start; loop { if index == 1 { return index; }; index = index - 1; } }; let result = minimum(3); calls * 10 + result", 11, "minimum", 1),
     ("recursive-inferred-signature", "fn count(x) { if x == 0 { 0 } else { count(x - 1) } }; count(3)", 0, "count", 1),
     ("query-does-not-publish", "fn add(x) { x + 1 }; let t = decltype(add(2)); 3", 3, "add", 0),
     ("recursive-query-promise", "fn count(x: Number) -> Number { if x == 0 { 0 } else { count(x - 1) } }; let t = decltype(count(2)); count(2)", 0, "count", 1)
@@ -61,6 +62,21 @@ foreach (var (source, expected) in new[]
     var module = Compiler.Analyze(source, "coercion.msync");
     var value = await Interpreter.ExecuteAsync(HirLowerer.Lower(module).Module);
     Require(value is StringValue text && text.Data == expected, $"Implicit parameter coercion returned {value}");
+}
+if (args.Length == 0 || args.Contains("annotated-return-conversions", StringComparer.Ordinal))
+{
+    foreach (var (source, expected) in new[]
+    {
+        ("fn text() -> String { ./sample }; text()", "./sample"),
+        ("fn text() -> String { loop { return ./sample; } }; text()", "./sample"),
+        ("fn text(flag: Bool) -> String { if flag { return ./early; }; ./tail }; text(true)", "./early"),
+        ("fn text(flag: Bool) -> String { if flag { return ./early; }; ./tail }; text(false)", "./tail")
+    })
+    {
+        var module = Compiler.Analyze(source, "annotated-return-conversions.msync");
+        var value = await Interpreter.ExecuteAsync(HirLowerer.Lower(module).Module);
+        Require(value is StringValue text && text.Data == expected, $"Annotated return conversion produced {value}");
+    }
 }
 var nullableCarrier = Compiler.Analyze("let value? = null; value = 42; value = null; value", "nullable-carrier.msync");
 Require((await Interpreter.ExecuteAsync(HirLowerer.Lower(nullableCarrier).Module)).Type == TypeRef.Null,

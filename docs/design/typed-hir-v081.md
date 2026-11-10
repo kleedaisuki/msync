@@ -232,6 +232,13 @@ call. Boundary Path/String conversions are explicit typed prologue operations:
 actual incoming parameters and converted lexical storage are distinct only when
 conversion is necessary, including native callbacks and returned captures.
 
+Executable function bodies and result summaries have separate ownership. Apply
+an annotated return conversion to the fallthrough body itself; explicit return
+sites perform their own conversion. Only then join their type/value facts into
+the cached, node-free result summary. A nonbreaking loop may have type Never
+while an inner return supplies the Number result; that inner value node must
+never replace the loop, its initialization or its preceding effects.
+
 ### Finite formal resource views
 
 Code keys encode the same normalization as published `FormalInput` instances.
@@ -349,6 +356,13 @@ For a stable private location, the third may use the current refinement. A
 writable capture, open REPL root or mutable field must retain its legal future
 domain. Scope field mutation is not ruled out merely because the Scope-valued
 parameter itself is unwritten.
+
+A bound future-call candidate names declarations, not fresh runtime capture
+cells. Alias copies of one module-owned binding must retain its actual captured
+location and current value, including explicit writes, rather than acquire a
+type-only Scope placeholder with unresolved function fields. Canonical
+declaration equality alone does not establish cell identity for private factory
+environments; their distinct captures remain distinct.
 
 A generic return-type scheme provides a cheap shape projection before a call
 is materialized. Evaluation policy is resolved against the relevant read

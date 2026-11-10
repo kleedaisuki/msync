@@ -8,6 +8,7 @@ const string first = "native fn first(values: Range) -> Number;";
 await Number("binding", first + "let operation = fn { [1] }; let pending = operation(); operation = fn { [2] }; first(pending)", 2);
 await Number("field", first + "let state = scope { operation: fn { [1] } }; let pending = state::operation(); state::operation = fn { [2] }; first(pending)", 2);
 await Number("field-alias", first + "let state = scope { operation: fn { [1] } }; let alias = state; let pending = state::operation(); alias::operation = fn { [2] }; first(pending)", 2);
+await Number("named-capture-live-binding", first + "scope Operations { value: 1, read: fn { [Operations::value] }, forward: fn { Operations::read() } }; let alias = Operations; let pending = alias::forward(); Operations = scope { value: 7, read: alias::read, forward: alias::forward }; first(pending)", 7);
 await Number("parameter-field-write", first + "let state = scope { operation: fn { [1] } }; fn replace(object) { object::operation = fn { [2] }; }; let pending = state::operation(); replace(state); first(pending)", 2);
 await Number("captured-binding", first + "let operation = fn { [1] }; fn build() { operation() }; let pending = build(); operation = fn { [2] }; first(pending)", 2);
 await Number("alternative-effects", first + "let state = scope { flag: false }; let operation = fn { state::flag = true; [1] }; let pending = operation(); if exists ./__missing_callable_domain__ { operation = fn { state::flag = false; [2] }; }; first(pending); if state::flag { 1 } else { 2 }", 1);

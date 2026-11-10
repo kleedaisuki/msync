@@ -92,6 +92,39 @@ internal sealed partial class SemanticAnalyzer
             FutureCallableDomain = new(StorageOwner(source, context), admittedChoices, value.Callables)
         };
 
+        SemanticCallable NormalizeProgramCaptures(SemanticCallable candidate)
+        {
+            if (candidate.Template is null || candidate.Captures.IsDefaultOrEmpty) return candidate;
+            ImmutableArray<SemanticCapture>.Builder? changed = null;
+            for (int index = 0; index < candidate.Captures.Length; index++)
+            {
+                SemanticCapture capture = candidate.Captures[index];
+                if (capture.Mode != HirCaptureMode.Location) continue;
+                HirLocationId declaration = program.Original(context.Definitions.GetValueOrDefault(capture.Source, capture.Source));
+                bool programBinding = program.TryDeclaration(declaration, out BoundDeclaration defined)
+                    && defined.Template is null
+                    && defined.Kind is DeclarationKind.Scope or DeclarationKind.StandardModule or DeclarationKind.StandardRoot;
+                foreach (SemanticCallable current in Choices(value))
+                {
+                    if (current.Template != candidate.Template || current.Captures.IsDefaultOrEmpty
+                        || index >= current.Captures.Length) continue;
+                    SemanticCapture actual = current.Captures[index];
+                    if (actual.Mode != HirCaptureMode.Location) continue;
+                    HirLocationId actualDeclaration = program.Original(context.Definitions.GetValueOrDefault(actual.Source, actual.Source));
+                    if (actualDeclaration != declaration || !programBinding
+                        && StorageOwner(actual.Source, context) != StorageOwner(capture.Source, context)) continue;
+                    SemanticValue live = StorageValue(actual.Source, context) ?? actual.Value;
+                    if (actual.Source != capture.Source || !ReferenceEquals(live, capture.Value))
+                    {
+                        changed ??= candidate.Captures.ToBuilder();
+                        changed[index] = capture with { Source = actual.Source, Value = live };
+                    }
+                    break;
+                }
+            }
+            return changed is null ? candidate : candidate with { Captures = changed.ToImmutable() };
+        }
+
         void Collect(HirLocationId target)
         {
             if (!active.Add(target)) return;
@@ -107,9 +140,11 @@ internal sealed partial class SemanticAnalyzer
                 HirNode expression = program.Node(write);
                 if (expression.Kind is HirKind.ReadLocation or HirKind.ReadStorage)
                     Collect(program.Original(new(expression.Data)));
-                foreach (SemanticCallable choice in BoundCallables(write, context))
-                    if (!choices.Contains(choice, SemanticCallableIdentity.Instance))
-                        choices.Add(choice);
+                foreach (SemanticCallable candidate in BoundCallables(write, context))
+                {
+                    SemanticCallable choice = NormalizeProgramCaptures(candidate);
+                    if (!choices.Contains(choice, SemanticCallableIdentity.Instance)) choices.Add(choice);
+                }
             }
         }
     }

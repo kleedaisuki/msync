@@ -162,3 +162,19 @@ rows/nullability. Its 63 checks pass through source, serialized `.mso` and
 serialized `.mexe` at O0/O2/O3. The actual command-policy source additionally
 checks at all three levels without launching its child processes; actual live
 Process execution is a separate ownership/terminal journey.
+
+### Program-owned capture aliases in future callable domains
+
+A bound future-write expression can reconstruct the same function template with
+an alias of a named program Scope cell. That alias may still hold a provisional
+semantic row; it is not another closure environment. Before joining this
+candidate into a live callable domain, match its location captures with the
+current same-template captures by canonical declaration identity. For Scope and
+standard-module/root declarations owned by the program (not a function template),
+reuse the current capture source and its live storage value. Exact same-cell
+storage aliases also qualify. Current writes therefore remain visible without
+replacing a closure's environment from a root object or counting its fields.
+
+This normalization never merges by-value captures or distinct parameter/factory
+cells merely because their function template or structural type is equal. Code
+sharing and closure-environment identity remain separate contracts.

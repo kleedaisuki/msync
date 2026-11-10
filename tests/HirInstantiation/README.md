@@ -8,6 +8,10 @@ returned closures, fresh object field/capture identity, recursive type queries
 and inferred signatures. Parameter Path/String conversion is checked both
 directly and through a returned closure.
 
+Annotated return checks preserve an initializing block and captured side effect
+around a nonbreaking loop. Tail and explicit-return Path/String conversions,
+including mixed branches, remain independent of the node-free result summary.
+
 The joined-Scope case preserves a common member across two differently shaped
 branches while sharing one Bool-specialized body. Its result depends on the
 runtime branch, not retained binary-join construction history.

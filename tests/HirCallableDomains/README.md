@@ -52,6 +52,11 @@ eager source wrappers. Explicit result annotations bound the pure return scheme
 without discarding narrower structural rows; actual specialization still rejects
 an incompatible function body.
 
+The named-capture journey replaces a module-style binding after creating a
+deferred alias call. Its closures must observe the new binding value, not a
+hydrated copy of the original singleton. Separate factory writer and wrapper
+journeys retain distinct private capture environments.
+
 Unknown future REPL definitions are handled separately by session signature
 obligations; this closed-source index does not pretend to predict unseen source.
 

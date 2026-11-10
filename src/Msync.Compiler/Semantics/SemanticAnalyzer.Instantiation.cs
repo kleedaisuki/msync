@@ -332,14 +332,15 @@ internal sealed partial class SemanticAnalyzer
         try
         {
             var body = Analyze(template.Body, context);
+            if (context.ExpectedReturn is { } bodyType)
+            {
+                Require(body, bodyType, template.Source, true, context);
+                body = Convert(body, bodyType, template.Source, context);
+            }
             var result = body;
             foreach (var returned in context.Returns) result = Join(result, returned);
             if (context.ExpectedReturn is { } expected)
-            {
                 Require(result, expected, template.Source, true, context);
-                result = Convert(result, expected, template.Source, context);
-                if (result.Node != body.Node) body = result;
-            }
             if (context.Publish && parameterInitializers.Count != 0)
             {
                 parameterInitializers.Add(body.Node);
@@ -349,7 +350,7 @@ internal sealed partial class SemanticAnalyzer
                     System.Runtime.InteropServices.CollectionsMarshal.AsSpan(parameterInitializers))
                 };
             }
-            instance.Result = result with { Location = null };
+            instance.Result = result with { Node = HirNodeId.None, Location = null };
             FreezeSummary(instance, context);
             instance.Complete = true;
             caller.Output?.SealFunction(function, new(template.Name,
