@@ -93,12 +93,9 @@ constraints keep their existing semantics.
 
 ## Delivery evidence
 
-Leaders own the concrete layout and affine interfaces and record their decisions
-and measurements in the relevant implementation notes. Acceptance must include
-actual traversal/scan output, transformation/placement evidence, captured aliases
-and retention, strict Number semantics, reference-heavy controls, optimizer cost
-and affected real source/artifact/REPL/platform journeys. A reduced allocation
-count alone is not proof of locality or a Native latency improvement.
+The implementation and records below distinguish actual placement, legal schedule
+changes, allocation traffic, retained heap and Native latency. These are separate
+claims; fewer allocations alone do not establish locality or an overall speedup.
 
 ## Managed spatial Scope storage
 
@@ -267,3 +264,39 @@ Exact commands, native/receipt/harness/source identities, all raw samples,
 stdout/stderr, checked results and both affine disassemblies are retained under
 `artifacts/candidates/spatial-layout/a0cebdf/performance/`; `index.json` links the
 records. No outliers were removed and no replacement timing batch was run.
+
+## Completed integration and acceptance
+
+The accepted source is `a0cebdf6c5f31dd0b3650fd534cbbee7ac1d7ddd`.
+[Native candidate 42826959366](https://github.com/kleedaisuki/msync/actions/runs/42826959366)
+passes all eleven selected phases on both Linux and Windows, including the
+object-locality journey and required affine-fusion check. Three actual VS Code
+host suites and a separate real CLI-installed VSIX/native pair also pass. The
+installed source LSP, source-deleted HIR and format-5 plan views retain hover,
+outline, highlighting, read-only behavior and absence of execution effects.
+
+| Requested direction | Implemented mechanism and evidence |
+| --- | --- |
+| Actual spatial object layout, not contiguous references alone | Numeric Scope payloads share managed double pages grouped by logical layout, allocation site and numeric shape; raw VM operands access the page. Same-Core scans and held-heap observations isolate this representation from unrelated runtime changes. |
+| No physical-layout promise in the language | Logical field names/order, fresh and singleton identities, aliasing, Cell captures and snapshots remain unchanged. Incompatible payload writes promote the one affected object, not its neighbors. |
+| Correct lifetime and GC behavior | Managed references belong to individual rows; pages contain no such payloads, immutable descriptors contain no allocator/current-page ownership, and full old pages have no allocator history root. Weak-reference discriminators prove sibling payload and allocator isolation. |
+| Traversal/scan schedule informed by layout | The default machine-independent pass fuses proved eager Number/readonly numeric-Scope scans, changing the schedule from `(statement,i)` to `(i,statement)` and reusing the row before advancing. Actual source/object/executable positives require two iterators to become one. |
+| Graphite-style model rather than a renamed unroller | Explicit integer ordinal domain, access/schema facts, scalar dependence legality and schedule selection run before literal expansion. The implemented subset is uniform one-dimensional scan fusion, not a general ISL scheduler or a claim that pointer traversal is affine. |
+| Numeric and side-effect semantics | Each reduction retains its original IEEE order/grouping. Captured/cross-scan dependencies, lazy callbacks, possible field failures and opaque effects retain the original schedule; readonly repeated Scope references are allowed. |
+| Language-native representation and composition | No new source type, layout annotation, dynamic CLR type generation, unmanaged GC-hidden arena or external solver deployment is required. Existing `fn`, Scope, Range and Buffer programs use the default path. |
+| Negative controls and optimizer overhead | Computed/shared-literal/mixed/reference cases, unchanged headers, raw wrapper counts and retained-heap tests expose costs. A causal common-path repair removes repeated block/index work instead of disguising reference-only regressions as a layout trade-off. |
+| Usable cross-platform product path | Both Native platform matrices, real REPL/terminal use, artifact lowering/execution and actual installed extension acceptance complete on the exact package bytes; strict local build and changed-source formatting pass. |
+
+These results justify retaining the representation and bounded affine pass,
+without claiming every constructor or source-run case improves. The known
+preboxed-construction cost, scalar startup/control regression and inconclusive
+small affine source-run result stay explicit above. They are not replaced by
+the independent scan component's result or a pooled speedup.
+
+All four validated packages, source/build hashes and installed evidence are
+linked by `artifacts/candidates/spatial-layout/a0cebdf/delivery.json`; the
+matching checksum list covers the Linux archive, Windows portable archive,
+Windows installer and VSIX. This task does not publish or replace any release.
+The public 0.8.1 tag/assets remain unchanged, bytecode format remains 5, HIR
+format remains 1 and the source language remains 0.8.0. Documentation-only
+closure commits do not change the accepted production source or payloads.
