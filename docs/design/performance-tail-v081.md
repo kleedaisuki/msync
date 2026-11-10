@@ -78,7 +78,7 @@ visible rather than being silently deleted as warmup.
 One coordinator serializes team measurement windows and excludes builds,
 profiling and unrelated functional journeys during those windows. The host can
 still contain external services and other users' work. Record host/platform,
-load, CPU/memory pressure and relevant process context rather than claiming an
+load, CPU/memory/I/O pressure and relevant process context rather than claiming an
 isolated machine or terminating unrelated work.
 
 The Native harness records per-process child user/system CPU deltas where the

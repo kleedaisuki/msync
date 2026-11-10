@@ -38,7 +38,14 @@ def utc() -> str:
 def host_state() -> dict[str, Any]:
     state: dict[str, Any] = {"utc": utc()}
     state["load_average"] = list(os.getloadavg()) if hasattr(os, "getloadavg") else None
-    for name in ("stat", "meminfo", "pressure/cpu", "pressure/memory"):
+    for name in (
+        "stat",
+        "meminfo",
+        "diskstats",
+        "pressure/cpu",
+        "pressure/memory",
+        "pressure/io",
+    ):
         path = Path("/proc") / name
         state[f"proc_{name}"] = path.read_text() if path.exists() else None
     return state
