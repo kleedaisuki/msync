@@ -312,6 +312,66 @@ Compiler mirror SHA256
 file, and `callable-patch-receipt.json` records precisely the two patched source
 files and the mirror-only witness hook.
 
+## Snapshot 16 performance regression bisect
+
+The expanded 24-insert source is a third exact workload, SHA256
+`3fc8333a4e8003c83495625dd59af655746af2bfb03075c10e040bebcc3626cb`,
+from `.temp/hir-fourth-phase/inputs/tree.msync`. Snapshot 15 could complete it,
+whereas the combined snapshot-16 call-local optimization candidate was stopped
+with only Analyze started. A private Compiler mirror retained snapshot-16
+Core/HIR/Optimization references; no product build or unguarded CLI run was used.
+
+The first two controlled 300-entry runs changed only FormalInput's role
+representation. Both had the same call order, keys and table counts through the
+cutoff, progressing to 39 functions with stable carrier/layout counts. Returning
+the `Complete` capture-role call to fresh `Abstract(value)` alone did not rescue
+the longer run either. Those observations do not support blaming interned role
+IDs or that one Complete call for the regression.
+
+The surviving cost was hidden from the arena counters: complete keys of about
+2.5–3.6 Ki units needed only 58–103 append visits, yet their preceding schema
+normalization allocated 25–32 MB per key. A mirror-only counter inside
+`FormalInput.Abstract` found a single normalization with 72,222 visits, 50,581
+distinct SemanticValue references and 77,134 Alternative edges. The maximum
+Alternative array length was only two. Another normalization had 64,959 value
+references despite just six registered objects and five indexed resources.
+The missing work is the rewritten binary Alternative/history graph, not a
+growing number of ordinary code/type/resource table entries.
+
+The shortest successful bisect restored **only**
+`SemanticAnalyzer.FutureDomains.cs` to its snapshot-15 implementation from
+`903d75a`, keeping full FormalInput16—including canonical capture-role
+Complete—and Projection16. The same exact expanded source then completed under
+600-entry, 10-second, 512-MiB managed-heap and per-key guards:
+
+| Boundary | Elapsed ms | Functions |
+|---|---:|---:|
+| Analyze exit | 8011.343 | 50 |
+| Lower exit | 8060.142 | 99 |
+| Optimizer exit | 8690.667 | 99 |
+| Host complete | 8709.691 | 99 |
+
+Supervisor time was 8.800 seconds and Linux child peak RSS 190,840 KiB. The
+remaining late normalization samples were about 13,000 visits / 9,600 value
+references / 14,000 Alternative edges rather than the candidate's 72,000 /
+65,000 / 77,000 expansion. These are instrumented observations, not an AOT
+latency benchmark. They isolate the Enrich16 memoization change for semantic
+audit; they do not justify deleting future facets or imposing product quotas.
+
+The successful one-file-revert trace SHA256 is
+`4ef7fd96799bbb7e9237f8c8c0c065bb155fe9caf931338da33fcd7416b0dec9`,
+Compiler mirror SHA256
+`6aa69494e84c8a5011766a10ab2b0cf6b0d951f5db6d2def938e9c2c6e8585a4`.
+Prior variants and receipts are preserved under `role16-string-side1/`,
+`role16-full600/` and `role16-complete-old-formal-counters/`.
+
+One laboratory correction matters for reproducibility: replacing a copied source
+with `copy2` can preserve an older timestamp and cause MSBuild's incremental
+compile to retain the previous DLL. That initial side-2 result was excluded.
+`build.py` now also uses `--no-incremental`, in addition to successful-source
+fingerprints and actual DLL hashes. A successful MSBuild exit alone is not the
+source-to-binary identity check.
+
 ## Receipts and reproduction
 
 The workspace retains:
