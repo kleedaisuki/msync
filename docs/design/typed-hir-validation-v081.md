@@ -280,3 +280,19 @@ The total candidate change is therefore not attributed to one isolated hunk.
 It remains substantially above the old first complete O0 Compile's 151 MB, so
 matched final costs and publication are not inferred from this partial reduction.
 The raw observation is `.temp/hir-final-cost/frozen15-original-tree-trace-receipt.*`.
+
+The following combined performance attempt, frozen16, did not complete Analyze
+within the externally observed interval, so it has no final allocation/count
+result. It is not part of an improving numerical series. The corrected frozen17
+producer (Compiler
+`bb4456050510f8d81411f5c925bb5cf7c4cddd0aaff732b2cf9f1d07b0ecdfc0`)
+removes the historical SemanticValue Join tree while retaining actual type and
+semantic facets. Its one same-source cold observation completes with
+143,736,064 B in Analyze, 606,632 B in Lower and 531,600 B in O0 optimization.
+It contains 49 finalized functions, 49 templates, 5,156 nodes, 1,967 locations,
+1,258 types and 39 layouts; lowering produces 98 functions/4,331 instructions.
+The observed process RSS is 83,140 KiB, not retained heap size. This restores a
+completed allocation control near the old first full O0 Compile's 151 MB;
+the normal complete compiler's matched warm time, O2 allocation and retention
+remain separate required observations. Raw records are
+`.temp/hir-final-cost/frozen17-original-tree-trace-receipt.*`.
