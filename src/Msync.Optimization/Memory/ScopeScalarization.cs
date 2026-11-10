@@ -305,7 +305,7 @@ internal static class ScopeScalarization
             uses.Add(block.Start, use); definitions.Add(block.Start, define);
             foreach (var successor in block.Successors) predecessors[successor].Add(block.Start);
         }
-        var work = new Queue<int>(blocks.Select(block => block.Start));
+        var work = new Queue<int>(blocks.Select(block => block.Start).Reverse());
         var queued = blocks.Select(block => block.Start).ToHashSet();
         var byStart = blocks.ToDictionary(block => block.Start);
         while (work.TryDequeue(out var start))

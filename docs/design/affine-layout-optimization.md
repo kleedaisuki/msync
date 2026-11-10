@@ -161,3 +161,37 @@ captures, lazy callbacks, intervening I/O, repeated rows and strict floating-poi
 order. The same changed Optimization image passes 112 invalidation and 87
 predicate contracts. This retains the late provenance opportunity instead of
 trading it away for earlier analysis.
+
+### Backward liveness work scheduling
+
+The remaining liveness work has a direct scheduling cause as well. Blocks are
+stored in increasing PC order, but liveness propagates backwards. Seeding its
+work queue in forward order repeatedly carries each newly discovered tail use
+through all earlier scan blocks, rebuilding HashSets along the chain. The
+solver now seeds the queue in reverse block order. Its transfer function,
+definition kills, joins and predecessor re-enqueue rules remain unchanged, so
+arbitrary branches and backedges still converge to the same live-out sets. This
+choice targets the actual sequential-scan CFG, without introducing another
+analysis, special-case thresholds or a different representation.
+
+The combined early-fusion/reverse-liveness image has Optimization SHA256
+`25cdab5857899c112a8f7fc59ead1791dd7310a6267ffb2423b4523f17505773`.
+One bounded unprofiled calibration uses that existing frozen host, the same
+128-scan source and three warm observations after five warmups. It retains
+the earlier controlled before arm rather than collecting another baseline:
+
+| Optimizer | Warm observations ms | Median allocated bytes | Gen0 / Gen1 / Gen2 per observation |
+| --- | --- | ---: | --- |
+| Late-only fusion, forward liveness | 462.76 / 489.27 / 492.09 | 364,239,472 | 45–47 / 11–13 / 4 |
+| Early fusion, forward liveness | 397.48 / 403.05 / 393.09 | 277,756,944 | 34–35 / 7–9 / 4 |
+| Early fusion, backward liveness | 241.87 / 277.62 / 258.55 | 189,764,984 | 22–25 / 6–7 / 2–3 |
+
+The combined change removes 47.9% of optimizer allocation on this fixture and
+reduces the observed collection counts. All three outputs retain five functions,
+404 total locals, 1,852 instructions, the same opcode histogram and one iterator.
+The final image passes the same 27 actual affine artifact routes plus 112
+invalidation and 87 predicate contracts. Residual allocation remains about
+190 MB; the result is not a claim that every optimizer analysis is now linear
+or that three observations establish P95/P99. The exact report is
+`.temp/tail-compiler/final-number_scans-128-warm.json`; Native user tails use
+the separate process/session experiments.
