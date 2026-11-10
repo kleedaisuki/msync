@@ -169,6 +169,41 @@ standard root/module/native-query roles with useful signatures and source
 documentation. The original nullable workflow additionally passed all six
 source checks and its three real language-server cases.
 
+### Declared constraints in callable hover
+
+Runtime kinds are not a complete callable signature: both a bare `Scope` and
+`$std::concepts::Equality` have the Scope runtime kind, but only the latter
+expresses the required policy operations. `SemanticTypeTables` therefore keeps
+compact concept display names and associated `typename` binder names beside
+its existing type/signature tables. The shared display formatter preserves
+concept identity, nullable admission, true unions and nested Range elements.
+Standard concept names are qualified using their actual bound module ownership;
+local concepts retain their lexical names. No HIR expression/body arena is kept
+for this presentation metadata.
+
+Source callable help is projected from its owning bound declaration and actual
+parameter constraints. Declaration origins are indexed once with the existing
+initializer scan; template documentation is cached within that analysis.
+Constraint help includes the concept's own source documentation and required
+members rather than replacing it with a generic Function explanation. Native
+aliases use the same type-name rules while retaining their declaration's
+parameter names, result and documentation. This path never analyzes a tested
+operation, emits bytecode or executes a query to obtain hover text.
+
+The actual failed VS Code source fixture remained unchanged at 1,015 UTF-8 bytes
+with SHA256
+`ffac7323348ab1f3875b02c24ee044652cbeffd10e0b0ebc0528244afe091a3d`.
+Against managed Compiler
+`cebc3525bc12635af4be873a842319bc1c2a87f4f18e9e5cd8ac2201ccbbdc68`,
+the real LSP hover at its `with_equality(` now contains
+`equality: $std::concepts::Equality`, the equivalence-relation documentation and
+`equal: fn(left: typename Self, right: Self) -> Bool`. The focused direct host
+passed eight checks covering that policy constraint, owning-field documentation,
+nullable/local concept names, nullable associated types inside Range signatures
+and native aliases. Its loaded Compiler hash matched the frozen receipt. The
+fixture witness is `.temp/hir-equality-hover24/report.json`; installed extension
+acceptance remains a separate workflow.
+
 Semantic joins retain their real finite facets rather than a historical binary
 `first`/`second` graph. The observer reads the joined Scope fields, Range element,
 callable candidates, indexed resources and their captures directly. Dependency

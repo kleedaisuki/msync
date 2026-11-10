@@ -66,7 +66,9 @@ internal sealed record SemanticTypeTables(ImmutableArray<HirSource> Sources,
     ImmutableArray<HirType> Types, ImmutableArray<HirLocation> Locations,
     ImmutableArray<HirScopeLayout> ScopeLayouts, ImmutableArray<HirSignature> Signatures,
     ImmutableArray<SemanticFunctionSignature> Functions,
-    ImmutableArray<SemanticTemplateSignature> Templates)
+    ImmutableArray<SemanticTemplateSignature> Templates,
+    ImmutableArray<string> ConceptNames = default,
+    ImmutableDictionary<int, string>? AssociatedTypes = null)
 {
     public static SemanticTypeTables From(HirModule module) => new(module.Sources,
         module.Types, module.Locations, module.ScopeLayouts, module.Signatures,
@@ -74,9 +76,38 @@ internal sealed record SemanticTypeTables(ImmutableArray<HirSource> Sources,
             function.Parameters, function.Result)).ToImmutableArray(),
         module.Templates.Select(template => new SemanticTemplateSignature(template.Name,
             template.Parameters, template.ResultAnnotation
-                ?? (template.Body.IsNone ? null : module.Node(template.Body).Type))).ToImmutableArray());
+                ?? (template.Body.IsNone ? null : module.Node(template.Body).Type))).ToImmutableArray(),
+        module.Concepts.IsDefault ? [] : module.Concepts.Select(concept => concept.Name).ToImmutableArray());
 
     public TypeRef RuntimeType(HirTypeId type) => Types[type.Value].RuntimeType;
+    public string TypeName(HirTypeId type, bool nullable = false, bool omitNull = false) =>
+        SemanticTypeNames.Format(type, Types, ConceptNames, AssociatedTypes, nullable, omitNull);
+}
+
+internal static class SemanticTypeNames
+{
+    public static string Format(HirTypeId identity, IReadOnlyList<HirType> types,
+        IReadOnlyList<string> concepts, IReadOnlyDictionary<int, string>? associated,
+        bool nullable = false, bool omitNull = false)
+    {
+        HirType type = types[identity.Value];
+        if (!type.Alternatives.IsDefaultOrEmpty)
+        {
+            var present = type.Alternatives.Where(part => types[part.Value].RuntimeType != TypeRef.Null).ToArray();
+            bool admitsNull = !omitNull && (nullable || present.Length != type.Alternatives.Length || type.Nullable);
+            if (present.Length == 1) return Format(present[0], types, concepts, associated, admitsNull, omitNull);
+            string union = string.Join(" | ", present.Select(part => Format(part, types, concepts, associated)));
+            return admitsNull ? union + " | Null" : union;
+        }
+        if (type.TypeParameter >= 0)
+            return (associated?.GetValueOrDefault(type.TypeParameter) ?? "inferred at call")
+                + (!omitNull && (nullable || type.Nullable) ? "?" : "");
+        bool optional = !omitNull && (nullable || type.Nullable || type.RuntimeType.Nullable);
+        if (type.Concept >= 0) return concepts[type.Concept] + (optional ? "?" : "");
+        if (type.RuntimeType.WithoutNull.Kind == TypeKind.Range && type.Element >= 0)
+            return $"Range<{Format(new(type.Element), types, concepts, associated)}>" + (optional ? "?" : "");
+        return (omitNull ? type.RuntimeType.WithoutNull : nullable ? type.RuntimeType.WithNull : type.RuntimeType).ToString();
+    }
 }
 
 internal sealed record SemanticObservationView(SemanticTypeTables Module, HirSourceId Source,

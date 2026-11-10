@@ -22,6 +22,7 @@ internal sealed partial class SemanticObservationBuilder
     private readonly Dictionary<(HirNodeId, HirFunctionId), SemanticValueId> nodeValues = [];
     private readonly Dictionary<HirNodeId, SemanticValueId> typedValues = [];
     private readonly Dictionary<HirLocationId, HirNodeId> initializers = [];
+    private readonly Dictionary<HirTemplateId, HirSourceRange> templateOrigins = [];
     private readonly Dictionary<HirLocationId, SemanticValue> boundValues = [];
     private readonly Dictionary<HirNodeId, BoundVisibility[]> before;
     private readonly Dictionary<HirNodeId, BoundVisibility[]> after;
@@ -30,6 +31,9 @@ internal sealed partial class SemanticObservationBuilder
     private readonly Dictionary<HirNodeId, BoundPathUse[]> pathUses;
     private readonly Dictionary<HirNodeId, BoundStandardUse[]> standardUses;
     private readonly Dictionary<HirSourceRange, BoundGlobalImport[]> globalImports;
+    private ImmutableArray<string> conceptNames;
+    private ImmutableDictionary<int, string>? associatedTypes;
+    private readonly Dictionary<HirTemplateId, string> callableDocumentation = [];
     private readonly HashSet<BoundVisibility> recorded = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<SemanticContext, ObservationState> states = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<ImmutableDictionary<string, int>, ImmutableDictionary<string, SemanticConceptView>> conceptViews
@@ -56,8 +60,11 @@ internal sealed partial class SemanticObservationBuilder
         for (int index = 0; index < program.Hir.Nodes.Count; index++)
         {
             HirNode node = program.Hir.Nodes[index];
-            if (node.Kind == HirKind.Declare && node.Children.Count != 0)
-                initializers[new(node.Data)] = program.Hir.Edges[node.Children.Start];
+            if (node.Kind != HirKind.Declare || node.Children.Count == 0) continue;
+            HirNodeId initializer = program.Hir.Edges[node.Children.Start];
+            initializers[new(node.Data)] = initializer;
+            if (program.Node(initializer) is { Kind: HirKind.TemplateClosure } closure)
+                templateOrigins.TryAdd(program.Hir.TemplateClosures[closure.Data].Template, node.Source);
         }
     }
 
@@ -158,7 +165,12 @@ internal sealed partial class SemanticObservationBuilder
         var imported = imports.Select(item => new SemanticImport(item.Span,
             item.Facts.Bindings(item.Bindings, declarations), item.Concrete)).ToImmutableArray();
         foreach (var state in states.Values) state.Detach();
-        return new(module, source, values.ToImmutableArray(), observations.ToImmutableArray(),
+        var tables = SemanticTypeTables.From(module) with
+        {
+            ConceptNames = ConceptNames(),
+            AssociatedTypes = AssociatedTypes()
+        };
+        return new(tables, source, values.ToImmutableArray(), observations.ToImmutableArray(),
             visible, receivers.ToImmutableArray(), pathOwners.ToImmutableArray(),
             imported, references.ToImmutableArray());
     }
@@ -260,7 +272,8 @@ internal sealed partial class SemanticObservationBuilder
             Text: value.Observation?.Text
                 ?? (value.Literal is { Kind: HirLiteralKind.String } text ? text.Text : null),
             Signature: nativeSignature is null ? null : NativeSignature(nativeSignature),
-            Documentation: nativeSignature is null ? null : Documentation(nativeSignature.Source));
+            Documentation: nativeSignature is not null ? Documentation(nativeSignature.Source)
+                : template is { } definition ? CallableDocumentation(definition) : null);
         if (!value.Callables.IsDefault && value.Callables.Length > 1)
             values[id.Value] = values[id.Value] with
             {
@@ -280,7 +293,8 @@ internal sealed partial class SemanticObservationBuilder
             NativeName = callable.NativeName,
             Alternatives = default,
             Signature = declaration is null ? null : NativeSignature(declaration),
-            Documentation = declaration is null ? null : Documentation(declaration.Source)
+            Documentation = declaration is not null ? Documentation(declaration.Source)
+                : callable.Template is { } template ? CallableDocumentation(template) : null
         });
         return id;
     }
@@ -446,11 +460,11 @@ internal sealed partial class SemanticObservationBuilder
     private SemanticConceptView Concept(int id)
     {
         BoundConcept concept = program.Concepts[id];
-        var members = concept.Requirements.Select(requirement => new SemanticMember(requirement.Name,
+        var members = Requirements(id).Select(requirement => new SemanticMember(requirement.Name,
             program.Hir.Types[requirement.Type.Value].RuntimeType.ToString(),
             requirement.DeclarationSource is { } written ? Text(written)
                 : requirement.Parameters.IsDefault ? $"{requirement.Name}: {TypeName(requirement.Type)}"
-                    : $"{requirement.Name}: fn({string.Join(", ", requirement.Parameters.Select(TypeName))}) -> {TypeName(requirement.Result!.Value)}",
+                    : $"{requirement.Name}: fn({string.Join(", ", requirement.Parameters.Select(parameter => TypeName(parameter)))}) -> {TypeName(requirement.Result!.Value)}",
             "A required member of this structural concept.",
             SemanticRole: requirement.Parameters.IsDefault ? "variable" : "function")).ToImmutableArray();
         return new(concept.Name, concept.Source, $"concept {concept.Name}",
@@ -459,9 +473,55 @@ internal sealed partial class SemanticObservationBuilder
                 + (members.Length == 0 ? "" : "\n\nRequired members:\n" + string.Join('\n', members.Select(member => $"- `{member.Signature}`"))), members);
     }
 
-    private string TypeName(HirTypeId type) => program.Hir.Types[type.Value].TypeParameter >= 0
-        ? program.TypeParameterNames.GetValueOrDefault(program.Hir.Types[type.Value].TypeParameter, "inferred at call")
-        : program.Hir.Types[type.Value].RuntimeType.ToString();
+    private ImmutableArray<string> ConceptNames()
+    {
+        if (!conceptNames.IsDefault) return conceptNames;
+        var standard = program.StandardModules.GetValueOrDefault("concepts");
+        conceptNames = program.Concepts.Select(concept => standard?.Source == concept.Source.Source
+            ? "$std::concepts::" + concept.Name : concept.Name).ToImmutableArray();
+        return conceptNames;
+    }
+
+    private ImmutableDictionary<int, string> AssociatedTypes() => associatedTypes ??= program.Concepts
+        .SelectMany(concept => concept.AssociatedTypes)
+        .GroupBy(pair => program.Hir.Types[pair.Value.Value].TypeParameter)
+        .Where(group => group.Key >= 0).ToImmutableDictionary(group => group.Key, group => group.First().Key);
+
+    private string TypeName(HirTypeId type, bool omitNull = false) => SemanticTypeNames.Format(type,
+        program.Hir.Types, ConceptNames(), AssociatedTypes(), omitNull: omitNull);
+
+    private string CallableDocumentation(HirTemplateId template)
+    {
+        if (callableDocumentation.TryGetValue(template, out string? known)) return known;
+        HirTemplate declaration = program.Hir.Templates[template.Value];
+        HirSourceRange origin = templateOrigins.GetValueOrDefault(template, declaration.Source);
+        List<string> sections = [];
+        string documentation = Documentation(origin);
+        if (documentation.Length != 0) sections.Add(documentation);
+        foreach (var parameter in declaration.Parameters)
+        {
+            HirLocation location = program.Hir.Locations[parameter.Value];
+            foreach (int concept in ParameterConcepts(location.StorageType, []))
+                sections.Add($"Parameter `{location.Name}` requires `{ConceptNames()[concept]}`.\n\n{Concept(concept).Description}");
+        }
+        known = sections.Count == 0
+            ? "A callable value. Unannotated parameters are specialized from each call's argument types."
+            : string.Join("\n\n", sections);
+        callableDocumentation.Add(template, known);
+        return known;
+    }
+
+    private IEnumerable<int> ParameterConcepts(HirTypeId identity, HashSet<HirTypeId> visited)
+    {
+        if (!visited.Add(identity)) yield break;
+        HirType type = program.Hir.Types[identity.Value];
+        if (type.Concept >= 0) yield return type.Concept;
+        if (type.Element >= 0)
+            foreach (int concept in ParameterConcepts(new(type.Element), visited)) yield return concept;
+        if (!type.Alternatives.IsDefault)
+            foreach (var alternative in type.Alternatives)
+                foreach (int concept in ParameterConcepts(alternative, visited)) yield return concept;
+    }
 
     private IEnumerable<BoundRequirement> Requirements(int concept)
     {
@@ -480,7 +540,7 @@ internal sealed partial class SemanticObservationBuilder
                 || runtime.Nullable && runtime != TypeRef.Null;
             string prefix = native?.Variadic == true && index >= native.Parameters.Count ? "..." : "";
             return $"{prefix}{declaration.ParameterNames[index]}{(nullable ? "?" : "")}: "
-                + (nullable ? runtime.WithoutNull.ToString() : TypeName(type));
+                + TypeName(type, omitNull: nullable);
         }));
         return $"fn {declaration.Name}({parameters}) -> {TypeName(declaration.Result)}";
     }
@@ -488,8 +548,15 @@ internal sealed partial class SemanticObservationBuilder
     private string Text(HirSourceRange source) => program.Hir.Sources[source.Source.Value].Text is { } text
         ? text.Substring(source.Start, source.Length) : "";
 
-    private string Documentation(HirSourceRange source) => program.Hir.Sources[source.Source.Value].Text is { } text
-        ? SemanticStandardCatalog.Documentation(text, source.Start) : "";
+    private string Documentation(HirSourceRange source)
+    {
+        if (program.Hir.Sources[source.Source.Value].Text is not { } text) return "";
+        int start = source.Start;
+        int line = start == 0 ? 0 : text.LastIndexOf('\n', start - 1) + 1;
+        ReadOnlySpan<char> prefix = text.AsSpan(line, start - line).Trim();
+        if (prefix.SequenceEqual("concept") || prefix.SequenceEqual("fn") || prefix.SequenceEqual("let")) start = line;
+        return SemanticStandardCatalog.Documentation(text, start);
+    }
 
     private HirSourceRange Definition(HirLocationId location)
     {

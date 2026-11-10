@@ -378,8 +378,10 @@ construction and declaration-hover metadata; unsupported key shapes retain
 the prior formal path. This is a combined candidate delta, not single-hunk
 attribution.
 
-Only the original List source (`8a668807...c1e6ff3ab`) is measured. Each frozen
-direct-reference Release host runs normal Compile at O2 once cold, three times
+Only the original List source
+(`8a6688070adf66d76a1b4248e67f1ddee360a9e086b296d4cc07d22c1e6ff3ab`)
+is measured. Each frozen direct-reference Release host runs normal Compile at
+O2 once cold, three times
 for warmup and three recorded warm times, on SDK 10.0.403/.NET 10.0.14 with
 TieredCompilation=0 and NO_COLOR=1. Root, compiler and experience owners hold
 builds/tests/formatting during the short window. No tree, scalar, GC trace or

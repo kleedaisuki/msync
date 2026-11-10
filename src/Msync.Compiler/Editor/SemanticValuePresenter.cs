@@ -222,8 +222,8 @@ internal sealed class SemanticValuePresenter(SemanticObservationView view,
         {
             HirLocation parameter = view.Module.Locations[id.Value];
             TypeRef type = view.Module.RuntimeType(parameter.StorageType);
-            string display = IsTypeParameter(parameter.StorageType) ? "inferred at call"
-                : parameter.AdmitsNull && type != TypeRef.Null ? type.WithoutNull.ToString() : type.ToString();
+            string display = view.Module.TypeName(parameter.StorageType,
+                omitNull: parameter.AdmitsNull && type != TypeRef.Null);
             return $"{parameter.Name}{(parameter.AdmitsNull ? "?" : "")}: {display}";
         }))}) -> {result}";
     }
@@ -239,8 +239,7 @@ internal sealed class SemanticValuePresenter(SemanticObservationView view,
     private HirTypeId TypeId(ValueKey key) => key.Kind == ValueKind.Type ? new(key.Id) : view.Value(new(key.Id)).Type;
     private bool IsTypeParameter(ValueKey key) => key.Kind != ValueKind.RuntimeType && IsTypeParameter(TypeId(key));
     private bool IsTypeParameter(HirTypeId type) => view.Module.Types[type.Value].TypeParameter >= 0;
-    private string TypeName(HirTypeId type, bool nullable = false) => IsTypeParameter(type)
-        ? "inferred at call" : (nullable ? view.Module.RuntimeType(type).WithNull : view.Module.RuntimeType(type)).ToString();
+    private string TypeName(HirTypeId type, bool nullable = false) => view.Module.TypeName(type, nullable);
     private static string Name(string name, string fallback) => name.Length == 0 ? fallback : name;
 
     private static string Rename(string name, string signature)
