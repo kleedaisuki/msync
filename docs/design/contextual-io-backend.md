@@ -495,3 +495,46 @@ Native jobs, all four package digests, installed receipt and payload audit.
 post-timing graph; `transport-cli/receipt.json` records the final selected-channel
 CLI proof. Both-platform execution and installed activation are completed
 evidence, not requirements deferred to a future release.
+
+## Preparation regions and allocation-linear emission (2026-11-10)
+
+The tail investigation distinguishes function-wide applicability from a useful
+entry position. A preparation stops at backward-edge targets. In an 8,192-row
+reference scan, a counted private Runtime mirror found 8,197 preparations, of
+which 8,192 stopped before executing any instruction. The initial positional
+fix removes those empty entries without changing any Step count. Resource waits
+remain outside the eligibility decision, so an unprepared region does not lose
+its submitted-work dependencies.
+
+The generalization caches one immutable linear region map per FunctionCode.
+Backward targets and Return stop propagation; forward conditional successors
+union opportunities. Call, GetIterator, metadata natives, Transfer, LocalTransfer
+and SelectPath remain opportunities. In particular, GetIterator can expose a
+finite I/O batch even though its backedge header is a stop. This is a bounded
+intraprocedural reachability fact, not a callee-effect system, value cache or
+filesystem validity check. The initial internal module path now shares the
+public path's no-preparation decision for functions with no such work.
+
+A distinct-reference manifest exposed a second cost: successful pure filename
+calls repeatedly rewrite a function. The old emitter created singleton arrays,
+LINQ filters, materialized arrays and Repeat enumerators even for unchanged
+instructions. PreparationCode now appends directly into pre-sized output and
+provenance lists, then performs the same PC remapping. A frozen 32-row/four-scan
+allocation calibration falls from 5,910,640 to 2,923,616 bytes with this emission
+change alone. Cold managed/JIT timings are not a latency comparison. The final
+combined implementation's one 8,192-row manifest check returns the exact 32,768
+result and allocates 625,415,320 bytes; remaining conservative per-row Call
+specialization is visible, not claimed eliminated. Setup and the separate
+1,000-sample reference-control tail window are in
+`tests/Performance/ScopeSpatial/Tails/README.md`.
+
+Rejected duplicate constructors stop speculative evaluation and stay in the
+executable path, including inside KnownCalls. TryAdd replaces the existing
+Dictionary.Add duplicate check; there is no extra validation pass. The VM owns
+the concrete MsyncException, inner cause and source span, and earlier selected
+transfers can complete before that failure. The source-linked emission oracle
+checks 1,505 cases/12,047 contracts; an independent DFS region oracle checks
+1,213 cases/90,515 contracts. The selected-duplicate journey checks 18 direct,
+portable and prepared executable cases/93 contracts, including prior bytes and
+unreachable later writes. Existing ScopeLayout 109 contracts and all 24 real
+source/object/executable loop continuation journeys pass on the final Runtime.

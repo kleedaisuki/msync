@@ -8,7 +8,7 @@ public sealed record ContextualPreparation(Module Module, int? ContinueAt,
 
 public static partial class ContextualBackend
 {
-    private sealed record Applicability(bool Required, IReadOnlySet<int> LoopHeaders);
+    private sealed record Applicability(bool Required, IReadOnlySet<int> LoopHeaders, bool[] Starts);
     private static readonly ConditionalWeakTable<FunctionCode, Applicability> applicability = new();
 
     public static bool NeedsPreparation(FunctionCode function) => Applicable(function).Required;
@@ -16,8 +16,7 @@ public static partial class ContextualBackend
     internal static bool NeedsPreparation(FunctionCode function, int start)
     {
         Applicability facts = Applicable(function);
-        // Preparation stops before backward-edge targets without interpreting an instruction.
-        return facts.Required && !facts.LoopHeaders.Contains(start);
+        return facts.Required && facts.Starts[start];
     }
 
     private static Applicability Applicable(FunctionCode function) => applicability.GetValue(function, static code =>
@@ -33,7 +32,8 @@ public static partial class ContextualBackend
             if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse && instruction.A <= index)
                 headers.Add(instruction.A);
         }
-        return new(required, headers);
+        return new(required, headers,
+            required ? PreparationRegions.Analyze(code.Instructions, headers, IsMetadata) : []);
     });
 
     public static Module Prepare(Module module, ExecutionOptions? options = null,
@@ -50,7 +50,9 @@ public static partial class ContextualBackend
         CancellationToken cancellationToken = default)
     {
         if (module.ExecutionPlans is not null) return module;
-        Module prepared = PrepareNext(module, module.EntryPoint, 0, null, null, options, resources, cancellationToken).Module;
+        Module prepared = NeedsPreparation(module.Functions[module.EntryPoint])
+            ? PrepareNext(module, module.EntryPoint, 0, null, null, options, resources, cancellationToken).Module
+            : module with { ExecutionPlans = [] };
         return prepared.Blocks is null ? BlockBuilder.Form(prepared) : prepared;
     }
 
@@ -204,14 +206,7 @@ public static partial class ContextualBackend
                                 inputs.Aggregate(new TypeRef(TypeKind.Never), (type, item) => TypeRef.Union(type, item.Value!.Type))) : null;
                         return PushComputed(result, inputs);
                     }
-                case OpCode.MakeScope:
-                    {
-                        KnownValue[] inputs = PopMany(instruction.A);
-                        string[] names = (instruction.Text ?? "").Split('\0');
-                        Value? value = inputs.All(item => item.Known)
-                            ? new ScopeValue(names.Zip(inputs, (name, item) => KeyValuePair.Create(name, item.Value!)).ToDictionary()) : null;
-                        Push(new(value)); return true;
-                    }
+                case OpCode.MakeScope: return KnownScope(instruction);
                 case OpCode.GetMember:
                     {
                         KnownValue receiver = Pop();
@@ -307,6 +302,18 @@ public static partial class ContextualBackend
             output.Add(new(OpCode.Constant, index, Span: code[pc].Span));
             Replace(pc, output.ToArray());
             Push(pops == 0 ? new(value, pc, pc) : new(value));
+            return true;
+        }
+
+        private bool KnownScope(Instruction instruction)
+        {
+            KnownValue[] inputs = PopMany(instruction.A);
+            if (inputs.Any(value => !value.Known)) { Push(KnownValue.Unknown); return true; }
+            string[] names = (instruction.Text ?? "").Split('\0');
+            Dictionary<string, Value> members = new(StringComparer.Ordinal);
+            for (int index = 0; index < names.Length && index < inputs.Length; index++)
+                if (!members.TryAdd(names[index], inputs[index].Value!)) return Stop();
+            Push(new(new ScopeValue(members)));
             return true;
         }
 
@@ -605,29 +612,7 @@ public static partial class ContextualBackend
         {
             if (replacements.Count == 0)
                 return new(module.ExecutionPlans is null ? module with { ExecutionPlans = [] } : module, continuation, awaitResources);
-            int[] positions = new int[code.Count + 1];
-            List<Instruction> output = [];
-            List<int> sources = [];
-            for (int index = 0; index < code.Count; index++)
-            {
-                positions[index] = output.Count;
-                Instruction[] rewritten = (replacements.GetValueOrDefault(index) ?? [code[index]])
-                    .Where(instruction => instruction.Op != OpCode.Nop).ToArray();
-                output.AddRange(rewritten);
-                sources.AddRange(Enumerable.Repeat(index, rewritten.Length));
-            }
-            positions[^1] = output.Count;
-            sources.Add(code.Count);
-            for (int index = 0; index < output.Count; index++)
-            {
-                Instruction instruction = output[index];
-                output[index] = instruction.Op switch
-                {
-                    OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue => instruction with { A = positions[instruction.A] },
-                    OpCode.IteratorNext => instruction with { B = positions[instruction.B] },
-                    _ => instruction
-                };
-            }
+            var (positions, output, sources) = PreparationCode.Rewrite(code, replacements);
             for (int index = module.ExecutionPlans?.Count ?? 0; index < plans.Count; index++)
                 plans[index] = plans[index] with { Start = positions[plans[index].Start], End = positions[plans[index].End] };
             bool identity = sources.Count == code.Count + 1;

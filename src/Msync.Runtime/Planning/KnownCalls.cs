@@ -149,7 +149,10 @@ internal sealed class KnownCalls(Module module, RuntimeContext context, PlanFile
                         Value?[] values = PopMany(instruction.A);
                         if (values.Any(value => value is null or KnownCopyResult)) return false;
                         string[] names = (instruction.Text ?? "").Split('\0');
-                        return Push(new ScopeValue(names.Zip(values, (name, value) => KeyValuePair.Create(name, value!)).ToDictionary()));
+                        Dictionary<string, Value> members = new(StringComparer.Ordinal);
+                        for (int index = 0; index < names.Length && index < values.Length; index++)
+                            if (!members.TryAdd(names[index], values[index]!)) return false;
+                        return Push(new ScopeValue(members));
                     }
                 case OpCode.MakeClosure:
                     {
