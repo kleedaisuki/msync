@@ -32,6 +32,22 @@ for row in rows { second = second + row::y; };
 """,
         {"first.txt": b"40", "second.txt": b"44"},
     ),
+    "scope-carried-snapshot": (
+        PREFIX
+        + """
+let holder = scope {
+    items: $std::ranges::materialize($std::ranges::iota(0, 4)),
+};
+let values = holder::items;
+let first = 0;
+let second = 0;
+for value in values { first = first + value + seed; };
+for value in values { second = second + value + seed; };
+(first as String) -> ./first.txt;
+(second as String) -> ./second.txt;
+""",
+        {"first.txt": b"34", "second.txt": b"34"},
+    ),
     "scope-shared": (
         PREFIX
         + """
@@ -160,7 +176,11 @@ def run_case(
     )
     text = str(disassembly["text"])
     iterators: int = len(re.findall(r"\bIteratorNext\b", text))
-    if require_fusion and name in {"independent", "scope-fields"}:
+    if require_fusion and name in {
+        "independent",
+        "scope-fields",
+        "scope-carried-snapshot",
+    }:
         assert iterators == 1, (
             "Expected a genuinely fused portable scan",
             iterators,

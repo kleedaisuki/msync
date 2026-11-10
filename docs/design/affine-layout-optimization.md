@@ -9,7 +9,9 @@ Traversal through data-dependent tree pointers is not affine merely because
 the language has a closed type system.
 
 `AffineLoopOptimization` belongs to the machine-independent optimizer. It runs
-before literal-loop expansion so the iteration structure remains available.
+after predicate simplification and before per-block memory/scalar analyses, then
+can retry when those later passes actually change code and expose more provenance.
+Both attempts precede literal-loop expansion so iteration structure remains available.
 The VM executes the resulting ordinary bytecode; neither a VM optimizer nor a
 new source-language collection type is introduced.
 
@@ -106,3 +108,56 @@ The isolated new-pass oracle additionally checks 46 runtime/provenance cases,
 including empty ranges, physical slot reuse and repeated Scope identity. It is
 not a replacement for the integrated default-path evidence above. This section
 establishes transformation and semantics, not a Native speedup measurement.
+
+## Phase placement and optimizer cost
+
+The power-user tail probe retains 128 independent Number reductions over a
+materialized runtime-derived range. The original pipeline correctly fused all
+128 iterators into one, but only after CrossBlockMemoryOptimization and
+ScopeScalarization had analyzed the much larger original CFG. A separate warmed
+sampled-thread-time trace attributes 40.1% of optimizer time to scalarization's
+HashSet-based liveness, 18.5% to MemoryEffects, and 11.6% to affine fusion itself.
+Three instrumented warm optimizer observations take 508.86, 527.05 and 537.56 ms,
+allocating approximately 364.24 MB each; each triggers 44–48 Gen0, 10–12 Gen1
+and 3–4 Gen2 collections. They are attribution observations, not a P99 distribution
+or a Native latency claim.
+
+The schedule proof does not require those expensive whole-CFG analyses. The
+pipeline therefore attempts the same affine proof immediately after predicate
+simplification, before memory/scalar analysis pays for the old iteration graph.
+It retains a later opportunity only if intervening memory, scalar or tail-call
+transformation actually changes instructions or local count. Existing
+`Unchanged` canonicalization detects that condition; no persistent negative cache
+or new invalidation scheme is introduced. The retained late proof handles facts
+made visible by those transformations, while unchanged functions do not pay for
+an identical second attempt. Captures, effects, schema totality and IEEE order
+use the same legality rules at either point.
+
+The frozen producer for the diagnostic trace is the predicate-lazy image
+`6354688ac7167ac7c342c8145adb0c2adcb4b3d7370480283a4e57070dd74e78`.
+The exact 128-scan source hash is
+`60f500a2a0816babeecdc989e7ce045df4b7ec37e270964fc8e9addf23e319ec`;
+the maintained compiler-tail fixture generator and phase host reproduce it.
+Raw stage observations, opcode histograms and the separate trace live under
+`.temp/tail-compiler/scans-profile-capture.log`, `scans128.nettrace` and
+`scans-profile-summary.json`.
+
+The first controlled unprofiled comparison keeps that producer and changes only
+phase placement. Three warm optimizer observations change from
+462.76/489.27/492.09 ms to 397.48/403.05/393.09 ms, and median allocation changes
+from 364,239,472 to 277,756,944 bytes. This is a useful partial reduction, not a
+complete repair: both arms still collect Gen2 four times per observation. An
+earlier arm launched before the coordinator's quiet acknowledgement is retained
+as `late-number_scans-128-warm-prequiet.json` and is not mixed into this comparison.
+The controlled arms are `late-number_scans-128-warm.json` and
+`early-number_scans-128-warm.json`. Three observations are calibration, not P95/P99.
+
+The added `scope-carried-snapshot` journey stores an eager numeric Range inside
+a Scope field, then scans the selected member. Its original late-only producer
+and changed producer both fuse the portable scans and return exact `34/34`
+outputs through source, source-deleted `.mso` and `.mexe` execution. The complete
+changed journey passes nine cases through all three routes, including dependent
+captures, lazy callbacks, intervening I/O, repeated rows and strict floating-point
+order. The same changed Optimization image passes 112 invalidation and 87
+predicate contracts. This retains the late provenance opportunity instead of
+trading it away for earlier analysis.
