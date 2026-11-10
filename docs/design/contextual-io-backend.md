@@ -368,3 +368,78 @@ and executable routes: 28 exact outputs per route, including `0/1/1/1`, and six
 negative diagnostics. The scoped result is retained at
 `.temp/backend-acceptance/common8-hir-o2.json`; both-platform Native acceptance
 of the corrected producer remains a separate delivery responsibility.
+
+## Final contextual Native candidate and workload results
+
+The corrected validation-only source is
+`746f6b9319e336751e5486ef3071928f8a0dbcad`.
+[Candidate run 42792178206](https://github.com/kleedaisuki/msync/actions/runs/42792178206)
+passes all nine selected Native phases on Linux and Windows and all three actual
+editor-host suites. The separate real installed-VSIX receipt also passes source
+LSP, HIR and format-5 executable graph viewing, outline/hover, read-only behavior
+and absence of execution effects. These results close the earlier deferred-Range,
+Windows directory-link timestamp and terminal completion failures; the rejected
+candidate's results are not substituted for them.
+
+The exact measured Linux Native SHA256 is
+`7d1d2856e75631f162bdded1f7258dc7b1d71620afcd2ae28ae42939a08865f4`.
+The comparison baseline is the published 0.8.1 Native executable,
+`105e29503c74422831c8481281c617deba5356eb56f38ec9da3b23fbd89c5732`.
+This backend task does not publish a new release or replace existing 0.8.1
+packages. Format 5 belongs to this candidate; the public release remains intact.
+
+### Paired actual CLI I/O
+
+`tests/Performance/ContextualIo/paired.py` runs one explicitly selected workload
+per invocation. Each comparison uses seven alternating fresh-process pairs after
+one untimed invocation per image, the same existing output paths, `NO_COLOR=1`
+and disabled user configuration/telemetry. Inputs receive a new fixed-length
+generation before every run. Every output filename and byte is checked after
+timing. The ordinary directory case additionally checks an empty directory,
+Unix executable/data modes and file/directory modification times. Fixture setup,
+verification and graph inspection are outside timing; CLI startup, frontend,
+backend preparation and actual I/O are inside it.
+
+The host is Linux x86-64, kernel `6.12.113+deb13-amd64`, glibc 2.41; the harness
+uses Python 3.15.2, not a product Python dependency. Each large case has 1,024
+files of 4,096 bytes. Development builds, other timing jobs and installed-editor
+hosts are paused during the paired window. Raw samples are retained without
+filtering or repeated batches.
+
+| Actual source-run workload | Published 0.8.1 median, ms | Candidate median, ms | Median paired difference, ms | Candidate faster pairs |
+| --- | ---: | ---: | ---: | ---: |
+| One independent copy | 22.26 | 23.55 | +2.23 | 1/7 |
+| Ordinary nested directory, 1,024 files | 1,306.67 | 552.05 | -713.76 | 7/7 |
+| 1,024 independent source statements | 658.62 | 693.60 | +36.83 | 2/7 |
+| 1,024 writes to one destination | 1,632.64 | 212.29 | -1,419.90 | 7/7 |
+| One regex selection, 1,024 files | 1,326.51 | 553.23 | -744.89 | 7/7 |
+
+Ordinary directory and regex synchronization improve by approximately 2.37x
+and 2.40x on these descriptive medians; overwritten work improves by 7.69x.
+The independent-statement workload is about 5.3% slower, and the one-copy paired
+cost is approximately +2.23 ms. These are retained costs of this implementation,
+not parity or a universal improvement. The paired-difference median need not
+equal the difference between the two independent medians. No per-patch timing
+attribution follows from this combined backend change.
+
+### Actual prepared work
+
+After timing, the same candidate compiles, prepares and disassembles each exact
+generated source without executing transfers. The resulting graph evidence is:
+
+| Workload | Prepared nodes | Backend batches | Eliminated transfers |
+| --- | ---: | ---: | ---: |
+| One independent copy | 1 CopyFile | 1 | 0 |
+| Ordinary directory | 1,024 CopyFile + 34 EnsureDirectory + 34 ApplyDirectoryMetadata | 100 | 0 |
+| Independent statements | 1,024 CopyFile | 1 | 0 |
+| Repeated overwrite | 1 CopyFile | 1 | 1,023 |
+| Regex selection | 1,024 CopyFile | 1 | 0 |
+
+Every row has one plan. The directory's 100 batches retain its actual namespace
+and metadata ordering; this is not a claim that the whole folder is one batch.
+The overwritten nodes actually disappear, and the regex member list is explicit
+rather than recomputed by the VM. Full read-only graph JSON, ephemeral `.mexe`
+carriers, source/harness/native receipt identities and raw timing observations
+are retained under `artifacts/candidates/contextual-io/746f6b9/performance/`.
+The native installation evidence is under the same candidate's
+`installed-smoke/` directory.
