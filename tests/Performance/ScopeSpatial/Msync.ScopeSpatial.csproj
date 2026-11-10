@@ -5,6 +5,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="Component/**/*.cs" />
+    <Compile Remove="Tails/**/*.cs" />
     <Reference Include="Msync.Core"><HintPath>$(FrozenAssemblies)/Msync.Core.dll</HintPath></Reference>
     <Reference Include="Msync.Compiler"><HintPath>$(FrozenAssemblies)/Msync.Compiler.dll</HintPath></Reference>
     <Reference Include="Msync.Hir"><HintPath>$(FrozenAssemblies)/Msync.Hir.dll</HintPath></Reference>
