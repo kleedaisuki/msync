@@ -155,3 +155,93 @@ direct log, raw materiality report and overlap note are retained in
 `artifacts/candidates/tail-latency/repl-fact-identity/index.json`. This correction
 is commit `03b49c9`; the final Native session measurements must use a new package
 that includes it, not relabel the preceding `9e5e997` CLI evidence.
+
+## Final Native colored REPL tails
+
+The final session producer is source
+`604b5584e103e1fcb7c62cfee779b0dc43447cbe`, Linux Native SHA256
+`8614cfa234930f599e35b5b901ad208b3d5202ed0bf7419066680dc171463d7c`.
+The baseline is spatial source `a0cebdf6c5f31dd0b3650fd534cbbee7ac1d7ddd`,
+Native SHA256 `54d591a87ab831c07459333d3e06acc39a1164b37beaae0eb83cccfd9df21bfc`.
+Both run the exact same harness SHA256
+`5705620dfccfe9b4418cf9b390b7390a98d3c314942cb9545de236e307614ae4`.
+The preceding CLI six-case comparison uses the separately identified `9e5e997`
+producer; it is not relabelled as this new session image.
+
+Each image completes 1,024 submissions in each of three workloads: fixed-export
+colored PTY, growing-export colored PTY, and growing-export offered burst.
+Every one of the 6,144 numbered responses matches, and all six processes exit
+normally with code zero. Full sessions run AB/BA by case (fixed A/B, growing B/A,
+burst A/B), not per-request interleaved pairs. There is one complete session per
+image/case, not repeated-session replication. A coordinated quiet window excludes
+team builds/profilers/installation and other benchmarks; OS caches are not
+flushed. No run or slow observation is replaced, truncated or filtered.
+
+PTY measurements include **Enter through the checked result and next ready
+prompt**. Colors, lexical highlighting and hints are enabled with
+`TERM=xterm-256color`, 30×120 cells, default `auto` color policy and `NO_COLOR`
+unset. Paste-to-complete-input-render is measured separately rather than hidden
+inside an Enter latency. The fixed case has one user export; growing exports
+increase from two through 1,025, in addition to 55 imported shell names.
+
+### Ready-prompt age windows
+
+| Case and submission ages | Baseline P95 ms | Final P95 ms | Baseline P99 ms | Final P99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Fixed, 1–256 | 23.45 | 11.31 | 28.03 | 14.77 |
+| Fixed, 257–512 | 33.49 | 10.57 | 40.10 | 13.84 |
+| Fixed, 513–768 | 44.47 | 11.48 | 56.63 | 14.73 |
+| Fixed, 769–1,024 | 61.75 | 11.85 | 70.34 | 14.22 |
+| Growing, 1–256 | 68.98 | 23.36 | 84.86 | 27.43 |
+| Growing, 257–512 | 172.21 | 40.43 | 203.22 | 46.14 |
+| Growing, 513–768 | 294.19 | 63.75 | 428.88 | 73.45 |
+| Growing, 769–1,024 | 434.21 | 100.24 | 753.50 | 117.00 |
+
+Every 256-entry window's nearest-rank P99 is rank 254, with **three** observations
+at/above that rank. These are observed age-window tails, not precise population
+quantile guarantees. The additional fixed-workload full-1,024 summary has eleven
+upper P99 observations: P95 52.08 → 11.15 ms, P99 63.07 → 14.22 ms. Its original
+age trend remains visible above; fixed export count does not prove stationarity.
+Growing windows are deliberately not pooled. In the last growing window, the
+largest observed response falls from 1,057.26 to 132.65 ms. The final growing
+response still costs more with more retained roots; this is not a constant-time
+or universal tail guarantee.
+
+The fixed case removes the sharp history-age escalation even without increasing
+exports. The growing case retains real feedback/projection costs while avoiding
+the old historical parent-chain and whole-private-world description work. The
+managed controls above distinguish that mechanism from unrelated Runtime fixes;
+this Native table measures the complete combined user experience, not one
+isolated optimization's attribution.
+
+### Input rendering, queue completion and observation cost
+
+Last-window paste-render P95/P99 values are 0.477/0.709 → 0.385/0.431 ms for
+fixed exports and 1.486/11.011 → 1.271/1.638 ms for growing exports. This is not an
+all-age render-speedup claim: the first growing window's render P99 is
+0.792 → 2.200 ms, and the raw maxima remain. Enter-to-readiness and rendering
+answer different input/output parts of the journey.
+
+The offered-burst clock starts before the blocking stdin write, so it includes
+producer pipe backpressure and accumulated queue delay. The final numbered
+result arrives at 54.445 → 18.502 seconds. Last-256 queue-completion P95/P99 are
+52.858/54.162 → 18.118/18.436 seconds; they must not be described as independent
+request service times or compared directly with ready-prompt milliseconds. The
+product emits redirected results before semantic acceptance; this mode does not
+claim prompt readiness or an independently observed service-entry timestamp.
+
+Per-run 4,096-pair adjacent timer calibrations give P99 read deltas of 201–379 ns;
+none are subtracted. These describe counter reads, not the entire observer.
+Terminal parsing/log handling remains bounded to one request, with raw segments
+retained outside each measured Enter interval. There is no forced product GC or
+new product hot-path telemetry. Spawn-to-first-prompt observations are recorded
+separately, but four starts are not a startup-tail estimate; the larger CLI
+startup comparison remains separate evidence.
+
+Exact commands/order, six raw reports, every age sample, full terminal/stdout
+logs, source/helper/producer identities, clock controls and postprocessing are
+retained under
+`artifacts/candidates/tail-latency/604b558/repl/index.json` and `summary.json`.
+Both platforms pass the changed HIR/session-age/shell-REPL acceptance and actual
+source-editor suite in Native candidate run `42869625070`; this latency window
+itself is Linux only. It does not publish or replace a release.
