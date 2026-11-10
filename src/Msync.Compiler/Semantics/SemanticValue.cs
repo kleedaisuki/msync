@@ -17,7 +17,8 @@ internal sealed record SemanticCallableDomain(HirLocationId Owner, ImmutableArra
 internal sealed record SemanticScope(int Region, int Layout,
     ImmutableDictionary<string, SemanticValue> Fields,
     ImmutableDictionary<string, HirLocationId> Locations, bool Named = false,
-    bool Dynamic = false, ImmutableArray<int> Aliases = default, bool Initializing = false);
+    bool Dynamic = false, ImmutableArray<int> Aliases = default, bool Initializing = false,
+    ImmutableDictionary<string, ImmutableArray<HirSourceRange>>? FieldDefinitions = null);
 
 internal sealed record SemanticMemberContract(int Concept, HirConceptMember Requirement,
     ImmutableDictionary<HirTypeId, HirTypeId> Associated)

@@ -118,6 +118,37 @@ through fields, elements and captures. It refreshes only dependent roots. The
 current element is read from each live resource description; an old embedded
 `SemanticValue.Element` is not a fallback when resource identities are present.
 
+### Declaration provenance and skipped pure-query operands
+
+A Scope field's declaration origin is not its mutable storage location.
+`SemanticScope.FieldDefinitions` is an optional immutable map from field names
+to source-owned declaration ranges. Scope construction caches that map once per
+bound construction descriptor and shares it between instances. Formal input
+abstraction and dynamic value projection can clear private `Locations` without
+losing navigation; actual argument substitution replaces the whole Scope
+metadata, including its own origins. Same-shape instances never add source
+origins to code identity or restore a callee-private cell alias. Structural joins
+union the finite origins of common fields. The editor prefers these ranges and
+uses the older location-derived origin only when no separate facet is present.
+
+Pure metadata queries may resolve their native callee without analyzing that
+callee expression as executable input. Their highlighting and hover therefore
+also use the binder's real standard-module/member sidecars. `BoundStandardUse`
+retains the parsed `std` name's exact span independently from the selected module
+span; no source-text name guessing is needed. Module export descriptors and
+native declaration identities provide missing query-operand observations
+without inference re-entry, bytecode emission or execution. Program-owned
+standard modules retain named-Scope presentation; `fn` and `scope` remain syntax
+keywords.
+
+A focused strict-frozen host passed 17 origin/role checks against Compiler
+`659ab7fda953ab8bd2adfe4b6aea3df7eef9617a4382862f420a7640af2abaac`.
+They include the user's direct/rebuilt nullable constructor example, distinct
+actual field origins through one reused same-shape identity function, and
+standard root/module/native-query roles with useful signatures and source
+documentation. The original nullable workflow additionally passed all six
+source checks and its three real language-server cases.
+
 Semantic joins retain their real finite facets rather than a historical binary
 `first`/`second` graph. The observer reads the joined Scope fields, Range element,
 callable candidates, indexed resources and their captures directly. Dependency

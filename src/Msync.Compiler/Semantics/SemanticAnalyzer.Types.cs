@@ -23,7 +23,8 @@ internal sealed partial class SemanticAnalyzer
                 var fields = a.Fields.Where(pair => b.Fields.ContainsKey(pair.Key)).ToImmutableDictionary(
                     pair => pair.Key, pair => Join(pair.Value, b.Fields[pair.Key]), StringComparer.Ordinal);
                 scope = new(-1, Shape(fields), fields, ImmutableDictionary<string, HirLocationId>.Empty,
-                    Dynamic: a.Dynamic || b.Dynamic, Aliases: ScopeAliases(a).Concat(ScopeAliases(b)).Distinct().ToImmutableArray());
+                    Dynamic: a.Dynamic || b.Dynamic, Aliases: ScopeAliases(a).Concat(ScopeAliases(b)).Distinct().ToImmutableArray(),
+                    FieldDefinitions: JoinFieldDefinitions(a, b, fields.Keys));
             }
         }
         SemanticValue? element = first.Element is null ? second.Element : second.Element is null
@@ -38,6 +39,17 @@ internal sealed partial class SemanticAnalyzer
             DeferredEffects: CombineDeferredEffects(first.DeferredEffects, second.DeferredEffects),
             IndexedAliases: payload?.IndexedAliases ?? JoinIndexedResources(first, second),
             OpenSessionCalls: CombineSessionCalls(first.OpenSessionCalls, second.OpenSessionCalls));
+    }
+
+    private static ImmutableDictionary<string, ImmutableArray<HirSourceRange>>? JoinFieldDefinitions(
+        SemanticScope first, SemanticScope second, IEnumerable<string> members)
+    {
+        if (first.FieldDefinitions is null) return second.FieldDefinitions;
+        if (second.FieldDefinitions is null || ReferenceEquals(first.FieldDefinitions, second.FieldDefinitions))
+            return first.FieldDefinitions;
+        return members.ToImmutableDictionary(name => name, name =>
+            first.FieldDefinitions.GetValueOrDefault(name, []).AddRange(second.FieldDefinitions.GetValueOrDefault(name, []))
+                .Distinct().ToImmutableArray(), StringComparer.Ordinal);
     }
 
     private static int IndexedResourceCount(SemanticValue value) => value.IndexedRegion is not null ? 1

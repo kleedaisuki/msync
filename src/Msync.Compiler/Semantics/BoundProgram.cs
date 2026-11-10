@@ -28,7 +28,7 @@ internal sealed record BoundPathUse(HirNodeId Node, HirSourceRange ReceiverSpan,
 internal sealed record BoundGlobalImport(HirSourceRange Source,
     ImmutableDictionary<string, HirLocationId> Bindings);
 internal sealed record BoundStandardUse(HirNodeId Node, HirSourceRange ReceiverSpan,
-    HirSourceRange NameSpan, string Module);
+    HirSourceRange NameSpan, string Module, HirSourceRange? RootSpan = null);
 
 internal sealed record BoundConcept(int Id, string Name, HirSourceRange Source,
     ImmutableArray<int> Bases, ImmutableArray<BoundRequirement> Requirements,

@@ -7,6 +7,13 @@ void Require(bool condition, string reason)
     if (!condition) throw new InvalidOperationException(reason);
 }
 
+if (args.Contains("--origins-and-roles", StringComparer.Ordinal))
+{
+    OriginAndRoleChecks.Run(Require);
+    Console.WriteLine($"PASS {checks} origin and role editor contracts");
+    return;
+}
+
 const string source = "scope Named { value: 7, }; let object = scope { item: \"Klee\" }; object::item;";
 EditorAnalysis analysis = EditorCompiler.Analyze(source, "semantic-editor.msync");
 Require(analysis.Diagnostic is null, analysis.Diagnostic?.Message ?? "Unexpected error");

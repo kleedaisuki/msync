@@ -7,6 +7,17 @@ namespace Msync.Compiler.Semantics;
 internal sealed partial class SemanticAnalyzer
 {
     private readonly Dictionary<int, SemanticScope> singletonScopes = [];
+    private readonly Dictionary<int, ImmutableDictionary<string, ImmutableArray<HirSourceRange>>> fieldDefinitions = [];
+
+    private ImmutableDictionary<string, ImmutableArray<HirSourceRange>> ScopeDefinitions(int construction,
+        ImmutableArray<HirLocationId> fields)
+    {
+        if (fieldDefinitions.TryGetValue(construction, out var known)) return known;
+        var definitions = fields.ToImmutableDictionary(field => hir.Locations[field.Value].Name,
+            field => ImmutableArray.Create(hir.Locations[field.Value].Source), StringComparer.Ordinal);
+        fieldDefinitions.Add(construction, definitions);
+        return definitions;
+    }
 
     private SemanticValue Scope(HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext context)
     {
@@ -33,8 +44,9 @@ internal sealed partial class SemanticAnalyzer
         var declaredFields = hir.ScopeLayouts[construction.Layout].Fields;
         var fields = declaredFields.ToImmutableDictionary(field => field.Name,
             field => ValueForType(ResolveHirType(field.StorageType, context)), StringComparer.Ordinal);
+        var definitions = ScopeDefinitions(node.Data, construction.Fields);
         SemanticScope provisional = new(region, construction.Layout, fields, locations, construction.Singleton >= 0,
-            Initializing: construction.Self is not null);
+            Initializing: construction.Self is not null, FieldDefinitions: definitions);
         context.Objects[region] = provisional;
         HirLocationId? self = construction.Self is { } original ? context.Location(original) : null;
         if (self is { } selfLocation)
@@ -94,7 +106,8 @@ internal sealed partial class SemanticAnalyzer
         }
 
         int shape = InternShape(layout);
-        SemanticScope result = currentObject ?? new(region, shape, populated, locations, construction.Singleton >= 0);
+        SemanticScope result = currentObject ?? new(region, shape, populated, locations, construction.Singleton >= 0,
+            FieldDefinitions: definitions);
         destination.Objects[region] = result;
         if (construction.Singleton >= 0)
         {

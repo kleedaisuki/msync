@@ -89,7 +89,7 @@ internal sealed partial class SourceBinder
     {
         if (binary.Operator == "::")
         {
-            if (binary.Left is UnaryExpr { Operator: "$", Operand: NameExpr { Name: "std" } }
+            if (binary.Left is UnaryExpr { Operator: "$", Operand: NameExpr { Name: "std" } root }
                 && !scope.Values.ContainsKey("std"))
             {
                 string? module = binary.Right switch
@@ -103,7 +103,7 @@ internal sealed partial class SourceBinder
                     {
                         int start = binary.OperatorSpan?.End ?? binary.Right.Span.Start;
                         program.StandardUses.Add(new(reference, Range(new(start, binary.Right.Span.End - start)),
-                            Range(binary.Right.Span), module));
+                            Range(binary.Right.Span), module, Range(root.Span)));
                     }
                     return reference;
                 }

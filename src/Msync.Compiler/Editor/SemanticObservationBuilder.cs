@@ -99,8 +99,7 @@ internal sealed partial class SemanticObservationBuilder
                 if (Receiver(original, context) is { } receiver)
                     receivers.Add(new(Span(use.ReceiverSpan), receiver, EditorReceiverKind.PathJoin));
         if (standardUses.TryGetValue(original, out var standards))
-            foreach (var use in standards)
-                observations.Add(new(use.NameSpan, result, use.Module));
+            foreach (var use in standards) RecordStandard(use, result, concrete: true);
         if (node.Kind == HirKind.Qualify)
             RecordPhysicalOwner(original, context);
         if (globalImports.TryGetValue(node.Source, out var selectedImports))
@@ -139,9 +138,12 @@ internal sealed partial class SemanticObservationBuilder
             if (selection.Name is null || receiver.Scope is not { } shape
                 || !shape.Fields.TryGetValue(selection.Name, out var member)) continue;
             Observe(selection.MemberSpan, member, generic, selection.Name, concrete: false);
-            if (shape.Locations.TryGetValue(selection.Name, out var location))
-                references.Add(new(Span(selection.MemberSpan), [Definition(location)], false));
+            var origins = FieldDefinitions(shape, selection.Name);
+            if (!origins.IsDefaultOrEmpty) references.Add(new(Span(selection.MemberSpan), origins, false));
         }
+        foreach (var use in program.StandardUses)
+            if (use.NameSpan.Source == source)
+                RecordStandard(use, Value(BoundValue(program.StandardLocations[use.Module]), generic), concrete: false);
         foreach (var use in program.TypeUses)
         {
             if (use.Source.Source != source) continue;
@@ -194,6 +196,22 @@ internal sealed partial class SemanticObservationBuilder
                 references.Add(new(Span(use.MemberSpan), field.Definitions));
     }
 
+    private void RecordStandard(BoundStandardUse use, SemanticValueId value, bool concrete)
+    {
+        values[value.Value] = values[value.Value] with { IsNamedScope = true };
+        observations.Add(new(use.NameSpan, value, use.Module, concrete));
+        if (use.RootSpan is not { } root) return;
+        SemanticValueId standard = new(values.Count);
+        values.Add(new(values[value.Value].Type, IsNamedScope: true, Members: [], Signature: "scope std"));
+        observations.Add(new(root, standard, "$std", concrete));
+    }
+
+    private ImmutableArray<HirSourceRange> FieldDefinitions(SemanticScope scope, string name)
+    {
+        if (scope.FieldDefinitions?.TryGetValue(name, out var definitions) == true) return definitions;
+        return scope.Locations.TryGetValue(name, out var location) ? [Definition(location)] : [];
+    }
+
     private SemanticValueId? Receiver(HirNodeId node, SemanticContext context)
     {
         var children = program.Children(node);
@@ -212,7 +230,7 @@ internal sealed partial class SemanticObservationBuilder
         values.Add(new(value.Type));
         ImmutableArray<SemanticFieldView> fields = scope is null ? default : scope.Fields.Select(pair =>
             new SemanticFieldView(pair.Key, Value(pair.Value, context),
-                scope.Locations.TryGetValue(pair.Key, out var location) ? [Definition(location)] : []))
+                FieldDefinitions(scope, pair.Key)))
             .ToImmutableArray();
         int concept = program.Hir.Types[value.Type.Value].Concept;
         if (scope is null && concept >= 0)
@@ -382,6 +400,12 @@ internal sealed partial class SemanticObservationBuilder
             value = value with { Callables = [new(NativeName: native)] };
         else if (program.TryDeclaration(location, out var declaration) && declaration.CapturedFrom is { } parent)
             value = BoundValue(parent);
+        else if (program.TryDeclaration(location, out var moduleDeclaration)
+            && moduleDeclaration.Kind == DeclarationKind.StandardModule
+            && program.StandardModules.TryGetValue(moduleDeclaration.Name, out var module))
+            value = value with { Scope = new(-1, program.Hir.Types[program.Node(module.Body).Type.Value].Shape,
+                module.Exports.ToImmutableDictionary(pair => pair.Key, pair => BoundValue(pair.Value), StringComparer.Ordinal),
+                module.Exports, Named: true) };
         else if (initializers.TryGetValue(location, out var initializer))
             value = BoundExpression(initializer);
         boundValues[location] = value;
@@ -392,6 +416,12 @@ internal sealed partial class SemanticObservationBuilder
     {
         HirNode node = program.Node(id);
         if (node.Kind == HirKind.ReadLocation) return BoundValue(new(node.Data));
+        if (node.Kind == HirKind.MemberRead)
+        {
+            var children = program.Children(id);
+            if (children.Length != 0 && BoundExpression(children[0]).Scope is { } scope
+                && node.Text is { } name && scope.Fields.TryGetValue(name, out var member)) return member;
+        }
         if (node.Kind == HirKind.Literal) return new(node.Type, id, program.Hir.Literals[node.Data]);
         if (node.Kind == HirKind.NativeFunction) return new(node.Type, id, Callables: [new(NativeName: node.Text)]);
         if (node.Kind == HirKind.TemplateClosure)
