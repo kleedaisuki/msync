@@ -1,5 +1,27 @@
 # Typed HIR compiler-cost observations
 
+## Final Native user-latency control
+
+`native_list.py` pairs only the original short List source on the published
+Native executable and the exact release-candidate Native image. Every
+observation starts a fresh `check SOURCE` process with the product's default O2;
+one untimed launch per image warms OS file caches. Pair order alternates,
+and raw times, paired differences, source/image hashes and the candidate's
+receipt are retained. This is user-facing process latency, not managed component
+time, and has no CI threshold or automatic promotion decision.
+
+```sh
+python3 tests/Performance/HirCompilation/native_list.py \
+  --baseline /absolute/published/bin/msync \
+  --candidate /absolute/candidate/bin/msync \
+  --source .temp/hir-final-cost/inputs/list.msync \
+  --candidate-receipt /absolute/candidate-receipt.json \
+  --output .temp/hir-final-cost/native-list.json
+```
+
+Coordinate this short observation with the producer and LSP owner rather than
+launching a second Native build or repeating the old full source matrix.
+
 This probe separates two questions:
 
 1. What does a user pay for a fresh native `check` process?
