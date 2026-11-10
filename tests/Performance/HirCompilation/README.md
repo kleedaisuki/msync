@@ -515,3 +515,106 @@ new result retains raw observations, actual counts and exact product/probe
 identities, with checkpoints after each completed image. This is a local
 discriminating experiment, not a CI threshold or a substitute for semantic
 acceptance of the selected frozen image.
+
+### Matched normal Compile control after the semantic-facet correction
+
+The reserved observation window on 2026-11-10 ran the three original source
+strings against published-source `637bd091e62e013f4003a1fa7e2c8f0b5e917140`
+and `.temp/hir-editor-cli/frozen17`. Input hashes are the scalar/List/unrolled
+B-tree hashes recorded above; the loop functional gate was not substituted.
+Both direct-reference hosts used SDK 10.0.403, Release, runtime .NET 10.0.14,
+and `DOTNET_TieredCompilation=0`. The baseline host and its three product DLLs
+remained unchanged. All six frozen candidate producer DLLs were verified:
+
+| Candidate producer assembly | SHA-256 |
+| --- | --- |
+| Msync.Compiler.dll | `bb4456050510f8d81411f5c925bb5cf7c4cddd0aaff732b2cf9f1d07b0ecdfc0` |
+| Msync.Core.dll | `fd3fce10ea29c9b95e58e92029de929417701e1672cd3f18c61120fb00b3097c` |
+| Msync.Hir.dll | `9e2ddd0171be4cc01527b7fdc7a9a5321289c47f2422065f04444280b72c1adf` |
+| Msync.Optimization.dll | `e5b787183935264f3e2036abf59db099e6c5260753dd635d770ab10017f9be87` |
+| Msync.Runtime.dll | `97a8a007f6ae01509cf747fe9945367d04feb2423f2eb06568aee18cf76edd70` |
+| msync.dll | `34ba464bbe9707bcf4bcc4bc608fd46788eff808506b841c149edb0452358eb1` |
+
+Producer source head is `72491a0302b0f1727ef0edc0981a8b1b3a64ee9c`, with
+worktree diff SHA-256
+`358267351a173db86cc493552460e41abde6f19a11172aa036127d4f92727d16`.
+This is a **cost-control image**, not complete product acceptance: three
+independent editor/REPL experience blockers were still being resolved. The
+measurement does not make those functional failures acceptable.
+
+Normal Compile observations alternated image order by case/level, with three
+warmups followed by three timed Compile calls per process. The ordinary facade
+includes its selected optimizer; source reads, artifact encoding and report
+construction are outside timing. The local team withheld builds/heavy tests
+during the reserved window. Timings completed in 49.5 seconds; the separate
+retention run then completed in 37.2 seconds. Neither run was interrupted, and
+the window was released immediately afterward. No six-case, world-scaling,
+whole semantic journey or native-process matrix was repeated.
+
+| Normal Compile warm p50 | Released ms | Candidate ms | Released allocated B | Candidate allocated B |
+| --- | ---: | ---: | ---: | ---: |
+| Scalar O0 | 0.0209 | 0.0420 | 9,080 | 17,560 |
+| Scalar O2 | 0.1119 | 0.1251 | 22,064 | 31,032 |
+| List O0 | 5.8744 | 11.8966 | 927,904 | 3,815,952 |
+| List O2 | 13.1322 | 18.6967 | 4,432,464 | 7,374,744 |
+| Unrolled B-tree O0 | 1226.7234 | 569.1180 | 146,474,016 | 140,010,392 |
+| Unrolled B-tree O2 | 1717.2645 | 545.6478 | 379,604,160 | 162,023,192 |
+
+The B-tree construction issue has materially improved on this corrected image:
+O2 component median is about 3.15× faster and allocation falls about 57.3%.
+This is **not** a whole native CLI latency or runtime execution comparison.
+The List remains a real regression: O0 allocation is about 4.11× released and
+O2 allocation rises about 66.4%; its respective observed medians are about
+2.03× and 1.42× released. Individual List timings have visible spread in the
+three-sample records, so precise tail claims are not supported. Consistently
+higher allocation nevertheless identifies an independent construction-cost
+problem; tree improvements do not erase it.
+
+The scalar's absolute component medians are 20.9 → 42.0 microseconds at O0 and
+111.9 → 125.1 microseconds at O2, with allocation increases of 8,480 and
+8,968 bytes. These fixed-cost values are useful when deciding later Native
+AOT startup/interactive work; no startup result was measured here.
+
+| Final normal Compile output | Released functions / instructions | Candidate functions / instructions |
+| --- | ---: | ---: |
+| Scalar O0 | 1 / 6 | 1 / 8 |
+| Scalar O2 | 1 / 2 | 1 / 2 |
+| List O0 | 43 / 452 | 40 / 538 |
+| List O2 | 43 / 415 | 37 / 330 |
+| Unrolled B-tree O0 | 577 / 33,127 | 98 / 4,331 |
+| Unrolled B-tree O2 | 577 / 27,850 | 95 / 2,724 |
+
+Retention was a separate process per source/image/level: three warm compiles,
+forced collection before compilation, another collected snapshot with the
+returned bytecode Module held in a non-inlined helper, then collection after
+release. The sampled managed-heap observer ran only in this experiment, never
+in the timed observations. All 12 returned Modules were alive while held and
+collectible after release. The probe did not deliberately retain an additional
+Analyze graph while observing normal Compile.
+
+| Retention control | Image | Collected before / held / released B | Observed managed-heap peak B |
+| --- | --- | ---: | ---: |
+| List O0 | Released | 1,498,928 / 1,557,568 / 1,498,928 | 2,385,640 |
+| List O0 | Candidate | 1,513,232 / 1,572,064 / 1,513,232 | 5,249,120 |
+| List O2 | Released | 1,525,688 / 1,581,624 / 1,525,688 | 5,999,912 |
+| List O2 | Candidate | 1,554,552 / 1,596,768 / 1,554,552 | 8,856,136 |
+| B-tree O0 | Released | 2,011,232 / 6,041,344 / 2,008,672 | 28,518,360 |
+| B-tree O0 | Candidate | 1,822,488 / 2,301,736 / 1,819,928 | 16,894,032 |
+| B-tree O2 | Released | 2,059,520 / 5,685,744 / 2,056,960 | 32,468,720 |
+| B-tree O2 | Candidate | 1,874,248 / 2,242,272 / 1,871,688 | 18,379,904 |
+
+For B-tree O2, the held-minus-before heap observation falls from 3,626,224 to
+368,024 bytes. This is an observational difference, not an exact object graph
+size. List's smaller O2 held-result increment does not repair its higher
+transient peak or allocation traffic. Managed-heap samples include uncollected
+garbage and can miss interval maxima; they are not RSS, committed memory,
+cumulative allocations or proof of per-body arena disposal. Runtime/cache
+deltas after release are not attributed to a dead Module.
+
+Raw checkpoints, sample arrays, source hashes, product/probe fingerprints and
+phase-independent retention snapshots are
+`.temp/hir-final-cost/frozen17/matched-timing.json` and
+`.temp/hir-final-cost/frozen17/matched-retention.json`. The old saved samples
+were used only to verify identities and sources; every comparison in this
+section uses the newly paired observations, not an older timing substituted
+into the new window.
