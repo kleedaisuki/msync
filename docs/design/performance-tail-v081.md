@@ -172,3 +172,45 @@ The host `true` launcher control's median is 1.54 ms across 200 observations;
 this cost remains in every product result rather than being subtracted. Full
 records and the earlier functional-only calibration are in
 `artifacts/candidates/tail-latency/baseline-5d36d5b/native-diagnostic/`.
+
+## Frozen Runtime execute-only result
+
+The Runtime-only comparison for `4199e9d` uses identical Core, HIR, Compiler and
+Optimization assemblies and one shared bound artifact. Runtime changes from
+`5c9e8a5423ff32b04989aa333b21e731f09af2ea84f23b3707f5f6fe8dd2f5c1` to
+`92908c6351bf9fadefa737ae6c6e38f66d8d7795cf9122f2745ce2c7fa44bba1`.
+Two persistent managed hosts compile/bind outside timing, warm five executions,
+then alternate 32-sample batches (the final batch has eight). Each of 1,000
+executions constructs 8,192 fresh reference-only Scopes and scans four times;
+the rows share three constant payloads, making this a preparation/negative
+numeric-layout control rather than a distinct-filename manifest workload.
+Every numeric result is bit-checked outside timing.
+
+| Execute-only metric | Before | Fixed Runtime |
+| --- | ---: | ---: |
+| P50 ms | 207.92 | 119.24 |
+| P95 ms | 252.00 | 162.06 |
+| P99 ms | 276.59 | 187.49 |
+| Maximum ms | 342.52 | 213.77 |
+| Mean allocation bytes/execution | 99,039,918 | 4,656,539 |
+| Total Gen0 / Gen1 / Gen2 collections | 11,841 / 284 / 284 | 556 / 445 / 3 |
+
+These collection counts are not pause durations; Gen1 counts rise even as
+allocation traffic and observed tails fall. Functional counting independently
+locates the change: 8,197 preparations become five, removing 8,192 empty loop
+header preparations without changing other execution-step counts. This is not
+an isolated physical-packing gain or a Native CLI latency result.
+
+The first batch's coordinator did not explicitly consume both initial READY
+messages before sending the first RUN. Candidate warmup could therefore overlap
+the first baseline batch; its actual readiness time cannot be recovered from
+message-consumption order. Preserve all 1,000 samples as the primary result.
+All 32 block paired medians improve, by 77.70–119.11 ms. The baseline's top 11
+observations contain no first-batch sample; the candidate's contain four.
+The separately labeled after-first-batch sensitivity gives P99 280.95 versus
+180.75 ms, without replacing the primary result or rerunning the batch. The
+future coordinator now fences both initial READY messages before any RUN.
+
+Exact frozen images, shared artifact, original runner bytes, raw samples,
+stdout/stderr and block/tail-rank analysis are retained in
+`artifacts/candidates/tail-latency/runtime-4199e9d/references-final/`.
