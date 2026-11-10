@@ -194,6 +194,42 @@ or mutable inference contexts. Client text patches and weakened assertions are
 not fixes. Neither follow-up changes the release requirement for a matching
 VSIX, real isolated installation/activation, and byte-preserving promotion.
 
+## Third Native candidate: measured trade-off and remaining editor failure
+
+Run `42740109409` validates source
+`9f4856adeb8f70b38a1446b458be619893096fe8`. Both Native jobs again passed
+all seven selected phases. The original Equality hover assertion now passes,
+but the same actual VS Code suite reaches a further failure: the initialized
+`tree` binding is displayed as `unknown` rather than `Scope`. This is another
+semantic-observation defect, not a reason to weaken the existing assertion.
+The candidate remains rejected; the subsequent editor suites and VSIX packaging
+have not run. The next local editor check must replay all assertions belonging
+to this exact small fixture before another Native freeze.
+
+The Linux payload's SHA256 is
+`83f9c206904dfdd4ee1a1eae7d066d0fe59faa85caf210aa7b46139f8ddc7494`.
+Repeating the same 15-pair actual-compile procedure gives baseline median/p95
+42.34/48.50 ms and candidate 51.64/56.61 ms. The median paired difference is
++8.14 ms; 13 of 15 candidate samples are slower. The retained report is
+`artifacts/candidates/v0.8.1/9f4856a/native-list-paired.json`. The earlier
++25.45 ms candidate result was not rerun, so the two historical paired deltas
+are not a controlled attribution to a single code change.
+
+The intervening immutable managed comparison does isolate the combined fixed-
+work correction on the same semantic baseline: warm allocation decreases from
+6,642,096 to 5,804,832 bytes, with identical 37-function, 330-instruction,
+11,860-byte output. The bounded recursion and key changes therefore remove
+measured work without changing the resulting program. They do not establish
+zero overhead for a structured semantic phase.
+
+The remaining approximately 8 ms Native short-program cost is an explicit
+architectural trade-off, not performance parity. It is materially smaller than
+the earlier regression and is acceptable alongside the independent large-tree
+and incremental-editor results; it must remain visible in the final performance
+account rather than be hidden by those improvements. The unresolved editor
+semantic defect, matching VSIX installation and immutable publication still
+prevent completion independently of that cost decision.
+
 ## Work ownership
 
 The compiler team owns semantic contracts, binding, specialization and lowering.
