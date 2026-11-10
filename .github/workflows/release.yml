@@ -75,7 +75,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
       - name: Build and exercise Native AOT portable payload
         run: python packaging/build.py --rid ${{ matrix.rid }} --smoke
-      - name: Exercise reorganized product boundaries
+      - name: Exercise compiler, contextual I/O and product boundaries
         shell: python
         env:
           PACKAGE_VERSION: ${{ needs.version.outputs.version }}
@@ -87,7 +87,11 @@ jobs:
           from pathlib import Path
 
           binary: Path = Path('artifacts/package') / f"msync-{os.environ['PACKAGE_VERSION']}-{os.environ['PACKAGE_NAME']}" / 'bin' / ('msync.exe' if os.name == 'nt' else 'msync')
-          phases: tuple[str, ...] = ('hir-semantics', 'hir-artifact', 'concepts-tooling', 'library-policy', 'type-traits', 'shell-repl', 'artifact')
+          phases: tuple[str, ...] = (
+              'hir-semantics', 'hir-artifact', 'contextual-io',
+              'directory-plans', 'concepts-tooling', 'library-policy',
+              'type-traits', 'shell-repl', 'artifact',
+          )
           arguments: list[str] = [sys.executable, 'packaging/language_upgrade.py', '--binary', str(binary.resolve())]
           for phase in phases:
               arguments.extend(('--phase', phase))
