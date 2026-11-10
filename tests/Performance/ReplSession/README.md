@@ -119,3 +119,39 @@ SHA256 are retained under
 `artifacts/candidates/tail-latency/repl-compiler-isolated/index.json`. The actual
 1,024-submission colored PTY and offered-burst Native comparisons remain separate
 user-visible evidence; do not substitute this managed attribution table for them.
+
+### Exact published-fact identity follow-up
+
+The first isolated producer above used the BCL's default value comparer when
+merging published facts. A minimal direct map regression exposed a distinct
+contract error: default `SemanticValue` record equality can identify `+0` and
+`-0`, two different NaN payloads, or equal-valued newly assigned descriptors.
+Three of five updates consequently retained the old value/reference. Reference-
+valued publication tables now use assigned-reference identity, while value-type
+location/type IDs retain normal equality. Selection occurs once per closed
+generic publication table; ordinary mutable assignments and query lookups are
+unchanged. The same direct test then passed every bit/reference update.
+
+The real Number/global/Scope/alias/copy/NaN feedback journey returns eight exact
+`true` results. It also passed on the old Native image: that source control is
+not presented as a reproduced source miscompile. The direct publication contract
+is the actual failing-before/passing-after discriminator.
+
+One additional run of the **existing** growing-256 phase case checks cost, not a
+new workload family. With Compiler SHA256
+`a22391acc9a7c377c549fc394cd18a9278f9b7cd8bf717927e5cf7a5edc55296`
+and the same common4 other assemblies/probe, last-64 mean total allocation
+traffic changes from 5.264 to 5.302 MB/request (+0.72%). Publication accounts for
+about 37.5 KB/request extra; its median changes 2.484 to 2.678 ms. Descriptive
+publication/total P95 values are 9.81/28.59 ms, versus 6.43/25.07 ms in the earlier
+isolated window. The orchestrator reports approximately one second of Ruff/mypy
+work at the start of this additional window. It was not interrupted, replaced
+or filtered; its timing does not establish an isolated tail regression or a
+Native result. The modest allocation cost is retained for exact semantics,
+without adding dirty-root tracking or another session mechanism.
+
+The exact new DLL/PDB, complete Compiler source and source-hash manifest, failing
+direct log, raw materiality report and overlap note are retained in
+`artifacts/candidates/tail-latency/repl-fact-identity/index.json`. This correction
+is commit `03b49c9`; the final Native session measurements must use a new package
+that includes it, not relabel the preceding `9e5e997` CLI evidence.
