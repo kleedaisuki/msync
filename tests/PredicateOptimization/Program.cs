@@ -116,8 +116,18 @@ try
         [new("nan-entry", 0, 0, [new(OpCode.MakeClosure, 1), new(OpCode.Constant, 0), new(OpCode.Call, 1, 2), new(OpCode.Return)], TypeRef.Number),
             new("nan-keep", 1, 1, [new(OpCode.LoadLocal, 0), new(OpCode.Constant, 1), new(OpCode.Equal), new(OpCode.JumpIfFalse, 6),
                 new(OpCode.LoadLocal, 0), new(OpCode.Return), new(OpCode.Constant, 2), new(OpCode.Return)], TypeRef.Number, ParameterTypes: [TypeRef.Number])]);
-    Require(await Run(nanPayload) == "Number:7FF8000000000001", "NaN payload baseline changed");
-    Require(await Run(Optimize(nanPayload)) == "Number:7FF8000000000001", "Numerical equality replaced the original NaN payload");
+    Require(await Run(nanPayload) == "Number:3FF0000000000000", "IEEE NaN equality must select the false edge");
+    Require(await Run(Optimize(nanPayload)) == "Number:3FF0000000000000", "NaN equality was folded to true");
+    Module nanUnequal = nanPayload with
+    {
+        Functions = nanPayload.Functions.Select(function => function with
+        {
+            Instructions = function.Instructions.Select(instruction => instruction.Op == OpCode.Equal
+                ? instruction with { Op = OpCode.NotEqual } : instruction).ToArray()
+        }).ToArray()
+    };
+    Require(await Run(nanUnequal) == "Number:7FF8000000000001", "NaN inequality baseline lost its original payload");
+    Require(await Run(Optimize(nanUnequal)) == "Number:7FF8000000000001", "Numerical inequality replaced the original NaN payload");
     Console.WriteLine($"Predicate optimization: {contracts} contracts passed.");
 }
 finally { Directory.Delete(root, recursive: true); }

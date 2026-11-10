@@ -8,7 +8,8 @@ cover dominating Bool/null/type tests, infeasible predecessors, assignments,
 captured writes invalidating earlier facts, and loop-carried values.
 Representation-sensitive checks compare exact Number bits, preserve both signed
 zeros through a feasible-predecessor join and numerical equality, and retain a
-NaN payload through an equality-true edge. Text equality must not replace a Path
+NaN payload through an inequality-true edge while NaN equality selects its false
+edge. Text equality must not replace a Path
 with a String or discard its endpoint/context provenance.
 
 The test invokes the internal pass directly so its own evidence does not depend
