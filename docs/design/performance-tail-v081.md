@@ -300,3 +300,24 @@ stdout/stderr and block-resampling analysis are linked by
 This batch is preserved unchanged. It precedes a later CompilerSession-only
 publication-comparer correctness correction; final REPL evidence belongs to
 that corrected Native payload, not to an unrun REPL session on this image.
+
+## Publication identity correctness follow-up
+
+After the `9e5e997` CLI window, three direct publication regressions exposed
+default immutable-dictionary value equality retaining an older assigned fact:
+signed-zero bits, distinct NaN payloads and newly assigned reference identity.
+The correction uses one reference-value comparer per closed generic publication
+table; ordinary mutable maps and standalone analysis/lookups are unchanged.
+The direct regressions change from three failures to none. Eight source-feedback
+controls also pass, but already passed on the older Native image and are not
+presented as counterexamples. Source `604b5584e103e1fcb7c62cfee779b0dc43447cbe`
+freezes this session-only correction for the final Native REPL comparison.
+
+One existing growing-session 256-submission component probe checks materiality,
+not a new tail population: total traffic changes from 5.264 to 5.302 MB/request
+(+0.72%); Accept adds about 37.5 KB/request and its median changes from 2.484 to
+2.678 ms. Approximately one second of orchestrator Ruff/mypy work overlaps the
+start of that small window and remains explicitly recorded, rather than
+replacing the samples. Direct probes, fixed source, mixed producer identities
+and raw observations are in
+`artifacts/candidates/tail-latency/repl-fact-identity/index.json`.
