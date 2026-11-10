@@ -69,3 +69,53 @@ the managed stage distribution is not interchangeable with Native user-visible
 tails. All result integers, exact product assembly hashes, runtime and tiering
 settings remain in the report. No forced collection is inserted between
 submissions, and disposal/JSON writing occur outside stage timers.
+
+## Isolated Compiler attribution (2026-11-10)
+
+The initial common4 image showed growing history costs even with a fixed set of
+56 exports (55 default shell names plus the counter). Accepted facts retained
+query/analysis parent overlays across every submission. Prompt descriptions
+additionally ran an empty editor compilation, froze executable HIR and projected
+historical/private facts and capture dependencies, although a prompt needed only
+the current accepted lexical roots.
+
+The isolated candidate changes only `Msync.Compiler.dll`: baseline SHA256
+`50a28a42918f1053582be91d67e060646fa7ed284d430f2695bda3c0ab4e9b27`,
+candidate `36bb4653f50e9285e33dd0ae164ce6c1247a992e8e572d618de0c8756873d7fe`.
+Core/Hir/Optimization/Runtime and the exact probe assembly remain common4. This
+mixed producer is an attribution control, **not** the final combined producer or
+Native AOT. Both 256-submission cases passed every exact counter check in quiet
+windows, with .NET 10.0.14 and `DOTNET_TieredCompilation=0`. The before/after
+windows are separate, not an interleaved latency experiment.
+
+Last 64 submissions, ages 193–256:
+
+| Phase/workload | Baseline P95 ms | Compiler-only P95 ms | Baseline P99 ms | Compiler-only P99 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Fixed exports, complete phase sum | 22.28 | 12.46 | 24.26 | 16.18 |
+| Growing exports, complete phase sum | 75.07 | 25.07 | 83.72 | 30.48 |
+| Growing exports, binding descriptions | 52.98 | 12.78 | 63.25 | 17.57 |
+| Growing exports, runtime feedback/publication | 3.40 | 6.43 | 12.34 | 14.57 |
+
+At N=64, nearest-rank P99 is the largest observation: these are diagnostic slow
+samples, not precise population-tail estimates. The complete phase sum is formed
+per request before taking its quantile; it is not the sum of marginal phase
+quantiles. Initial first-call/JIT observations remain in the raw 256 samples and
+first-window summaries; none were filtered or replaced.
+
+Growing-case mean allocation-counter traffic falls from 10.42 to 5.26 MB per
+request in the same final window (about 49.5% less). The publication trade-off is
+explicit: dense actual-root feedback followed by persistent-map publication adds
+about 76 KB/request in that phase and its observed P95 rises. Whole-request P95
+still falls by about threefold because the unnecessary description compilation
+and parent-chain traversal disappear. Runtime feedback still visits the actual
+exports; this result does not justify hiding mutations or adding dirty-root
+version machinery. An unchanged ordinary within-analysis query still allocates
+1,368 B for both 10 and 100,000 borrowed bindings in the focused ownership check.
+
+The two frozen hosts, complete baseline product source, candidate Compiler
+source, source manifests, commands, raw four reports, analysis and every file's
+SHA256 are retained under
+`artifacts/candidates/tail-latency/repl-compiler-isolated/index.json`. The actual
+1,024-submission colored PTY and offered-burst Native comparisons remain separate
+user-visible evidence; do not substitute this managed attribution table for them.
