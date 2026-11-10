@@ -12,29 +12,7 @@ public static partial class TransferEngine
             bool recursive = false, CancellationToken cancellationToken = default)
         {
             string data = await QueryAsync(DirectoryMetadataProgram, [directory.Raw, recursive ? "recursive" : "flat"], cancellationToken);
-            string[] fields = data.Split('\0');
-            string canonical = fields[0].TrimEnd('/');
-            string raw = directory.Raw.TrimEnd('/');
-            List<RemotePathMetadata> entries = [];
-            for (int index = 1; index + 1 < fields.Length; index += 2)
-            {
-                string name = fields[index + 1];
-                if (name.Length == 0) continue;
-                string kind = fields[index] switch
-                {
-                    "f" => "regular",
-                    "d" => "directory",
-                    "l" => "symlink",
-                    "b" => "block",
-                    "c" => "character",
-                    "p" => "fifo",
-                    "s" => "socket",
-                    _ => "unknown"
-                };
-                entries.Add(new(directory.WithRaw(raw + "/" + name), kind, canonical + "/" + name));
-            }
-            entries.Sort(static (left, right) => TextSemantics.Ordinal.Compare(left.Path.Raw, right.Path.Raw));
-            return entries;
+            return ParseDirectoryMetadata(directory, data);
         }
 
         public async Task<IReadOnlyList<RemotePathMetadata>> ReadMetadataBatchAsync(IReadOnlyList<PathValue> paths,
@@ -75,16 +53,52 @@ public static partial class TransferEngine
         }
     }
 
+    internal static async Task<IReadOnlyList<RemotePathMetadata>> ReadSelectedDirectoryMetadataAsync(
+        PathValue directory, bool recursive = false, CancellationToken cancellationToken = default)
+    {
+        string data = await RunCommandAsync(Remote(directory)!, DirectoryMetadataProgram,
+            [directory.Raw, recursive ? "recursive" : "flat"], cancellationToken);
+        return ParseDirectoryMetadata(directory, data);
+    }
+
+    private static IReadOnlyList<RemotePathMetadata> ParseDirectoryMetadata(PathValue directory, string data)
+    {
+        string[] fields = data.Split('\0');
+        string canonical = fields[0].TrimEnd('/');
+        string raw = directory.Raw.TrimEnd('/');
+        List<RemotePathMetadata> entries = [];
+        for (int index = 1; index + 1 < fields.Length; index += 2)
+        {
+            string name = fields[index + 1];
+            if (name.Length == 0) continue;
+            string kind = fields[index] switch
+            {
+                "f" => "regular",
+                "d" => "directory",
+                "l" => "symlink",
+                "b" => "block",
+                "c" => "character",
+                "p" => "fifo",
+                "s" => "socket",
+                _ => "unknown"
+            };
+            entries.Add(new(directory.WithRaw(raw + "/" + name), kind, canonical + "/" + name));
+        }
+        entries.Sort(static (left, right) => TextSemantics.Ordinal.Compare(left.Path.Raw, right.Path.Raw));
+        return entries;
+    }
+
     private static string DirectoryMetadataProgram => field ??= ShellProgram.Source(ShellLibrary + "\n" + """
         directory=$(expand "$1"; printf .); directory=${directory%.}
         if [ ! -d "$directory" ]; then printf 'Directory metadata requires a directory: %s\n' "$directory" >&2; exit 1; fi
         canonical=$(realpath -m -- "$directory" && printf .)
         canonical=${canonical%.}; canonical=${canonical%?}
         printf '%s\0' "$canonical"
-        if [ "$2" = recursive ]; then
-            find -H "$directory" -samefile /proc/self/fd/9 -prune -o -printf '%y\0%P\0'
+        if [ "$2" = recursive ]; then set -- "$directory"; else set -- "$directory" -maxdepth 1; fi
+        if [ -n "${MSYNC_OWNED_DIRECTORY_FD:-}" ]; then
+            find -H "$@" -samefile "/proc/self/fd/$MSYNC_OWNED_DIRECTORY_FD" -prune -o -printf '%y\0%P\0'
         else
-            find -H "$directory" -maxdepth 1 -samefile /proc/self/fd/9 -prune -o -printf '%y\0%P\0'
+            find -H "$@" -printf '%y\0%P\0'
         fi
         """);
 }

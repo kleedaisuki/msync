@@ -60,7 +60,12 @@ adding another SSH library, authentication cache, ControlMaster startup process
 or global pool. Aliases, agent selection, host-key behavior and prompts continue
 to use the native client's existing configuration. An older selection operation
 with its own active query channel retains priority over the broader epoch lease.
-Only an actually selected endpoint opens a client.
+Only an actually selected endpoint opens a client. Contextual metadata discovery
+inside such a selection borrows that query channel through
+`ReadSelectedDirectoryMetadataAsync`; it does not create an idle batch lease.
+Both query and batch paths use the same directory program and row parser, with
+owned-directory identity pruning enabled only when its retained descriptor is
+actually exported.
 
 The remote coordinator retains an open directory descriptor for its own scratch
 identity. Leased discovery prunes that identity with `find -samefile`, including
@@ -199,3 +204,12 @@ The two aliases address the same owned loopback server with separate source and
 target trees; this proves channel ownership and gate ordering, not WAN throughput
 or distinct-server performance. The full report is retained at
 `.temp/transfer-ssh/s-usxz1x2m/result.json`.
+
+The selected-filter integration follow-up uses immutable producer 7, Runtime
+SHA256 `ae45a510ae98abbec726c506cb20ba15e90f7419ebf3e5d4689764bb8ee922ab`.
+An actual source function returning a remote lazy directory iterator, filtered
+by source callbacks invoking native file metadata and then transferred, produces
+the two expected files with exactly one native client, authentication and exec
+session. Lazy directory constructors do not admit an idle backend lease;
+metadata callbacks borrow the selected operation's channel. The strict report
+is retained at `.temp/transfer-batch/filter-source/s-jxoy2yzl/result.json`.
