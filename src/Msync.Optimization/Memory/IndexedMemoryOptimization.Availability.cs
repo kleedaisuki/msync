@@ -39,17 +39,31 @@ internal static partial class IndexedMemoryOptimization
         {
             state.Reads = ImmutableDictionary<Access, Read>.Empty;
             state.Join = null;
-            state.WrittenIndices = null;
-            state.UnknownIndexWrite = false;
+            state.Clobbers = null;
+        }
+
+        private void Kill(State state, Clobber write)
+        {
+            foreach (var entry in state.Reads)
+                if (MayClobber(entry.Key, write)) state.Reads = state.Reads.Remove(entry.Key);
+            if (state.Join is not null)
+                state.Clobbers = (state.Clobbers ?? ImmutableHashSet<Clobber>.Empty).Add(write);
+        }
+
+        private bool MayClobber(Access access, Clobber write)
+        {
+            if (access.Operation == "storage.buffer_size" && (write.Region & IndexedRegion.Length) == 0) return false;
+            if (access.Buffer != write.Buffer && freshBuffers is not null
+                && freshBuffers.Contains(access.Buffer) && freshBuffers.Contains(write.Buffer)) return false;
+            return (write.Region & IndexedRegion.Length) != 0 || !access.Index.Known
+                || write.Index is not int exact || access.Index.Constant == exact;
         }
 
         private Read? Available(State state, Access access)
         {
             if (state.Reads.TryGetValue(access, out var read)) return read;
             if (state.Join is not { } join) return null;
-            if (access.Operation == "storage.buffer_get" &&
-                (state.UnknownIndexWrite || state.WrittenIndices is { } writes &&
-                    (!access.Index.Known || writes.Contains(access.Index.Constant)))) return null;
+            if (state.Clobbers is { } writes && writes.Any(write => MayClobber(access, write))) return null;
             var cache = join.Available ??= [];
             if (!cache.TryGetValue(access, out read))
             {

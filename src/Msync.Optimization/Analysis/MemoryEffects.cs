@@ -11,13 +11,14 @@ internal static class MemoryEffects
         var targets = module.Functions.Select((function, index) => PotentialTargets(module, function, exact[index])).ToArray();
         var components = CallTargetGraph.Components(targets);
         var callers = module.Functions.Select(_ => new HashSet<int>()).ToArray();
+        var contexts = new FunctionAnalysisContext?[summaries.Length];
         var work = new Queue<int>(Enumerable.Range(0, summaries.Length));
         var queued = Enumerable.Repeat(true, summaries.Length).ToArray();
         while (work.TryDequeue(out int index))
         {
             queued[index] = false;
             var next = Trivial(module, module.Functions[index])
-                ?? new Analysis(module, index, summaries, components, callee => callers[callee].Add(index)).Run();
+                ?? new Analysis(module, index, summaries, components, contexts, callee => callers[callee].Add(index)).Run();
             if (Same(summaries[index], next)) continue;
             summaries[index] = next;
             foreach (int caller in callers[index])
@@ -68,7 +69,7 @@ internal static class MemoryEffects
             or OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.Return or OpCode.Not or OpCode.IsNull or OpCode.IsType
             or OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide or OpCode.Remainder or OpCode.Negate or OpCode.Equal or OpCode.NotEqual
             or OpCode.Less or OpCode.LessEqual or OpCode.Greater or OpCode.GreaterEqual or OpCode.PathJoin or OpCode.Convert
-            or OpCode.Transfer or OpCode.LocalTransfer or OpCode.Acquire or OpCode.Barrier)
+            or OpCode.Transfer or OpCode.LocalTransfer)
             ? FunctionMemoryEffects.Empty : null;
     }
 
@@ -78,7 +79,9 @@ internal static class MemoryEffects
         && left.UnknownWrites == right.UnknownWrites && left.UnknownReturnAlias == right.UnknownReturnAlias
         && left.HasDeferredInvocation == right.HasDeferredInvocation && SetSame(left.Reads, right.Reads)
         && SetSame(left.Writes, right.Writes) && SetSame(left.Escapes, right.Escapes) && SetSame(left.ReturnAliases, right.ReturnAliases)
-        && SetSame(left.Enumerates, right.Enumerates) && left.ReturnsCallbackFreeRange == right.ReturnsCallbackFreeRange;
+        && SetSame(left.Enumerates, right.Enumerates) && left.ReturnsCallbackFreeRange == right.ReturnsCallbackFreeRange
+        && SetSame(left.IndexedReads, right.IndexedReads) && SetSame(left.IndexedWrites, right.IndexedWrites)
+        && left.HasOrderingBoundary == right.HasOrderingBoundary;
     private static bool SetSame<T>(IReadOnlyList<T> left, IReadOnlyList<T> right)
     {
         if (ReferenceEquals(left, right)) return true;
@@ -108,11 +111,13 @@ internal static class MemoryEffects
         { AllFieldsUnknown = AllFieldsUnknown };
     }
 
-    private sealed class Analysis(Module module, int functionIndex, FunctionMemoryEffects[] summaries, int[] components, Action<int> dependency)
+    private sealed class Analysis(Module module, int functionIndex, FunctionMemoryEffects[] summaries, int[] components,
+        FunctionAnalysisContext?[] contexts, Action<int> dependency)
     {
         private readonly FunctionCode function = module.Functions[functionIndex];
         private readonly HashSet<MemoryAccess> reads = [], writes = [], escapes = [], returns = [], enumerates = [];
-        private bool unknownReads, unknownWrites, unknownReturn, deferred;
+        private HashSet<IndexedFootprint>? indexedReads, indexedWrites;
+        private bool unknownReads, unknownWrites, unknownReturn, deferred, ordering;
         private bool sawRangeReturn, callbackFreeReturns = true;
         private readonly Queue<int> work = new();
         private readonly Dictionary<int, State> entries = [];
@@ -175,7 +180,13 @@ internal static class MemoryEffects
                 }
             }
             return new(reads.ToArray(), writes.ToArray(), escapes.ToArray(), returns.ToArray(), unknownReads, unknownWrites, unknownReturn, deferred)
-            { Enumerates = enumerates.ToArray(), ReturnsCallbackFreeRange = sawRangeReturn && callbackFreeReturns };
+            {
+                Enumerates = enumerates.ToArray(),
+                IndexedReads = indexedReads?.ToArray() ?? [],
+                IndexedWrites = indexedWrites?.ToArray() ?? [],
+                HasOrderingBoundary = ordering,
+                ReturnsCallbackFreeRange = sawRangeReturn && callbackFreeReturns
+            };
         }
 
         private void Enqueue(int pc) { if (queued.Add(pc)) work.Enqueue(pc); }
@@ -227,7 +238,8 @@ internal static class MemoryEffects
             void Push(ValueInfo value) => state.Stack.Add(value);
             switch (instruction.Op)
             {
-                case OpCode.Nop: case OpCode.Barrier: break;
+                case OpCode.Nop: break;
+                case OpCode.Barrier: ordering = true; break;
                 case OpCode.GetSingleton: unknownReads = true; Push(ValueInfo.Top); break;
                 case OpCode.SetSingleton: Escape(state, Pop(state), []); unknownWrites = true; Push(ValueInfo.Top); break;
                 case OpCode.Constant:
@@ -312,7 +324,14 @@ internal static class MemoryEffects
                     if (iterator.Elements is null) { if (!iterator.CallbackFreeRange) Enumerate(state, iterator); Push(ValueInfo.Top); }
                     else Push(iterator.Elements.Aggregate(ValueInfo.Empty, Union));
                     break;
+                case OpCode.ExecutePlan:
+                case OpCode.PlanResult:
+                    Arguments(state, instruction.B);
+                    ordering = true;
+                    if (instruction.Op == OpCode.PlanResult) Push(ValueInfo.Empty);
+                    break;
                 case OpCode.Acquire:
+                    ordering = true;
                     if (instruction.A != 0) Push(Pop(state)); break;
                 case OpCode.JumpIfFalse: case OpCode.JumpIfTrue: Pop(state); break;
                 case OpCode.Jump: break;
@@ -380,8 +399,13 @@ internal static class MemoryEffects
             foreach (var closure in callee.Closures)
             {
                 if (closure.Native is { } native) { result = Union(result, Native(state, native, arguments)); continue; }
-                int target = instruction.B > 0 ? instruction.B - 1 : instruction.Text is null ? closure.Function
-                    : FunctionDispatch.Parse(instruction.Text).GetValueOrDefault(closure.Function, closure.Function);
+                int target;
+                if (instruction.Text is { } mapping)
+                {
+                    if (!FunctionDispatch.Parse(mapping).TryGetValue(closure.Function, out target))
+                    { result = Union(result, ValueInfo.Top); continue; }
+                }
+                else target = instruction.B > 0 ? instruction.B - 1 : closure.Function;
                 dependency(target);
                 var summary = summaries[target];
                 var returned = summary.ReturnAliases.Select(alias => ReturnAlias(state, alias, closure, arguments, target)).ToArray();
@@ -390,6 +414,10 @@ internal static class MemoryEffects
                 var writePlan = summary.Writes.Select(access => (Access: access, Values: Map(state, access, closure, arguments, target,
                     access.Root.Kind == MemoryRootKind.Capture && access.Fields.Count == 0).ToArray())).ToArray();
                 var retained = summary.Escapes.Select(escape => ResolveAccess(state, escape, closure, arguments, true)).ToArray();
+                foreach (var read in summary.IndexedReads)
+                    RecordIndexed(ReturnAlias(state, read.Receiver, closure, arguments, target), read.Region, read.Index, false);
+                foreach (var write in summary.IndexedWrites)
+                    RecordIndexed(ReturnAlias(state, write.Receiver, closure, arguments, target), write.Region, write.Index, true);
                 foreach (var read in readPlan) Apply(state, read.Access, read.Values, reads, false);
                 foreach (var write in writePlan) Apply(state, write.Access, write.Values, writes, true);
                 foreach (var enumeration in summary.Enumerates)
@@ -406,6 +434,7 @@ internal static class MemoryEffects
                 foreach (var returnedValue in returned) result = Union(result, returnedValue);
                 if (summary.UnknownReturnAlias) result = Union(result, ValueInfo.Top);
                 deferred |= summary.HasDeferredInvocation;
+                ordering |= summary.HasOrderingBoundary;
                 if (summary.ReturnsCallbackFreeRange) result = result with { CallbackFreeRange = true };
                 if (summary.HasDeferredInvocation && module.Functions[target].ReturnType.Kind == TypeKind.Range && !summary.ReturnsCallbackFreeRange)
                     result = result with { Deferred = true };
@@ -537,6 +566,23 @@ internal static class MemoryEffects
                 if (MayEnumerate(arguments[0])) Enumerate(state, arguments[0]);
                 return OwnedStorage(state, RangeContents(state, arguments[0]));
             }
+            var effect = IndexedNativeEffect.For(name);
+            if (effect == default) { Unknown(state, arguments); return ValueInfo.Top; }
+            var receiver = arguments[0];
+            if (receiver.Unknown || receiver.UnknownCell || receiver.Origins.Any(External))
+            {
+                RecordIndexed(receiver, effect.Reads & IndexedRegion.Length, null, false);
+                RecordIndexed(receiver, effect.Writes & IndexedRegion.Length, null, true);
+                for (int index = 0; index < Math.Max(1, effect.Indices); index++)
+                {
+                    int? subscript = effect.Indices == 0 ? null : ConstantSubscript(index + 1, effect.Writes != 0);
+                    RecordIndexed(receiver, effect.Reads & IndexedRegion.Contents, subscript, false);
+                    RecordIndexed(receiver, effect.Writes & IndexedRegion.Contents, subscript, true);
+                }
+            }
+            // Membership witnesses and value aliases are different facts. A
+            // size observation does not inspect the stored values at all.
+            if (name == "storage.buffer_size") return ValueInfo.Empty;
             ValueInfo contents = ReadField(state, arguments[0], IndexedContents);
             if (name == "storage.buffer_snapshot") return OwnedStorage(state, contents);
             if (signature.Effect == NativeEffect.Write)
@@ -551,6 +597,52 @@ internal static class MemoryEffects
                 WriteField(state, arguments[0], IndexedContents, next);
             }
             return signature.ResultRule == NativeResultRule.RangeItem ? contents : ValueInfo.Empty;
+        }
+
+        private void RecordIndexed(ValueInfo receiver, IndexedRegion region, int? index, bool write)
+        {
+            if (region == IndexedRegion.None) return;
+            if (receiver.Unknown || receiver.UnknownCell)
+            {
+                if (write) unknownWrites = true; else unknownReads = true;
+            }
+            foreach (var origin in receiver.Origins)
+            {
+                if (!External(origin)) continue;
+                var result = write ? indexedWrites ??= [] : indexedReads ??= [];
+                result.Add(new(origin, region, index));
+            }
+        }
+
+        private int? ConstantSubscript(int argument, bool write)
+        {
+            var code = function.Instructions;
+            var native = code[instructionPosition];
+            if (native.Op != OpCode.NativeCall) return null;
+            int position = instructionPosition - (native.A - argument);
+            if (position >= 0 && ReadLiteral(position) is int adjacent)
+            {
+                int pc = position + 1;
+                while (pc <= instructionPosition && !starts.Contains(pc) && (pc == instructionPosition
+                    || code[pc].Op is OpCode.LoadLocal or OpCode.LoadStorage or OpCode.Constant or OpCode.True or OpCode.False or OpCode.Null))
+                    pc++;
+                if (pc > instructionPosition) return adjacent;
+            }
+            // Exact writes can keep other reads available. Nonliteral read
+            // metadata alone needn't build a graph when the fast case missed.
+            if (!write) return null;
+            var definitions = (contexts[functionIndex] ??= new()).DefUse(function).Inputs(instructionPosition)[argument];
+            int? result = null;
+            foreach (int definition in definitions)
+            {
+                if (definition < 0 || ReadLiteral(definition / 2) is not int value
+                    || result is int previous && previous != value) return null;
+                result = value;
+            }
+            return result;
+
+            int? ReadLiteral(int pc) => code[pc] is { Op: OpCode.Constant, A: var id }
+                && module.Constants[id] is NumberValue number ? IndexedNativeEffect.ExactIndex(number.Data) : null;
         }
 
         private ValueInfo OwnedStorage(State state, ValueInfo contents)

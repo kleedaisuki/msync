@@ -130,13 +130,24 @@ public static class Optimizer
             if (inlined.Functions.Count == current.Functions.Count
                 && inlined.Functions.Select((function, index) => function.Instructions.SequenceEqual(current.Functions[index].Instructions)).All(equal => equal))
             {
+                IReadOnlyList<FunctionMemoryEffects>? indexedSummaries = null;
+                Func<IReadOnlyList<FunctionMemoryEffects>>? getIndexedSummaries = null;
                 var numbered = WithFunctions(inlined, inlined.Functions.Select((function, index) =>
-                    inlined.PreserveLocals && index == inlined.EntryPoint ? function : Number(function)).ToArray());
+                    inlined.PreserveLocals && index == inlined.EntryPoint ? function : Number(function, index)).ToArray());
                 var numberedConstants = numbered.Constants.ToList();
                 var numberedInterner = new ConstantInterner(numberedConstants);
                 var numberedEffects = MeasureEffects(numbered, Calls(numbered), profile);
                 var cleaned = numbered with { Functions = numbered.Functions.Select(Clean).ToArray(), Constants = numberedConstants };
                 return Compact(cleaned, profile);
+
+                IReadOnlyList<FunctionMemoryEffects> IndexedSummaries()
+                {
+                    if (indexedSummaries is not null) return indexedSummaries;
+                    var start = profile?.Start() ?? default;
+                    indexedSummaries = MemoryEffects.AnalyzeWithCalls(inlined, Calls(inlined));
+                    profile?.AddAnalysis(OptimizationProfile.Pass.MemoryEffects, start, inlined);
+                    return indexedSummaries;
+                }
 
                 FunctionCode Clean(FunctionCode function, int index)
                 {
@@ -148,7 +159,7 @@ public static class Optimizer
                     return result;
                 }
 
-                FunctionCode Number(FunctionCode function)
+                FunctionCode Number(FunctionCode function, int index)
                 {
                     if (FunctionAnalysis.LiteralBody(function)) return function;
                     var features = FunctionAnalysis.Features(function);
@@ -166,7 +177,10 @@ public static class Optimizer
                     if (profile is not null && branching)
                         profile.Add(OptimizationProfile.Pass.GlobalRedundancy, start, normalized, available);
                     start = profile?.Start() ?? default;
-                    var indexed = indexedReads ? IndexedMemoryOptimization.OptimizeWithAnalysis(available, constants, analysis) : available;
+                    var indexed = indexedReads
+                        ? IndexedMemoryOptimization.OptimizeWithAnalysis(available, constants, analysis,
+                            Calls(inlined), getIndexedSummaries ??= IndexedSummaries, index)
+                        : available;
                     if (profile is not null && indexedReads)
                         profile.Add(OptimizationProfile.Pass.IndexedMemory, start, available, indexed);
                     start = profile?.Start() ?? default;

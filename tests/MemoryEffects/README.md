@@ -41,6 +41,39 @@ write to the caller's binding.
 - `HasDeferredInvocation` records a retained/constructed deferred capability,
   not an immediate write. `ReturnsCallbackFreeRange` additionally distinguishes
   filesystem path selection and callback-free native ranges.
+- `HasOrderingBoundary` distinguishes explicit acquire/release and prepared
+  work from otherwise known immediate memory effects.
+
+### Indexed storage resources
+
+`IndexedReads` and `IndexedWrites` summarize Buffer access relative to the
+same entry receiver paths, with separate length and contents regions. A
+contents footprint has either an exact integral index or a wildcard. For
+example, `set(buffer, 1, value)` reads length for bounds and writes contents
+at 1; it does not mutate length. A push or insert writes length and wildcard
+contents. The first successful read and every real call still execute.
+
+The shared native effect table is used by both the summary producer and the
+indexed availability pass. The producer reuses sparse operand definitions for
+write indices when there is no adjacent literal witness. The scope analysis's
+indexed contents alias describes the values retained by a Buffer, separately
+from the native footprint that can invalidate a membership read.
+
+At a source call, the availability pass first proves the actual source
+callable and admitted callee, then maps writes to evaluated arguments or
+captures. The positive call hint is not a source-call proof. An unresolvable
+receiver path becomes a possible alias; two distinct value numbers alone do
+not prove disjointness. Separate direct `buffer_new` allocations can provide
+that proof. Unresolved calls, deferred invocation, potentially effectful
+enumeration and ordering boundaries invalidate read witnesses. Scoped
+effects that can change member/cell bindings still advance their own memory
+versions. A standalone entry's private frame is used only when it cannot
+also be selected as a source closure; open and imported callable alternatives
+keep their wider capture assumptions.
+
+The [indexed CLI journeys](../IndexedMemoryOptimization/README.md#resource-relative-modref-across-source-calls)
+test a retained hot call that writes one position and leaves another
+available, with alias, capture, lazy invocation and first-error controls.
 
 Actual native callback terminals apply known callback summaries. Pure adapter
 creation retains aliases but does not execute callbacks. Function values use
@@ -66,8 +99,8 @@ allocation identities and raw cells, never repeated syntactic field suffixes.
 
 Empty/singleton set comparisons avoid hashing; larger summaries compare through
 hash sets rather than quadratic list membership. Literal and closed-scalar
-helpers need no CFG state. Ordinary modules without a field-memory optimization
-client do not request this analysis from the optimizer driver.
+helpers need no CFG state. The driver requests summaries for field-memory
+clients and, lazily, when a proved source call crosses a live indexed witness.
 
 The design follows the separation between alias/ModRef queries and memory
 versions in [LLVM Alias Analysis](https://llvm.org/docs/AliasAnalysis.html) and

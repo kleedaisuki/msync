@@ -7,6 +7,8 @@ internal sealed class CallTargetGraph(Module module)
     private CallTargets.Result[]? facts;
     private Dictionary<int, int>[]? targets;
     private bool[]? recursive;
+    private int? captureCeiling;
+    private bool? entryClosed;
 
     private CallTargets.Result[] Facts => facts ??= Analyze();
 
@@ -16,11 +18,43 @@ internal sealed class CallTargetGraph(Module module)
 
     private CallTargets.Result[] Analyze()
     {
-        int captureCeiling = CaptureCeiling();
+        int ceiling = captureCeiling ??= CaptureCeiling();
         var plainReturns = module.Functions.Select(function => CallTargets.ReturnsPlain(function, module.Constants)).ToArray();
         return module.Functions.Select(function => CallTargets.Analyze(function, module.Constants,
-            requireKnownCallee: true, layouts: module.Functions, trackArguments: true, captureCeiling: captureCeiling,
+            requireKnownCallee: true, layouts: module.Functions, trackArguments: true, captureCeiling: ceiling,
             plainReturns: plainReturns)).ToArray();
+    }
+
+    // The caller can have been rewritten since the module snapshot. Callee
+    // layouts and the existing constant IDs are still owned by the snapshot.
+    internal CallTargets.Result AnalyzeBody(FunctionCode caller, IReadOnlyList<Value> constants, int originalId)
+    {
+        int ceiling = captureCeiling ??= CaptureCeiling();
+        if (originalId == module.EntryPoint && ceiling != int.MaxValue && (entryClosed ??= EntryIsClosed()))
+            ceiling = caller.CaptureCount;
+        return CallTargets.Analyze(caller, constants, requireKnownCallee: true, layouts: module.Functions,
+            captureCeiling: ceiling);
+    }
+
+    // The standalone entry starts without a closure. Bytecode can also select
+    // it as a callable, so do not assume entry slots are private in that case.
+    private bool EntryIsClosed()
+    {
+        int entry = module.EntryPoint;
+        foreach (var value in module.Constants)
+            if (value is FunctionValue { NativeName: null } function && function.Function == entry) return false;
+        foreach (var function in module.Functions)
+            foreach (var instruction in function.Instructions)
+            {
+                if (instruction.Op == OpCode.MakeClosure && instruction.A == entry) return false;
+                if (instruction.Op is not (OpCode.Call or OpCode.SpecializeClosure)) continue;
+                if (instruction.Text is { } dispatch)
+                {
+                    if (FunctionDispatch.Parse(dispatch).Values.Contains(entry)) return false;
+                }
+                else if (instruction.Op == OpCode.Call ? instruction.B == entry + 1 : instruction.A == entry) return false;
+            }
+        return true;
     }
 
     private int CaptureCeiling()

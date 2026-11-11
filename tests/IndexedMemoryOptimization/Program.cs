@@ -120,6 +120,62 @@ foreach (bool left in new[] { true, false })
     }
 }
 
+foreach (var (name, operation, index, other, capture, expected, gets) in new[]
+{
+    ("callee-read", "buffer_size", 0, false, false, 20d, 1),
+    ("callee-disjoint-index", "buffer_set", 1, false, false, 20d, 1),
+    ("callee-overlap", "buffer_set", 0, false, false, 109d, 2),
+    ("callee-fresh-parameter", "buffer_push", 0, true, false, 20d, 1),
+    ("callee-fresh-capture", "buffer_push", 0, true, true, 20d, 1),
+    ("callee-capture-overlap", "buffer_set", 0, false, true, 109d, 2),
+})
+{
+    Code program = new();
+    if (other)
+    {
+        program.Buffer(1, 2);
+        program.Emit(OpCode.LoadLocal, 0);
+        program.Emit(OpCode.InitializeLocal, 2);
+    }
+    program.Buffer(10, 20);
+    program.Get(0);
+    program.Emit(OpCode.InitializeLocal, 1);
+    if (capture) program.Emit(OpCode.LoadLocal, other ? 2 : 0);
+    program.Emit(OpCode.MakeClosure, 1, capture ? 1 : 0);
+    if (!capture) program.Emit(OpCode.LoadLocal, other ? 2 : 0);
+    program.Emit(OpCode.Call, capture ? 0 : 1, 2);
+    program.Emit(OpCode.Pop);
+    program.Emit(OpCode.LoadLocal, 1);
+    program.Get(0);
+    program.Emit(OpCode.Add);
+    program.Emit(OpCode.Return);
+
+    List<Instruction> helper = [];
+    // Keep the read-only case at an actual call boundary: unlike a direct
+    // Buffer observation, an external input operation is not inlined.
+    if (operation == "buffer_size")
+        helper.AddRange([new(OpCode.NativeCall, Text: "io.read_line"), new(OpCode.Pop)]);
+    int arguments = helper.Count;
+    helper.Add(new(OpCode.LoadLocal, 0));
+    if (operation == "buffer_set") helper.Add(new(OpCode.Constant, program.Constant(new NumberValue(index))));
+    if (operation is "buffer_set" or "buffer_push") helper.Add(new(OpCode.Constant, program.Constant(new NumberValue(99))));
+    helper.Add(new(OpCode.NativeCall, helper.Count - arguments, Text: "storage." + operation));
+    helper.Add(new(OpCode.Return));
+    var function = new FunctionCode(name, capture ? 0 : 1, 1, helper,
+        operation == "buffer_set" ? TypeRef.Null : TypeRef.Number, capture ? 1 : 0,
+        capture ? [] : [new(TypeKind.Range)]);
+    Module raw = new(program.Constants, [program.Function(), function], OptimizationLevel: 0);
+    foreach (int level in new[] { 0, 2, 3 })
+    {
+        Module optimized = Optimizer.Optimize(raw, level);
+        Check(optimized.Functions[optimized.EntryPoint].Instructions.Any(instruction => instruction.Op == OpCode.Call),
+            name + " must retain the actual call boundary");
+        Check(optimized.Functions.Sum(GetCount) == (level == 0 ? 2 : gets), name + " resource-relative residual gets");
+        foreach (Module image in Images(optimized))
+            Check(await Interpreter.ExecuteAsync(image) is NumberValue number && number.Data == expected, $"{name} O{level}");
+    }
+}
+
 foreach (bool resize in new[] { false, true })
 {
     Code program = new(); program.Buffer(10);

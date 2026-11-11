@@ -7,6 +7,7 @@ internal static partial class IndexedMemoryOptimization
     private readonly record struct Atom(int Number, bool Storage = false);
     private readonly record struct Index(int Number, long Constant = 0, bool Known = false);
     private readonly record struct Access(string Operation, int Buffer, Index Index);
+    private readonly record struct Clobber(int Buffer, IndexedRegion Region, int? Index);
     private sealed record Read(int Position, Atom Result, Phi? Merge = null);
     private readonly record struct Source(Read? Read, int Local = -1);
     private readonly record struct PhiInput(ControlFlowEdge Edge, Source Source);
@@ -24,14 +25,13 @@ internal static partial class IndexedMemoryOptimization
         internal ImmutableDictionary<Access, Read> Reads = ImmutableDictionary<Access, Read>.Empty;
         internal ImmutableDictionary<string, int> Fields = ImmutableDictionary<string, int>.Empty;
         internal Join? Join;
-        internal ImmutableHashSet<long>? WrittenIndices;
-        internal bool UnknownIndexWrite;
+        internal ImmutableHashSet<Clobber>? Clobbers;
         internal int Cells;
         internal int Memory;
         internal State Copy() => new((Atom[])Locals.Clone(), [.. Stack])
         {
             Reads = Reads, Fields = Fields, Cells = Cells, Memory = Memory,
-            Join = Join, WrittenIndices = WrittenIndices, UnknownIndexWrite = UnknownIndexWrite
+            Join = Join, Clobbers = Clobbers
         };
     }
     private sealed class BlockState
@@ -44,7 +44,8 @@ internal static partial class IndexedMemoryOptimization
         OptimizeWithAnalysis(function, constants, null);
 
     internal static FunctionCode OptimizeWithAnalysis(FunctionCode function, IReadOnlyList<Value> constants,
-        FunctionAnalysisContext? analysis)
+        FunctionAnalysisContext? analysis, CallTargetGraph? callGraph = null,
+        Func<IReadOnlyList<FunctionMemoryEffects>>? summaries = null, int originalId = -1)
     {
         int gets = 0, sizes = 0;
         bool unknown = false, repeated = false;
@@ -67,10 +68,12 @@ internal static partial class IndexedMemoryOptimization
         }
         return function;
 
-        FunctionCode Run() => new Analysis(function, constants, analysis?.ControlFlow(function) ?? new(function)).Run();
+        FunctionCode Run() => new Analysis(function, constants, analysis?.ControlFlow(function) ?? new(function),
+            callGraph, summaries, originalId).Run();
     }
 
-    private sealed partial class Analysis(FunctionCode function, IReadOnlyList<Value> constants, ControlFlowGraph graph)
+    private sealed partial class Analysis(FunctionCode function, IReadOnlyList<Value> constants, ControlFlowGraph graph,
+        CallTargetGraph? callGraph, Func<IReadOnlyList<FunctionMemoryEffects>>? summaries, int originalId)
     {
         private readonly IReadOnlyList<Instruction> code = function.Instructions;
         private readonly Dictionary<Identity, int> identities = [];
@@ -78,6 +81,9 @@ internal static partial class IndexedMemoryOptimization
         private readonly Dictionary<int, double> numbers = [];
         private readonly Dictionary<int, Source> replacements = [];
         private readonly List<Identity> definitions = [default];
+        private HashSet<int>? freshBuffers;
+        private Dictionary<int, Atom[]>? captures;
+        private Dictionary<int, int>? callTargets;
         private BlockState[] states = [];
         private bool[]? storageSlots;
 
@@ -121,8 +127,8 @@ internal static partial class IndexedMemoryOptimization
             ? new(Number(new(CellRead, value.Number, state.Cells))) : value;
 
         private Index Subscript(Atom value) => numbers.TryGetValue(value.Number, out double index)
-            && index >= 0 && index <= int.MaxValue && index == Math.Truncate(index)
-            ? new(0, (long)index, true) : new(value.Number);
+            && IndexedNativeEffect.ExactIndex(index) is int exact
+            ? new(0, exact, true) : new(value.Number);
 
         private State? Input(int index)
         {
@@ -173,8 +179,7 @@ internal static partial class IndexedMemoryOptimization
                 if (incoming.Skip(1).Any(edge => !edge.State.Reads.TryGetValue(entry.Key, out var read) || read != entry.Value))
                     result.Reads = result.Reads.Remove(entry.Key);
             result.Join = translate ? new(index, incoming, result) : null;
-            result.WrittenIndices = null;
-            result.UnknownIndexWrite = false;
+            result.Clobbers = null;
             return result;
         }
 
@@ -222,6 +227,11 @@ internal static partial class IndexedMemoryOptimization
         private void Invalidate(State state, int pc)
         {
             ForgetReads(state);
+            ForgetLocations(state, pc);
+        }
+
+        private void ForgetLocations(State state, int pc)
+        {
             state.Cells = Number(new(CellsClobber, pc));
             state.Memory = Number(new(MemoryClobber, pc));
             state.Fields = ImmutableDictionary<string, int>.Empty;
@@ -281,7 +291,7 @@ internal static partial class IndexedMemoryOptimization
                         state.Stack.Add(Literal(Value.Null)); break;
                     case OpCode.NativeCall: Native(state, instruction, pc, Arguments(instruction.A)); break;
                     case OpCode.Call: case OpCode.ProcessCall:
-                        Arguments(instruction.A + 1); Invalidate(state, pc); state.Stack.Add(Unknown(pc, storage: true)); break;
+                        Call(state, instruction, pc, Arguments(instruction.A + 1)); break;
                     case OpCode.Barrier: Invalidate(state, pc); break;
                     case OpCode.ExecutePlan: case OpCode.PlanResult:
                         for (int item = 0; item < instruction.B; item++) Pop();
@@ -295,7 +305,11 @@ internal static partial class IndexedMemoryOptimization
                         Pop(); Invalidate(state, pc); state.Stack.Add(Unknown(pc)); break;
                     case OpCode.IteratorNext:
                         Invalidate(state, pc); output.IteratorFailure = state.Copy(); state.Stack.Add(Unknown(pc, storage: true)); break;
-                    case OpCode.MakeClosure: Arguments(instruction.B); state.Stack.Add(Unknown(pc)); break;
+                    case OpCode.MakeClosure:
+                        var captured = Arguments(instruction.B);
+                        var closure = Unknown(pc);
+                        if (callGraph is not null && captured.Length > 0) (captures ??= [])[closure.Number] = captured;
+                        state.Stack.Add(closure); break;
                     case OpCode.MakeScope: case OpCode.MakeRange: case OpCode.MakeLazyRange:
                         Arguments(instruction.A); state.Stack.Add(Unknown(pc)); break;
                     case OpCode.GetCapture: Pop(); state.Stack.Add(Unknown(pc, storage: true)); break;
@@ -315,8 +329,51 @@ internal static partial class IndexedMemoryOptimization
             output.Output = state;
         }
 
-        private void Unary(State state, Instruction instruction, Atom input) => state.Stack.Add(new(ExpressionNumber(
-            new(Operator + (int)instruction.Op, input.Number, Name: instruction.Text))));
+        private void Unary(State state, Instruction instruction, Atom input)
+        {
+            var result = new Atom(ExpressionNumber(new(Operator + (int)instruction.Op, input.Number, Name: instruction.Text)));
+            if (instruction.Op == OpCode.SpecializeClosure && captures?.TryGetValue(input.Number, out var locations) == true)
+                captures[result.Number] = locations;
+            state.Stack.Add(result);
+        }
+
+        private void Call(State state, Instruction instruction, int pc, Atom[] operands)
+        {
+            if (instruction.Op == OpCode.Call && instruction.B >= 0 && callGraph is not null && summaries is not null
+                && (state.Reads.Count > 0 || state.Join is not null))
+            {
+                callTargets ??= callGraph.AnalyzeBody(function, constants, originalId).Targets;
+                if (callTargets.TryGetValue(pc, out int target))
+                {
+                    var effect = summaries()[target];
+                    if (!effect.UnknownWrites && !effect.HasDeferredInvocation && !effect.HasOrderingBoundary
+                        && effect.Enumerates.Count == 0)
+                    {
+                        foreach (var footprint in effect.IndexedWrites)
+                            Kill(state, new(Receiver(state, operands, footprint.Receiver), footprint.Region, footprint.Index));
+                        // A successful call can change cells or replace a
+                        // member without changing the earlier Buffer object.
+                        if (effect.Writes.Count != 0) ForgetLocations(state, pc);
+                        state.Stack.Add(Unknown(pc, storage: true));
+                        return;
+                    }
+                }
+            }
+            Invalidate(state, pc);
+            state.Stack.Add(Unknown(pc, storage: true));
+        }
+
+        private int Receiver(State state, Atom[] operands, MemoryAccess receiver)
+        {
+            if (receiver.Fields.Count != 0 || receiver.Descendants) return 0;
+            int index = receiver.Root.Index;
+            if (receiver.Root.Kind == MemoryRootKind.Parameter && index + 1 < operands.Length)
+                return Dereference(state, operands[index + 1]).Number;
+            if (receiver.Root.Kind == MemoryRootKind.Capture
+                && captures?.TryGetValue(operands[0].Number, out var locations) == true && index < locations.Length)
+                return Dereference(state, locations[index]).Number;
+            return 0;
+        }
 
         private void Native(State state, Instruction instruction, int pc, Atom[] arguments)
         {
@@ -341,30 +398,24 @@ internal static partial class IndexedMemoryOptimization
                 }
                 return;
             }
-            if (name is "storage.buffer_set" or "storage.buffer_swap")
+            var effect = IndexedNativeEffect.For(name);
+            if (effect.Writes != IndexedRegion.None)
             {
-                Index first = Subscript(Dereference(state, arguments[1]));
-                Index second = name == "storage.buffer_swap" ? Subscript(Dereference(state, arguments[2])) : first;
-                foreach (var entry in state.Reads)
-                    if (entry.Key.Operation == "storage.buffer_get" && MayOverlap(entry.Key.Index, first, second))
-                        state.Reads = state.Reads.Remove(entry.Key);
-                if (state.Join is not null)
+                int buffer = Dereference(state, arguments[0]).Number;
+                if (effect.Indices == 0) Kill(state, new(buffer, effect.Writes, null));
+                else for (int index = 1; index <= effect.Indices; index++)
                 {
-                    if (!first.Known || !second.Known) state.UnknownIndexWrite = true;
-                    else if (!state.UnknownIndexWrite)
-                        state.WrittenIndices = (state.WrittenIndices ?? ImmutableHashSet<long>.Empty).Add(first.Constant).Add(second.Constant);
+                    var subscript = Subscript(Dereference(state, arguments[index]));
+                    Kill(state, new(buffer, effect.Writes, subscript.Known ? (int)subscript.Constant : null));
                 }
             }
-            else if (name is "storage.buffer_push" or "storage.buffer_pop" or "storage.buffer_insert" or "storage.buffer_remove" or "storage.buffer_clear")
-                ForgetReads(state);
             else if ((InstructionEffects.NativeEffects(name) & (InstructionEffect.Write | InstructionEffect.Invoke)) != 0)
                 Invalidate(state, pc);
             bool item = NativeSignatures.TryGet(name, out var signature) && signature.ResultRule == NativeResultRule.RangeItem;
-            state.Stack.Add(Unknown(pc, storage: item));
+            var result = Unknown(pc, storage: item);
+            if (name == "storage.buffer_new") (freshBuffers ??= []).Add(result.Number);
+            state.Stack.Add(result);
         }
-
-        private static bool MayOverlap(Index read, Index first, Index second) =>
-            !read.Known || !first.Known || !second.Known || read.Constant == first.Constant || read.Constant == second.Constant;
 
     }
 }

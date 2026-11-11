@@ -97,6 +97,45 @@ var sharedField = Function("shared-field", 0, 1, TypeRef.Null,
 summary = Summaries(Program(sharedField, set))[0];
 Has(summary, "Writes", "Capture[0]"); Check(!Flag(summary, "UnknownWrites"), "Field-cell write lost capture identity");
 
+TypeRef rangeType = new(TypeKind.Range);
+Module indexed = new([new NumberValue(0), new NumberValue(1)],
+    [
+        Function("index-read", 1, 1, TypeRef.Number,
+            [new(OpCode.LoadLocal, 0), new(OpCode.Constant, 0), new(OpCode.NativeCall, 2, Text: "storage.buffer_get"), new(OpCode.Return)],
+            types: [rangeType]),
+        Function("index-size", 1, 1, TypeRef.Number,
+            [new(OpCode.LoadLocal, 0), new(OpCode.NativeCall, 1, Text: "storage.buffer_size"), new(OpCode.Return)],
+            types: [rangeType]),
+        Function("index-set", 1, 1, TypeRef.Null,
+            [new(OpCode.LoadLocal, 0), new(OpCode.Constant, 1), new(OpCode.Constant, 0), new(OpCode.Constant, 1),
+                new(OpCode.Add), new(OpCode.NativeCall, 3, Text: "storage.buffer_set"), new(OpCode.Return)],
+            types: [rangeType]),
+        Function("index-captured", 0, 1, TypeRef.Null,
+            [new(OpCode.LoadLocal, 0), new(OpCode.Constant, 0), new(OpCode.Constant, 1),
+                new(OpCode.NativeCall, 3, Text: "storage.buffer_swap"), new(OpCode.Return)], captures: 1),
+        Function("index-relay", 1, 1, TypeRef.Null,
+            [new(OpCode.LoadCell, 0), new(OpCode.MakeClosure, 3, 1), new(OpCode.Call, 0, 4), new(OpCode.Return)],
+            types: [rangeType]),
+        Function("index-child-relay", 1, 1, TypeRef.Null,
+            [new(OpCode.MakeClosure, 2), new(OpCode.LoadLocal, 0), new(OpCode.GetMember, Text: "items"),
+                new(OpCode.Call, 1, 3), new(OpCode.Return)], types: [TypeRef.Scope]),
+        Function("index-grow", 1, 1, TypeRef.Number,
+            [new(OpCode.LoadLocal, 0), new(OpCode.Constant, 0), new(OpCode.NativeCall, 2, Text: "storage.buffer_push"), new(OpCode.Return)],
+            types: [rangeType]),
+    ], OptimizationLevel: 0);
+var indexedSummaries = Summaries(indexed);
+Has(indexedSummaries[0], "IndexedReads", "Parameter[0]::contents[0]", "Parameter[0]::length");
+Has(indexedSummaries[0], "IndexedWrites");
+Has(indexedSummaries[1], "IndexedReads", "Parameter[0]::length");
+Has(indexedSummaries[1], "Reads");
+Has(indexedSummaries[2], "IndexedReads", "Parameter[0]::length");
+Has(indexedSummaries[2], "IndexedWrites", "Parameter[0]::contents[1]");
+Has(indexedSummaries[3], "IndexedReads", "Capture[0]::contents[0]", "Capture[0]::contents[1]", "Capture[0]::length");
+Has(indexedSummaries[3], "IndexedWrites", "Capture[0]::contents[0]", "Capture[0]::contents[1]");
+Has(indexedSummaries[4], "IndexedWrites", "Parameter[0]::contents[0]", "Parameter[0]::contents[1]");
+Has(indexedSummaries[5], "IndexedWrites", "Parameter[0]::items::contents[1]");
+Has(indexedSummaries[6], "IndexedWrites", "Parameter[0]::contents[*]", "Parameter[0]::length");
+
 var identityFn = Function("identity-fn", 1, 1, TypeRef.Function,
     [new(OpCode.LoadLocal, 0), new(OpCode.Return)], types: [TypeRef.Function]);
 var retainThroughIdentity = Function("retain-through-identity", 1, 2, TypeRef.Null,

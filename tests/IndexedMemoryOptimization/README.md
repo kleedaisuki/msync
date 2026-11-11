@@ -147,3 +147,56 @@ shortcut; the fixture demonstrates that the middle end can remove a selected
 reread without asking source authors to implement that shortcut. Calls still
 kill availability without a proof about their actual runtime target and
 effects.
+
+## Selected calls and resource-relative mod/ref
+
+Run the cross-call fixture with a candidate CLI:
+
+```sh
+python tests/IndexedMemoryOptimization/modref_journey.py /absolute/path/to/msync \
+  --workspace .temp/indexed-modref/candidate
+```
+
+For a frozen compiler without resource-relative call effects, add
+`--baseline` and choose a separate workspace. The harness checks O0/O2/O3
+stdout through source, relocatable, and executable routes, and checks both
+artifact views for a retained actual source call. It tests a read-only callee
+after a selected-read join, literal disjoint writes on the same Buffer, writes
+on a separate newly allocated Buffer, a captured Buffer mutation, and length
+after a content-only write. Two distinct parameters can still alias: passing
+the same Buffer through them and enumerating a mutating lazy callback are
+negative controls. A profiled failing read in each route proves the original
+first read still fails before any helper entry or write.
+
+The [hot fixture](modref-loop.msync) executes 131,072 retained helper calls.
+Each helper writes index 1 and reads length between the caller's two reads
+of index 0. The expected stdout is `2883584\n`. A profile verifies 262,144 →
+131,072 actual `storage.buffer_get` calls while `storage.buffer_set`,
+`storage.buffer_size`, and `touch_other` frame entries each remain 131,072.
+The fixture keeps the helper in a low-numbered entry local rather than
+reordering declarations to work around reaching-location analysis.
+
+Use [profile_compare.py](../Performance/profile_compare.py) for a matched
+before/after measurement: use the same Native CLI as both runners and the
+before/after compilers as `--baseline-compiler` and `--candidate-compiler`,
+with `--source tests/IndexedMemoryOptimization/modref-loop.msync`. Elapsed
+samples run with recording off; separate SQLite samples account for actual
+native operations, managed allocation, source frames and Number boxes.
+
+A same-VM comparison used the frozen Linux Native AOT runner
+`bf99379a5108f55c758d2e430becaa0a5d47bece4dd1654fd6a7aea62c0f3df9`,
+the original O2 compiler and a managed compiler snapshot with the mod/ref
+pass (`Msync.Optimization.dll` SHA-256
+`cf6658ddd7a9f03dc8ddeede0771833ee81701b83ee627868aa0695f8e13ec3e`).
+The two bound artifacts both returned the exact checksum. SQLite measured
+47,221,568 → 41,978,696 allocated bytes, with exactly 7,405,650 VM instructions
+and 393,216 Number boxes on both sides. The native get count halved while
+the helper, write and size counts were unchanged: neither a shorter dispatch
+trace nor eliminating the actual helper explains the result.
+
+The seven alternating unobserved pairs on logical CPU 6 after two warmup
+pairs had 727.53 → 674.69 ms marginal medians and a −52.85 ms paired median,
+but only four pairs were faster and the host was noisy. The exact dynamic
+work and allocation are better evidence than that elapsed observation.
+Raw images, SQLite data and samples are in
+`.temp/modref-journeys/final-profile/`.

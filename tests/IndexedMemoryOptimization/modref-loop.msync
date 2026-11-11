@@ -1,0 +1,23 @@
+let Buffer = $std::storage::Buffer;
+fn touch_other(values, digit: Number) {
+    if digit == 0 {
+        Buffer::set(values, 1, 30);
+    } else {
+        Buffer::set(values, 1, 40);
+    };
+    Buffer::size(values)
+};
+let values = Buffer::new([10, 20]);
+let sum = 0;
+let iteration = 0;
+loop {
+    if iteration >= 131072 {
+        break;
+    };
+    let before = Buffer::get(values, 0);
+    let size = touch_other(values, iteration % 2);
+    let after = Buffer::get(values, 0);
+    sum = sum + before + size + after;
+    iteration = iteration + 1;
+};
+$std::io::println(sum as String);
