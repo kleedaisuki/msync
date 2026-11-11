@@ -791,9 +791,9 @@ wall interval (and may include waiting for a revision); it is neither
 client round-trip time nor exclusive computation. The checked LSP
 benchmark applies every actual delta to the previous full stream and
 compares exact integers, including no-change replies, skipped versions,
-unknown IDs, and reopen. A real VS Code host confirms that the built-in semantic highlighter
-negotiates and sends a delta after a range edit; the extension need not
-maintain a second cache or implement a private request.
+unknown IDs, and reopen. A real VS Code host confirms that the built-in
+semantic highlighter negotiates and sends a delta after a range edit; the
+extension need not maintain a second cache or implement a private request.
 
 ```sh
 python3 tests/Msync.EndToEnd/lsp_semantic_delta.py \
@@ -806,3 +806,36 @@ format: the full arm advertises no delta capability, and the delta arm
 does. The timed arms have telemetry off. Separate SQLite runs check that
 the recorded body byte count equals the actual Content-Length, without
 folding instrumented timings into the primary comparison.
+
+On Linux Native AOT, the matched stock (`bf99379a5108`) / candidate
+(`4af0110c4d50`) comparison alternated four process pairs on logical
+CPU 11. Each process performed six checked range edits and an unchanged
+request after each edit. Medians are over 24 responses per arm; time is
+client request to decoded LSP reply, not visual repaint:
+
+| Document and request | Full body → delta body | Full RTT → delta RTT |
+| --- | ---: | ---: |
+| 4,000 lines, changed Number token | 167,044 → 103 B | 230.20 → 213.56 ms |
+| 4,000 lines, unchanged snapshot | ~167,045 → ~62 B | 13.40 → 0.39 ms |
+| 16 lines, changed Number token | 700 → 101 B | 0.94 → 0.91 ms |
+| 16 lines, unchanged snapshot | ~701 → ~62 B | 0.28 → 0.27 ms |
+
+The large unchanged control improved in all four paired process medians.
+The first request after an edit waits for semantic analysis and had mixed
+pair results, so its full median difference is not attributed to reply
+format. The short latency control was mixed and approximately flat. Keep
+the next server effort on semantic work if edit-to-highlight latency is
+the target, not on reducing the already-small delta envelope. Raw samples,
+separate server intervals and SQLite files live under
+`.temp/editor-next/final-paired/`.
+
+The same-candidate three-pair control separates protocol from the
+implementation change: on 4,000 lines the unchanged request was 12.88 ms
+with full responses versus 0.42 ms with deltas; changed requests were
+230.67 versus 224.87 ms. In the real VS Code 1.144 Native AOT host,
+the 1,000-line document recorded a 41,113-byte full reply and a 61-byte
+delta. That host also verified that opting out stopped database writes.
+The server's cancel/edit/close/shutdown and refresh lifecycle controls
+pass independently. Receipts: `.temp/editor-next/same-image/`,
+`.temp/editor-next/final-host/telemetry-results.json`, and
+`.temp/editor-next/lsp-lifecycle.log`.
