@@ -262,10 +262,10 @@ public sealed partial class Interpreter
             await Task.WhenAll(dependencies);
     }
 
-    private List<Task>? NamespaceDependencies(IEnumerable<PathValue> paths)
+    private HashSet<Task>? NamespaceDependencies(IEnumerable<PathValue> paths)
     {
-        if (namespaceProducers.Count == 0) return null;
-        HashSet<string> entries = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        if (!namespaceProducers.HasLocalEntries) return null;
+        HashSet<Task>? dependencies = null;
         foreach (var path in paths)
         {
             if (path.Connection?.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl) continue;
@@ -273,14 +273,12 @@ public sealed partial class Interpreter
             while (name is not null)
             {
                 string? parent = Path.GetDirectoryName(name);
-                entries.Add(parent is null ? name : Path.Combine(ResourcePath.Resolve(parent), Path.GetFileName(name)));
+                string entry = parent is null ? name : Path.Combine(ResourcePath.Resolve(parent), Path.GetFileName(name));
+                namespaceProducers.CollectPending(entry, ref dependencies);
                 name = parent;
             }
         }
-        var dependencies = namespaceProducers.Where(pair => !pair.Key.IsCompleted
-            && pair.Value.Any(root => root.Endpoint == "local" && entries.Contains(root.Path)))
-            .Select(pair => pair.Key).ToArray();
-        return dependencies.Length == 0 ? null : dependencies.ToList();
+        return dependencies;
     }
 
 }

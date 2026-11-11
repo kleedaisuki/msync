@@ -91,6 +91,14 @@ internal sealed class ResourceIndex
             Compact(tasks);
         }
 
+        internal readonly void CollectPending(ref HashSet<Task>? target)
+        {
+            if (first is { IsCompleted: false } task) (target ??= []).Add(task);
+            if (shared is not { } tasks) return;
+            foreach (var item in tasks)
+                if (!item.IsCompleted) (target ??= []).Add(item);
+        }
+
         private void Compact(HashSet<Task> tasks)
         {
             if (tasks.Count > 1) return;

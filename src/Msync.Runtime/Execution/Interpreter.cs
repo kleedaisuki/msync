@@ -27,7 +27,7 @@ public sealed partial class Interpreter
         pending = previous?.pending ?? [];
         sessionProcesses = previous?.sessionProcesses ?? new(ReferenceEqualityComparer.Instance);
         processDependencies = previous?.processDependencies ?? [];
-        namespaceProducers = previous?.namespaceProducers ?? [];
+        namespaceProducers = previous?.namespaceProducers ?? new();
         iterators = previous?.iterators ?? [];
         context = new(options, module.Context);
         try { this.module = Binding.Relocate(module, ImageContext); }

@@ -8,7 +8,7 @@ bytecode contract come from `Msync.Core`.
 | Directory | Responsibility |
 | --- | --- |
 | `Execution` | Interpreter entry/lifetimes, opcode dispatch, invocation, local state, iteration, image projection, and the public persistent `ExecutionSession` |
-| `Scheduling` | Invocation work ownership, process/deferred-flow reachability, directional ordering, and the independent resource-prefix dependency index |
+| `Scheduling` | Invocation work ownership, process/deferred-flow reachability, directional ordering, the resource-prefix dependency index, and exact namespace publication postings |
 | `Context` | Execution options/observations and invocation-owned path/cwd projection |
 | `Native` | Static native dispatch and grouped filesystem, process, Range, scalar, text, metadata, and indexed-storage implementations |
 | `Transfers` | Local/remote copy selection, owned staging files, archive transport, overlap handling, and selected queries |
@@ -24,9 +24,12 @@ published code image. They are distinct classes, not declarations appended to
 the interpreter implementation.
 
 `ResourceIndex` owns its prefix trie and registration leases independently of
-the interpreter. Its query and retirement algorithms are unchanged by source
-organization. `IndexedStorageOperations` and `TextBuilderOperations` likewise
-own their self-contained backing-store/chunk algorithms. `NativeRegistry` keeps
+the interpreter. `NamespaceProducerIndex` instead matches exact local entries
+after projecting the selected ancestors: it does not treat a path below an
+observed entry as an entry publication. Both retain admission ownership across
+REPL interpreter replacement. `IndexedStorageOperations` and
+`TextBuilderOperations` likewise own their self-contained backing-store/chunk
+algorithms. `NativeRegistry` keeps
 the finite static dispatch boundary; no runtime reflection or extra interface
 dispatch is needed to select those implementations.
 

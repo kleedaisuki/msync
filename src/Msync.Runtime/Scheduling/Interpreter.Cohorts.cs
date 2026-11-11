@@ -58,8 +58,8 @@ public sealed partial class Interpreter
         var reads = sources.Select(Key).ToArray();
         var writes = CohortWrites(target, targets, replace);
         var publications = resources.Dependencies(writes, []);
-        if (namespaceProducers.Count != 0)
-            publications.UnionWith(resources.Dependencies(reads, writes).Where(namespaceProducers.ContainsKey));
+        if (namespaceProducers.HasProducers)
+            publications.UnionWith(resources.Dependencies(reads, writes).Where(namespaceProducers.Contains));
         if (publications.Count != 0)
         {
             await Task.WhenAll(publications);
@@ -87,7 +87,7 @@ public sealed partial class Interpreter
         if (directories.Count == 0) return roots;
         await AwaitNamespacePublicationsAsync(directories);
         ResourceKey[] writes = MergeAliases(roots, targets, directories);
-        var aliases = resources.Dependencies([], writes).Where(namespaceProducers.ContainsKey).ToArray();
+        var aliases = resources.Dependencies([], writes).Where(namespaceProducers.Contains).ToArray();
         if (aliases.Length == 0) return writes;
         await Task.WhenAll(aliases);
         return MergeAliases(roots, targets, directories);

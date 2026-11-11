@@ -401,3 +401,49 @@ taskset -c 14 python3 tests/Performance/namespace_publication.py \
 The runner retains the source, object, executable and per-round samples in
 the selected scratch directory. This run's receipt is
 `.temp/vm-io-investigation/pinned/result.json`.
+
+### Exact-entry namespace producer index
+
+`NamespaceProducerIndex` now keeps both task-to-root ownership and exact
+local entry-to-task postings. Admissions and retirement update both views
+together; the REPL successor retains the same index as the live scheduler
+state. Each query still resolves the current parent of each selected lexical
+ancestor before combining it with the leaf. It looks up those exact entries,
+filters out completed tasks and deduplicates shared producers only on a hit.
+The resource trie remains responsible for prefix overlaps and unknown remote
+work. No remembered canonical pathname outlives a query.
+
+One ordinary producer is stored inline in each entry posting, reusing the
+resource trie's `TaskSet` storage. Only concurrent writers to the same entry
+need a set, and duplicate roots in a batch do not create duplicate task
+references. The reverse view remains necessary for alias reprojection and
+removal. A local or remote workload with no namespace registrations creates
+neither dictionary.
+
+On Linux x86-64, SDK 10.0.403 Native AOT, a checkout through `887eced`
+plus just the namespace index was compared with the `025b1da` Native CLI.
+Each arm ran the same pre-bound files in three alternating rounds on logical
+CPU 14. The host gated the same 4,000-query window and checked all output bytes.
+
+| Held Path copies | Median process CPU, before → after | Median wall, before → after |
+| ---: | ---: | ---: |
+| 0 | 290 → 250 ms | 347 → 299 ms |
+| 1 | 580 → 530 ms | 674 → 676 ms |
+| 1,024 | 1,040 → 640 ms | 1,287 → 767 ms |
+| 4,096 | 3,160 → 640 ms | 4,127 → 784 ms |
+
+Small-frontier changes are not attributed to the index; host wall time
+varied. The large-frontier CPU slope disappeared in this selected disjoint
+case. This measures neither file-copy throughput nor the cost of remaining
+path-resolution walks in isolation. The matching receipts, per-arm binary
+and executable hashes, and driver are in
+`.temp/namespace-index-isolated/{paired/result.json,compare.py}`.
+
+The nine independent reader/alias/dependency journeys above passed with
+the candidate. Three additional CLI journeys gate a process-produced Path
+that publishes a directory symlink; a selected native `exists` below it
+waits and sees the new file through source, object and executable routes.
+`tests/SchedulingGraph --namespace-only` also passed its existing retry and
+namespace lifecycle cases. A randomized source-linked comparison with the
+old scan checked 3,833 queries over duplicate postings, shared writers,
+completion, retirement and local/remote entries.

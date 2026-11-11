@@ -29,6 +29,7 @@ CASES: tuple[str, ...] = (
     "native-dot-dependent",
     "native-dotdot-dependent",
     "native-link-dotdot-dependent",
+    "native-namespace-entry-dependent",
     "native-destination-dependent",
 )
 
@@ -135,6 +136,18 @@ child::stdout -> ./held.txt;
         source = source.replace("./held.txt", "./input.txt")
         source += "$std::fs::copy_file(./source-alias, ./output.txt);\n"
         output = work / "output.txt"
+    elif kind == "native-namespace-entry-dependent":
+        (work / "target").mkdir()
+        (work / "target/file").write_bytes(b"namespace")
+        (work / "source-link").symlink_to(work / "target", target_is_directory=True)
+        source = source.replace(
+            "child::stdout -> ./held.txt;",
+            """
+(child::stdout as Path) -> ./published;
+if $std::fs::exists(./published/file) { "independent" } else { "unexpected" } -> ./output.txt;
+""",
+        )
+        output = work / "output.txt"
     else:
         source += (
             "if $std::fs::copy_file(./input.txt, ./held.txt) "
@@ -143,8 +156,11 @@ child::stdout -> ./held.txt;
         output = work / "output.txt"
     source += "acquire child;\n"
     (work / "input.txt").write_bytes(b"independent")
+    producer_result: str = (
+        "./source-link" if kind == "native-namespace-entry-dependent" else "held"
+    )
     (work / "wait.sh").write_text(
-        "set -eu\n: > child-ready\nwhile [ ! -e gate ]; do sleep .01; done\nprintf held\n"
+        f"set -eu\n: > child-ready\nwhile [ ! -e gate ]; do sleep .01; done\nprintf %s {producer_result}\n"
     )
     (work / "case.msync").write_text(source)
     if route != "msync":
@@ -187,6 +203,9 @@ child::stdout -> ./held.txt;
     assert output.read_bytes() == (b"held" if reads_held else b"independent"), work
     if kind in ("native-shared-reader", "native-destination-dependent"):
         assert (work / "held.txt").read_bytes() == b"independent", work
+    if kind == "native-namespace-entry-dependent":
+        assert (work / "published").is_symlink(), work
+        assert (work / "published/file").read_bytes() == b"namespace", work
     assert before_release == (not kind.endswith("dependent")), (route, kind, work)
     return {
         "route": route,

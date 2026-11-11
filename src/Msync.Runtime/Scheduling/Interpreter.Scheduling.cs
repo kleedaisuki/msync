@@ -22,7 +22,7 @@ public sealed partial class Interpreter
     private readonly List<PendingWork> pending;
     private readonly HashSet<ProcessValue> sessionProcesses;
     private readonly Dictionary<Task, IReadOnlyList<ProcessValue>> processDependencies;
-    private readonly Dictionary<Task, IReadOnlyList<ResourceKey>> namespaceProducers;
+    private readonly NamespaceProducerIndex namespaceProducers;
     private WorkOwner currentOwner = new();
     private Task standaloneOrdering = Task.CompletedTask;
     private Task ordering
@@ -107,7 +107,7 @@ public sealed partial class Interpreter
         if (footprint is null)
         foreach (var dependency in dependencies)
         {
-            if (!namespaceProducers.TryGetValue(dependency, out var produced)) continue;
+            if (!namespaceProducers.TryGetRoots(dependency, out var produced)) continue;
             if (produced.Any(root => root.Endpoint == "local"
                 && (reads.Length != 0 && DescendsFrom(reads[0], root) || DescendsFrom(writes[0], root))))
                 (namespaceDependencies ??= []).Add(dependency);
