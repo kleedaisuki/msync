@@ -145,6 +145,20 @@ async function run() {
         ['EqualitySet::with_equality', 'type'], ['with_equality(', 'function'],
         ['Set::new', 'type'],
     ];
+    const containers = await bounded('open embedded containers',
+        vscode.workspace.openTextDocument(vscode.Uri.parse('msync-stdlib:///0.8.0/containers.msync')));
+    const library = containers.getText();
+    const tree = library.indexOf('scope BPlusTree {');
+    const clear = library.indexOf('clear: fn(self)', tree);
+    const call = library.indexOf('BPlusTree::node(', clear);
+    assert.ok(tree >= 0 && clear > tree && call > clear, 'BPlusTree::clear self call');
+    const selfReference = [
+        [tree, 'scope', 'keyword'],
+        [tree + 'scope '.length, 'BPlusTree', 'type'],
+        [clear + 'clear: '.length, 'fn', 'keyword'],
+        [call, 'BPlusTree', 'type'],
+        [call + 'BPlusTree::'.length, 'node', 'function'],
+    ];
     const themes = [];
     for (const theme of ['Default Dark Modern', 'Default Light Modern']) {
         await vscode.workspace.getConfiguration('workbench').update('colorTheme', theme, vscode.ConfigurationTarget.Global);
@@ -155,7 +169,13 @@ async function run() {
             assert.equal(actual?.type, role, `${theme}: ${spelling}: ${JSON.stringify(actual)}`);
             observed.push({spelling, ...actual});
         }
-        themes.push({theme, roles: observed});
+        const embeddedRoles = await semanticRoles(containers);
+        const embedded = selfReference.map(([offset, text, type]) => {
+            const actual = embeddedRoles.get(offset);
+            assert.deepEqual(actual, {text, type}, `${theme}: BPlusTree::clear at ${offset}`);
+            return actual;
+        });
+        themes.push({theme, roles: observed, embedded});
     }
     const errors = vscode.languages.getDiagnostics(document.uri).filter(value => value.severity === vscode.DiagnosticSeverity.Error);
     assert.deepEqual(errors.map(value => value.message), []);
