@@ -667,3 +667,49 @@ register operands in a production VM. [Ertl and Paysan, ECOOP
 2024](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.ECOOP.2024.14)
 show that serial instruction-pointer updates can limit cheap instructions
 independently of misprediction; neither result predicts msync's gain.
+
+## Product SQLite profiles close the measurement loop
+
+The compiler and VM now report through the same opt-in trace. Use
+[profile_compare.py](../../tests/Performance/profile_compare.py) to separate
+normal Native CLI timing from diagnosis: alternate identical-input runs with
+telemetry disabled, then check an additional profiled run on each side.
+The runner keeps the SQLite databases and summarizes pass metrics, opcodes,
+native callees and total frame activity. For a compiler experiment, run both
+prepared artifacts on the same VM. For a runtime experiment, run the same
+artifact bytes on both binaries. For compilation costs, time the source
+route or the compile command and inspect its optimizer spans rather than
+charging compilation to bound execution.
+
+A Linux x86-64 Native AOT product profile compared the release-head O2
+compiler with the first integrated O2 candidate using the same runtime
+(`3a605f625352`). Every bound run checked exact stdout. Counts from
+SQLite, not estimated from the disassembly:
+
+| Source workload | Dynamic VM bytecodes before → after | VM boundary Number boxes before → after | Other observation |
+| --- | ---: | ---: | --- |
+| 1,048,576-update scalar recurrence | 15,728,667 → 7,602,215 | 2,097,152 → 524,288 | Execute-span allocated traffic 50.37 → 12.62 MB |
+| Set, 8,192 keys | 23,733,357 → 20,861,823 | 447,481 → 447,481 | Source frames and 424,304 Buffer gets unchanged |
+
+The scalar normal-path median of seven same-runtime pairs on CPU 10 was
+1,125.6 → 710.1 ms on a shared host, with substantial wall-time variation.
+The independent tighter in-process [loop experiment](../../tests/LoopOptimization/README.md)
+measured 696.1 → 335.5 ms. Set's first five-pair wall-time medians were
+1,672 → 1,654 ms, which does not establish a comparable gain to the 12.1%
+opcode reduction. Its native-call volume and allocated traffic were unchanged
+on this same-runtime comparison. Counts identify what to remove next; they
+are not a substitute for elapsed or CPU time.
+
+The first bound indexed-loop run was a useful negative control: a static
+diamond rewrite worked, but the actual loop stayed at 393,216 native gets.
+The loop-specific reaching-value issue was investigated separately rather
+than claiming a win from fewer static sites. Compiler-pass traces likewise
+showed that the exact cross-block memory admission fix reduced no-op visits
+from 38 to 12 on Heap and 16 to 4 on SHA, but left module-wide memory effect
+analysis counts unchanged on both. Its matched serialized bytes were
+identical; do not attribute the remaining analysis cost to the admission
+check.
+
+The execution receipts and SQLite databases are under
+`.temp/goal-profile/compiler-{scalar,set,index}/`. The compiler admission
+AB/BA probes are under `.temp/phasecompiler-gate/`.

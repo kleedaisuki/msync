@@ -19,6 +19,29 @@ cover process startup, small and 128-operation checks, ordinary 4 KiB file
 replacement, and a 256-file tree of 4 KiB files. Transfers run from source and
 source-free `.mso` artifacts; artifact preparation is outside timing.
 
+### Explain a before/after with product telemetry
+
+`profile_compare.py` runs an exact stdin/stdout fixture through the real CLI.
+Timings alternate before/after with telemetry **off**. One additional checked
+execution per binary writes a SQLite profile: the JSON receipt summarizes
+phases, dynamic opcodes, native calls, and compiler pass metrics, while the
+databases retain per-function and causal detail.
+
+```sh
+python3 tests/Performance/profile_compare.py \
+  --baseline .temp/cli-before/msync --candidate .temp/cli-after/msync \
+  --source .temp/fixture.msync --stdin .temp/input.txt \
+  --expected .temp/expected.txt --workspace .temp/profile-comparison
+```
+
+Use `--same-artifact` to test a runtime change against one baseline-built
+image. To isolate a compiler change, run both sides on the same current VM
+and choose different `--baseline-compiler` and `--candidate-compiler` paths.
+Use `--route source` for measured end-to-end compilation, or the default
+`bound` for already prepared execution. `--timing-only` admits old binaries
+that cannot write profiles. Profile timings and disabled wall time answer
+different questions; do not subtract or pool them.
+
 Exact copied bytes, file count, modification times and native Unix modes are
 checked outside timing. There is no page-cache eviction, so the comparison
 measures warm-cache interactive use, not storage bandwidth or WAN performance.
