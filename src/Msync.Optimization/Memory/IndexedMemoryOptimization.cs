@@ -353,7 +353,7 @@ internal static partial class IndexedMemoryOptimization
                             Kill(state, new(Receiver(state, operands, footprint.Receiver), footprint.Region, footprint.Index));
                         // A successful call can change cells or replace a
                         // member without changing the earlier Buffer object.
-                        if (effect.Writes.Count != 0) ForgetLocations(state, pc);
+                        ForgetLocations(state, pc);
                         state.Stack.Add(Unknown(pc, storage: true));
                         return;
                     }
@@ -363,9 +363,9 @@ internal static partial class IndexedMemoryOptimization
             state.Stack.Add(Unknown(pc, storage: true));
         }
 
-        private int Receiver(State state, Atom[] operands, MemoryAccess receiver)
+        private int Receiver(State state, Atom[] operands, MemoryAccess? receiver)
         {
-            if (receiver.Fields.Count != 0 || receiver.Descendants) return 0;
+            if (receiver is null || receiver.Fields.Count != 0 || receiver.Descendants) return 0;
             int index = receiver.Root.Index;
             if (receiver.Root.Kind == MemoryRootKind.Parameter && index + 1 < operands.Length)
                 return Dereference(state, operands[index + 1]).Number;

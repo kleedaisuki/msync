@@ -176,6 +176,49 @@ foreach (var (name, operation, index, other, capture, expected, gets) in new[]
     }
 }
 
+{
+    // A wrapper binds two formal arguments to one locally allocated Scope.
+    // The callee replaces its Buffer through one name, then writes through
+    // the other. Projecting its indexed path onto the entry field would see
+    // only the old local Buffer and lose the write to the caller's argument.
+    Code program = new();
+    program.Buffer(10, 20);
+    program.Get(0);
+    program.Emit(OpCode.InitializeLocal, 1);
+    program.Emit(OpCode.MakeClosure, 1);
+    program.Emit(OpCode.LoadLocal, 0);
+    program.Emit(OpCode.Call, 1, 2);
+    program.Emit(OpCode.Pop);
+    program.Emit(OpCode.LoadLocal, 1);
+    program.Get(0);
+    program.Emit(OpCode.Add);
+    program.Emit(OpCode.Return);
+    int zero = program.Constant(new NumberValue(0));
+    int replacement = program.Constant(new NumberValue(99));
+    TypeRef range = new(TypeKind.Range);
+    var wrapper = new FunctionCode("alias-wrapper", 1, 2,
+        [
+            new(OpCode.Constant, zero), new(OpCode.MakeRange, 1), new(OpCode.NativeCall, 1, Text: "storage.buffer_new"),
+            new(OpCode.MakeScope, 1, Text: "items"), new(OpCode.InitializeLocal, 1),
+            new(OpCode.MakeClosure, 2), new(OpCode.LoadLocal, 1), new(OpCode.LoadLocal, 1),
+            new(OpCode.LoadLocal, 0), new(OpCode.Call, 3, 3), new(OpCode.Return)
+        ], TypeRef.Null, ParameterTypes: [range]);
+    var mutate = new FunctionCode("alias-rebind-and-write", 3, 3,
+        [
+            new(OpCode.LoadLocal, 0), new(OpCode.LoadLocal, 2), new(OpCode.SetMember, Text: "items"), new(OpCode.Pop),
+            new(OpCode.LoadLocal, 1), new(OpCode.GetMember, Text: "items"), new(OpCode.Constant, zero),
+            new(OpCode.Constant, replacement), new(OpCode.NativeCall, 3, Text: "storage.buffer_set"), new(OpCode.Return)
+        ], TypeRef.Null, ParameterTypes: [TypeRef.Scope, TypeRef.Scope, range]);
+    Module raw = new(program.Constants, [program.Function(), wrapper, mutate], OptimizationLevel: 0);
+    foreach (int level in new[] { 0, 2, 3 })
+    {
+        Module optimized = Optimizer.Optimize(raw, level);
+        Check(optimized.Functions.Sum(GetCount) == 2, "transitive aliased receiver rebinding must invalidate contents");
+        foreach (Module image in Images(optimized))
+            Check(await Interpreter.ExecuteAsync(image) is NumberValue { Data: 109 }, $"transitive alias rebinding O{level}");
+    }
+}
+
 foreach (bool resize in new[] { false, true })
 {
     Code program = new(); program.Buffer(10);

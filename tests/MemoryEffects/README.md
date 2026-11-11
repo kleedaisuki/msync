@@ -64,14 +64,20 @@ callable and admitted callee, then maps writes to evaluated arguments or
 captures. The positive call hint is not a source-call proof. An unresolvable
 receiver path becomes a possible alias; two distinct value numbers alone do
 not prove disjointness. Separate direct `buffer_new` allocations can provide
-that proof. Unresolved calls, deferred invocation, potentially effectful
+that proof. When a callee may replace a binding along an indexed receiver
+path through an aliasing formal argument, callers must not project that path
+onto a stale entry field. The summary widens just the receiver (retaining
+length versus contents and the index). The transitive rebinding control
+creates one Scope with an old local Buffer, then passes it as both formals;
+the callee replaces the field through one formal and writes through the other.
+Unresolved calls, deferred invocation, potentially effectful
 enumeration and ordering boundaries invalidate read witnesses. Scoped
 effects that can change member/cell bindings still advance their own memory
 versions. A standalone entry's private frame is used only when it cannot
 also be selected as a source closure; open and imported callable alternatives
 keep their wider capture assumptions.
 
-The [indexed CLI journeys](../IndexedMemoryOptimization/README.md#resource-relative-modref-across-source-calls)
+The [indexed CLI journeys](../IndexedMemoryOptimization/README.md#selected-calls-and-resource-relative-modref)
 test a retained hot call that writes one position and leaves another
 available, with alias, capture, lazy invocation and first-error controls.
 

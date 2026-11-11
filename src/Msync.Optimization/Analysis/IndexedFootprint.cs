@@ -8,9 +8,9 @@ internal enum IndexedRegion : byte
     Length = 2
 }
 
-internal readonly record struct IndexedFootprint(MemoryAccess Receiver, IndexedRegion Region, int? Index = null)
+internal readonly record struct IndexedFootprint(MemoryAccess? Receiver, IndexedRegion Region, int? Index = null)
 {
-    public override string ToString() => Receiver + (Region == IndexedRegion.Length
+    public override string ToString() => (Receiver?.ToString() ?? "Buffer[*]") + (Region == IndexedRegion.Length
         ? "::length" : Index is int index ? $"::contents[{index}]" : "::contents[*]");
 }
 

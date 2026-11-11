@@ -70,7 +70,9 @@ internal static class MemoryEffects
             or OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide or OpCode.Remainder or OpCode.Negate or OpCode.Equal or OpCode.NotEqual
             or OpCode.Less or OpCode.LessEqual or OpCode.Greater or OpCode.GreaterEqual or OpCode.PathJoin or OpCode.Convert
             or OpCode.Transfer or OpCode.LocalTransfer)
-            ? FunctionMemoryEffects.Empty : null;
+            ? function.Instructions.Any(instruction => instruction.Op == OpCode.StoreLocal && instruction.A < function.ParameterCount)
+                ? FunctionMemoryEffects.Empty with { HasBindingWrites = true } : FunctionMemoryEffects.Empty
+            : null;
     }
 
     private static bool Scalar(TypeRef type) => (type.Kind & (TypeKind.Scope | TypeKind.Function | TypeKind.Range)) == 0;
@@ -81,7 +83,7 @@ internal static class MemoryEffects
         && SetSame(left.Writes, right.Writes) && SetSame(left.Escapes, right.Escapes) && SetSame(left.ReturnAliases, right.ReturnAliases)
         && SetSame(left.Enumerates, right.Enumerates) && left.ReturnsCallbackFreeRange == right.ReturnsCallbackFreeRange
         && SetSame(left.IndexedReads, right.IndexedReads) && SetSame(left.IndexedWrites, right.IndexedWrites)
-        && left.HasOrderingBoundary == right.HasOrderingBoundary;
+        && left.HasOrderingBoundary == right.HasOrderingBoundary && left.HasBindingWrites == right.HasBindingWrites;
     private static bool SetSame<T>(IReadOnlyList<T> left, IReadOnlyList<T> right)
     {
         if (ReferenceEquals(left, right)) return true;
@@ -117,7 +119,7 @@ internal static class MemoryEffects
         private readonly FunctionCode function = module.Functions[functionIndex];
         private readonly HashSet<MemoryAccess> reads = [], writes = [], escapes = [], returns = [], enumerates = [];
         private HashSet<IndexedFootprint>? indexedReads, indexedWrites;
-        private bool unknownReads, unknownWrites, unknownReturn, deferred, ordering;
+        private bool unknownReads, unknownWrites, unknownReturn, deferred, ordering, bindingWrites;
         private bool sawRangeReturn, callbackFreeReturns = true;
         private readonly Queue<int> work = new();
         private readonly Dictionary<int, State> entries = [];
@@ -185,6 +187,7 @@ internal static class MemoryEffects
                 IndexedReads = indexedReads?.ToArray() ?? [],
                 IndexedWrites = indexedWrites?.ToArray() ?? [],
                 HasOrderingBoundary = ordering,
+                HasBindingWrites = bindingWrites,
                 ReturnsCallbackFreeRange = sawRangeReturn && callbackFreeReturns
             };
         }
@@ -219,6 +222,7 @@ internal static class MemoryEffects
         {
             foreach (var cell in location.Cells)
             {
+                bindingWrites |= cell.External || state.EscapedCells.Contains(cell);
                 if (cell.External) writes.Add(new(new(MemoryRootKind.Capture, cell.Slot)));
                 if (cell.External || state.EscapedCells.Contains(cell)) Escape(state, value, []);
                 SetCell(state, cell, value);
@@ -259,6 +263,7 @@ internal static class MemoryEffects
                     Push(raw); break;
                 case OpCode.StoreLocal:
                     var assigned = Dereference(state, Pop(state));
+                    bindingWrites |= instruction.A < function.CaptureCount + function.ParameterCount;
                     if (state.Locals[instruction.A].UnknownCell) { unknownWrites = true; Invalidate(state); }
                     if (state.Locals[instruction.A].Cells.Length > 0) StoreCells(state, state.Locals[instruction.A], assigned);
                     else state.Locals[instruction.A] = assigned;
@@ -276,6 +281,7 @@ internal static class MemoryEffects
                 case OpCode.GetMember:
                     Push(ReadField(state, Dereference(state, Pop(state)), instruction.Text!)); break;
                 case OpCode.SetMember:
+                    bindingWrites = true;
                     var value = Dereference(state, Pop(state)); var receiver = Dereference(state, Pop(state));
                     WriteField(state, receiver, instruction.Text!, value); Push(ValueInfo.Empty); break;
                 case OpCode.MakeClosure: Push(ValueInfo.Callable(new(instruction.A, Arguments(state, instruction.B)))); break;
@@ -414,10 +420,8 @@ internal static class MemoryEffects
                 var writePlan = summary.Writes.Select(access => (Access: access, Values: Map(state, access, closure, arguments, target,
                     access.Root.Kind == MemoryRootKind.Capture && access.Fields.Count == 0).ToArray())).ToArray();
                 var retained = summary.Escapes.Select(escape => ResolveAccess(state, escape, closure, arguments, true)).ToArray();
-                foreach (var read in summary.IndexedReads)
-                    RecordIndexed(ReturnAlias(state, read.Receiver, closure, arguments, target), read.Region, read.Index, false);
-                foreach (var write in summary.IndexedWrites)
-                    RecordIndexed(ReturnAlias(state, write.Receiver, closure, arguments, target), write.Region, write.Index, true);
+                foreach (var read in summary.IndexedReads) ProjectIndexed(read, false);
+                foreach (var write in summary.IndexedWrites) ProjectIndexed(write, true);
                 foreach (var read in readPlan) Apply(state, read.Access, read.Values, reads, false);
                 foreach (var write in writePlan) Apply(state, write.Access, write.Values, writes, true);
                 foreach (var enumeration in summary.Enumerates)
@@ -435,9 +439,26 @@ internal static class MemoryEffects
                 if (summary.UnknownReturnAlias) result = Union(result, ValueInfo.Top);
                 deferred |= summary.HasDeferredInvocation;
                 ordering |= summary.HasOrderingBoundary;
+                bindingWrites |= summary.HasBindingWrites;
                 if (summary.ReturnsCallbackFreeRange) result = result with { CallbackFreeRange = true };
                 if (summary.HasDeferredInvocation && module.Functions[target].ReturnType.Kind == TypeKind.Range && !summary.ReturnsCallbackFreeRange)
                     result = result with { Deferred = true };
+
+                void ProjectIndexed(IndexedFootprint effect, bool write)
+                {
+                    // A rebinding via one input can change a path rooted in
+                    // a different, aliasing input before the indexed access.
+                    // Only project through the caller's entry aliases if
+                    // the receiver path cannot have been replaced.
+                    if (effect.Receiver is not { } receiver || receiver.Descendants
+                        || summary.HasBindingWrites && (receiver.Fields.Count > 0 || receiver.Root.Kind == MemoryRootKind.Capture)
+                        || summary.IndexedWrites.Count > 0 && receiver.Fields.Contains(IndexedContents))
+                    {
+                        AddIndexed(effect with { Receiver = null }, write);
+                        return;
+                    }
+                    RecordIndexed(ReturnAlias(state, receiver, closure, arguments, target), effect.Region, effect.Index, write);
+                }
             }
             return result;
         }
@@ -609,10 +630,12 @@ internal static class MemoryEffects
             foreach (var origin in receiver.Origins)
             {
                 if (!External(origin)) continue;
-                var result = write ? indexedWrites ??= [] : indexedReads ??= [];
-                result.Add(new(origin, region, index));
+                AddIndexed(new(origin, region, index), write);
             }
         }
+
+        private void AddIndexed(IndexedFootprint effect, bool write) =>
+            (write ? indexedWrites ??= [] : indexedReads ??= []).Add(effect);
 
         private int? ConstantSubscript(int argument, bool write)
         {

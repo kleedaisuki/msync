@@ -8,6 +8,7 @@ internal sealed record FunctionMemoryEffects(IReadOnlyList<MemoryAccess> Reads, 
     internal IReadOnlyList<IndexedFootprint> IndexedReads { get; init; } = [];
     internal IReadOnlyList<IndexedFootprint> IndexedWrites { get; init; } = [];
     internal bool HasOrderingBoundary { get; init; }
+    internal bool HasBindingWrites { get; init; }
     internal bool ReturnsCallbackFreeRange { get; init; }
     internal static readonly FunctionMemoryEffects Empty = new([], [], [], []);
 }
