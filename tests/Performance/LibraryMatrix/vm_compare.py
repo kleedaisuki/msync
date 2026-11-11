@@ -11,7 +11,7 @@ import statistics
 import subprocess
 import time
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from run import CASES, ROOT, SIZE, digest, prepare
@@ -22,6 +22,14 @@ class Variant:
     compiler: Path
     probe: Path
     observer: Path | None
+
+
+@dataclass(frozen=True)
+class FunctionProfile:
+    image: str
+    function: str
+    name: str
+    metrics: dict[str, int]
 
 
 def invoke(command: list[str | Path], cwd: Path) -> str:
@@ -90,6 +98,7 @@ def profile(observer: Path, image: Path, database: Path) -> dict[str, object]:
         ROOT,
     )
     groups: dict[str, dict[str, dict[str, int]]] = {}
+    functions: dict[tuple[str, str], FunctionProfile] = {}
     with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as db:
         sessions: list[tuple[str, str | None]] = db.execute(
             "SELECT status, exporter_error FROM sessions"
@@ -103,20 +112,39 @@ def profile(observer: Path, image: Path, database: Path) -> dict[str, object]:
             raise RuntimeError(
                 f"Expected one successful execute interval: {executes!r}"
             )
-        for name, label, key, value in db.execute(
-            """SELECT r.name, COALESCE(a.value, ''), m.key, m.value
+        for name, label, key, value, image_id, function_id in db.execute(
+            """SELECT r.name, COALESCE(a.value, ''), m.key, m.value, i.value, f.value
                FROM records r JOIN metrics m ON m.record_id=r.id
                LEFT JOIN attributes a ON a.record_id=r.id AND a.key=
                CASE r.name WHEN 'vm.function' THEN 'function.name'
                            WHEN 'vm.native' THEN 'native.name'
                            WHEN 'vm.opcode' THEN 'opcode' END
+               LEFT JOIN attributes i ON i.record_id=r.id AND i.key='image.id'
+               LEFT JOIN attributes f ON f.record_id=r.id AND f.key='function.id'
                WHERE r.name IN ('execute', 'vm.function', 'vm.native', 'vm.opcode')"""
         ):
             bucket: dict[str, int] = groups.setdefault(name, {}).setdefault(label, {})
             bucket[key] = bucket.get(key, 0) + int(value)
+            if (
+                name == "vm.function"
+                and image_id is not None
+                and function_id is not None
+            ):
+                function_key: tuple[str, str] = image_id, function_id
+                row: FunctionProfile | None = functions.get(function_key)
+                if row is None:
+                    row = functions[function_key] = FunctionProfile(
+                        image_id, function_id, label, {}
+                    )
+                row.metrics[key] = row.metrics.get(key, 0) + int(value)
     if not groups.get("vm.opcode"):
         raise RuntimeError(f"Missing VM counters in {database}")
-    return {"database": str(database), "execute_ns": executes[0][0], "metrics": groups}
+    return {
+        "database": str(database),
+        "execute_ns": executes[0][0],
+        "metrics": groups,
+        "functions": [asdict(row) for row in functions.values()],
+    }
 
 
 def main() -> None:
