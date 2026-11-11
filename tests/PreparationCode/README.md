@@ -13,14 +13,6 @@ stay within the original function's valid PC domain, including its end sentinel.
 These are emission properties, not randomly executed malformed programs or a
 performance measurement.
 
-`RegionsChecks` separately compares the actual linear preparation-opportunity
-analysis with an independent graph search from every original PC. Its 1,200
-generated cases derive backward-edge headers from valid branch targets. Explicit
-fixtures retain source calls, iterator entry, metadata and transfer opportunities,
-union forward conditional paths, stop at backward-edge targets/returns/iterator
-steps, and reject pure-native tails. This is intraprocedural syntax reachability,
-not a claim about callee effects or filesystem validity.
-
 ```text
 dotnet build tests/PreparationCode/Msync.PreparationCode.Tests.csproj -c Release -m:1 -nr:false -p:FrozenAssemblies=/absolute/frozen-image -p:ArtifactsPath=/absolute/msync/.temp/preparation-code
 /absolute/msync/.temp/preparation-code/bin/Msync.PreparationCode.Tests/release/Msync.PreparationCode.Tests

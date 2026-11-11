@@ -5,6 +5,41 @@ using Msync.Runtime;
 
 internal static class ContextualIoChecks
 {
+    internal static async Task RunExecutionBoundaryAsync(string scratch)
+    {
+        foreach (bool prepare in new[] { false, true })
+        {
+            string directory = Path.Combine(scratch, prepare ? "prepared-prefix" : "relocatable");
+            Directory.CreateDirectory(directory);
+            const string source = """
+                fn publish(target: Path) {
+                    "first" -> target;
+                    if exists target { target -> ./observed.txt; };
+                    "last" -> target;
+                };
+                let name? = $std::io::read_line();
+                if not name? { publish(name); };
+                """;
+            using StringReader input = new("result.txt\n");
+            var options = new ExecutionOptions(WorkingDirectory: directory, Jobs: 1) { Input = input };
+            var module = Compiler.Compile(source, Path.Combine(directory, "main.msync"), optimization: 2);
+            if (prepare)
+            {
+                module = ContextualBackend.Prepare(Binding.Bind(module, new(directory, directory)), options);
+                Require(module.ExecutionPlans is { Count: 0 }, "The opaque input must leave residual instructions.");
+            }
+            var vm = new Interpreter(RoundTrip(module), options);
+            await vm.ExecuteAsync();
+            Require(await File.ReadAllTextAsync(Path.Combine(directory, "observed.txt")) == "first",
+                "The executed metadata read and copy must observe the preceding publication.");
+            Require(await File.ReadAllTextAsync(Path.Combine(directory, "result.txt")) == "last",
+                "The final write overtook its dependent read.");
+            Require(vm.SchedulingStatistics is { SubmittedPlans: 0, AdmittedTransfers: 3 },
+                "Residual instructions must execute as written, not be planned during dispatch.");
+        }
+        Console.WriteLine("PASS execution-only VM: relocatable and bound residual I/O preserve actual dependencies");
+    }
+
     internal static async Task RunAsync(string scratch)
     {
         foreach (string route in new[] { "source", "mso", "mexe" })
@@ -163,12 +198,8 @@ internal static class ContextualIoChecks
         Module module = Compiler.Compile(source, sourceName, optimization: 2);
         ExecutionOptions options = new(WorkingDirectory: directory, SourceFile: sourceName, Jobs: jobs, Error: errors);
         if (route != "source") module = RoundTrip(module);
-        if (route == "mexe")
-        {
-            module = Binding.Bind(module, new(directory, directory, sourceName));
-            module = ContextualBackend.Prepare(module, options);
-            module = RoundTrip(module);
-        }
+        module = ContextualBackend.Prepare(Binding.Bind(module, new(directory, directory, sourceName)), options);
+        if (route == "mexe") module = RoundTrip(module);
         Interpreter vm = new(module, options);
         Value result = await vm.ExecuteAsync();
         return (vm, result);

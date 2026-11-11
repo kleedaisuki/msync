@@ -19,15 +19,11 @@ work and suppresses later work, while an unselected failure leaves both writes
 intact. Source parsing is deliberately not involved: its earlier rejection of a
 duplicate declaration would not exercise backend/VM effect ordering.
 
-`--call-preparation-only` checks the exact source-call guard against static and
-text dispatch precedence, shared callable cells, unresolved/native/session
-fallbacks, and future call/iterator/metadata/transfer opportunities. Classification
-must leave the operand stack intact and execute no effects. Actual VM journeys
-then exercise selected targets with opaque native I/O, a mutable captured counter
-whose body appends exactly once per invocation, and metadata reads depending on a
-preceding publication. O0/O2 source programs and hand-authored dispatch IR run
-directly and through portable/prepared executable round trips. Skipping redundant
-preparation must never skip or duplicate the actual function invocation.
+`--call-preparation-only` verifies that execution selects the actual static or
+table-dispatched target exactly once. It covers opaque native I/O, mutable
+captured counters and metadata reads after preceding publications, through
+direct bytecode and portable/prepared executable round trips. Preparation is
+outside the VM; residual calls execute normally.
 An additional raw-runtime fixture holds a public `ProcessValue.Completion`
 producer while its discarded stdout transfer owns the metadata target. With no
 sleep or timing threshold, the callee's captured-counter prefix must be visible

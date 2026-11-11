@@ -28,23 +28,9 @@ public sealed partial class Interpreter
         imageGeneration = image.Generation;
     }
 
-    internal (Module Module, BasicBlock[][] Blocks) ProjectImage(Module image) =>
-        ProjectImage(image, ImageContext, planResources, executionOptions, preparationCancellation,
-            pending.Count == 0 ? null : observationAdmission ??= AdmitContextualObservation);
-
-    internal static (Module Module, BasicBlock[][] Blocks) ProjectImage(Module image, BindingContext origin,
-        ContextualResources? resources = null, ExecutionOptions? options = null,
-        CancellationToken cancellationToken = default,
-        Func<PathValue, bool, bool, PlanFileSystem, ContextualReadWait?>? admission = null)
+    internal (Module Module, BasicBlock[][] Blocks) ProjectImage(Module image)
     {
-        // Code follows mutable session identities; physical anchors belong to this invocation's origin.
-        var projected = image;
-        if (image.Stage == ArtifactStage.Relocatable)
-        {
-            var bound = Binding.Bind(image, origin);
-            projected = resources is null ? ContextualBackend.Prepare(bound, options, cancellationToken)
-                : ContextualBackend.Prepare(bound, options, resources, cancellationToken, admission);
-        }
+        var projected = image.Stage == ArtifactStage.Relocatable ? Binding.Bind(image, ImageContext) : image;
         var prepared = preparedImages.GetValue(projected, static module =>
         {
             if (module.Blocks is null) module = BlockBuilder.Form(module);

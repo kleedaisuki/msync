@@ -9,127 +9,27 @@ public sealed partial class Interpreter
 
     private async ValueTask<Value> RunOwnedCodeAsync(int functionIndex, Value[] locals, int startInstruction, CancellationToken cancellationToken)
     {
-        Module original = module;
-        Module image = original;
+        Module image = module;
         var function = image.Functions[functionIndex];
         var indexed = blocks[functionIndex];
-        var originalBlocks = indexed;
-        IReadOnlyList<int>? positions = null;
         OperandStack stack = new();
         Dictionary<int, PlanSubmission>? submissions = null;
-        var pc = startInstruction;
-        int preparedAt = -1;
-        int? continuation = null;
-        IReadOnlyList<PlanResource> awaiting = [];
-        Task? pendingRead = null;
-        bool prepareEntry = true;
+        int pc = startInstruction;
         while (pc < function.Instructions.Count)
         {
-            var next = function.Instructions[pc];
-            bool contextualize = pc == continuation || preparedAt != pc
-                && (prepareEntry
-                    || next.Op is OpCode.Transfer or OpCode.LocalTransfer or OpCode.SelectPath
-                        or OpCode.GetIterator or OpCode.NativeCall or OpCode.Call);
-            if (pc == continuation && awaiting.Count != 0)
-                await AwaitPlanResourcesAsync(awaiting);
-            if (pc == continuation && pendingRead is { } ready)
-            {
-                await ready;
-                pendingRead = null;
-                preparedAt = -1;
-            }
-            if (contextualize && ContextualBackend.NeedsPreparation(function, pc)
-                && !CanExecuteCallDirectly(function, pc, stack))
-            {
-                var prepared = await PrepareContinuationAsync(image, functionIndex, pc, locals, stack, cancellationToken);
-                preparedAt = pc;
-                if (prepared is null)
-                {
-                    var deferredBlock = indexed[pc];
-                    var deferred = await RunBlockAsync(image, function, locals, stack, submissions, pc, deferredBlock, cancellationToken);
-                    if (deferred.Returned) return deferred.Value!;
-                    pc = deferred.Next;
-                    continue;
-                }
-                if (prepared.SourcePositions is { } rewritten)
-                {
-                    int oldPc = pc;
-                    pc = FindRewrittenPosition(rewritten, oldPc);
-                    positions = positions is null ? rewritten
-                        : rewritten.Select(source => positions[source]).ToArray();
-                }
-                preparedAt = pc;
-                continuation = prepared.ContinueAt;
-                awaiting = prepared.AwaitResources;
-                pendingRead = prepared.PendingRead;
-                if (!ReferenceEquals(prepared.Module, image))
-                {
-                    image = prepared.Module;
-                    var nextFunction = image.Functions[functionIndex];
-                    if (!ReferenceEquals(function, nextFunction)) indexed = IndexBlocks(nextFunction, functionIndex);
-                    function = nextFunction;
-                    if (pc >= function.Instructions.Count) break;
-                }
-                if (pc == continuation && pendingRead is not null) continue;
-            }
-            prepareEntry = false;
-            var block = indexed[pc];
-            var last = function.Instructions[block.End - 1];
-            var outcome = await RunBlockAsync(image, function, locals, stack, submissions, pc, block, cancellationToken);
+            var outcome = await RunBlockAsync(image, function, locals, stack, submissions, pc, indexed[pc], cancellationToken);
             if (outcome.Returned) return outcome.Value!;
             if (outcome.Submission is { } submitted)
                 (submissions ??= [])[outcome.SubmittedPlan] = submitted;
-            bool boundary = last.Op is OpCode.Call or OpCode.ProcessCall or OpCode.NativeCall;
-            if (outcome.Next <= pc || boundary)
-            {
-                pc = positions is null ? outcome.Next : positions[outcome.Next];
-                image = original;
-                function = image.Functions[functionIndex];
-                indexed = originalBlocks;
-                positions = null;
-                preparedAt = -1;
-                continuation = null;
-                awaiting = [];
-                pendingRead = null;
-                prepareEntry = true;
-            }
-            else pc = outcome.Next;
+            pc = outcome.Next;
         }
         return stack.Count == 0 ? Value.Null : stack[^1];
     }
-    private bool CanExecuteCallDirectly(FunctionCode caller, int pc, OperandStack stack)
-    {
-        Instruction call = caller.Instructions[pc];
-        if (call.Op != OpCode.Call || call.B < 0 || stack.Count <= call.A
-            || pc + 1 < caller.Instructions.Count && ContextualBackend.NeedsPreparation(caller, pc + 1)) return false;
-        if (ReadValue(stack[stack.Count - call.A - 1]) is not FunctionValue { NativeName: null } function
-            || KnownCalls.Target(function, call) is not int target || (uint)target >= (uint)module.Functions.Count) return false;
-        return !ContextualBackend.NeedsPreparation(module.Functions[target]);
-    }
-    private static int FindRewrittenPosition(IReadOnlyList<int> positions, int source)
-    {
-        int index = 0;
-        while (index + 1 < positions.Count && positions[index] < source) index++;
-        return index;
-    }
 
-    private async ValueTask<ContextualPreparation?> PrepareContinuationAsync(Module image, int function, int pc,
-        Value[] locals, OperandStack stack, CancellationToken cancellationToken)
-    {
-        if (!await AwaitContextualInputsAsync(image.Functions[function].Instructions[pc], stack, cancellationToken)) return null;
-        var values = Enumerable.Range(0, stack.Count).Select(index => stack[index]).ToArray();
-        return ContextualBackend.PrepareNext(image, function, pc, locals, values,
-            executionOptions, planResources, cancellationToken,
-            pending.Count == 0 ? null : observationAdmission ??= AdmitContextualObservation);
-    }
     private readonly record struct BlockOutcome(int Next, Value? Value = null, bool Returned = false,
         int SubmittedPlan = -1, PlanSubmission? Submission = null);
-    private static Instruction SpecializeBlockInstruction(Instruction instruction, OperandStack stack)
-    {
-        if (instruction.Op != OpCode.Transfer || stack.Count < 2) return instruction;
-        static bool Local(Value value) => value is StringValue or PathValue { Connection: null or { Kind: ConnectionKind.Local } };
-        return Local(stack[^1]) && Local(stack[^2]) ? instruction with { Op = OpCode.LocalTransfer } : instruction;
-    }
+    private static bool LocalTransferOperand(Value value) =>
+        value is StringValue or PathValue { Connection: null or { Kind: ConnectionKind.Local } };
     private async ValueTask<BlockOutcome> RunBlockAsync(Module image, FunctionCode function, Value[] locals,
         OperandStack stack, Dictionary<int, PlanSubmission>? submissions, int startInstruction,
         BasicBlock block, CancellationToken cancellationToken)
@@ -139,7 +39,7 @@ public sealed partial class Interpreter
         for (; pc < block.End; pc++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var instruction = pc == block.Start ? SpecializeBlockInstruction(code[pc], stack) : code[pc];
+            var instruction = code[pc];
             try
             {
                 switch (instruction.Op)
@@ -267,7 +167,9 @@ public sealed partial class Interpreter
                                 && source is PathValue or StringValue or DeferredValue
                                 && destination is PathValue or StringValue or DeferredValue;
                             if (!discarded && source is not (PathValue or StringValue or DeferredValue)) await DrainAsync();
-                            var completion = await ScheduleTransferAsync(source, destination, instruction.Span, instruction.Op == OpCode.LocalTransfer, cancellationToken, discarded);
+                            bool local = instruction.Op == OpCode.LocalTransfer
+                                || LocalTransferOperand(source) && LocalTransferOperand(destination);
+                            var completion = await ScheduleTransferAsync(source, destination, instruction.Span, local, cancellationToken, discarded);
                             if (discarded) pc++;
                             else stack.Add(await completion ? Value.True : Value.False);
                             break;

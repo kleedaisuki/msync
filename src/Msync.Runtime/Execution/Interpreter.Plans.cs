@@ -5,34 +5,6 @@ namespace Msync.Runtime;
 
 public sealed partial class Interpreter
 {
-    private Func<PathValue, bool, bool, PlanFileSystem, ContextualReadWait?>? observationAdmission;
-
-    private ContextualReadWait? AdmitContextualObservation(PathValue path, bool followLeaf, bool subtree,
-        PlanFileSystem filesystem)
-    {
-        if (pending.Count == 0) return null;
-        string endpoint = path.Connection is { Kind: ConnectionKind.Ssh or ConnectionKind.Wsl } remote
-            ? remote.ToString() : "local";
-        if (!resources.HasPendingWriters(endpoint)) return null;
-        var endpointDependencies = resources.Dependencies([new(endpoint, "")], [], false);
-        if (endpointDependencies.Count != 0) return ReadWait(endpointDependencies);
-        var namespaceDependencies = NamespaceDependencies([path]);
-        if (namespaceDependencies is { Count: > 0 }) return ReadWait(namespaceDependencies);
-        var entry = filesystem.AdmissionEntry(path);
-        var entryDependencies = resources.Dependencies([Key(entry)], [], false);
-        if (entryDependencies.Count != 0) return ReadWait(entryDependencies);
-        var observed = filesystem.AdmissionResources(path, followLeaf);
-        var dependencies = resources.Dependencies(observed.Where(resource => !subtree || !resource.Subtree)
-            .Select(Key).ToArray(), [], false);
-        if (subtree) dependencies.UnionWith(resources.Dependencies(observed.Where(resource => resource.Subtree)
-            .Select(Key).ToArray(), []));
-        return dependencies.Count == 0 ? null : ReadWait(dependencies);
-    }
-
-    private ContextualReadWait ReadWait(IReadOnlyCollection<Task> dependencies) =>
-        new(dependencies.Count == 1 ? dependencies.First() : Task.WhenAll(dependencies),
-            dependencies.Any(IsUnresolvedProcessFlow));
-
     private readonly record struct PlanNodeResult(Task<IReadOnlyList<TransferBatchOutcome>> Completion, int Offset);
     private sealed record PlanSubmission(PlanNodeResult[] Results);
 
@@ -276,63 +248,14 @@ public sealed partial class Interpreter
         await planResources.DisposeAsync();
     }
 
-    private async ValueTask AwaitPlanResourcesAsync(IReadOnlyList<PlanResource> read)
-    {
-        var dependencies = resources.Dependencies(read.Select(Key).ToArray(), []);
-        if (dependencies.Count == 0) return;
-        nativeHazardWaits++;
-        await Task.WhenAll(dependencies);
-    }
-
-    private async ValueTask<bool> AwaitContextualInputsAsync(Instruction instruction, OperandStack stack,
-        CancellationToken cancellationToken)
-    {
-        PathValue[] paths;
-        if (instruction.Op == OpCode.SelectPath && stack.Count != 0)
-            paths = [context.AsPath(stack[stack.Count - 1])];
-        else if (instruction.Op is OpCode.Transfer or OpCode.LocalTransfer && stack.Count >= 2
-            && stack[stack.Count - 2] is RangeValue { Selection: { } selection })
-            paths = [selection.Directory, context.AsPath(stack[stack.Count - 1])];
-        else if (instruction.Op == OpCode.GetIterator && stack.Count != 0
-            && stack[stack.Count - 1] is RangeValue { Selection: { } iteration })
-            paths = [iteration.Directory];
-        else if (instruction.Op is OpCode.Transfer or OpCode.LocalTransfer && stack.Count >= 2
-            && stack[stack.Count - 2] is PathValue source)
-            paths = [source];
-        else if (instruction.Op == OpCode.NativeCall && instruction.Text!.StartsWith("fs.", StringComparison.Ordinal)
-            && !NativeEvaluation.DefersFileRead(instruction.Text)
-            && NativeSignatures.TryGet(instruction.Text, out var signature) && signature.Effect == NativeEffect.Read)
-            paths = Enumerable.Range(0, instruction.A)
-                .Where(index => (signature.Parameters[index].Kind & TypeKind.Path) != 0)
-                .Select(index => context.AsPath(stack[stack.Count - instruction.A + index])).ToArray();
-        else return true;
-        bool deferrable = instruction.Op is OpCode.Transfer or OpCode.LocalTransfer;
-        if (!await AwaitNamespacePublicationsAsync(paths, deferrable)) return false;
-        var filesystem = new PlanFileSystem(context, planResources, cancellationToken);
-        var entries = paths.Select(path => filesystem.Resource(path, true)).ToArray();
-        var dependencies = resources.Dependencies(entries.Select(Key).ToArray(), []);
-        if (deferrable && dependencies.Any(IsUnresolvedProcessFlow)) return false;
-        if (dependencies.Count != 0)
-        {
-            nativeHazardWaits++;
-            await Task.WhenAll(dependencies);
-        }
-        bool follow = instruction.Text is not ("fs.symlink_status" or "fs.is_symlink" or "fs.read_symlink");
-        await AwaitPlanResourcesAsync(paths.SelectMany(path => filesystem.ObservationResources(path, follow)).ToArray());
-        return true;
-    }
-
     private IDisposable? EnterPathSession(IReadOnlyList<Value> values, CancellationToken cancellationToken) =>
         values.OfType<PathValue>().FirstOrDefault(path => path.Connection?.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl)
             is { Connection: { } connection } ? planResources.Enter(connection, cancellationToken) : null;
 
-    private async ValueTask<bool> AwaitNamespacePublicationsAsync(IReadOnlyList<PathValue> paths, bool deferProcessFlows = false)
+    private async ValueTask AwaitNamespacePublicationsAsync(IReadOnlyList<PathValue> paths)
     {
-        var dependencies = NamespaceDependencies(paths);
-        if (dependencies is null) return true;
-        if (deferProcessFlows && dependencies.Any(IsUnresolvedProcessFlow)) return false;
-        await Task.WhenAll(dependencies);
-        return true;
+        if (NamespaceDependencies(paths) is { } dependencies)
+            await Task.WhenAll(dependencies);
     }
 
     private List<Task>? NamespaceDependencies(IReadOnlyList<PathValue> paths)
@@ -356,9 +279,4 @@ public sealed partial class Interpreter
         return dependencies.Length == 0 ? null : dependencies.ToList();
     }
 
-    private bool IsUnresolvedProcessFlow(Task task) => !task.IsCompleted
-        && processDependencies.TryGetValue(task, out var processes) && processes.Count != 0;
-
-    private static BasicBlock[] IndexBlocks(FunctionCode function, int index) =>
-        BlockBuilder.IndexFunction(function, index);
 }

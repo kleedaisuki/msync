@@ -4,23 +4,14 @@ using Msync.Core;
 namespace Msync.Runtime;
 
 public sealed record ContextualPreparation(Module Module, int? ContinueAt,
-    IReadOnlyList<PlanResource> AwaitResources, IReadOnlyList<int>? SourcePositions = null)
-{
-    internal Task? PendingRead { get; init; }
-}
+    IReadOnlyList<PlanResource> AwaitResources, IReadOnlyList<int>? SourcePositions = null);
 
 public static partial class ContextualBackend
 {
-    private sealed record Applicability(bool Required, IReadOnlySet<int> LoopHeaders, bool[] Starts);
+    private sealed record Applicability(bool Required, IReadOnlySet<int> LoopHeaders);
     private static readonly ConditionalWeakTable<FunctionCode, Applicability> applicability = new();
 
     public static bool NeedsPreparation(FunctionCode function) => Applicable(function).Required;
-
-    internal static bool NeedsPreparation(FunctionCode function, int start)
-    {
-        Applicability facts = Applicable(function);
-        return facts.Required && facts.Starts[start];
-    }
 
     private static Applicability Applicable(FunctionCode function) => applicability.GetValue(function, static code =>
     {
@@ -35,8 +26,7 @@ public static partial class ContextualBackend
             if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse && instruction.A <= index)
                 headers.Add(instruction.A);
         }
-        return new(required, headers,
-            required ? PreparationRegions.Analyze(code.Instructions, headers, IsMetadata) : []);
+        return new(required, headers);
     });
 
     public static Module Prepare(Module module, ExecutionOptions? options = null,
@@ -50,12 +40,11 @@ public static partial class ContextualBackend
     }
 
     internal static Module Prepare(Module module, ExecutionOptions? options, ContextualResources resources,
-        CancellationToken cancellationToken = default,
-        Func<PathValue, bool, bool, PlanFileSystem, ContextualReadWait?>? admission = null)
+        CancellationToken cancellationToken = default)
     {
         if (module.ExecutionPlans is not null) return module;
         Module prepared = NeedsPreparation(module.Functions[module.EntryPoint])
-            ? PrepareNext(module, module.EntryPoint, 0, null, null, options, resources, cancellationToken, admission).Module
+            ? new Preparation(module, module.EntryPoint, 0, null, null, options, resources, cancellationToken).Run().Module
             : module with { ExecutionPlans = [] };
         return prepared.Blocks is null ? BlockBuilder.Form(prepared) : prepared;
     }
@@ -77,12 +66,6 @@ public static partial class ContextualBackend
         try { return new Preparation(module, function, start, locals, stack, options, resources, cancellationToken).Run(); }
         finally { resources.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
     }
-
-    internal static ContextualPreparation PrepareNext(Module module, int function, int start,
-        IReadOnlyList<Value>? locals, IReadOnlyList<Value>? stack, ExecutionOptions? options,
-        ContextualResources resources, CancellationToken cancellationToken = default,
-        Func<PathValue, bool, bool, PlanFileSystem, ContextualReadWait?>? admission = null) =>
-        new Preparation(module, function, start, locals, stack, options, resources, cancellationToken, admission).Run();
 
     private static bool IsMetadata(string? name) => name is not null && name.StartsWith("fs.", StringComparison.Ordinal)
         && !NativeEvaluation.DefersFileRead(name)
@@ -116,14 +99,11 @@ public static partial class ContextualBackend
         private TransferGraph graph = new();
         private int? continuation;
         private IReadOnlyList<PlanResource> awaitResources = [];
-        private Task? pendingRead;
-        private bool blockedObservation;
         private int pc;
 
         internal Preparation(Module module, int function, int start, IReadOnlyList<Value>? locals,
             IReadOnlyList<Value>? stack, ExecutionOptions? options, ContextualResources resources,
-            CancellationToken cancellationToken,
-            Func<PathValue, bool, bool, PlanFileSystem, ContextualReadWait?>? admission = null)
+            CancellationToken cancellationToken)
         {
             this.module = module;
             this.function = function;
@@ -131,7 +111,7 @@ public static partial class ContextualBackend
             context = new(options, module.Context);
             this.cancellationToken = cancellationToken;
             loopHeaders = Applicable(module.Functions[function]).LoopHeaders;
-            filesystem = new(context, resources, cancellationToken, admission);
+            filesystem = new(context, resources, cancellationToken);
             code = module.Functions[function].Instructions;
             constants = new(module.Constants);
             plans = new(module.ExecutionPlans ?? []);
@@ -146,25 +126,15 @@ public static partial class ContextualBackend
         internal ContextualPreparation Run()
         {
             pc = start;
-            try
+            while (pc < code.Count && visited.Add(pc))
             {
-                while (pc < code.Count && visited.Add(pc))
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    if (loopHeaders.Contains(pc)) { Stop(); break; }
-                    if (!Step()) break;
-                    pc++;
-                }
-            }
-            catch (ContextualObservationBlocked blocked)
-            {
-                blockedObservation = true;
-                Stop();
-                if (!blocked.Wait.ProcessFlow || code[pc].Op is not (OpCode.Transfer or OpCode.LocalTransfer))
-                    pendingRead = blocked.Wait.Completion;
+                cancellationToken.ThrowIfCancellationRequested();
+                if (loopHeaders.Contains(pc)) { Stop(); break; }
+                if (!Step()) break;
+                pc++;
             }
             Flush();
-            return Rewrite() with { PendingRead = pendingRead };
+            return Rewrite();
         }
 
         private bool Step()
@@ -450,7 +420,7 @@ public static partial class ContextualBackend
                 else snapshot = filesystem.Select(selection.Directory, selection.Pattern, selection.Recursive);
             }
             if (snapshot.SnapshotValues is not { } values) return Stop();
-            if (TryExpandLoop(input, values)) return true;
+            if (ExpandKnownLoop(input, values)) return true;
             if (ReferenceEquals(range, snapshot)) return Stop();
             Pop();
             int pops = RemoveInputs([input]);
@@ -461,12 +431,6 @@ public static partial class ContextualBackend
             output.Add(code[pc]);
             Replace(pc, output.ToArray());
             return Stop();
-        }
-
-        private bool TryExpandLoop(KnownValue input, IReadOnlyList<Value> values)
-        {
-            try { return ExpandKnownLoop(input, values); }
-            catch (ContextualObservationBlocked) { blockedObservation = true; return false; }
         }
 
         private bool ExpandKnownLoop(KnownValue input, IReadOnlyList<Value> values)
@@ -613,7 +577,7 @@ public static partial class ContextualBackend
             int index = plans.Count;
             int begin = sites[0].Instruction, end = sites[^1].LoopEnd
                 ?? sites[^1].Instruction + (sites[^1].Observed ? 1 : 2);
-            if (!blockedObservation) graph = FileVersionForwarding.Apply(graph, filesystem);
+            graph = FileVersionForwarding.Apply(graph, filesystem);
             ExecutionPlan plan = graph.Build(function, begin, end);
             if (sites.Any(site => site.Observed) && plan.ResultTransfers is null) plan = plan with { ResultTransfers = [] };
             plans.Add(plan);

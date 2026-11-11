@@ -47,10 +47,11 @@
   `decltype` still infers without executing effects.
 - `Runtime/Planning` owns contextual computation, resource-version dependencies,
   dead overwritten I/O elimination and batch formation. VM owns execution,
-  parallel scheduling, admission, lifetimes and concrete errors. Only selected
-  unprepared continuations request backend computation after opaque effects or
-  unknown inputs; prepared graphs are not refreshed. Mutable-loop/call inputs
-  belong to their frame, never a first-iteration/shared-module specialization.
+  parallel scheduling, admission, lifetimes and concrete errors. The CLI host
+  may prepare a relocatable entry image once before handing it to the VM.
+  Residual instructions, including calls after opaque effects or unknown
+  inputs, execute directly. The VM never calls the planner, rewrites a frame's
+  instructions, or refreshes a prepared graph.
   See [the contextual backend contract](docs/design/contextual-io-backend.md).
 - Scope identity and logical field order do not promise physical contiguity.
   VM factories may place numeric payloads in shape/allocation-site pages while
@@ -81,9 +82,9 @@
   not a synthetic empty compilation or a freeze of historical executable HIR.
 - Predicate havoc advances an analysis-local generation; realize invalidated
   alias facts only on reads and joins. Canonical semantic identities, not the
-  generation counters, determine CFG convergence. Runtime preparation skips
-  positions where it must immediately stop, without skipping continuation
-  resource waits. See [tail-latency findings](docs/design/performance-tail-v081.md).
+  generation counters, determine CFG convergence. Actual native operations and
+  transfers retain their scheduler resource dependencies. See
+  [tail-latency findings](docs/design/performance-tail-v081.md).
 - Product code never depends on Python or a Rust toolchain. Typed Python under
   `scripts/`, `packaging/` and `tests/` owns development/installation experiments.
   Keep publication payloads in `artifacts/`, archives in `dist/`, disposable work

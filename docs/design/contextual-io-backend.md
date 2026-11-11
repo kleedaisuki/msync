@@ -1,6 +1,6 @@
 # Contextual I/O backend and execution plans
 
-## Contract (2026-11-10)
+## Contract
 
 This work replaces the assumption that executable artifacts are reusable
 environment-independent programs. `.mso` retains the machine-independent
@@ -11,12 +11,13 @@ time; repeat submission is another attempt to execute its recorded operations.
 The contextual backend computes known values and control flow, observes selected
 filesystem/endpoint state, expands finite selections, builds effect dependencies,
 eliminates dead work and forms executable batches. An opaque external call ends
-the region whose effects can currently be computed; continuation inputs describe
-what must become available before the next region can be contextualized.
+the region whose effects can be computed before execution. The remaining
+instructions execute normally; they do not request another planning pass.
 
 The VM executes received operations and dependencies. It owns parallel execution,
 admission, processes, transport lifetimes, cancellation and concrete errors. It
-does **not** revalidate the whole plan, compare environment snapshots, classify
+does **not** enter the planner during construction or dispatch, rewrite code,
+revalidate the whole plan, compare environment snapshots, classify
 plans as stale, automatically replan, or fall back to another program because
 an observation changed. Reading/decoding an artifact is not an environment
 validity check. Native operations perform the work requested and report actual
@@ -105,6 +106,10 @@ buffer, Task and global dependency scan for every bytecode instruction.
 * [MLIR async tokens](https://mlir.llvm.org/docs/Dialects/AsyncDialect/)
   distinguish completion dependencies from returned values. The VM needs both
   for demanded Bool results and independent finite I/O.
+* [PostgreSQL's executor boundary](https://www.postgresql.org/docs/15/executor.html)
+  illustrates the distinction between producing a plan and executing its
+  operators. Here a native resource wait is an execution dependency, not
+  permission for the VM to revisit optimization.
 * [OpenSSH configuration](https://man.openbsd.org/ssh_config) supplies native
   connection multiplexing through ControlMaster/ControlPersist. Ownership and
   cleanup must distinguish msync-created resources from user-owned masters.
@@ -117,9 +122,9 @@ buffer, Task and global dependency scan for every bytecode instruction.
   and buffer budgets still apply inside batches; nested per-batch parallelism
   must not multiply the configured concurrency by the number of batches.
 
-The following sections describe the implemented default execution path and its
-acceptance results. Earlier rejected candidates remain historical observations,
-not substitutes for the final Native and installed-editor evidence.
+The following sections document the backend and its historical validation.
+Where older observations describe preparation inside dispatch, the current
+execution-only contract above takes precedence.
 
 ## Representation and phase ownership
 
@@ -170,20 +175,20 @@ resolution lifetime explicit: a leaf writing outside a tree must finish before
 a later replacement removes the link it used. Separators and case comparison
 follow the endpoint grammar; a POSIX backslash is filename data.
 
-## Continuations and runtime ownership
+## Residual instructions and execution ownership
 
-The remaining typed bytecode is the continuation program after an opaque effect
-or an unresolved input. Runtime orchestration supplies the selected frame's
-actual inputs to the backend; the resulting residual code, constants and plans
-belong to that frame, not the shared source Module. Rewrites retain instruction
-provenance so backedges and opaque-result boundaries resume the original
-continuation with current values. This prevents the first loop iteration or
-first closure invocation from freezing subsequent invocations. It is not shared
-bytecode patching or a stale-plan recovery path.
+The CLI's `ExecutionHost` binds and optionally prepares one entry image before
+constructing the interpreter; `bind-ir` and `plan` retain explicit preparation.
+The low-level Interpreter and interactive sessions bind relocatable paths but
+execute the supplied bytecode without contextual preparation. A loaded
+`.mexe` is already the execution image: both its recorded plans and the
+instructions left after an opaque effect execute as supplied. No frame sends
+its locals or operand stack back to the backend. A selected native read or
+transfer still waits on actual resource publications through the scheduler.
 
 `ContextualResources` has an explicit run/session owner. Artifact/inspection
 factories close their own metadata resources before returning a pure Module;
-live orchestration lends its resource owner to preparation and execution so
+the CLI host transfers the same resource owner from preparation to execution so
 selected metadata and payload can use the same native channel. No live lease is
 hidden in a Module-keyed side table or serialized with an artifact.
 
@@ -228,7 +233,7 @@ publishing graph operations. Residual local stores preserve initialization
 versus mutation, and unproved loops retain their continuation. Ordinary scanning
 stops before a backedge header, so the first iteration cannot freeze later
 iteration values. Changed-function and append-only constant/plan views avoid
-copying unrelated module tables for each dynamic preparation.
+copying unrelated module tables during preparation.
 
 ### Known source calls
 
@@ -541,6 +546,9 @@ source/object/executable loop continuation journeys pass on the final Runtime.
 
 ### Exact source calls without a planning continuation
 
+Historical 0.8.6 runtime-dispatch investigation; the current execution-only
+boundary removes the per-frame preparation opportunity and direct-call bypass.
+
 The distinct-reference manifest's actual call is a statically selected source
 `filename` wrapper whose body has no contextual preparation opportunity. The VM
 may execute that exact source call directly when the caller's following region
@@ -554,6 +562,10 @@ falls from 625,415,320 to 86,723,704 bytes. Cold managed timings are budget
 observations, not tail estimates; the accepted 1,000-sample window was not rerun.
 
 ### Selected observation admission
+
+Historical admission design for runtime preparation. The current host does not
+borrow an active scheduler into the planner. Observation ordering below now
+belongs to the execution of actual native operations and transfers.
 
 A focused caller-publish/callee-read test exposed a real race: entry preparation
 could start at LoadLocal and cross into `exists` before the caller's discarded
@@ -633,12 +645,15 @@ is an experimental intervention for these known compute-only programs, not
 an execution mode or a safe general optimization. An empty serialized plan
 table does not prove that a future continuation is free of I/O.
 
-A production fix should prove a negative: retain a compact, immutable
-contextual-effect and downstream-demand summary of the code, not a cache of
-argument values, object contents, filesystem observations, or previous frames.
-Propagate effects through proven call/dispatch targets, and keep unknown or
-effectful callbacks eligible. A call may be locally compute-only but still
-produce an input to a downstream transfer, so check result demand as well as
-the callee's own effects. Start with the closed computation case; test a
-mixed program that computes its destination, a late-bound effectful callback,
-and existing namespace/observation waits before broadening the proof.
+The adopted fix removes the admission point instead of adding a purity
+classifier to dispatch. Preparation stays in the host/backend; unknown
+effects and late-bound operands execute through ordinary instructions. Tests
+exercise an opaque input followed by a call that writes a path, observes the
+publication, and overwrites it again, with no runtime plan submission.
+
+The uninstrumented execution-only Native AOT host runs the same original
+8,192-key bound Set with the same checksum in 4.67 and 4.75 seconds on logical
+CPU 6, versus 25.56 seconds for one run of the frozen original host. Selected
+dispatch, held producer, namespace, prepared plan resubmission, and dynamic
+REPL I/O journeys passed. A loopback SSH selection reused one native client
+from host preparation through transfer on both source and object routes.

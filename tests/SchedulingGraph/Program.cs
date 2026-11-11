@@ -6,6 +6,11 @@ string scratch = Path.Combine(Directory.GetCurrentDirectory(), ".temp", "schedul
 Directory.CreateDirectory(scratch);
 try
 {
+    if (args.Contains("--execution-boundary-only", StringComparer.Ordinal))
+    {
+        await ContextualIoChecks.RunExecutionBoundaryAsync(scratch);
+        return;
+    }
     if (args.Contains("--plan-prepare-1024", StringComparer.Ordinal))
     {
         await PreparationCostProbe.RunAsync(scratch, [1024]);

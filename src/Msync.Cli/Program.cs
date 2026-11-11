@@ -135,7 +135,10 @@ internal static class Program
                     PrintPlan(module, color);
                     return Complete(0, telemetry);
                 }
-                Interpreter interpreter = new(module, RuntimeOptions(options, options.SourceFile ?? (binary || file == "-" ? null : Path.GetFullPath(file)), telemetry, color, snapshot, input), cancellation.Token);
+                string? runSource = options.SourceFile is { } requestedSource ? Path.GetFullPath(requestedSource)
+                    : binary || file == "-" ? null : Path.GetFullPath(file);
+                ExecutionOptions execution = RuntimeOptions(options, runSource, telemetry, color, snapshot, input);
+                Interpreter interpreter = ExecutionHost.Create(module, execution, cancellation.Token);
                 await interpreter.ExecuteAsync(cancellation.Token);
                 return Complete(interpreter.FailedTransfers == 0 ? 0 : 1, telemetry);
             }

@@ -6,9 +6,7 @@ public sealed partial class Interpreter
 {
     private Module module;
     private readonly RuntimeContext context;
-    private readonly ExecutionOptions? executionOptions;
     private readonly ContextualResources planResources;
-    private readonly CancellationToken preparationCancellation;
     private BasicBlock[][] blocks;
     private readonly SemaphoreSlim slots;
     private readonly int transferConcurrency;
@@ -21,11 +19,11 @@ public sealed partial class Interpreter
     public Interpreter(Module module, ExecutionOptions? options = null) : this(module, options, null) { }
     public Interpreter(Module module, ExecutionOptions? options, CancellationToken cancellationToken)
         : this(module, options, null, cancellationToken) { }
-    internal Interpreter(Module module, ExecutionOptions? options, Interpreter? previous, CancellationToken cancellationToken = default)
+    internal Interpreter(Module module, ExecutionOptions? options, Interpreter? previous,
+        CancellationToken cancellationToken = default, ContextualResources? transferredResources = null)
     {
-        executionOptions = options;
-        preparationCancellation = cancellationToken;
-        planResources = previous?.planResources ?? new();
+        cancellationToken.ThrowIfCancellationRequested();
+        planResources = transferredResources ?? previous?.planResources ?? new();
         resources = previous?.resources ?? new();
         pending = previous?.pending ?? [];
         sessionProcesses = previous?.sessionProcesses ?? new(ReferenceEqualityComparer.Instance);
@@ -36,7 +34,7 @@ public sealed partial class Interpreter
         try { (this.module, blocks) = ProjectImage(module); }
         catch
         {
-            if (previous is null) planResources.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            if (previous is null && transferredResources is null) planResources.DisposeAsync().AsTask().GetAwaiter().GetResult();
             throw;
         }
         transferConcurrency = previous?.transferConcurrency

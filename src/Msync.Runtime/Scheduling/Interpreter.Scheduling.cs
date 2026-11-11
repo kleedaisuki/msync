@@ -154,6 +154,7 @@ public sealed partial class Interpreter
         var effects = InstructionEffects.NativeEffects(name);
         if ((effects & (InstructionEffect.Read | InstructionEffect.Write)) == 0) return;
         await ordering;
+        if (pending.Count == 0) return;
         List<PathValue>? operands = null;
         for (int index = 0; index < Math.Min(arguments.Count, signature.Parameters.Count); index++)
             if ((signature.Parameters[index].Kind & TypeKind.Path) != 0
@@ -242,7 +243,6 @@ public sealed partial class Interpreter
             foreach (var item in registrations) resources.Remove(work.Completion, item);
         work.Registration = null;
         work.Registrations = null;
-        resources.RetireTask(work.Completion);
         processDependencies.Remove(work.Completion);
         namespaceProducers.Remove(work.Completion);
     }

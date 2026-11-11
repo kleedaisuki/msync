@@ -1,4 +1,3 @@
-using System.Reflection;
 using Msync.Compiler;
 using Msync.Core;
 using Msync.Optimization;
@@ -15,7 +14,6 @@ internal static class CallPreparationChecks
         Directory.CreateDirectory(root);
         try
         {
-            await CheckClassification();
             await CheckMetadataFrontier();
             await CheckProcessFlowDeferral();
             await CheckIndependentMetadata(observeSibling: false);
@@ -33,66 +31,7 @@ internal static class CallPreparationChecks
                 }
         }
         finally { Directory.Delete(root, recursive: true); }
-        Console.WriteLine($"Call preparation: {cases} real VM journeys, {checks} classification/effect contracts passed.");
-
-        async Task CheckClassification()
-        {
-            FunctionCode[] functions = [
-                new("entry", 0, 0, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null),
-                new("pure", 0, 0, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null),
-                new("planned", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Transfer), new(OpCode.Return)], TypeRef.Bool),
-                new("opaque", 0, 0, [new(OpCode.Constant, 1), new(OpCode.Constant, 0), new(OpCode.NativeCall, 2, Text: "io.append_text"), new(OpCode.Return)], TypeRef.Null),
-                new("nested", 0, 0, [new(OpCode.MakeClosure, 1), new(OpCode.Call, B: 2), new(OpCode.Return)], TypeRef.Null)
-            ];
-            Module image = new([new StringValue("not-executed"), new PathValue("./guard.txt")], functions,
-                Stage: ArtifactStage.Executable, Context: new(root, root)) { ExecutionPlans = [] };
-            Interpreter interpreter = new(image, new(WorkingDirectory: root));
-            Type stackType = typeof(Interpreter).Assembly.GetType("Msync.Runtime.OperandStack")!;
-            MethodInfo add = stackType.GetMethod("Add")!;
-            PropertyInfo count = stackType.GetProperty("Count")!;
-            MethodInfo guard = typeof(Interpreter).GetMethod("CanExecuteCallDirectly", BindingFlags.Instance | BindingFlags.NonPublic)!;
-
-            bool Probe(Instruction call, Value[] operands, params Instruction[] tail)
-            {
-                object stack = Activator.CreateInstance(stackType, nonPublic: true)!;
-                foreach (Value operand in operands) add.Invoke(stack, [operand]);
-                FunctionCode caller = new("guard-probe", 0, 0,
-                    new[] { call }.Concat(tail.Length == 0 ? [new(OpCode.Return)] : tail).ToArray(), TypeRef.Any);
-                bool result = (bool)guard.Invoke(interpreter, [caller, 0, stack])!;
-                Check((int)count.GetValue(stack)! == operands.Length, "Classification consumed the actual call operands.");
-                return result;
-            }
-
-            Check(Probe(new(OpCode.Call), [new FunctionValue(1)]), "A known final source call was not admitted directly.");
-            Check(Probe(new(OpCode.Call, B: 2), [new FunctionValue(2)]), "Static B did not override the callable's original identity.");
-            Check(!Probe(new(OpCode.Call, B: 3), [new FunctionValue(1)]), "The original callable hid a planning-capable selected target.");
-            Check(Probe(new(OpCode.Call, B: 3, Text: "2:1"), [new FunctionValue(2)]), "Text dispatch did not take precedence over B.");
-            Check(!Probe(new(OpCode.Call, B: 2, Text: "1:2"), [new FunctionValue(1)]), "B incorrectly overrode a planning-capable text target.");
-            Check(!Probe(new(OpCode.Call, Text: "2:1"), [new FunctionValue(1)]), "An unresolved dispatch identity bypassed preparation.");
-            Check(!Probe(new(OpCode.Call, B: -1), [new FunctionValue(1)]), "An open session call bypassed its session policy.");
-            Check(!Probe(new(OpCode.Call, B: 2), [new FunctionValue(-1, NativeName: "math.abs")]), "A native callee entered the source-call path.");
-            Check(!Probe(new(OpCode.Call), [new StringValue("not-a-source-function")]), "An unknown callable bypassed preparation.");
-            Check(!Probe(new(OpCode.Call, A: 1), [new FunctionValue(1)]), "An incomplete argument stack bypassed preparation.");
-            Check(!Probe(new(OpCode.Call), []), "An empty operand stack bypassed preparation.");
-            Check(!Probe(new(OpCode.ProcessCall), [new FunctionValue(1)]), "A process call entered the source-call path.");
-            Check(Probe(new(OpCode.Call, A: 1, B: 2), [new FunctionValue(2), Value.Null]), "The guard selected an argument instead of the callee.");
-            Check(Probe(new(OpCode.Call), [new CellValue(new FunctionValue(1))]), "A shared callable location lost its actual value.");
-            Check(Probe(new(OpCode.Call), [new FunctionValue(3)]), "An opaque-native source body was mistaken for a planning target.");
-            Check(!Probe(new(OpCode.Call), [new FunctionValue(4)]), "A source target with a nested call lost preparation.");
-            foreach (Instruction future in new Instruction[]
-            {
-                new(OpCode.Call), new(OpCode.GetIterator), new(OpCode.SelectPath),
-                new(OpCode.NativeCall, 1, Text: "fs.exists"), new(OpCode.Transfer), new(OpCode.LocalTransfer)
-            })
-                Check(!Probe(new(OpCode.Call), [new FunctionValue(1)], future, new(OpCode.Return)),
-                    "A future " + future.Op + " opportunity was skipped.");
-            Check(Probe(new(OpCode.Call), [new FunctionValue(1)], new(OpCode.Return), new(OpCode.Transfer)),
-                "Unreachable post-return work blocked direct execution.");
-            Check(Probe(new(OpCode.Call), [new FunctionValue(1)], new(OpCode.NativeCall, 2, Text: "io.append_text"), new(OpCode.Return)),
-                "An opaque native tail was incorrectly treated as a metadata opportunity.");
-            await interpreter.ExecuteAsync();
-            Check(!File.Exists(Path.Combine(root, "guard.txt")), "Classification executed a callee or its opaque I/O.");
-        }
+        Console.WriteLine($"Call execution: {cases} real VM journeys, {checks} dispatch/effect contracts passed.");
 
         async Task CheckSelectedTarget(string route, bool dispatch)
         {
@@ -147,7 +86,7 @@ internal static class CallPreparationChecks
             Check(executionPending && producerHeld, "The metadata observer completed while its selected publication was held.");
             Check(unpublished, "The held producer published bytes before being released.");
             Check(counter.Data is NumberValue { Data: 1 }, "Resuming the metadata frontier replayed the callee prefix.");
-            Check(result is StringValue { Data: "present" }, "Preparation froze metadata before the selected producer completed.");
+            Check(result is StringValue { Data: "present" }, "The metadata read did not wait for the selected producer.");
             Check(File.ReadAllText(Path.Combine(work, "published.txt")) == "present", "The selected publication did not complete.");
         }
 
@@ -178,7 +117,7 @@ internal static class CallPreparationChecks
             bool unpublished = !File.Exists(Path.Combine(work, "first.txt")) && !File.Exists(Path.Combine(work, "second.txt"));
             producer.SetResult(new ProcessValue(0, "payload", ""));
             Value result = await execution.WaitAsync(TimeSpan.FromSeconds(10));
-            Check(callerAdvanced, "Copy preparation waited for a live process before the caller could advance past its discarded helper call.");
+            Check(callerAdvanced, "Copy scheduling waited for a live process before the caller could advance past its discarded helper call.");
             Check(executionPending && producerHeld, "A held process flow did not retain pending execution ownership.");
             Check(unpublished, "The held process flow published before its producer completed.");
             Check(result is NullValue && counter.Data is NumberValue { Data: 1 }, "Deferring the helper copy replayed or skipped the caller prefix.");
