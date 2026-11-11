@@ -2,7 +2,7 @@ using System.Text;
 
 namespace Msync.Cli;
 
-internal static class SkillReference
+internal static partial class SkillReference
 {
     private sealed record Topic(string Path, string Title, string Resource, string? Module = null);
 
@@ -22,6 +22,7 @@ internal static class SkillReference
         new("paths", "Path values, literal text and file transfers", "paths"),
         new("paths/connections", "Native SSH and WSL endpoint qualification", "connections"),
         new("library", "Source-backed standard library", "library"),
+        new("library/console", "Format values and compose standard-stream pipelines", "console"),
         .. StandardModules().Select(ModuleTopic),
         new("workflow", "Check, inspect, format and execute", "workflow"),
         new("workflow/artifacts", "Compile .mso and bind .mexe", "artifacts"),
@@ -30,7 +31,7 @@ internal static class SkillReference
     ];
 
     private static Topic ModuleTopic(string module) => new("library/" + module,
-        $"Source-backed {module} declarations", "module", module);
+        $"Source-backed {module} declarations", "library", module);
 
     private static IEnumerable<string> StandardModules() => typeof(SkillReference).Assembly
         .GetManifestResourceNames()
@@ -42,17 +43,12 @@ internal static class SkillReference
     public static string Render(IReadOnlyList<string> topics)
     {
         string path = string.Join('/', topics.SelectMany(topic => topic.Split('/', StringSplitOptions.RemoveEmptyEntries)));
+        string[] parts = path.Split('/');
+        if (parts is ["library", _, ..] && Topics.Any(topic => topic.Module == parts[1]))
+            return RenderLibrary(parts);
         Topic? selected = Topics.FirstOrDefault(topic => topic.Path == path);
         if (selected is null) throw UnknownTopic(path);
         string body = Read($"Msync.Skills.{selected.Resource}.md");
-        if (selected.Module is { } module)
-        {
-            string source = ReadStandard(module);
-            if (Msync.Compiler.Syntax.Parser.Parse(source).Statements.All(statement => statement is Msync.Compiler.Syntax.ConceptDeclaration))
-                body = Read("Msync.Skills.concept-module.md");
-            body = body.Replace("{{module}}", module, StringComparison.Ordinal)
-                .Replace("{{source}}", source.TrimEnd(), StringComparison.Ordinal);
-        }
         StringBuilder result = new(body.TrimEnd());
         Topic[] children = Topics.Where(topic => Parent(topic.Path) == path && topic.Path != path).ToArray();
         if (children.Length != 0)

@@ -18,7 +18,7 @@ native fn remove_null(type: Type) -> Type;
 # The common type is the finite union, retaining Range element alternatives.
 native fn common_type(first: Type, second: Type) -> Type;
 # Join one or more static Type witnesses without evaluating their operands.
-native fn common_type_of(type: Type) -> Type;
+native fn common_type_of(first: Type, rest: Type) -> Type;
 native fn range_of(element: Type) -> Type;
 # Unknown Range elements yield Any; a non-Range yields null.
 native fn element_type(type: Type) -> Type?;

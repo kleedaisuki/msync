@@ -69,12 +69,7 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
         snippets = CODE.findall(result.stdout)
         if snippets:
             source = directory / f"example-{'-'.join(topic) or 'overview'}.msync"
-            program = (
-                f"let module = $std::{topic[1]};\n"
-                if len(topic) == 2 and topic[0] == "library"
-                else "\n".join(snippets)
-            )
-            source.write_text(program, encoding="utf-8")
+            source.write_text("\n".join(snippets), encoding="utf-8")
             checked = invoke(
                 binary,
                 ["--no-config", "--no-telemetry", "check", str(source)],
@@ -85,8 +80,8 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
             examples += len(snippets)
     assert ("language", "functions") in pages and ("workflow", "artifacts") in pages
     assert ("paths", "connections") in pages and ("library", "fs") in pages
-    for topic in ("numbers", "conversions", "concepts"):
-        assert ("language", topic) in pages, topic
+    for section in ("numbers", "conversions", "concepts"):
+        assert ("language", section) in pages, section
     assert ("library", "cast") not in pages
     root = pages[()]
     assert "name: msync" in root and "description:" in root
@@ -97,9 +92,56 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
     assert "singleton" in pages[("language", "scopes")]
     assert "connection @ path" in pages[("paths", "connections")]
     assert " as Number" in pages[("language", "conversions")]
-    assert "type Self;" in pages[("language", "concepts")]
-    for module in ("collections", "text", "regex", "files", "commands", "environment"):
+    assert "first?: typename First" in pages[("language", "concepts")]
+    for module in (
+        "containers",
+        "text",
+        "regex",
+        "files",
+        "commands",
+        "environment",
+        "console",
+    ):
         assert ("library", module) in pages, module
+    assert ("library", "collections") not in pages
+
+    containers = pages[("library", "containers")]
+    assert "msync skill library containers Set" in containers
+    assert "scope Set {" not in containers, (
+        "Module overview should not dump implementation bodies"
+    )
+    family = invoke(
+        binary, ["skill", "library", "containers", "Set"], directory, environment
+    )
+    assert (
+        family.returncode == 0 and "new: fn(initial: Range | Type)" in family.stdout
+    ), family
+    constructor = invoke(
+        binary, ["skill", "library", "containers", "Set", "new"], directory, environment
+    )
+    assert constructor.returncode == 0 and "Set::with_policy" in constructor.stdout, (
+        constructor
+    )
+    descriptor = invoke(
+        binary,
+        ["skill", "library", "meta", "try_invoke_result"],
+        directory,
+        environment,
+    )
+    assert descriptor.returncode == 0 and "a valid Null result" in descriptor.stdout, (
+        descriptor
+    )
+    missing = invoke(
+        binary,
+        ["skill", "library", "containers", "Set", "inset"],
+        directory,
+        environment,
+    )
+    assert (
+        missing.returncode != 0
+        and "insert" in missing.stderr
+        and "containers Set" in missing.stderr
+    ), missing
 
     syntax = invoke(
         binary, ["--color", "never", "help", "syntax"], directory, environment

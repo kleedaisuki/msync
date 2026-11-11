@@ -2,8 +2,18 @@
 
 `$std` is a Scope. Runtime modules contain ordinary source functions and explicit
 host-native declarations. The compile-time `concepts` namespace supplies named
-constraints without introducing runtime values. Module topic pages show the
-same embedded declarations used by the compiler.
+constraints without introducing runtime values. Module topic pages index the
+same embedded declarations used by the compiler. Drill into a family or a
+specific operation instead of reading a whole module at once:
+
+```text
+msync skill library containers
+msync skill library containers Set
+msync skill library containers Set new
+msync skill library meta signature_of
+```
+
+Append `_source` to a module or family reference to see its full source.
 
 ```msync
 let fs = $std::fs;
@@ -69,6 +79,37 @@ separate equality-only collection. BTree, BPlusTree and Heap provide distinct
 ordered data structures. Their `StrictOrder` policies do not change the
 language's IEEE Number comparisons.
 
+Pass a Type when you need an empty collection with a known carrier; pass a Range
+to seed it. No dummy item or new generic syntax is necessary:
+
+```msync
+let Set = $std::containers::Set;
+let numbers = Set::new(Number);
+Set::insert(numbers, 42);
+let ascending = Set::snapshot(numbers);
+```
+
+For an associative key/value family, use `of_types(Key, Value)`, for example
+`$std::containers::Map::of_types(String, Number)`. The existing prototype and
+seeded constructors retain their meanings.
+
+## Reflect before specializing
+
+`signature_of` describes the declaration. `try_invoke_result` answers a concrete
+type-directed call in one query and returns `null` when it is not valid. A
+successful call returning Null instead produces the Type value `Null`.
+
+```msync
+let meta = $std::meta;
+fn label(value: Number) -> String { value as String };
+let signature = meta::signature_of(label);
+let result = meta::try_invoke_result(label, Number);
+let fields = meta::members_of(scope { label: "report", file?: ./report.txt });
+```
+
+Member descriptors distinguish `type` from fixed `storage_type`; reflection
+does not evaluate the inspected operands or call the inspected function.
+
 Concepts check fields, signatures and associated types without adding runtime
 type kinds. Ordinary Scope records and generic functions supply the values and
 operations. Mathematical laws remain semantic contracts rather than compiler
@@ -93,6 +134,24 @@ Adapters are lazy; terminals consume their source. Buffered operations such as
 sorting need finite input. Materialization preserves object references rather
 than cloning Scope instances. String positions count Unicode scalar values,
 not UTF-16 code units or displayed grapheme clusters.
+
+Use `for` and lazy adapters for one-pass inputs. When you need to pause, seek or
+traverse backward, use a snapshot `Cursor`. `has_value` tests the position,
+not the element: a real Null element does not mean end of input.
+
+```msync
+let Cursor = $std::ranges::Cursor;
+let cursor = Set::cursor(numbers);
+if Cursor::has_value(cursor) {
+    let item = Cursor::value(cursor);
+    Cursor::next(cursor);
+};
+```
+
+`Cursor::clone` gives independent positions on the same snapshot. Bounds and
+`equal_range` return positions in a sorted range; the latter is half-open.
+Sorted merge and set algorithms consume their inputs lazily. Use the `_with`
+variants when you supply an ordering policy.
 
 ```msync
 let number = "42" as Number;
