@@ -68,17 +68,42 @@ public sealed partial class Interpreter
     }
     private ValueTask<Value> RunFunctionAsync(int functionIndex, IReadOnlyList<Value> captures, IReadOnlyList<Value> arguments, CancellationToken cancellationToken)
     {
-        RefreshSessionImage();
-        var function = module.Functions[functionIndex];
-        if (arguments.Count != function.ParameterCount) throw new MsyncException($"Function '{function.Name}' expects {function.ParameterCount} arguments, received {arguments.Count}");
-        var locals = new Value[function.LocalCount];
-        Array.Fill(locals, Value.Null);
-        for (var i = 0; i < captures.Count; i++) locals[i] = captures[i];
+        var function = CallLayout(functionIndex, arguments.Count);
+        var locals = InitializeFrame(function, captures);
         for (var i = 0; i < arguments.Count; i++) locals[function.CaptureCount + i] = arguments[i];
         return RunCodeAsync(functionIndex, locals, 0, cancellationToken, captures, arguments);
     }
+
+    private ValueTask<Value> RunStackFunctionAsync(int functionIndex, FunctionValue callee, int count,
+        ref OperandStack operands, CancellationToken cancellationToken)
+    {
+        var function = CallLayout(functionIndex, count);
+        var captures = callee.Captures ?? [];
+        var locals = InitializeFrame(function, captures);
+        var arguments = operands.CopyArguments(count, locals, function.CaptureCount);
+        return RunCodeAsync(functionIndex, locals, 0, cancellationToken, captures, callerArguments: arguments);
+    }
+
+    private FunctionCode CallLayout(int functionIndex, int argumentCount)
+    {
+        RefreshSessionImage();
+        var function = module.Functions[functionIndex];
+        if (argumentCount != function.ParameterCount) throw new MsyncException($"Function '{function.Name}' expects {function.ParameterCount} arguments, received {argumentCount}");
+        return function;
+    }
+
+    private static Value[] InitializeFrame(FunctionCode function, IReadOnlyList<Value> captures)
+    {
+        Value[] locals = function.LocalCount == 0 ? [] : new Value[function.LocalCount];
+        for (var i = 0; i < captures.Count; i++) locals[i] = captures[i];
+        for (var i = captures.Count; i < function.CaptureCount; i++) locals[i] = Value.Null;
+        for (var i = Math.Max(captures.Count, function.CaptureCount + function.ParameterCount); i < locals.Length; i++)
+            locals[i] = Value.Null;
+        return locals;
+    }
     private async ValueTask<Value> RunCodeAsync(int functionIndex, Value[] locals, int startInstruction,
-        CancellationToken cancellationToken, IReadOnlyList<Value>? captures = null, IReadOnlyList<Value>? arguments = null)
+        CancellationToken cancellationToken, IReadOnlyList<Value>? captures = null, IReadOnlyList<Value>? arguments = null,
+        ArraySegment<Value?> callerArguments = default)
     {
         var active = sessionImage?.ActiveInterpreter;
         var outer = active is not null && !ReferenceEquals(active, this) ? active : null;
@@ -98,9 +123,16 @@ public sealed partial class Interpreter
         {
             try
             {
-                var roots = sessionImage is not null && functionIndex == module.EntryPoint ? module.SessionRoots : null;
-                PromoteReturnedProcesses(result, roots, locals, captures, arguments, ref caller, hasCaller);
-                await JoinOwnerAsync(currentOwner);
+                if (currentOwner.Processes is { Count: > 0 } || currentOwner.Tasks is { Count: > 0 })
+                {
+                    var roots = sessionImage is not null && functionIndex == module.EntryPoint ? module.SessionRoots : null;
+                    // The calling frame stays suspended until ownership has been resolved.
+                    // Inspect the original arguments, not possibly rebound parameters.
+                    if (callerArguments.Count != 0 && currentOwner.Processes is { Count: > 0 })
+                        arguments = MaterializeArgumentRoots(callerArguments);
+                    PromoteReturnedProcesses(result, roots, locals, captures, arguments, ref caller, hasCaller);
+                    await JoinOwnerAsync(currentOwner);
+                }
             }
             finally
             {
@@ -110,5 +142,13 @@ public sealed partial class Interpreter
                 if (sessionImage is { } image) image.ActiveInterpreter = active;
             }
         }
+    }
+
+    private static Value[] MaterializeArgumentRoots(ArraySegment<Value?> arguments)
+    {
+        var values = new Value[arguments.Count];
+        for (int index = 0; index < values.Length; index++)
+            values[index] = arguments.Array![arguments.Offset + index] ?? Value.Null;
+        return values;
     }
 }

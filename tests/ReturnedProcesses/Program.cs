@@ -156,6 +156,21 @@ try
                     $std::process::stdout($std::process::wait(state::child))
                 }
                 """,
+            prelude + """
+                let state = scope { child?: null };
+                fn launch(state: Scope) {
+                    state::child = start();
+                    state = scope { child?: null };
+                };
+                launch(state);
+                if state::child is null {
+                    "missing"
+                } else {
+                    $std::process::write_stdin(state::child, "original-argument");
+                    $std::process::close_stdin(state::child);
+                    $std::process::stdout($std::process::wait(state::child))
+                }
+                """,
             $$"""
                 fn ignored() {
                     $std::process::spawn("{{executable}}", ["--done-child", "./joined.txt"]);
@@ -166,11 +181,11 @@ try
                 """
         ];
         string[] expected = ["echo:direct", "echo:scope", "echo:capture", "echo:flow", "echo:existing",
-            "echo:materialized", "echo:view", "echo:snapshot", "echo:late", "echo:global", "echo:out", "joined"];
+            "echo:materialized", "echo:view", "echo:snapshot", "echo:late", "echo:global", "echo:out", "echo:original-argument", "joined"];
         for (int index = 0; index < programs.Length; index++)
         {
             if (args.Contains("--late-cell-only", StringComparer.Ordinal) && index != 8) continue;
-            if (args.Contains("--external-only", StringComparer.Ordinal) && index is not (9 or 10)) continue;
+            if (args.Contains("--external-only", StringComparer.Ordinal) && index is not (9 or 10 or 11)) continue;
             Module module = Compiler.Compile(programs[index], "returned-process.msync", level);
             foreach (Module image in Images(module, root))
             {

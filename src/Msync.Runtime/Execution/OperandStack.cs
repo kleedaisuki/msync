@@ -13,6 +13,7 @@ internal struct OperandStack
     private double[] numbers = [];
     public int Count { get; private set; }
     public Value this[int index] => items[index] ?? new NumberValue(numbers[index]);
+    public Value Peek(int depth) => this[Count - depth - 1];
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Add(Value value)
@@ -68,6 +69,26 @@ internal struct OperandStack
             arguments[index] = value is CellValue cell ? cell.Data : value;
         }
         return arguments;
+    }
+
+    public ArraySegment<Value?> CopyArguments(int count, Value[] locals, int destination)
+    {
+        int start = Count - count;
+        for (int index = 0; index < count; index++)
+        {
+            int source = start + index;
+            Value? value = items[source];
+            if (value is CellValue cell) items[source] = value = cell.Data;
+            locals[destination + index] = value ?? new NumberValue(numbers[source]);
+        }
+        return new(items, start, count);
+    }
+
+    public void CompleteCall(int arguments, Value result)
+    {
+        Count -= arguments;
+        items[Count - 1] = result;
+        if (arguments != 0) Array.Clear(items, Count, arguments);
     }
 
     public ScopeValue PopScope(ScopeAllocator allocator, ScopeLayout layout, int count, int allocationSite)

@@ -70,21 +70,20 @@ public sealed partial class Interpreter
                     case OpCode.Call:
                     case OpCode.ProcessCall:
                         {
-                            var arguments = stack.PopArguments(instruction.A); var callee = ReadValue(stack.Pop());
-                            int? target = null;
-                            if (instruction.Op == OpCode.Call && instruction.B < 0)
+                            var callee = ReadValue(stack.Peek(instruction.A));
+                            if (callee is FunctionValue { NativeName: null } function)
                             {
-                                if (callee is not FunctionValue selected) throw new MsyncException("An open session call requires a Function value.", instruction.Span);
-                                if (selected.NativeName is null) target = SessionDispatchTarget(selected, -instruction.B - 1, instruction.Span);
+                                int target = SourceCallTarget(function, instruction);
+                                Value value = await RunStackFunctionAsync(target, function, instruction.A, ref stack, cancellationToken);
+                                stack.CompleteCall(instruction.A, value);
+                                break;
                             }
-                            else if (instruction.Op == OpCode.Call && instruction.Text is not null && callee is FunctionValue { NativeName: null } dynamicFunction)
-                                target = DispatchTarget(dynamicFunction, instruction);
-                            else if (instruction.Op == OpCode.Call && instruction.B != 0)
-                            {
-                                var selected = (FunctionValue)callee;
-                                if (selected.NativeName is null) target = instruction.B - 1;
-                            }
-                            stack.Add(await InvokeValueAsync(callee, arguments, cancellationToken, target, instruction.B, instruction.Span)); break;
+                            if (instruction.Op == OpCode.Call && instruction.B < 0 && callee is not FunctionValue)
+                                throw new MsyncException("An open session call requires a Function value.", instruction.Span);
+                            var arguments = stack.PopArguments(instruction.A);
+                            stack.Discard();
+                            stack.Add(await InvokeValueAsync(callee, arguments, cancellationToken, scheduling: instruction.B, origin: instruction.Span));
+                            break;
                         }
                     case OpCode.NativeCall:
                         if (instruction.Text == "math.pow" && instruction.A == 2
@@ -246,5 +245,13 @@ public sealed partial class Interpreter
             }
         }
         return stack.Count == 0 ? Value.Null : stack.Pop();
+    }
+
+    private int SourceCallTarget(FunctionValue function, Instruction instruction)
+    {
+        if (instruction.Op != OpCode.Call) return function.Function;
+        if (instruction.B < 0) return SessionDispatchTarget(function, -instruction.B - 1, instruction.Span);
+        if (instruction.Text is not null) return DispatchTarget(function, instruction);
+        return instruction.B != 0 ? instruction.B - 1 : function.Function;
     }
 }
