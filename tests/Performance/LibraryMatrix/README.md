@@ -121,3 +121,35 @@ execution host took 1,922 ms for Set, 813 ms for Heap, 150 ms for Hash and
 loading the artifacts). The [current execution diagnosis](../../../docs/design/performance-assumption-audit-v086.md#current-vm-cost-fewer-interpreter-actions-before-a-different-dispatcher)
 records dynamic work, allocation, and scalar ablations. The original table
 is unchanged as historical data, not a timing of the current VM.
+
+## Isolate the compiler and VM in matched runs
+
+`vm_compare.py` uses the same four source kernels and oracles as the language
+matrix. It compiles and binds the fixtures once, validates the SHA padding
+controls, then alternates fresh Native probe processes on a selected CPU.
+The timed workload includes VM construction, execution and cleanup, but not
+artifact loading, binding, process startup, or result checking.
+
+```sh
+python3 tests/Performance/LibraryMatrix/vm_compare.py \
+  --compiler /path/to/control/msync \
+  --before-probe /path/to/control/library-matrix \
+  --after-probe /path/to/candidate/library-matrix \
+  --before-cli /path/to/control/msync --after-cli /path/to/candidate/msync \
+  --cpu 10 --work .temp/vm-matrix-comparison
+```
+
+Publish the probe for each implementation with
+`dotnet publish tests/Performance/LibraryMatrix/Probe.csproj -c Release
+-r linux-x64 -p:MatrixNative=true`. With no `--candidate-compiler`, both
+probes execute the same bound artifact bytes. For compiler-only comparisons,
+specify a candidate compiler and reuse the same probe and observer on both
+sides. `--cli-pairs` additionally measures fresh actual CLI runs with
+recording disabled; unlike the probe timing, that measurement includes
+startup and artifact loading.
+
+The two optional CLI observer arguments collect separate SQLite sessions
+after timing, executing exactly the artifacts checked by the probes.
+The receipt preserves hashes, paired raw timings, VM function and native
+counts, opcode counts, and execute allocation/CPU metrics. The profiled
+interval is not substituted for telemetry-off elapsed time.

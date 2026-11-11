@@ -33,18 +33,21 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def prepare(msync: Path) -> dict[str, str]:
+def prepare(msync: Path, directory: Path = WORK) -> dict[str, str]:
+    directory.mkdir(parents=True, exist_ok=True)
     expected = {"tree": str(SIZE * 9), "heap": str(SIZE), "hash": str(SIZE * 9)}
     keys = sorted(2 * (i * 40503 % 65536) for i in range(1, SIZE + 1))
     for case in ("tree", "heap", "hash"):
         source = (HERE / f"{case}.msync").read_text().replace("SIZE", str(SIZE))
         if case == "heap":
             source = source.replace("HEAP_EXPECTED", ",".join(map(str, keys)))
-        build_mso(msync, case, source)
-    return expected | prepare_sha(msync)
+        build_mso(msync, case, source, directory)
+    return expected | prepare_sha(msync, directory=directory)
 
 
-def prepare_sha(msync: Path, *, arithmetic: bool = False) -> dict[str, str]:
+def prepare_sha(
+    msync: Path, *, arithmetic: bool = False, directory: Path = WORK
+) -> dict[str, str]:
     constants = [
         int(word, 16) for word in (HERE / "round-constants.txt").read_text().split()
     ]
@@ -77,21 +80,31 @@ def prepare_sha(msync: Path, *, arithmetic: bool = False) -> dict[str, str]:
         padded += (len(data) * 8).to_bytes(8, "big")
         words = list(struct.unpack(f">{len(padded) // 4}I", padded))
         expected[case] = hashlib.sha256(data).hexdigest()
-        (WORK / f"{case}.words").write_text(" ".join(map(str, constants + words)))
+        (directory / f"{case}.words").write_text(" ".join(map(str, constants + words)))
         build_mso(
             msync,
             case,
             sha.replace("INPUT_WORDS", ",".join(map(str, words))).replace(
                 "WORD_COUNT", str(len(words))
             ),
+            directory,
         )
     return expected
 
 
-def build_mso(msync: Path, case: str, source: str) -> None:
-    path = WORK / f"{case}.msync"
+def build_mso(msync: Path, case: str, source: str, directory: Path) -> None:
+    path = directory / f"{case}.msync"
     path.write_text(source)
-    run(msync, "--no-config", "compile", path, "-O2", "-o", WORK / f"{case}.mso")
+    run(
+        msync,
+        "--no-config",
+        "--no-telemetry",
+        "compile",
+        path,
+        "-O2",
+        "-o",
+        directory / f"{case}.mso",
+    )
 
 
 def command(language: str) -> list[str | Path]:
