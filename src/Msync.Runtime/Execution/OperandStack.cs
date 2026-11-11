@@ -96,7 +96,7 @@ internal struct OperandStack
         int start = Count - count;
         ReadOnlySpan<double> numeric = start < numbers.Length
             ? numbers.AsSpan(start, Math.Min(count, numbers.Length - start)) : [];
-        ScopeValue value = allocator.Create(layout, items.AsSpan(start, count), numeric, allocationSite);
+        ScopeValue value = allocator.CreateFromOperands(layout, items.AsSpan(start, count), numeric, allocationSite);
         Array.Clear(items, start, count);
         Count = start;
         return value;

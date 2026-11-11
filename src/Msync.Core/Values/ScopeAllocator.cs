@@ -11,6 +11,13 @@ public sealed class ScopeAllocator
     {
         if (values.Length != layout.Count)
             throw new ArgumentException("Scope field storage disagrees with its layout.", nameof(values));
+        return CreateFromOperands(layout, values, numbers, allocationSite);
+    }
+
+    /// <summary>Materialize operands whose count was established by the bytecode producer or reader.</summary>
+    public ScopeValue CreateFromOperands(ScopeLayout layout, ReadOnlySpan<Value?> values,
+        ReadOnlySpan<double> numbers, int allocationSite)
+    {
         int numericCount = 0;
         ulong hash = 14695981039346656037;
         for (int index = 0; index < values.Length; index++)
@@ -44,7 +51,7 @@ public sealed class ScopeAllocator
         Value[] fields = values.Length == 0 ? [] : new Value[values.Length];
         for (int index = 0; index < fields.Length; index++)
             fields[index] = values[index] ?? new NumberValue(numbers[index]);
-        return new(layout, fields) { AllocationSite = allocationSite };
+        return ScopeValue.FromOwnedFields(layout, fields, allocationSite);
     }
 }
 

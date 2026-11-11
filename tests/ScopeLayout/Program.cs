@@ -46,7 +46,6 @@ ScopeLayout layout = new(new[] { "first", ".codex", "cell" });
 CellValue cell = new(new StringValue("before"));
 ScopeValue value = new(layout, [Value.True, new NumberValue(3), cell]) { AllocationSite = 17 };
 Check(ReferenceEquals(value.Members, value), "Scope allocated a separate member-view object");
-Check(layout.Names.SequenceEqual(["first", ".codex", "cell"]), "Declaration order changed");
 Check(value.IsField(1, ".codex") && !value.IsField(-1, ".codex") && !value.IsField(1, "cell"), "Offset/name guard changed");
 Check(value.TryGetFieldOffset("cell", out int offset) && offset == 2, "Field offset lookup changed");
 Check(value.GetField(2) is StringValue { Data: "before" }, "Indexed read did not dereference shared storage");
@@ -55,8 +54,8 @@ Check(cell.Data is StringValue { Data: "indexed" }, "Indexed write replaced the 
 value.SetMember("cell", new StringValue("named"));
 Check(value.Members["cell"] is StringValue { Data: "named" } && cell.Data is StringValue { Data: "named" }, "Named/member reads no longer share storage");
 Check(!value.Members.TryGetValue("missing", out Value? absent) && absent is NullValue, "Missing member lookup changed");
-Check(value.Select(pair => pair.Key).SequenceEqual(layout.Names), "Member enumeration order changed");
-Check(value.Members.Values.Last() is StringValue { Data: "named" }, "Value enumeration exposed a raw Cell");
+Check(value.Select(pair => pair.Key).ToHashSet(StringComparer.Ordinal).SetEquals(layout.Names), "Member enumeration lost a name");
+Check(value.Single(field => field.Key == "cell").Value is StringValue { Data: "named" }, "Value enumeration exposed a raw Cell");
 ScopeValue mapped = value.MapFields(item => item);
 Check(ReferenceEquals(mapped.Layout, layout) && mapped.AllocationSite == 17, "Cloning lost immutable layout or source provenance");
 mapped.SetMember("cell", new StringValue("independent"));
@@ -133,6 +132,40 @@ try
     ScopeValue right = (ScopeValue)pair.Members["second"];
     Check(ReferenceEquals(left.Layout, right.Layout), "Repeated constructor execution rebuilt the immutable shape");
     Check(!ReferenceEquals(left, right), "Shape reuse merged distinct runtime instances");
+
+    const string permuted = """
+        let trace = 0;
+        fn mark(value: Number) { global trace; trace = trace * 10 + value; value };
+        let left = scope { z: mark(1), a: mark(2) };
+        let right = scope { a: mark(3), z: mark(4) };
+        left::a = 99;
+        scope { left: left, right: right, trace: trace }
+        """;
+    using MemoryStream typed = new();
+    Msync.Hir.HirArtifact.WriteProduced(Compiler.Analyze(permuted, "permuted-scope"), typed);
+    typed.Position = 0;
+    var canonical = Msync.Hir.HirLowerer.Lower(Msync.Hir.HirArtifact.Read(typed), new(OptimizationLevel: 0)).Module;
+    foreach (var image in new[] { canonical, RoundTrip(canonical), RoundTrip(Binding.Bind(canonical, new(root, root))) })
+    {
+        ScopeValue result = (ScopeValue)await Interpreter.ExecuteAsync(image, new(WorkingDirectory: root));
+        ScopeValue firstRow = (ScopeValue)result["left"], secondRow = (ScopeValue)result["right"];
+        Check(ReferenceEquals(firstRow.Layout, secondRow.Layout) && !firstRow.Equals(secondRow),
+            "Permuted field declarations did not share one layout with independent instances");
+        Check(result["trace"] is NumberValue { Data: 1234 }, "Physical layout changed initializer evaluation order");
+        Check(firstRow["a"] is NumberValue { Data: 99 } && firstRow["z"] is NumberValue { Data: 1 }
+            && secondRow["a"] is NumberValue { Data: 3 } && secondRow["z"] is NumberValue { Data: 4 },
+            "Physical layout changed a field binding");
+    }
+
+    CompilerSession privateCompiler = new(optimization: 2);
+    Module privateFrames = privateCompiler.Compile(
+        "fn take_field(n: Number) { let row = scope { x: n }; row::x }; take_field(37)");
+    Check(privateFrames.Functions.Where(function => function.Name == "take_field"
+        && function.ReturnType == TypeRef.Number).ToArray() is [var privateFrame]
+        && privateFrame.Instructions.All(instruction => instruction.Op != OpCode.MakeScope),
+        "Stable REPL entry slots blocked scalar replacement in a private callable");
+    Check(await new ExecutionSession().ExecuteAsync(privateFrames) is NumberValue { Data: 37 },
+        "Private frame optimization changed the REPL result");
     Module sourceHints = Compiler.Compile("let object = scope { field: \"before\" }; object::field = \"after\"; object::field", "source-hints", 0);
     Instruction[] fieldAccesses = sourceHints.Functions.SelectMany(function => function.Instructions)
         .Where(instruction => instruction.Op is OpCode.GetMember or OpCode.SetMember).ToArray();

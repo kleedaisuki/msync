@@ -26,7 +26,7 @@ internal static class SpatialLayoutChecks
             item.SetField(0, new NumberValue(BitConverter.Int64BitsToDouble(representation)));
             Check(Bits(alias.GetField(0)) == representation, "Indexed numeric read changed IEEE representation.");
             Check(Bits(alias["x"]) == representation, "Named numeric read changed IEEE representation.");
-            Check(Bits(alias.Values.First()) == representation, "Enumeration changed IEEE representation.");
+            Check(Bits(alias.Single(field => field.Key == "x").Value) == representation, "Enumeration changed IEEE representation.");
         }
 
         item.SetField(0, new StringValue("reference"));
@@ -49,7 +49,8 @@ internal static class SpatialLayoutChecks
         Check(cell.Data is StringValue { Data: "captured reference" }, "Captured reference store did not share its location.");
 
         Check(item.GetHashCode() == identityHash && identities.Contains(item), "Physical field transitions changed instance identity.");
-        Check(item.Keys.SequenceEqual(["x", "y", "z", "weight", "payload"]), "Physical layout changed logical field order.");
+        Check(item.Count == 5 && new HashSet<string>(item.Keys, StringComparer.Ordinal)
+            .SetEquals(["x", "y", "z", "weight", "payload"]), "Physical layout changed the named fields.");
         ScopeValue independent = item.MapFields(value => value);
         independent.SetField(0, new NumberValue(37));
         Check(cell.Data is StringValue { Data: "captured reference" }, "Visible-value cloning retained the old shared Cell.");

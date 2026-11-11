@@ -65,8 +65,7 @@ internal static partial class CrossBlockMemoryOptimization
         IReadOnlyList<FunctionMemoryEffects>? summaries)
     {
         _ = constants;
-        if (module.PreserveLocals
-            || !function.Instructions.Any(instruction => instruction.Op == OpCode.MakeScope)) return function;
+        if (!function.Instructions.Any(instruction => instruction.Op == OpCode.MakeScope)) return function;
         return new Analysis(module, function, summaries).Optimize();
     }
 

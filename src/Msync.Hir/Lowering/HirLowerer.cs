@@ -9,14 +9,15 @@ public static class HirLowerer
         HirLoweringSession? session = null)
     {
         if (!module.SessionDispatches.IsDefaultOrEmpty && session is null)
-            throw new InvalidOperationException("Open callable signatures require an active HIR session.");
+            throw new InvalidOperationException("Open callable signatures require an active HIR session. Inspect the artifact in read-only mode, or export a self-contained program for standalone execution.");
         if (!module.UnresolvedImports.IsDefaultOrEmpty)
         {
             var unresolved = module.UnresolvedImports.Where(id => session is null
                 || !session.Locations.ContainsKey(new(module.Locations[id.Value].Owner, id))).ToArray();
             if (unresolved.Length != 0)
-                throw new InvalidOperationException("HIR requires an active session containing imports: "
-                    + string.Join(", ", unresolved.Select(id => module.Locations[id.Value].Name)) + ".");
+                throw new InvalidOperationException("Typed HIR requires session locations: "
+                    + string.Join(", ", unresolved.Select(id => module.Locations[id.Value].Name).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
+                    + ". Export a self-contained program for standalone execution; live session values are not stored in .mhir files.");
         }
         return new Lowering(module, options ?? new(), session ?? new()).Run();
     }
@@ -27,6 +28,7 @@ public static class HirLowerer
         private readonly Dictionary<Value, int> constantIndices = new(ValueRepresentation.Comparer);
         private readonly Dictionary<HirFunctionId, FunctionCode> functions = [];
         private readonly List<HirLocationId>?[] locations = new List<HirLocationId>?[hir.Functions.Length];
+        private readonly StorageLayout?[] scopeLayouts = new StorageLayout?[hir.ScopeLayouts.Length];
         private readonly HashSet<HirLocationId>? sessionRoots = hir.IsSession
             ? hir.Exports.Select(export => export.Location).ToHashSet() : null;
 
@@ -118,9 +120,43 @@ public static class HirLowerer
         internal Core.SourceSpan? Source(HirSourceRange range) => range.Source.Value < 0 ? null
             : new(hir.Sources[range.Source.Value].Name, range.Start, range.Length);
         internal TypeRef Type(HirTypeId id) => hir.RuntimeType(id);
+        internal StorageLayout ScopeLayout(int shape) =>
+            scopeLayouts[shape] ??= StorageLayout.Create(hir.ScopeLayouts[shape]);
+
+        internal int MemberHint(HirNode node, HirNodeId receiver)
+        {
+            if (node.Data < 0) return 0;
+            int shape = hir.Types[hir.Node(receiver).Type.Value].Shape;
+            if (shape < 0) return node.Data + 1;
+            var fields = hir.ScopeLayouts[shape].Fields;
+            if ((uint)node.Data >= (uint)fields.Length || fields[node.Data].Name != node.Text)
+                return node.Data + 1;
+            return ScopeLayout(shape).PhysicalSlot(node.Data) + 1;
+        }
         internal HirModule Hir => hir;
         internal HirLoweringSession Layout => layout;
         internal IReadOnlyList<HirLocationId> Locations(HirFunctionId function) => locations[function.Value] ?? (IReadOnlyList<HirLocationId>)Array.Empty<HirLocationId>();
+    }
+
+    private sealed record StorageLayout(string Names, int[]? StorageToHir, int[]? HirToStorage)
+    {
+        internal int PhysicalSlot(int field) => HirToStorage is null ? field : HirToStorage[field];
+        internal int HirSlot(int offset) => StorageToHir is null ? offset : StorageToHir[offset];
+
+        internal static StorageLayout Create(HirScopeLayout shape)
+        {
+            var fields = shape.Fields;
+            for (int index = 1; index < fields.Length; index++)
+            {
+                if (string.CompareOrdinal(fields[index - 1].Name, fields[index].Name) <= 0) continue;
+                var order = Enumerable.Range(0, fields.Length).ToArray();
+                Array.Sort(order, (left, right) => string.CompareOrdinal(fields[left].Name, fields[right].Name));
+                int[] reverse = new int[order.Length];
+                for (int slot = 0; slot < order.Length; slot++) reverse[order[slot]] = slot;
+                return new(string.Join('\0', order.Select(field => fields[field].Name)), order, reverse);
+            }
+            return new(string.Join('\0', fields.Select(field => field.Name)), null, null);
+        }
     }
 
     private sealed class FunctionLowering(Lowering owner, HirFunctionId id, HirFunction function)
@@ -227,8 +263,8 @@ public static class HirLowerer
                 case HirKind.TemplateClosure: TemplateClosure(Hir.TemplateClosures[node.Data], node.Source); break;
                 case HirKind.AdaptFunction: Adapt(node); break;
                 case HirKind.Scope: Scope(node); break;
-                case HirKind.MemberRead: Emit(Child(node, 0)); Add(OpCode.GetMember, Math.Max(0, node.Data + 1), text: node.Text, source: node.Source); break;
-                case HirKind.MemberAssign: AllChildren(node); Add(OpCode.SetMember, Math.Max(0, node.Data + 1), text: node.Text, source: node.Source); break;
+                case HirKind.MemberRead: Emit(Child(node, 0)); Add(OpCode.GetMember, owner.MemberHint(node, Child(node, 0)), text: node.Text, source: node.Source); break;
+                case HirKind.MemberAssign: AllChildren(node); Add(OpCode.SetMember, owner.MemberHint(node, Child(node, 0)), text: node.Text, source: node.Source); break;
                 case HirKind.Range: AllChildren(node); Add(OpCode.MakeRange, node.Children.Count, source: node.Source); break;
                 case HirKind.LazyRange: LazyRange(node); break;
                 case HirKind.DeferRange: Emit(Child(node, 0)); Add(OpCode.DeferRange, source: node.Source); break;
@@ -376,9 +412,11 @@ public static class HirLowerer
                 initialized = Add(OpCode.JumpIfFalse); Add(OpCode.Pop);
             }
             foreach (var initializer in Hir.Children(node)) { Emit(initializer); Add(OpCode.Pop); }
-            foreach (var field in scope.Fields) Add(OpCode.LoadStorage, Slot(field.Value));
-            Add(OpCode.MakeScope, scope.Fields.Length, site,
-                string.Join('\0', Hir.ScopeLayouts[scope.Layout].Fields.Select(field => field.Name)), node.Source);
+            // Initialization order belongs to the expressions above, not to storage.
+            var storage = owner.ScopeLayout(scope.Layout);
+            for (int offset = 0; offset < scope.Fields.Length; offset++)
+                Add(OpCode.LoadStorage, Slot(scope.Fields[storage.HirSlot(offset)].Value));
+            Add(OpCode.MakeScope, scope.Fields.Length, site, storage.Names, node.Source);
             if (scope.Singleton >= 0) { Add(OpCode.SetSingleton, site, source: node.Source); Patch(initialized, code.Count); }
             if (scope.Self is { } target) { Add(OpCode.Dup); Add(OpCode.StoreLocal, Slot(target.Value)); }
         }

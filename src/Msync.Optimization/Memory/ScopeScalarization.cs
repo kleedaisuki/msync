@@ -30,11 +30,9 @@ internal static class ScopeScalarization
     private sealed record Write(Allocation Allocation, Field Field);
     private sealed record Block(int Start, int End, int[] Successors);
 
-    internal static FunctionCode Optimize(Module module, FunctionCode function, List<Value> constants)
+    internal static FunctionCode Optimize(FunctionCode function)
     {
-        _ = constants;
-        if (module.PreserveLocals
-            || !function.Instructions.Any(instruction => instruction.Op == OpCode.MakeScope)) return function;
+        if (!function.Instructions.Any(instruction => instruction.Op == OpCode.MakeScope)) return function;
         // A scalar slot represents one instance only while its allocation stays
         // within this CFG region. Live-out aliases keep the physical instance.
         var blocks = Blocks(function.Instructions);

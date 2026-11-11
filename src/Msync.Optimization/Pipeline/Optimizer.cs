@@ -43,7 +43,7 @@ public static class Optimizer
                 var memory = level >= 2 && (features & (FunctionFeatures.Scope | FunctionFeatures.Fields))
                     == (FunctionFeatures.Scope | FunctionFeatures.Fields)
                     ? CrossBlockMemoryOptimization.Optimize(context, scheduled, constants) : scheduled;
-                var scalar = (features & FunctionFeatures.Scope) != 0 ? ScopeScalarization.Optimize(context, memory, constants) : memory;
+                var scalar = (features & FunctionFeatures.Scope) != 0 ? ScopeScalarization.Optimize(memory) : memory;
                 var tail = (features & FunctionFeatures.Call) != 0 ? TailCallOptimization.Optimize(context, scalar, index) : scalar;
                 var affine = (features & FunctionFeatures.Iteration) != 0
                     && !ReferenceEquals(scheduled, Unchanged(scheduled, tail))

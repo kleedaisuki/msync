@@ -18,12 +18,20 @@ public sealed record ScopeValue : Value, IReadOnlyDictionary<string, Value>
         foreach (var member in members) { names[index] = member.Key; values[index++] = member.Value; }
         Layout = ScopeLayout.Own(names);
     }
-    public ScopeValue(ScopeLayout layout, Value[] fields)
+    public ScopeValue(ScopeLayout layout, Value[] fields) : this(layout, fields, 0)
     {
         if (fields.Length != layout.Count) throw new ArgumentException("Scope field storage disagrees with its layout.", nameof(fields));
+    }
+
+    private ScopeValue(ScopeLayout layout, Value[] fields, int allocationSite)
+    {
         Layout = layout;
         this.fields = fields;
+        AllocationSite = allocationSite;
     }
+
+    internal static ScopeValue FromOwnedFields(ScopeLayout layout, Value[] fields, int allocationSite) =>
+        new(layout, fields, allocationSite);
     internal ScopeValue(ScopeLayout layout, PackedScopeStorage fields, int rowOffset)
     {
         Layout = layout;
@@ -71,8 +79,7 @@ public sealed record ScopeValue : Value, IReadOnlyDictionary<string, Value>
         if (fields is PackedScopeStorage packed) { packed.SetNumber(rowOffset, offset, number); return; }
         SetField(offset, new NumberValue(number));
     }
-    public bool IsField(int offset, string name) => (uint)offset < (uint)Layout.Count
-        && string.Equals(Layout.Names[offset], name, StringComparison.Ordinal);
+    public bool IsField(int offset, string name) => Layout.IsField(offset, name);
     public bool TryGetFieldOffset(string name, out int offset) => Layout.TryGetOffset(name, out offset);
     public bool TryGetFieldCell(int offset, out CellValue cell)
     {
@@ -102,7 +109,7 @@ public sealed record ScopeValue : Value, IReadOnlyDictionary<string, Value>
     {
         var values = new Value[Count];
         for (int index = 0; index < values.Length; index++) values[index] = transform(GetField(index));
-        return new(Layout, values) { AllocationSite = AllocationSite };
+        return FromOwnedFields(Layout, values, AllocationSite);
     }
     private static Value Read(Value value) => value is CellValue cell ? cell.Data : value;
     public Enumerator GetEnumerator() => new(this);
