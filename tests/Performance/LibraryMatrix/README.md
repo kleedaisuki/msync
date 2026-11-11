@@ -109,9 +109,15 @@ language-level ordering. Tree destruction is timed for C++; Java and C# drop
 references and pay reclamation on their collectors' schedule.
 
 The [VM continuation ablation](../../../docs/design/contextual-io-backend.md#compute-only-continuation-admission-086-investigation)
-explains why the msync timings remain large after initial binding: execution
-still repeatedly enters the contextual I/O planner for ordinary call paths.
-An 8,192-key bound tree run triggers 985,902 preparations. Disabling that
-admission in a diagnostic-only image reduces one matched pair from 26.03 to
-5.30 seconds; the remaining cost is real VM and data-structure work, not
-source compilation. The original matrix is unchanged as historical data.
+explains why the original msync timings remained large after initial binding:
+execution repeatedly entered the contextual I/O planner on ordinary call
+paths. An 8,192-key bound tree run triggered 985,902 preparations. Disabling
+admission in a diagnostic-only image reduced one matched pair from 26.03 to
+5.30 seconds. The production VM no longer does this replanning.
+
+At release head, freshly compiled and bound O2 artifacts on the Native AOT
+execution host took 1,922 ms for Set, 813 ms for Heap, 150 ms for Hash and
+469 ms for SHA-256 (median of eight checked samples per workload, after
+loading the artifacts). The [current execution diagnosis](../../../docs/design/performance-assumption-audit-v086.md#current-vm-cost-fewer-interpreter-actions-before-a-different-dispatcher)
+records dynamic work, allocation, and scalar ablations. The original table
+is unchanged as historical data, not a timing of the current VM.

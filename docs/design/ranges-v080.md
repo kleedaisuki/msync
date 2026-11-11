@@ -173,6 +173,133 @@ eventually ceases to change its value, enumeration reports that non-progress
 instead of looping forever. A finite fractional progression can use an explicit
 Number cast because decimal-looking tokens otherwise retain path-name syntax.
 
+## Execution-only costs of Range composition and singleton payloads
+
+The 0.8.6 Linux x86-64 release CLI compiled at O2 and bound each input before
+measurement. A source-linked Native AOT runner at `025b1da` (.NET SDK 10.0.403,
+logical CPU 12) decoded all `.mexe` images before timing. It warmed each
+variant once, then ran six rounds, alternating forward and reverse variant
+order in one process. Time covers `Interpreter.ExecuteAsync` to completion;
+every result was checked outside the timer. Allocation is the difference in
+`GC.GetTotalAllocatedBytes(true)` around each invocation, not live memory.
+
+The first control sums the even values of `x + 1` for integers
+`0 <= x < 262144` in increasing order (expected `17180000256`). Start
+`result` at zero. The scalar loop breaks when `x >= 262144`, assigns
+`y = x + 1`, adds `y` when `y % 2 == 0`, then assigns `x = y`.
+The inline `for` consumes `iota(0, 262144)` and keeps the same conditional
+body. The pipeline uses `transform(values, fn(x: Number) { x + 1 })` then
+`filter(added, fn(x: Number) { x % 2 == 0 })`; the `for` body just adds each
+selected value.
+
+| Range control | Median ms | Median allocated bytes |
+| --- | ---: | ---: |
+| Scalar loop | 215.20 | 9,438,720 |
+| `for iota`, inline body | 239.07 | 15,733,104 |
+| `iota → transform → filter → for` | 467.05 | 103,816,880 |
+
+The inline range adds about 24 allocation bytes per input, consistent with
+the [boxed sequence yield](../../src/Msync.Runtime/Native/Ranges/NativeRanges.Algorithms.cs#L78-L89).
+The composed range adds about 336 bytes per input over the inline range and
+has a +226.40 ms paired-median elapsed difference. Each input crosses two
+[callback invocations](../../src/Msync.Runtime/Native/Ranges/NativeRanges.cs#L68-L82),
+each transporting a one-element argument array and crossing a producer
+boundary. The measurement does not apportion the cost among iterator steps,
+argument transport, frames, boxes and GC. In particular it does not show
+that each synchronous completion performs OS scheduling.
+
+The second control repeats the 8,192-key
+[red-black Set fixture](../../tests/Performance/LibraryMatrix/tree.msync)
+with score `73728` and four source variants. For the unchanged local copy,
+prepend the current library's `construction_range`, `NaturalOrder` and
+`Set` definitions to the fixture without its first import line. In the
+inline comparison copy, replace `self::order::less(key, value)` and its
+inverse with the corresponding Number `<` expressions and constrain
+`key` to Number in `find_index`, `contains`, `allocate`, and `insert`.
+The scalar payload copy additionally changes the NIL initializer's payload
+to zero, stores `key` instead of `[key]` in allocation/reuse, and reads
+`node::payload` directly in the two search loops.
+
+| Set control | Median ms | Median allocated bytes |
+| --- | ---: | ---: |
+| Standard Set | 2,004.98 | 212,724,192 |
+| Unchanged local Set | 1,915.60 | 212,723,064 |
+| Local Set, inline finite Number comparison | 1,386.23 | 166,774,480 |
+| Inline comparison, direct Number payload | 1,131.29 | 129,089,948 |
+
+Use the local variant as the baseline for the source edits. The paired
+median differences are −533.67 ms for inlining the comparison and −248.23 ms
+for the subsequent payload change. Owned-array `front` already bypasses
+enumeration; the second change removes the remaining singleton creation,
+lookup/call path and intermediate representation. Neither change explains
+the whole gap. This is a finite-number diagnostic overlay, not a valid
+library replacement: the normal order handles Null, NaN and custom
+comparators, and the observable Set shape is read by the
+[red-black journey](../../tests/Msync.EndToEnd/rb_set_journey.py#L55-L59).
+
+### Constant-time indexing still crosses an expensive boundary
+
+For a point-access control, sum `x % 64` for `x` in `iota(0, 262144)`
+(expected `8257536`). The two alternatives replace the value used in the
+sum with `ranges::at(values, x % 64)` or `Buffer::get(values, x % 64)`.
+Build `values` once from `iota(0, 64)` with `materialize` or
+`Buffer::new`, respectively. Disassembly retains the direct `NativeCall`
+at each access. Both operations already index their backing storage
+without enumeration.
+
+| Indexed access control | Median ms | Median allocated bytes |
+| --- | ---: | ---: |
+| Scalar, sum the index itself | 188.20 | 18,878,832 |
+| Owned snapshot, `ranges.at` | 359.17 | 65,021,584 |
+| Live Buffer, `storage.buffer_get` | 356.18 | 46,153,864 |
+
+The Buffer adds about 104 bytes per index; the snapshot lookup adds
+about 176. The SDK 10.0.403 Native AOT machine code allocates a display
+class on entry to [native invocation](../../src/Msync.Runtime/Execution/Interpreter.Invocation.cs#L98-L135),
+before it tests for a deferred argument: the captured local async
+function is only used in the deferred branch. Both
+[Range dispatch](../../src/Msync.Runtime/Native/Ranges/NativeRanges.cs#L8-L29)
+and [extended dispatch](../../src/Msync.Runtime/Native/Ranges/NativeRanges.Algorithms.cs#L17-L53)
+also allocate display classes before their operation tests because
+some unrelated adaptors use capturing lambdas. Those allocations are
+distinct from a `ValueTask` actually suspending, or from the index
+implementation and layout of the 64-element storage.
+
+A diagnostic build moves deferred native completion and the capturing Range
+adaptors behind separate helpers, invoked only in the branches that need
+them. The two runners execute identical `.mexe` bytes in A/B/B/A fork
+order, with the same per-fork warmup and six observations. Results below
+are pooled descriptive medians (12 observations per runner).
+
+| Indexed access control | Median ms, baseline → diagnostic | Median allocated bytes, baseline → diagnostic |
+| --- | ---: | ---: |
+| Scalar | 196.56 → 183.43 | 18,878,832 → 18,878,696 |
+| Owned snapshot, `ranges.at` | 373.94 → 339.11 | 65,021,584 → 29,369,592 |
+| Live Buffer, `storage.buffer_get` | 376.52 → 349.86 | 46,153,864 → 29,376,312 |
+
+The diagnostic removes about 64 bytes per Buffer read and 136 bytes per
+snapshot read, leaving about 40 incremental bytes per access in both cases,
+consistent with the two-argument
+[`Value[]`](../../src/Msync.Runtime/Execution/OperandStack.cs#L62-L72).
+This identifies the common closure and the additional Range dispatch
+closures without changing index behavior or eliminating any VM instructions.
+The same binary overlay and frozen standard Set image, run in one B-then-A
+pair of warmed six-observation forks, changed median execution from
+1,930.54 to 1,819.05 ms and allocation from 212,722,248 to 152,320,316 bytes
+(28.4% less). The elapsed observations are descriptive; the scalar control
+also varied. These controls do not validate effectful or deferred branches
+for shipping a production patch.
+
+A compact owned-single representation and a specialized source-to-source
+loop for a closed pure pipeline are distinct follow-ups. Compare them
+separately against the existing generic path. The
+[stream fusion paper](https://www.cs.tufts.edu/~nr/cs257/archive/duncan-coutts/stream-fusion.pdf)
+shows why removing intermediate iteration state and inlining callbacks can
+matter; a general msync Range must still preserve lazy demand, selected
+callback effects, iteration/IEEE order, cancellation and disposal. The
+probe, inputs and raw per-round receipts from this run are in
+`.temp/range-vm-diagnosis/`.
+
 ## Focused verification
 
 `tests/StdlibRanges` executes source and binary round trips at O0/O2/O3 through

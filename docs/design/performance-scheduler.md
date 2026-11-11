@@ -321,3 +321,83 @@ Each arm has nine checked observations across three alternating batches.
 Small and tail timings are mixed; an earlier intermediate-build run also
 had slower literal admissions despite lower allocation. These receipts do
 not establish a stable P95 improvement or a storage-throughput claim.
+
+### Residual native observations scan unrelated namespace producers (2026-11-11)
+
+The adaptive resource trie does not cover the separate namespace-publication
+lookup. [`NamespaceDependencies`](../../src/Msync.Runtime/Execution/Interpreter.Plans.cs#L259-L283)
+projects every ancestor of the selected local operand, resolving each parent,
+then enumerates the whole task-to-roots map. The test for completion is inside
+that enumeration; completed entries retained until their owner joins are
+still visited. The map records even ordinary residual Path copies because
+their concrete node kind is not known at this admission boundary.
+
+A [process-gated CLI probe](../../tests/Performance/namespace_publication.py)
+isolates this path without replacing transfers with mock tasks. A child
+publishes stdout to `held.txt` only after a host gate opens. The script admits
+P Path copies from `held.txt` to distinct destinations and then executes 4,000
+verified `fs.exists(input.txt)` calls. The selected input is unrelated to all
+publishers. The measured interval is between two flushed stdout markers in
+the same process, after copy admission and before opening the gate. The host
+checks that publication has not happened in the interval, then releases the
+child and verifies every destination byte. P=0 still holds the child's String
+transfer, retaining ordinary native dependency checks but not the Path
+namespace-producer scan. All input executables contain zero contextual plan
+nodes: parsing, binding, artifact decoding, worker slots, copy and fsync are
+outside this interval.
+
+Linux x86-64 Native AOT 0.8.6 release candidate, package run `43021811925`,
+binary SHA-256 `278024641a9f62c3dff32b669a26d791a79cd3278073ec8233ad5b60e4c9a506`,
+Linux 6.12.113 on CPU 14, three forward/reverse/forward rounds. Process CPU is
+the `/proc/<pid>/stat` user-plus-system delta (10 ms resolution), excluding
+the waiting child. The shared host had concurrent work; the ranges below
+describe this window, not a population tail or a throughput forecast.
+
+| Held Path copies P | Nonmatching producer checks (source model) | Wall median (range), ms | Process CPU median (range), ms |
+| ---: | ---: | ---: | ---: |
+| 0 | 0 | 307 (284–311) | 270 (260–270) |
+| 1 | 4,000 | 577 (569–582) | 490 (490–500) |
+| 1,024 | 4,096,000 | 1,115 (1,070–1,129) | 950 (890–970) |
+| 4,096 | 16,384,000 | 3,191 (2,991–4,022) | 2,670 (2,530–3,340) |
+
+The check count is derived from the code, not an instrumented counter.
+The 0-to-1 change also switches on namespace ancestor projection. Comparing
+the nonzero frontiers keeps that projection active and increases the number
+of disjoint candidates while holding the query body, selected path and
+dependency set fixed. CPU grows before there are any transfer bytes or fsyncs
+to charge. This isolates a scheduler admission cost from bytecode dispatch
+and storage throughput; it is not a claim that a mixed 4,096-copy frontier
+is typical. Separately,
+[`AwaitNativeDependenciesAsync`](../../src/Msync.Runtime/Scheduling/Interpreter.Scheduling.cs#L168-L203)
+creates a new physical path fact owner for every effectful native Path call
+with registered work; the [C02 syscall probe](safety-cost-audit-v086.md#c02-temporary-proof-owners-repeat-path-walks)
+shows repeated leaf and parent resolution even with a small frontier.
+
+Prefer a live, exact entry-to-producers lookup queried at the selected
+ancestor entries, rather than scanning tasks or descendants; attach its
+registrations and retirement to the existing work owner. That change can
+remove the P term independently of pathname caching. Then measure whether
+scoped namespace facts or one shared path projection reduce the remaining
+ancestor walks. Do not reuse an old alias identity after a publication or
+an uncontrolled external effect. In particular, keep entry/referent
+distinctions, link/../directory alias cases, and actual predecessor waits.
+On the same Native image, the [gated dependency journey](../../tests/Msync.EndToEnd/cohort_dependencies_journey.py)
+checks independent shared readers, native link/.. dependencies and merge
+through a descendant directory alias in all three source/object/executable
+routes (nine journeys): independent publication precedes the gate; both
+dependent cases wait and preserve exact bytes. Linux
+[`namei` path lookup](https://docs.kernel.org/7.1/filesystems/path-lookup.html)
+likewise distinguishes cached traversal from rename-sensitive validation;
+it is not evidence for an indefinitely valid user-space canonical-path
+cache.
+
+Reproduce on Linux with a matching Native image and a fresh scratch path:
+
+```sh
+taskset -c 14 python3 tests/Performance/namespace_publication.py \
+  --binary /path/to/native/msync --workspace .temp/namespace-publication
+```
+
+The runner retains the source, object, executable and per-round samples in
+the selected scratch directory. This run's receipt is
+`.temp/vm-io-investigation/pinned/result.json`.

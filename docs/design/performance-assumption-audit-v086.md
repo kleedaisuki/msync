@@ -478,3 +478,192 @@ directly and the final destination bytes matched. The same fixture ran with
 an unused `max_streams = 0` and negative unused progress settings. Raw
 timings, binary identities, probe source and acceptance data are in
 `artifacts/benchmarks/library-matrix-v086/phase-ownership/`.
+
+## Current VM cost: fewer interpreter actions before a different dispatcher
+
+The release-head investigation uses `025b1da`, SDK 10.0.403, Linux x86-64
+Native AOT and O2 artifacts. The original LibraryMatrix's 37.7 s Set, 25.3 s
+Heap and 3.42 s SHA are historical results. The current VM has neither
+continuation replanning nor BasicBlock dispatch. The earlier 26.03 → 5.30 s
+same-binary planner bypass is strong evidence for the historical regression,
+not a remaining optimization opportunity. In the earlier integrated table,
+Set and SHA were already bound; the Heap input was a preloaded **.mso**, so
+the latter still included executable image preparation. See the exact
+[inputs](../../artifacts/benchmarks/library-matrix-v086/deep-integrated/execution.py)
+and the fresh all-bound control below.
+
+### Scalar causal control
+
+Use `x = x * 1.0000000001 + 0.125`, starting at zero, repeated N times.
+Take N from stdin so the compiler cannot precompute the answer. On the same
+Native AOT host compare a directly compiled C# loop using the same binary64
+recurrence (separate multiply/add) with the production interpreter on
+preloaded `.mexe` files. Time includes VM construction, an in-memory stdin
+read and result/cleanup, but not parsing, binding, image load or startup.
+Verify result bits in every sample and for N = 0, 1, 3, 5, 101 and 1,024
+before timing. At N = 1,048,576 the checked result is `0x41000036FA3A7F36`.
+Nine measured rounds alternate case order on logical CPU 11.
+
+| Shape | Bytecodes per four updates (hot path) | Median ms | Median allocated bytes |
+| --- | ---: | ---: | ---: |
+| Native C# recurrence | — | 3.06 | 0 |
+| VM scalar loop | 60 | 748.69 | 50,334,064 |
+| VM 4× unroll, four assignments | 35 | 359.70 | 31,459,696 |
+| VM 4× unroll, one nested expression | 29 | 339.71 | 12,585,328 |
+| VM `for _ in iota(0, n)`, same recurrence | 36, plus iterator work | 505.24 | 50,337,136 |
+
+The scalar loop uses a private counter and a private accumulator; its O2
+disassembly has no calls in the loop body. The four-way unroll uses
+`if i + 4 > n { break; }` and adds four to the counter; its tail loop
+performs the remaining updates. The nested form changes only the four
+assignments to `x = f(f(f(f(x))))`, with each f written inline as the
+expression above; it does not change the FP operation order. Both variants
+are compared on admitted nonnegative integer N, not as rewrites for every
+possible Number-valued bound. The unroll wins 9/9 pairs over the scalar
+loop. The nested form wins 7/9 over the four-assignment form (paired median
+−17.0 ms) and removes exactly 18,874,368 B of median allocation, or three
+24-byte boxes per four updates. It also removes six load/store opcodes per
+group, so it does not measure the isolated elapsed effect of boxing.
+The `iota` form still boxes an element even when the bytecode discards it,
+but moves loop control out of the VM and is faster here; do not generalize
+this to callback-heavy pipelines or different loop bodies.
+
+In the scalar form the observed slope is exactly 48 B/iteration after the
+2,416 B fixed cost in the million-update run: two 24-byte NumberValue
+allocations, one for each stored result. A second batch on CPU 10 found
+708.77 → 2,864.91 ms for 1,048,576 → 4,194,304 iterations and
+50,334,064 → 201,329,008 B. A separate fresh-process CLI fixture prints
+the scalar result and checks it bit-for-bit through source, `.mso` and
+`.mexe`. Those wall times have their own startup and preparation costs.
+With seven alternating fresh processes per route, source / object /
+executable medians were 21.3 / 17.3 / 18.4 ms at zero updates and
+742.0 / 758.8 / 736.7 ms at 1,048,576 updates. These are full CLI route
+times, not direct estimates of the difference between phase internals.
+
+The immediately-ready condition still passed through the generic async
+resolver. A diagnostic build changed **only** conditional jumps to await a
+DeferredValue and otherwise use the same AsBool directly. Eight fresh-process
+AB/BA pairs with the same artifacts and 262,144 updates found stock →
+diagnostic medians of 169.93 → 162.12 ms (scalar), 95.63 → 84.51 ms (four
+assignments) and 78.80 → 77.93 ms (nested). Paired median deltas were −8.36,
+−11.14 and +0.45 ms, with 5/8, 6/8 and 4/8 faster pairs, respectively; the
+native control had +0.004 ms paired median. This is a diagnostic of ready
+branches, not a production change or evidence that generic async plumbing
+accounts for most of the gap.
+
+Current mechanics: [dispatch](../../src/Msync.Runtime/Execution/Interpreter.Dispatch.cs)
+fetches a general instruction and checks cancellation per opcode; local
+loads/stores use `Value[]` and handle Cells. [OperandStack](../../src/Msync.Runtime/Execution/OperandStack.cs)
+can retain raw double temporaries, but the generic Pop boxes a number at
+the local store. Thus Native AOT compiles the *interpreter*, not the script
+loop: type, operand transport, and control work recur for each opcode
+even when no frame enters a real suspension. Neither these interventions
+nor historical profiles distinguish CPU branch mispredictions from
+instruction-pointer dependency, fetch costs, and individual handler work.
+Hardware PMU counters were not available on this host.
+
+Native disassembly shows two interface calls (instruction count and index)
+and a checked reference assignment before the opcode jump table in
+`RunOwnedCodeAsync.MoveNext` (roughly 16 KiB in the clean matrix host).
+`Instruction` is a reference record and the module exposes instructions
+as `IReadOnlyList<Instruction>`; the artifact reader already produces arrays.
+This is runtime instruction representation, not a wire-format requirement.
+
+Two matched experiments test this directly. On the three preloaded scalar
+images (N = 262,144, eight AB/BA pairs), a diagnostic assuming
+`Instruction[]` and hoisting length changed median time from 171.28 to
+128.76 ms (plain), 88.55 to 67.59 ms (four assignments), and 78.10 to
+66.62 ms (nested); 7/8, 7/8 and 8/8 pairs were faster. The direct native
+control's paired median difference was −0.007 ms. Independently, a
+matrix build kept a generic-list fallback and used direct indexing on the
+actual array. All eight matched cases were faster on CPU 9: Set
+12.1–18.5%, Heap 14.9–18.0%, Hash 12.8–17.7% and SHA 13.8–17.2% (two
+pairs each, one warmup and one checked execution per fresh process).
+This ablates length and index together; it does not assign the gain to
+either one alone or quantify branch mispredictions. Receipts:
+`.temp/vm-cost-root/array.csv` and
+`.temp/vm-dispatch-agent/direct-fetch/comparison.csv`.
+
+Raw sources, disassemblies, AOT image hashes and CSVs are in the
+[benchmark receipts](../../artifacts/benchmarks/vm-execution-head-v086/).
+Rebuild using the release CLI to compile O2 and bind the sources, and
+publish the matching `scalar/Probe.csproj` there with `dotnet publish -c
+Release -r linux-x64`. Run the probe with N, sample count, and artifact
+basenames as arguments, with the artifact directory as cwd. The diagnostic
+uses the same probe with the recorded dispatch source change.
+
+### Where the work multiplies
+
+A separate uninstrumented Native AOT host measured fresh HEAD-produced
+`.mexe` files after loading, with a checked result on each run. The
+instrumented managed same-artifact run below is a census, not the timing
+build.
+Two forks on CPU 9 ran in forward/reverse order, one warmup and four
+measurements per case per fork.
+
+| Case | Median ms | Allocated MB (decimal) | Dynamic bytecodes | Source call frames | Generic native invocations |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Set, 8,192 keys | 1,921.63 | 212.72 | 23,733,352 | 1,008,030 | 750,282 |
+| Heap, 8,192 keys | 812.81 | 83.08 | 10,950,928 | 273,870 | 406,156 |
+| Hash, 8,192 keys | 149.67 | 18.68 | 1,793,007 | 24,581 | 91,090 |
+| SHA-256, 1 KiB | 468.86 | 62.83 | 7,574,571 | 179,794 | 137,365 |
+
+The Set reaches 424,304 `storage.buffer_get` and 309,586 `ranges.front`
+calls; the latter already has the owned snapshot fast path. Heap performs
+224,710 gets and 120,960 sets. SHA-256 expands the word bit primitives into
+interpreted arithmetic and table operations; 136,272 native calls are
+buffer gets. These explain why an isolated VM instruction throughput ratio
+is not the cross-language library ratio. Allocation is cumulative GC
+traffic, not resident memory or an estimate of time in collection.
+
+Internal source calls already place arguments directly in the new frame,
+but still allocate the frame and operand storage and cross the ownership
+wrapper. Calls into generic native operations collect Value arguments and
+select the registry handler; frequency makes small per-call costs material.
+The independent [Range and Set ablations](ranges-v080.md) separate callback
+layers, comparator calls and singleton payloads from the dispatch mechanism.
+They also expose a host code-generation cost: entering an ordinary native
+call eagerly allocates a display class for a deferred-only local function.
+Moving closure-producing paths behind helper boundaries on the same images
+removes 64 B per Buffer get and 136 B per owned-snapshot index (including
+Range dispatcher closures). A stock Set run removes about 60.4 MB of
+allocation without changing its bytecode or algorithm. This is not a claim
+that asynchronous calls suspend or that the two performance gains add.
+For I/O, the [scheduler frontier probe](performance-scheduler.md) uses
+real held work and a physically unrelated native observation: a different
+problem from scalar code or the historical planner.
+
+Raw fresh images, diagnostic counters and timing receipts:
+`.temp/vm-dispatch-agent/{fresh,native}/`, with counters and timings also
+in the benchmark receipts above. Use the exact LibraryMatrix inputs and
+verified scores/digest in its [README](../../tests/Performance/LibraryMatrix/README.md).
+
+### Next experiment: statically certified scalar regions
+
+First take the measured execution-owned array fetch and the verified common
+native call allocation removals as separate small changes. In the array
+change preserve the generic in-memory module boundary and avoid copying
+bytecode in a callee. For the structural work, start with one register-like
+executable region for immediate, private
+Number slots, not a global numeric sidecar, full JIT or a new artifact
+contract. Select a hot compare/backedge or load/operate/store sequence from
+the dynamic data; preserve IEEE evaluation order (no implicit FMA),
+cancellation, branch targets, and source attribution. A static Number type
+alone does not prove an immediate value or private storage: use the producer
+facts for alias/capture, effect and deferred-value boundaries. Keep the
+generic path at those boundaries and preserve boxed Value transport where it
+is observable. Materialize the execution-only representation once, not in
+the dispatch loop or via contextual re-planning. Existing format-5 files
+still decode normally. Compare an unboxed-only prototype against a
+same-arithmetic fusion and their combination on the scalar controls plus
+Set/Heap and the captured/deferred controls. Record dynamic instructions,
+boxes and warm time **and** preparation/short-run overhead before generalizing.
+
+This tests independently the representation and instruction-volume axes.
+The rejected general sidecar, cache and fusion controls remain informative:
+do not charge reference-heavy frames for number-only work. The [Lua 5.4
+interpreter](https://www.lua.org/source/5.4/lvm.c.html) illustrates direct
+register operands in a production VM. [Ertl and Paysan, ECOOP
+2024](https://drops.dagstuhl.de/entities/document/10.4230/LIPIcs.ECOOP.2024.14)
+show that serial instruction-pointer updates can limit cheap instructions
+independently of misprediction; neither result predicts msync's gain.
