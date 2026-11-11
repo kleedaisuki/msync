@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Reflection;
 using Msync.Compiler;
 using Msync.Core;
 using Msync.Optimization;
@@ -104,6 +105,13 @@ internal static class NaturalLoops
             && SiteVisits(unrolledSamples, OpCode.StoreLocal, accumulatorStore) == 1027,
             "Grouped execution retained intermediate accumulator stores");
 
+        var plainBound = CopyBound(raw: false);
+        Require(!ReferenceEquals(plainBound, OptimizeDirect(plainBound)),
+            "A private bound lost its value proof across inlined argument copies");
+        var rawBound = CopyBound(raw: true);
+        Require(ReferenceEquals(rawBound, OptimizeDirect(rawBound)),
+            "A cast target was incorrectly treated as proof that an aliased bound was a private value");
+
         var infinite = Compiler.Compile(Program("0", "1", ">=", "line as Number"), "nan-loop", 2);
         using var cancellation = new CancellationTokenSource();
         cancellation.CancelAfter(TimeSpan.FromMilliseconds(100));
@@ -149,6 +157,29 @@ internal static class NaturalLoops
     private static ulong Instructions(IReadOnlyList<RuntimeProfileSample> samples) => samples
         .Where(sample => sample.Name == "vm.function")
         .Aggregate(0UL, (total, sample) => total + sample.Metrics["instructions"]);
+
+    private static FunctionCode CopyBound(bool raw) => new("argument-copy", 0, 5,
+        [raw ? new(OpCode.LoadStorage, 0) : new(OpCode.NativeCall, Text: "io.read_line"),
+         new(OpCode.InitializeLocal, 1), new(OpCode.LoadLocal, 1), new(OpCode.Constant, 0),
+         new(OpCode.NativeCall, 2, Text: "cast"), new(OpCode.InitializeLocal, 2),
+         new(OpCode.LoadLocal, 2), new(OpCode.InitializeLocal, 2),
+         new(OpCode.Constant, 1), new(OpCode.StoreLocal, 3), new(OpCode.Constant, 1), new(OpCode.StoreLocal, 4),
+         new(OpCode.LoadLocal, 3), new(OpCode.LoadLocal, 2), new(OpCode.GreaterEqual), new(OpCode.JumpIfFalse, 17),
+         new(OpCode.Jump, 26),
+         new(OpCode.LoadLocal, 4), new(OpCode.LoadLocal, 3), new(OpCode.Add), new(OpCode.StoreLocal, 4),
+         new(OpCode.LoadLocal, 3), new(OpCode.Constant, 2), new(OpCode.Add), new(OpCode.StoreLocal, 3), new(OpCode.Jump, 12),
+         new(OpCode.LoadLocal, 4), new(OpCode.Return)], TypeRef.Number, CaptureCount: raw ? 1 : 0);
+
+    private static FunctionCode OptimizeDirect(FunctionCode function)
+    {
+        var assembly = typeof(Optimizer).Assembly;
+        List<Value> constants = [new TypeValue(TypeRef.Number), new NumberValue(0), new NumberValue(1)];
+        object interner = assembly.GetType("Msync.Optimization.ConstantInterner")!
+            .GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).Single().Invoke([constants]);
+        var optimize = assembly.GetType("Msync.Optimization.NaturalLoopOptimization")!
+            .GetMethod("Optimize", BindingFlags.Static | BindingFlags.NonPublic)!;
+        return (FunctionCode)optimize.Invoke(null, [function, constants, interner, 2, null])!;
+    }
 
     private static string Program(string start, string step, string comparison, string bound,
         string recurrence = "x * 1.0000000001 + 0.125", string result = "x") => $$"""

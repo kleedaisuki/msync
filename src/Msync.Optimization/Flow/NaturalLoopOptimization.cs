@@ -17,7 +17,7 @@ internal static class NaturalLoopOptimization
         internal double SafeBound => ExactIntegerLimit - Factor * Step;
     }
 
-    private sealed class LocalFacts(FunctionCode function, IReadOnlyList<Value> constants)
+    private sealed class LocalFacts(FunctionCode function, IReadOnlyList<Value> constants, ControlFlowGraph graph)
     {
         private readonly LocalUse[] uses = Scan(function);
 
@@ -62,21 +62,70 @@ internal static class NaturalLoopOptimization
                 && constants[id] is NumberValue number ? number.Data : null;
         }
 
-        internal bool InvariantBound(BasicBlock preheader, int slot)
+        internal bool TryInvariantBound(BasicBlock preheader, int slot, out double? known)
         {
-            if (slot < function.CaptureCount + function.ParameterCount || uses[slot].MayShare
-                || uses[slot].SecondStore != 0) return false;
-            int store = uses[slot].FirstStore - 1;
-            if (store <= preheader.Start || store >= preheader.End) return false;
+            known = null;
+            if (uses[slot].FirstStore - 1 <= preheader.Start
+                || Math.Max(uses[slot].FirstStore, uses[slot].SecondStore) > preheader.End) return false;
+            int store = ValueWriter(slot, preheader.End, graph.BlockAt(preheader.Start));
+            if (store <= preheader.Start) return false;
+            return ProveBoundValue(store - 1, out known);
+        }
+
+        private int ValueWriter(int slot, int before, int useBlock)
+        {
+            var use = uses[slot];
+            if (slot < function.CaptureCount + function.ParameterCount || use.MayShare) return -1;
+            int first = use.FirstStore - 1, second = use.SecondStore - 1;
+            int store = second >= 0 && second < before ? second : first;
+            if (store <= 0 || store >= before) return -1;
+            int storeBlock = graph.BlockAt(store);
+            if (graph.BlockAt(store - 1) != storeBlock) return -1;
+            if (second >= 0 && (storeBlock != useBlock || function.Instructions[store].Op != OpCode.InitializeLocal))
+                return -1;
+            return graph.Dominates(storeBlock, useBlock) ? store : -1;
+        }
+
+        private bool ProveBoundValue(int pc, out double? known)
+        {
+            known = null;
             var code = function.Instructions;
-            var producer = code[store - 1];
-            // Prove the bound is a value, not a mutable cell whose payload
-            // could change after the chunk guard. Number cast can defer but
-            // does not repeat its computation when the condition is read.
-            return producer.Op is OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide or OpCode.Remainder or OpCode.Negate
-                || producer is { Op: OpCode.NativeCall, A: 2, Text: "cast" } && store - 2 >= preheader.Start
-                && code[store - 2] is { Op: OpCode.Constant, A: var type }
-                && constants[type] is TypeValue target && target.Data == TypeRef.Number;
+            bool castInput = false;
+            while (pc >= 0)
+            {
+                var producer = code[pc];
+                switch (producer.Op)
+                {
+                    case OpCode.LoadLocal:
+                        // The inliner can initialize an argument from an
+                        // earlier private slot, even the same compacted slot.
+                        pc = ValueWriter(producer.A, pc, graph.BlockAt(pc)) - 1;
+                        break;
+                    case OpCode.Constant when constants[producer.A] is NumberValue number:
+                        if (!castInput) known = number.Data;
+                        return true;
+                    case OpCode.Constant when castInput:
+                        return constants[producer.A] is StringValue or BoolValue or NullValue or PathValue;
+                    case OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide or OpCode.Remainder or OpCode.Negate:
+                        return true;
+                    case OpCode.Convert when castInput:
+                        return true;
+                    case OpCode.NativeCall when castInput && producer is { A: 0, Text: "io.read_line" }:
+                        return true;
+                    case OpCode.NativeCall when producer is { A: 2, Text: "cast" } && pc >= 2
+                        && graph.BlockAt(pc - 2) == graph.BlockAt(pc)
+                        && code[pc - 1] is { Op: OpCode.Constant, A: var type }
+                        && constants[type] is TypeValue target && target.Data == TypeRef.Number:
+                        // A cast can return its input as-is. Its Number type
+                        // alone is not evidence that the input was not a cell.
+                        castInput = true;
+                        pc -= 2;
+                        break;
+                    default:
+                        return false;
+                }
+            }
+            return false;
         }
     }
 
@@ -91,7 +140,7 @@ internal static class NaturalLoopOptimization
         foreach (var loop in NaturalLoopAnalysis.Discover(graph, maximumBlocks: 2))
         {
             if (loop.Blocks.Count != 2) continue;
-            var candidate = Recognize(code, constants, graph, loop, locals ??= new(function, constants));
+            var candidate = Recognize(code, constants, graph, loop, locals ??= new(function, constants, graph));
             if (candidate is not null) selected.Add(candidate);
         }
         return selected.Count == 0 ? function : Emit(function, selected, interner);
@@ -141,9 +190,13 @@ internal static class NaturalLoopOptimization
         var bound = code[test + 1];
         if (bound.Op is not (OpCode.Constant or OpCode.LoadLocal)
             || bound.Op == OpCode.LoadLocal && bound.A == counter) return null;
-        double? knownBound = bound.Op == OpCode.Constant ? (constants[bound.A] as NumberValue)?.Data
-            : locals.PrivateNumericSeed(preheader, bound.A, -1);
-        if (knownBound is null && (bound.Op != OpCode.LoadLocal || !locals.InvariantBound(preheader, bound.A))) return null;
+        double? knownBound;
+        if (bound.Op == OpCode.Constant)
+        {
+            if (constants[bound.A] is not NumberValue number) return null;
+            knownBound = number.Data;
+        }
+        else if (!locals.TryInvariantBound(preheader, bound.A, out knownBound)) return null;
         if (AnalyzeBody(code, constants, preheader, latch.Start, update, counter, bound, locals) is not { } plan)
             return null;
         var candidate = new Candidate(test, latch.Start, update, latch.End - 1, bodyIsTarget ? header.End : branch.A,
