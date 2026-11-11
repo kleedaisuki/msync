@@ -61,7 +61,7 @@ function; unrelated, nonescaping work still joins its original function owner.
 
 `with_args`, `append_args` and `on(connection)` return fresh specifications and
 preserve the exact selected runner. Old argument snapshots are unchanged.
-`on` uses normal `Path @ Connection` qualification, not string prefix guessing.
+`on` uses normal `Connection @ Path` qualification, not string prefix guessing.
 The specification's fields have fixed storage types; aliases retain ordinary
 Scope identity. The runner is explicit state, not a callback bag copied into
 each instance.

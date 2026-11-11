@@ -425,7 +425,7 @@ def ssh_journey(binary: Path, directory: Path) -> dict[str, Any]:
         )
         source = f"""
 let endpoint = ssh://Perf_Fixture;
-let file = $std::files::File::new({remote} @ endpoint);
+let file = $std::files::File::new(endpoint @ {remote});
 $std::files::File::write(file, "remote🙂");
 $std::files::File::append(file, "!");
 $std::files::File::read_text(file) -> ./remote-read.txt;

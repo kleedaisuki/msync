@@ -20,7 +20,7 @@ Expect("let n=1.5+2e3; let x=-0; let value=3 % 2; let path=~/.codex/AGENTS.md;",
 Expect("let power=-2**2; let inverse=2**-2;", "-2 ** 2", "2 ** -2");
 Expect("let value=2; (-value) as String; let copy-config=2; -copy-config; let flag=--flag; let path=./-filename;",
     "(-value) as String", "-copy-config;", "--flag", "./-filename");
-Expect("let value=./config @ ssh://forge; let text=value as String;", "./config @ ssh://forge", "value as String");
+Expect("let value=ssh://forge @ ./config; let text=value as String;", "ssh://forge @ ./config", "value as String");
 string namedScopeSource = "let x = scope NamedScope { item:1 };";
 foreach (string text in new[] { namedScopeSource, Format(namedScopeSource) })
 {
@@ -29,8 +29,8 @@ foreach (string text in new[] { namedScopeSource, Format(namedScopeSource) })
     if (scope.Name != "NamedScope" || scope.NameSpan is not { } nameSpan || text[nameSpan.Start..nameSpan.End] != "NamedScope")
         throw new Exception($"Named Scope expression identity was lost:\n{text}");
 }
-Expect("scope SomeClass { new: fn -> Scope { scope { item: ~/.codex/AGENTS.md } }, copy: fn(where: Connection, object: Scope) { object::item @ where -> ./ } };",
-    "scope SomeClass {\n    new: fn -> Scope {", "object::item @ where -> ./");
+Expect("scope SomeClass { new: fn -> Scope { scope { item: ~/.codex/AGENTS.md } }, copy: fn(where: Connection, object: Scope) { where @ object::item -> ./ } };",
+    "scope SomeClass {\n    new: fn -> Scope {", "where @ object::item -> ./");
 Expect("concept Monoid { type Self; identity: Self, combine: fn(left: Self, right: Self) -> Self, };", "concept Monoid {", "identity: Self,\n", "combine: fn(");
 Expect("concept Product { first?: typename First, second?: typename Second, };",
     "first?: typename First,", "second?: typename Second,");

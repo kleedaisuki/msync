@@ -55,12 +55,12 @@ internal static class ContextChecks
 
     private static void ScopeInitializers()
     {
-        const string source = "scope SomeClass { remote: ssh://forge, send: fn(file: Path) { ./ @ remote";
+        const string source = "scope SomeClass { remote: ssh://forge, send: fn(file: Path) { remote @ ./";
         EditorContext context = EditorCompiler.Analyze(source, "file:///scope.msync").At(source.IndexOf("./", StringComparison.Ordinal) + 2);
         Check(context.Bindings.Single(item => item.Name == "remote").Endpoint == new ConnectionValue(ConnectionKind.Ssh, "forge"),
             "a previous Scope member is not available to its function initializer");
         Check(context.HasPhysicalOwner && context.PhysicalEndpoint?.Address == "forge", "a Scope's Connection field was treated as another Scope or Path");
-        const string nested = "fn draft() { let Hosts = scope { inner: scope { remote: ssh://forge } }; ./ @ Hosts::inner::remote";
+        const string nested = "fn draft() { let Hosts = scope { inner: scope { remote: ssh://forge } }; Hosts::inner::remote @ ./";
         EditorContext selected = EditorCompiler.Analyze(nested, "file:///chain.msync").At(nested.IndexOf("./", StringComparison.Ordinal) + 2);
         Check(selected.HasPhysicalOwner && selected.PhysicalEndpoint?.Address == "forge", "a nested Scope field chain lost its endpoint identity");
         const string initializer = "let outer = scope { kept: true }; scope Block { prior: outer, current: prior::";

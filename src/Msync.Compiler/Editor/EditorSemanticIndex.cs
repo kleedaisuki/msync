@@ -38,10 +38,18 @@ internal sealed class EditorSemanticIndex(SemanticObservationView view,
         var paths = PathOwnersAt(offset);
         SemanticConnectionView? endpoint = paths.Length == 0 ? null : paths[0].Endpoint;
         if (paths.Any(item => item.Endpoint != endpoint)) endpoint = null;
-        return new(DescribeBindings(contexts.Select(item => item.Bindings), presenter),
-            receivers.Length == 0 ? null : presenter.Describe("", receivers.Select(item => item.Value)),
+        SemanticMember? receiver = receivers.Length == 0 ? null : presenter.Describe("", receivers.Select(item => item.Value));
+        var owner = SemanticValuePresenter.Connection(endpoint);
+        if (paths.Length != 0 && receivers.Length != 0 && receivers[0].Kind == EditorReceiverKind.PathJoin)
+        {
+            var path = receiver!.KnownPath ?? (receiver.KnownText is { } text ? new PathValue(text) : null);
+            receiver = receiver with { KnownPath = owner is null || path is null
+                || owner.Kind is ConnectionKind.Environment or ConnectionKind.SearchPath ? null : PathSemantics.Qualify(path, owner),
+                KnownText = null };
+        }
+        return new(DescribeBindings(contexts.Select(item => item.Bindings), presenter), receiver,
             receivers.Length == 0 ? EditorReceiverKind.Member : receivers[0].Kind,
-            SemanticValuePresenter.Connection(endpoint), paths.Length != 0);
+            owner, paths.Length != 0);
     }
 
     public IReadOnlyList<SemanticMember> ConceptsAt(int offset)
@@ -102,7 +110,8 @@ internal sealed class EditorSemanticIndex(SemanticObservationView view,
         var containing = view.PathOwners.Where(item => item.Span.Start <= offset && offset <= item.Span.End).ToArray();
         if (containing.Length == 0) return [];
         int width = containing.Min(item => item.Span.Length);
-        var selected = containing.Where(item => item.Span.Length == width).ToArray();
+        int qualification = containing.Where(item => item.Span.Length == width).Max(item => item.QualificationWidth);
+        var selected = containing.Where(item => item.Span.Length == width && item.QualificationWidth == qualification).ToArray();
         return selected.Any(item => item.Concrete) ? selected.Where(item => item.Concrete).ToArray() : selected;
     }
 

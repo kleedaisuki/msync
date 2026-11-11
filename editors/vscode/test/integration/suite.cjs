@@ -42,7 +42,7 @@ async function run() {
             'let answer = identity(true);',
             'let file? = if true { ~/.codex } else { null };',
             'let invalid = file;',
-            `"must never execute" -> ${quotedOutput} @ $local;`,
+            `"must never execute" -> $local @ ${quotedOutput};`,
             '',
         ].join('\n');
         const filename = path.join(workspace, 'journey.msync');

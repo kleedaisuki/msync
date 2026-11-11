@@ -211,7 +211,7 @@ actual newlines:
 ```rust
 "D:\Code\agents\target" -> windows-spelling.txt;
 "say ""hello""" -> quoted-content.txt;
-let source = $pwd::pwd / "a file with spaces.txt";
+let source = ($pwd @ pwd) / "a file with spaces.txt";
 source -> backup/source;
 ```
 
@@ -231,12 +231,12 @@ tools, not dependencies of local-only copying or the installed .NET AOT runtime.
 ```rust
 let remote = ssh://forge;
 for file in ~/.codex/<.+> {
-    file -> file @ remote
+    file -> remote @ file
 };
 ```
 
 A lexical Scope selects declared members instead of qualifying physical paths.
-Write `path @ connection` to select a physical endpoint; `::` selects lexical
+Write `connection @ path` to select a physical endpoint; `::` selects lexical
 Scope members only. Named Scopes are shared singletons; anonymous `scope { ... }`
 expressions construct fresh instances. Both functions and scopes can be anonymous:
 

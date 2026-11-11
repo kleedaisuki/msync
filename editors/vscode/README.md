@@ -57,7 +57,7 @@ fn copy(file: Path | String, destination) {
 let file? = if exists ~/.codex { ~/.codex } else { null };
 match file {
     null => {},
-    _ => { copy(file, file @ $wsl) },
+    _ => { copy(file, $wsl @ file) },
 };
 ```
 
@@ -73,7 +73,7 @@ match file {
   connections. A block's final expression retains its value; `;` discards it.
 - `$`, `::`, `@` and `/` have independent operator scopes. Named standard
   modules, callbacks, pipelines and ordered `[ ... ]` ranges keep their lexical
-  roles. `path @ connection` selects a physical endpoint; `scope::member`
+  roles. `connection @ path` selects a physical endpoint; `scope::member`
   selects a lexical member. Filename components such as `root/match/file`
   are not keywords.
 - An unquoted URI keeps three roles: protocol, `://` operator and atomic address.
@@ -144,7 +144,7 @@ Number literals include decimals, exponents, base prefixes and separators:
 ```text
 let counts = [1_000, 1.5, .5, 1e3, 0xFF, 0b10_01, 0o77, -0];
 let file = "./input" as Path;
-let selected = file @ $local;
+let selected = $local @ file;
 concept Named { name: String, };
 concept Labeled { Named, };
 fn label(item: Labeled) -> String { item::name };

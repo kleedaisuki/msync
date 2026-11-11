@@ -89,8 +89,8 @@ test('paths preserve namespace, lookup, composition and callback roles', () => {
     for (const line of [
         'copy($local, .codex/codex.prompt);',
         '"C:\\Users\\STONE\\.codex"/codex.prompt',
-        '.codex/codex.prompt @ $local',
-        '("C:\\Users\\STONE\\.codex" / codex.prompt) @ $local',
+        '$local @ .codex/codex.prompt',
+        '$local @ ("C:\\Users\\STONE\\.codex" / codex.prompt)',
         '$std::ranges::filter(keep)',
     ]) {
         const pieces = grammar.tokenizeLine(line, textmate.INITIAL).tokens
@@ -104,8 +104,8 @@ test('paths preserve namespace, lookup, composition and callback roles', () => {
             }
         }
     }
-    hasScope('let config = codex(config.toml) @ $wsl;', 'wsl', 'variable.other.readwrite.msync');
-    hasScope('let config = codex(config.toml) @ $wsl;', 'codex', 'entity.name.function.msync');
+    hasScope('let config = $wsl @ codex(config.toml);', 'wsl', 'variable.other.readwrite.msync');
+    hasScope('let config = $wsl @ codex(config.toml);', 'codex', 'entity.name.function.msync');
     hasScope('items | $std::ranges::filter(present)', 'filter', 'entity.name.function.msync');
     for (const namespace of ['$view', '$views', '$ranges', 'view', 'views', 'ranges'])
         assert.ok(!scopes(`items | ${namespace}::filter(present)`, 'filter').includes('support.function.range.msync'));
@@ -115,7 +115,7 @@ test('paths preserve namespace, lookup, composition and callback roles', () => {
 });
 
 test('ordered ranges do not absorb booleans, calls, paths or regex classes', () => {
-    const line = 'let items = ["可莉🌟", true, "two words" @ $local, codex(config.toml)];';
+    const line = 'let items = ["可莉🌟", true, $local @ "two words", codex(config.toml)];';
     hasScope(line, '[', 'punctuation.section.brackets.begin.msync');
     hasScope(line, ']', 'punctuation.section.brackets.end.msync');
     hasScope(line, '可莉🌟', 'string.quoted.double.msync');
@@ -329,7 +329,7 @@ test('concept contracts and explicit conversions use type and control roles', ()
     hasScope('fn fold(value: Monoid | Semigroup) {', 'Semigroup', 'entity.name.type.msync');
     hasScope('fn fold(value: Monoid) -> Monoid {', 'Monoid {', 'entity.name.type.msync');
     hasScope('let value = object as Monoid;', 'Monoid', 'entity.name.type.msync');
-    hasScope('root/as/file @ remote;', 'as', 'variable.other.readwrite.msync');
+    hasScope('remote @ root/as/file;', 'as', 'variable.other.readwrite.msync');
 });
 
 test('inline associated binders retain declaration and type roles across requirement forms', () => {
@@ -360,8 +360,8 @@ test('standard module qualifiers are named types but connection values are ident
         hasScope(line, name, 'entity.name.function.msync');
     }
     hasScope('let root = $std;', 'std', 'entity.name.type.msync');
-    hasScope('path @ $wsl;', 'wsl', 'variable.other.readwrite.msync');
-    hasScope('path @ $local;', 'local', 'variable.other.readwrite.msync');
+    hasScope('$wsl @ path;', 'wsl', 'variable.other.readwrite.msync');
+    hasScope('$local @ path;', 'local', 'variable.other.readwrite.msync');
     const words = new RegExp(require('../language-configuration.json').wordPattern, 'g');
     assert.deepEqual('./path@$wsl'.match(words), ['.', 'path', 'wsl']);
 });

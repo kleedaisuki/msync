@@ -13,7 +13,7 @@
   "Directory predicate": { "prefix": "isdir", "body": ["\\$std::fs::is_directory(${1:path})"], "description": "Inspect a directory at its selected endpoint" },
   "Native function": { "prefix": "native", "body": ["native fn ${1:name}(${2:argument}: ${3:Path}) -> ${4:Bool};"], "description": "Declare a typed host-implemented function" },
   "Connection": { "prefix": "remote", "body": ["let ${1:remote} = ssh://${2:forge};"], "description": "Bind a native SSH connection" },
-  "Qualified path": { "prefix": "at", "body": ["${1:./file} @ ${2:\\$local}"], "description": "Select the physical endpoint for a Path or String" },
+  "Qualified path": { "prefix": "at", "body": ["${1:\\$local} @ ${2:./file}"], "description": "Select the physical endpoint for a Path or String" },
   "Concept": { "prefix": "concept", "body": ["concept ${1:Monoid} {", "    type Self;", "    identity: Self,", "    combine: fn(left: Self, right: Self) -> Self,", "};"], "description": "Declare a named structural algebra contract" },
   "Explicit conversion": { "prefix": "as", "body": ["${1:value} as ${2:String}"], "description": "Explicitly convert a value to a supported type" }
 }

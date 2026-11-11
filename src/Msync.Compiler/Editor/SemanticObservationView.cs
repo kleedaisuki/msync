@@ -48,7 +48,7 @@ internal readonly record struct SemanticReceiver(SourceSpan Span,
     bool Concrete = true);
 
 internal readonly record struct SemanticPathOwner(SourceSpan Span,
-    SemanticConnectionView? Endpoint, bool Concrete = true);
+    SemanticConnectionView? Endpoint, bool Concrete = true, int QualificationWidth = 0);
 
 internal sealed record SemanticImport(SourceSpan Span,
     IReadOnlyDictionary<string, SemanticBindingView> Bindings, bool Concrete = true);

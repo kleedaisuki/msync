@@ -624,16 +624,16 @@ def remote_queries(
                 )
             qualifier = "remote" if alias else endpoint
             if stored:
-                declaration += "let folder = " + quote(remote) + " @ remote;\n"
+                declaration += "let folder = remote @ " + quote(remote) + ";\n"
                 fragment = "folder/" + prefix
             else:
                 fragment = remote + "/" + prefix
-            suffix = "" if stored else " @ " + qualifier
+            owner = "" if stored else qualifier + " @ "
             text = (
                 declaration
                 + "let selected = "
+                + owner
                 + fragment
-                + suffix
                 + ";\ndecltype(selected)\n"
             )
             offset = text.index(fragment) + len(fragment)
@@ -665,7 +665,7 @@ def remote_queries(
             item = matches[0]
             assert "Path" in item.get("detail", ""), item
             edited = apply_edit(text, item["textEdit"])
-            assert ("@ remote" if alias or stored else "@ " + endpoint) in edited, (
+            assert ("remote @" if alias or stored else endpoint + " @") in edited, (
                 edited
             )
             native_run(binary, environment, directory, edited, "Path")
@@ -723,56 +723,56 @@ def distinct_endpoint_queries(
     (remote_directory / "REMOTE_ONLY.txt").write_bytes(b"remote domain")
     raw = "./" + relative.as_posix() + "/"
     declaration = "let remote = " + endpoint + ";\n"
-    stored = declaration + "let folder = " + quote(raw) + " @ remote;\n"
+    stored = declaration + "let folder = remote @ " + quote(raw) + ";\n"
     cases = [
-        (declaration + raw + CARET + " @ remote", "REMOTE_ONLY.txt"),
-        (declaration + "(" + raw + CARET + ") @ remote", "REMOTE_ONLY.txt"),
+        (declaration + "remote @ " + raw + CARET, "REMOTE_ONLY.txt"),
+        (declaration + "remote @ (" + raw + CARET + ")", "REMOTE_ONLY.txt"),
         (
             "scope Endpoints { host: "
             + endpoint
-            + " };\n("
+            + " };\nEndpoints::host @ ("
             + raw
             + CARET
-            + ") @ Endpoints::host",
+            + ")",
             "REMOTE_ONLY.txt",
         ),
         (stored + "folder/" + CARET, "REMOTE_ONLY.txt"),
-        (stored + "(folder/" + CARET + ") @ $local", "LOCAL_ONLY.txt"),
-        (stored + "((folder/" + CARET + ") @ $local) @ remote", "REMOTE_ONLY.txt"),
-        (declaration + "((" + raw + CARET + ") @ remote) @ $local", "LOCAL_ONLY.txt"),
-        (declaration + quote(raw + CARET) + " @ remote", "REMOTE_ONLY.txt"),
-        (declaration + "(" + quote(raw + CARET) + ") @ remote", "REMOTE_ONLY.txt"),
-        (declaration + "({ " + quote(raw + CARET) + " }) @ remote", "REMOTE_ONLY.txt"),
+        (stored + "$local @ (folder/" + CARET + ")", "LOCAL_ONLY.txt"),
+        (stored + "remote @ ($local @ (folder/" + CARET + "))", "REMOTE_ONLY.txt"),
+        (declaration + "$local @ (remote @ (" + raw + CARET + "))", "LOCAL_ONLY.txt"),
+        (declaration + "remote @ " + quote(raw + CARET), "REMOTE_ONLY.txt"),
+        (declaration + "remote @ (" + quote(raw + CARET) + ")", "REMOTE_ONLY.txt"),
+        (declaration + "remote @ ({ " + quote(raw + CARET) + " })", "REMOTE_ONLY.txt"),
         (
             declaration
-            + "(if true { "
+            + "remote @ (if true { "
             + quote(raw + CARET)
-            + " } else { ./unused }) @ remote",
+            + " } else { ./unused })",
             "REMOTE_ONLY.txt",
         ),
         (
             declaration
-            + "(match true { true => { "
+            + "remote @ (match true { true => { "
             + quote(raw + CARET)
-            + " }, false => { ./unused } }) @ remote",
+            + " }, false => { ./unused } })",
             "REMOTE_ONLY.txt",
         ),
         (
             declaration
-            + "fn identity(path: Path) { path };\n(identity("
+            + "fn identity(path: Path) { path };\nremote @ (identity("
             + quote(raw + CARET)
-            + ")) @ remote",
+            + "))",
             "LOCAL_ONLY.txt",
         ),
         (
             declaration
-            + "(if exists "
+            + "remote @ (if exists "
             + quote(raw + CARET)
-            + " { ./unused } else { ./unused }) @ remote",
+            + " { ./unused } else { ./unused })",
             "LOCAL_ONLY.txt",
         ),
         (
-            declaration + "((fn() { " + quote(raw + CARET) + " })()) @ remote",
+            declaration + "remote @ ((fn() { " + quote(raw + CARET) + " })())",
             "LOCAL_ONLY.txt",
         ),
     ]
@@ -780,10 +780,20 @@ def distinct_endpoint_queries(
     uri = (local_cwd / "endpoint-domain.msync").as_uri()
     try:
         client.request("initialize", {"capabilities": {}})
-        for version, (marked, expected) in enumerate(cases, 1):
+        bare = declaration + "remote @ "
+        local_only = "bare-local-only.txt"
+        (local_cwd / local_only).touch()
+        notify(client, uri, 1, bare, opening=True)
+        items, _ = client.request(
+            "textDocument/completion",
+            {"textDocument": {"uri": uri}, "position": lsp_position(bare, len(bare))},
+        )
+        assert any("remote" in item.get("detail", "") for item in items), items
+        assert not any(item.get("label") == local_only for item in items), items
+        for version, (marked, expected) in enumerate(cases, 2):
             offset = marked.index(CARET)
             text = marked.replace(CARET, "") + ";\n"
-            notify(client, uri, version, text, opening=version == 1)
+            notify(client, uri, version, text)
             response, _ = client.request(
                 "textDocument/completion",
                 {"textDocument": {"uri": uri}, "position": lsp_position(text, offset)},
@@ -797,8 +807,8 @@ def distinct_endpoint_queries(
                 )
             }
             assert names == {expected}, (version, marked, expected, names, response)
-        invalid_version = len(cases) + 1
-        malformed = "fn inspect(scope) { (/tmp/ @ scope::endpoint) }; inspect(scope { endpoint: true });\n"
+        invalid_version = len(cases) + 2
+        malformed = "fn inspect(scope) { (scope::endpoint @ /tmp/) }; inspect(scope { endpoint: true });\n"
         notify(client, uri, invalid_version, malformed)
         problem = diagnostics(client, uri, invalid_version)
         assert problem["diagnostics"], problem
@@ -817,6 +827,7 @@ def distinct_endpoint_queries(
         )
         assert client.process.poll() is None
         return {
+            "connection_first_empty_operand_remote_queries": 1,
             "distinct_local_remote_domains": len(cases),
             "same_process_malformed_edit_recovery": 1,
         }

@@ -184,13 +184,13 @@ def run_builtins(binary: Path, directory: Path) -> dict[str, int]:
 
         for prefix, suffix, marker, target in [
             (
-                "$env::MSYNC_TERMINAL_DETAIL_S",
+                "$env @ MSYNC_TERMINAL_DETAIL_S",
                 ' -> ./env-result; "ENV_DETAIL_DONE"',
                 "ENV_DETAIL_DONE",
                 "env-result",
             ),
             (
-                "environment::MSYNC_TERMINAL_DETAIL_S",
+                "environment @ MSYNC_TERMINAL_DETAIL_S",
                 ' -> ./env-alias-result; "ENV_ALIAS_DETAIL_DONE"',
                 "ENV_ALIAS_DETAIL_DONE",
                 "env-alias-result",
@@ -205,28 +205,32 @@ def run_builtins(binary: Path, directory: Path) -> dict[str, int]:
 
         (directory / "pwdinput.txt").write_bytes(b"PWD CONTENT")
         for prefix, replacement, target, marker in [
-            ("./pwdin", "./pwdinput.txt @ $pwd", "pwd-result", "PWD_DETAIL_DONE"),
             (
-                "./pwdin",
-                "./pwdinput.txt @ $local",
+                "$pwd @ ./pwdin",
+                "$pwd @ ./pwdinput.txt",
+                "pwd-result",
+                "PWD_DETAIL_DONE",
+            ),
+            (
+                "$local @ ./pwdin",
+                "$local @ ./pwdinput.txt",
                 "local-result",
                 "LOCAL_DETAIL_DONE",
             ),
         ]:
             start = complete(terminal, prefix, "pwdinput.txt")
-            endpoint = "$pwd" if target == "pwd-result" else "$local"
-            suffix = f' @ {endpoint} -> ./{target}; "{marker}"'
+            suffix = f' -> ./{target}; "{marker}"'
             finish_submission(terminal, suffix, marker, start)
             assert (directory / target).read_bytes() == b"PWD CONTENT"
-            expected.append(replacement + suffix[suffix.index(" ->") :])
+            expected.append(replacement + suffix)
 
-        start = complete(terminal, "$path::msync_detail_t", "msync_detail_tool")
-        terminal.key(b'("EXECUTABLE")::stdout -> ./path-result; "PATH_PROGRAM_DONE"')
+        start = complete(terminal, "($path @ msync_detail_t", "msync_detail_tool")
+        terminal.key(b')("EXECUTABLE")::stdout -> ./path-result; "PATH_PROGRAM_DONE"')
         terminal.send(b"\r")
         terminal.prompt(terminal.line("PATH_PROGRAM_DONE", start))
         assert (directory / "path-result").read_bytes() == b"EXECUTABLE\n"
         expected.append(
-            '$path::msync_detail_tool("EXECUTABLE")::stdout -> ./path-result; "PATH_PROGRAM_DONE"'
+            '($path @ msync_detail_tool)("EXECUTABLE")::stdout -> ./path-result; "PATH_PROGRAM_DONE"'
         )
 
         start = complete(terminal, "$std::ranges::sin")

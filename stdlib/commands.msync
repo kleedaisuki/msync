@@ -64,7 +64,7 @@ scope Command {
     },
     on: fn(self: $std::concepts::CommandSpec, connection: Connection) {
         Command::with_runner(
-            self::executable @ connection,
+            connection @ self::executable,
             self::arguments,
             self::runner
         )

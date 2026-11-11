@@ -29,7 +29,7 @@ let alias = settings;
 
 A Scope is lexical, not a machine or remote connection. `$wsl`, `$local` and
 `ssh://forge` have type Connection. Read `msync skill paths connections` before
-using `path @ connection` to select a physical endpoint.
+using `connection @ path` to select a physical endpoint.
 
 ## Mutable fields and aliases
 

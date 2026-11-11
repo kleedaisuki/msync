@@ -128,7 +128,7 @@ let allowed = $std::meta::is_invocable(invalid);
 mutable::operation = fn(value: Number) { true };
 ((not allowed) as String) -> ./failed-query-isolation.txt;
 let unselected = ssh://hir-no-auth.invalid;
-((decltype(~ @ unselected) is Path) as String) -> ./unevaluated-endpoint.txt;
+((decltype(unselected @ ~) is Path) as String) -> ./unevaluated-endpoint.txt;
 let generic_value = fn(value) { value };
 ((decltype(generic_value) is Function) as String) -> ./uncalled-generic.txt;
 fn unused_invalid(value) { 1 + true };

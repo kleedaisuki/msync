@@ -30,6 +30,12 @@ internal static class SemanticDiagnosticFactory
             label: $"this expression has type {actual}", help: TypeHelp(actual, expected), code: "E0203");
     }
 
+    public static CompileException QualificationOrder(HirSource source, SourceSpan span) =>
+        new("Write 'connection @ path' instead of 'path @ connection'.", source.Text ?? "", source.Name, span,
+            label: "the Connection now comes first",
+            help: "Place the Connection on the left of '@'. To preserve a path expression's earlier effects, evaluate it in a binding before qualifying that binding.",
+            code: "E0238");
+
     private static string TypeHelp(TypeRef actual, TypeRef expected)
     {
         if (actual.Nullable && !expected.Nullable)
@@ -41,7 +47,7 @@ internal static class SemanticDiagnosticFactory
         if (expected.Kind == TypeKind.Range)
             return "Iterate a Range, such as '[first, second]' or 'directory/<pattern>'. A single Path is not a collection.";
         if (actual == TypeRef.Connection && TypeRef.Union(TypeRef.Path, TypeRef.String).Accepts(expected))
-            return "A Connection selects an endpoint. Qualify a Path or String with 'path @ connection'.";
+            return "A Connection selects an endpoint. Qualify a Path or String with 'connection @ path'.";
         return ExplicitConversions.Possible(actual, expected)
             ? $"Convert explicitly with 'value as {expected}'. Only Path and String convert implicitly."
             : $"Supply a {expected} value here, or use a new binding for a different storage type.";

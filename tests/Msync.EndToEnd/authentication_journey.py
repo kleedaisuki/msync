@@ -126,7 +126,7 @@ def exercise(
 ) -> dict[str, Any]:
     write_remote("native.txt", "remote only")
     literal: str = '"' + (remote + "/").replace('"', '""') + '"'
-    source: str = f"let remote = ssh://Perf_Fixture;\n{literal} @ remote"
+    source: str = f"let remote = ssh://Perf_Fixture;\nremote @ {literal}"
     checked: subprocess.CompletedProcess[bytes] = subprocess.run(
         [str(binary), "--no-config", "--no-telemetry", "check", "-"],
         input=source.encode("utf-8"),

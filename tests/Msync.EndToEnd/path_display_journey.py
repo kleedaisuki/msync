@@ -33,27 +33,27 @@ def run(binary: Path, directory: Path) -> dict[str, Any]:
         binary,
         directory,
         ["repl"],
-        "./item @ ssh://forge\n"
-        "./item @ $wsl\n"
-        "./item @ $local\n"
-        "(./item @ $local) as String\n"
-        '("dir with space" @ ssh://forge) as String\n'
-        'let invalid = "not-a-number" @ ssh://forge;\n'
+        "ssh://forge @ ./item\n"
+        "$wsl @ ./item\n"
+        "$local @ ./item\n"
+        "($local @ ./item) as String\n"
+        '(ssh://forge @ "dir with space") as String\n'
+        'let invalid = ssh://forge @ "not-a-number";\n'
         "invalid as Number\n"
         "/quit\n",
     )
     assert result.returncode == 0, result
     lines = result.stdout.splitlines()
     assert len(lines) == 5, result.stdout
-    assert lines[:2] == ["./item @ ssh://forge", "./item @ wsl://"], lines
+    assert lines[:2] == ["ssh://forge @ ./item", "wsl:// @ ./item"], lines
     assert lines[2] == lines[3] and " @ " not in lines[2], lines
     assert lines[4] == "dir with space", lines
-    assert "Cannot cast Path 'not-a-number @ ssh://forge' to Number" in result.stderr
+    assert "Cannot cast Path 'ssh://forge @ not-a-number' to Number" in result.stderr
     assert "ssh://forge::" not in result.stderr
 
     source = directory / "display.msync"
     source.write_text(
-        'let invalid = "not-a-number" @ ssh://forge; invalid as Number;\n',
+        'let invalid = ssh://forge @ "not-a-number"; invalid as Number;\n',
         encoding="utf-8",
     )
     relocatable = directory / "display.mso"
@@ -71,7 +71,7 @@ def run(binary: Path, directory: Path) -> dict[str, Any]:
         failed = invoke(binary, directory, ["run-ir", str(artifact)])
         assert failed.returncode == 1, failed
         assert (
-            "Cannot cast Path 'not-a-number @ ssh://forge' to Number" in failed.stderr
+            "Cannot cast Path 'ssh://forge @ not-a-number' to Number" in failed.stderr
         )
         inspected = invoke(binary, directory, ["disassemble", str(artifact), "--json"])
         assert inspected.returncode == 0, inspected.stderr
@@ -79,7 +79,7 @@ def run(binary: Path, directory: Path) -> dict[str, Any]:
         assert 'connection(Ssh, "forge")' in document["text"]
         assert "ssh://forge::" not in document["text"]
         assert any(
-            "path @ connection" in hover["markdown"]
+            "connection @ path" in hover["markdown"]
             and "scope::member" in hover["markdown"]
             for hover in document["hovers"]
         )

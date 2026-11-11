@@ -21,86 +21,86 @@ internal static class QualificationContextChecks
 
     private static void TransparentPathFlow()
     {
-        Qualified(Prefix + "(/tmp/§) @ remote", Remote, "/tmp");
-        Qualified(Prefix + "let folder = /tmp; (folder/§) @ remote", Remote, "/tmp");
-        Qualified("scope Endpoints { remote: ssh://forge }; (./rel/§) @ Endpoints::remote", Remote, "./rel");
-        Qualified(Prefix + "(\"folder\"/§) @ remote", Remote, "folder");
-        Qualified(Prefix + "{ /tmp/§ } @ remote", Remote, "/tmp");
-        Qualified(Prefix + "(if true { /tmp/§ } else { other }) @ remote", Remote, "/tmp");
-        Qualified(Prefix + "(if true { other } else { /tmp/§ }) @ remote", Remote, "/tmp");
-        Qualified(Prefix + "(match true { true => { /tmp/§ }, false => { other } }) @ remote", Remote, "/tmp");
-        const string folder = "let remote = ssh://forge; let folder = ./rel @ remote; ";
-        Qualified(folder + "(folder/§) @ $local", Local, "./rel");
-        Qualified(folder + "((folder/§) @ $local) @ remote", Remote, "./rel");
-        Qualified(folder + "((./rel/§) @ remote) @ $local", Local, "./rel");
-        Qualified("(./rel/§) @ $wsl", new(ConnectionKind.Wsl), "./rel");
+        Qualified(Prefix + "remote @ (/tmp/§)", Remote, "/tmp");
+        Qualified(Prefix + "let folder = /tmp; remote @ (folder/§)", Remote, "/tmp");
+        Qualified("scope Endpoints { remote: ssh://forge }; Endpoints::remote @ (./rel/§)", Remote, "./rel");
+        Qualified(Prefix + "remote @ (\"folder\"/§)", Remote, "folder");
+        Qualified(Prefix + "remote @ { /tmp/§ }", Remote, "/tmp");
+        Qualified(Prefix + "remote @ (if true { /tmp/§ } else { other })", Remote, "/tmp");
+        Qualified(Prefix + "remote @ (if true { other } else { /tmp/§ })", Remote, "/tmp");
+        Qualified(Prefix + "remote @ (match true { true => { /tmp/§ }, false => { other } })", Remote, "/tmp");
+        const string folder = "let remote = ssh://forge; let folder = remote @ ./rel; ";
+        Qualified(folder + "$local @ (folder/§)", Local, "./rel");
+        Qualified(folder + "remote @ ($local @ (folder/§))", Remote, "./rel");
+        Qualified(folder + "$local @ (remote @ (./rel/§))", Local, "./rel");
+        Qualified("$wsl @ (./rel/§)", new(ConnectionKind.Wsl), "./rel");
     }
 
     private static void EvaluationBoundaries()
     {
-        Unqualified(Prefix + "fn identity(path) { path }; identity(/tmp/§) @ remote");
-        Unqualified(Prefix + "((fn() { /tmp/§ })()) @ remote");
-        Unqualified(Prefix + "(fn() { /tmp/§ }) @ remote");
-        Unqualified(Prefix + "(if exists (/tmp/§) { one } else { two }) @ remote");
-        Unqualified(Prefix + "(match exists (/tmp/§) { true => { one }, false => { two } }) @ remote");
-        Unqualified(Prefix + "{ /tmp/§; other } @ remote");
-        Unqualified(Prefix + "{ let temporary = /tmp/§; temporary } @ remote");
+        Unqualified(Prefix + "fn identity(path) { path }; remote @ identity(/tmp/§)");
+        Unqualified(Prefix + "remote @ ((fn() { /tmp/§ })())");
+        Unqualified(Prefix + "remote @ (fn() { /tmp/§ })");
+        Unqualified(Prefix + "remote @ (if exists (/tmp/§) { one } else { two })");
+        Unqualified(Prefix + "remote @ (match exists (/tmp/§) { true => { one }, false => { two } })");
+        Unqualified(Prefix + "remote @ { /tmp/§; other }");
+        Unqualified(Prefix + "remote @ { let temporary = /tmp/§; temporary }");
     }
 
     private static void LeafOwnership()
     {
         foreach (string expression in new[]
         {
-            "\"./rel/§\" @ remote", "(\"./rel/§\") @ remote", "{ \"./rel/§\" } @ remote",
-            "(if true { \"./rel/§\" } else { other }) @ remote",
-            "(match true { true => { \"./rel/§\" }, false => { other } }) @ remote",
-            "(\"./rel/§\" @ $local) @ remote"
+            "remote @ \"./rel/§\"", "remote @ (\"./rel/§\")", "remote @ { \"./rel/§\" }",
+            "remote @ (if true { \"./rel/§\" } else { other })",
+            "remote @ (match true { true => { \"./rel/§\" }, false => { other } })",
+            "remote @ ($local @ \"./rel/§\")"
         })
         {
             EditorContext context = At(Prefix + expression);
             Check(context.HasPhysicalOwner && context.PhysicalEndpoint == Remote, "transparent path leaf lost its physical owner: " + expression);
         }
-        EditorContext local = At(Prefix + "(\"./rel/§\" @ remote) @ $local");
+        EditorContext local = At(Prefix + "$local @ (remote @ \"./rel/§\")");
         Check(local.HasPhysicalOwner && local.PhysicalEndpoint == Local, "outermost physical leaf qualification did not win");
         foreach (string expression in new[]
         {
-            "fn identity(value) { value }; identity(\"./rel/§\") @ remote",
-            "((fn() { \"./rel/§\" })()) @ remote",
-            "(if exists \"./rel/§\" { one } else { two }) @ remote",
-            "(match exists \"./rel/§\" { true => { one }, false => { two } }) @ remote"
+            "fn identity(value) { value }; remote @ identity(\"./rel/§\")",
+            "remote @ ((fn() { \"./rel/§\" })())",
+            "remote @ (if exists \"./rel/§\" { one } else { two })",
+            "remote @ (match exists \"./rel/§\" { true => { one }, false => { two } })"
         })
         {
             EditorContext context = At(Prefix + expression);
             Check(!context.HasPhysicalOwner && context.Receiver?.Type != "Connection", "physical leaf ownership crossed an evaluation boundary: " + expression);
         }
-        EditorContext lexical = At(Prefix + "scope Config { root: ./rel }; (Config::ro§) @ remote");
+        EditorContext lexical = At(Prefix + "scope Config { root: ./rel }; remote @ (Config::ro§)");
         Check(!lexical.HasPhysicalOwner && lexical.Receiver?.Type == "Scope" && lexical.Receiver.Members?.Single().Name == "root",
             "outer qualification turned a Scope member-name lookup into a physical pathname");
-        EditorContext unknown = At("fn inspect(remote: Connection) { \"./rel/§\" @ remote }");
+        EditorContext unknown = At("fn inspect(remote: Connection) { remote @ \"./rel/§\" }");
         Check(unknown.HasPhysicalOwner && unknown.PhysicalEndpoint is null, "opaque leaf ownership became an ordinary local path");
-        EditorContext ambiguous = At("fn inspect(settings) { \"./rel/§\" @ settings::endpoint }; inspect(scope { endpoint: ssh://one }); inspect(scope { endpoint: ssh://two });");
+        EditorContext ambiguous = At("fn inspect(settings) { settings::endpoint @ \"./rel/§\" }; inspect(scope { endpoint: ssh://one }); inspect(scope { endpoint: ssh://two });");
         Check(ambiguous.HasPhysicalOwner && ambiguous.PhysicalEndpoint is null, "a physical leaf reports one of several actual generic endpoint owners");
-        EditorContext rewritten = At(Prefix + "fn inspect(unknown: Connection) { (\"./rel/§\" @ unknown) @ $local }");
+        EditorContext rewritten = At(Prefix + "fn inspect(unknown: Connection) { $local @ (unknown @ \"./rel/§\") }");
         Check(rewritten.HasPhysicalOwner && rewritten.PhysicalEndpoint is null,
             "an outer known endpoint invented a literal value through an unknown contextual projection");
     }
 
     private static void UnknownEndpoints()
     {
-        EditorContext endpoint = At("fn inspect(remote: Connection) { (/tmp/§) @ remote }");
+        EditorContext endpoint = At("fn inspect(remote: Connection) { remote @ (/tmp/§) }");
         Check(endpoint.ReceiverKind == EditorReceiverKind.PathJoin && endpoint.Receiver?.KnownPath is null && endpoint.Receiver?.KnownText is null,
             "a grouped unknown endpoint became a local filesystem target");
-        EditorContext path = At(Prefix + "fn inspect(path: Path) { (path/§) @ remote }");
+        EditorContext path = At(Prefix + "fn inspect(path: Path) { remote @ (path/§) }");
         Check(path.Receiver?.KnownPath is null, "qualification invented a path value for an opaque parameter");
-        EditorContext contextual = At("(/tmp/§) @ $env");
+        EditorContext contextual = At("$env @ (/tmp/§)");
         Check(contextual.Receiver?.KnownPath is null, "a contextual endpoint was projected as an ordinary physical path");
-        const string polymorphic = "fn inspect(settings) { (/tmp/§) @ settings::endpoint }; inspect(scope { endpoint: ssh://one }); inspect(scope { endpoint: ssh://two });";
+        const string polymorphic = "fn inspect(settings) { settings::endpoint @ (/tmp/§) }; inspect(scope { endpoint: ssh://one }); inspect(scope { endpoint: ssh://two });";
         Check(At(polymorphic).Receiver?.KnownPath is null, "one specialization overwrote the endpoint of another invocation's source receiver");
     }
 
     private static void ArtifactIsolation()
     {
-        const string source = Prefix + "(/tmp/) @ remote -> ./target @ remote;";
+        const string source = Prefix + "remote @ (/tmp/) -> remote @ ./target;";
         byte[] before = Bytes(Frontend.Compile(source, "qualified.msync", 0));
         _ = EditorCompiler.Analyze(source, "qualified.msync");
         Check(before.AsSpan().SequenceEqual(Bytes(Frontend.Compile(source, "qualified.msync", 0))), "editor qualification changed normal relocatable artifact bytes");
@@ -108,7 +108,7 @@ internal static class QualificationContextChecks
 
     private static void MalformedRecovery()
     {
-        const string source = "let ready = scope { useful: true }; fn inspect(scope) { (/tmp/) @ scope::endpoint }; inspect(scope { endpoint: ssh://one }); inspect(scope { endpoint: ssh://two });";
+        const string source = "let ready = scope { useful: true }; fn inspect(scope) { scope::endpoint @ (/tmp/) }; inspect(scope { endpoint: ssh://one }); inspect(scope { endpoint: ssh://two });";
         EditorAnalysis analysis = EditorCompiler.Analyze(source, "file:///malformed.msync");
         Check(analysis.Diagnostic is not null, "malformed keyword parameter lost its diagnostic");
         Check(analysis.At(source.Length).Bindings.Any(item => item.Name == "ready" && item.Members?.Single().Name == "useful"),
@@ -120,9 +120,10 @@ internal static class QualificationContextChecks
 
     private static void Qualified(string source, ConnectionValue connection, string raw)
     {
-        PathValue? path = At(source).Receiver?.KnownPath;
+        EditorContext context = At(source);
+        PathValue? path = context.Receiver?.KnownPath;
         Check(path is not null && path.Connection == connection && path.Raw == raw,
-            $"grouped path receiver differs from qualification semantics: {source}; expected {raw} @ {connection}, got {path}");
+            $"grouped path receiver differs from qualification semantics: {source}; expected {connection} @ {raw}, got {context.Receiver}; owner {context.PhysicalEndpoint}");
     }
 
     private static void Unqualified(string source)

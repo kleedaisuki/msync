@@ -259,9 +259,9 @@ public sealed class Parser
         Require(TokenKind.Semicolon, "Expected ';' after the native declaration.");
         return new(name.Text, parameters, type, SourceSpan.Cover(start, Previous.Span)) { NameSpan = name.Span };
     }
-    private Expr Expression(int minimum = 0, bool header = false)
+    private Expr Expression(int minimum = 0, bool header = false, bool stopSelection = false)
     {
-        Expr left = Prefix(header);
+        Expr left = Prefix(header, stopSelection);
         while (true)
         {
             if (At(TokenKind.LeftParen) && 15 >= minimum) { left = Call(left); continue; }
@@ -270,6 +270,7 @@ public sealed class Parser
                 Next(); left = new UnaryExpr("?", left, SourceSpan.Cover(left.Span, Previous.Span)); continue;
             }
             string? op = Operator();
+            if (stopSelection && op == "/" && Peek().Kind == TokenKind.Regex) break;
             int precedence = op == "/" && ExplicitPath(left) ? 16 : Precedence(op);
             if (op is null || precedence < minimum) break;
             Token operation = Next();
@@ -288,7 +289,7 @@ public sealed class Parser
                 right = new NameExpr(member.Text, member.Span);
                 if (WindowsPathBeforeString(member)) right = WindowsPathWithString(member);
             }
-            else right = Expression(precedence + (op is "=" or "**" ? 0 : 1), header);
+            else right = Expression(precedence + (op is "=" or "**" ? 0 : 1), header, stopSelection: op == "@");
             left = op == "="
                 ? new AssignmentExpr(left, right, SourceSpan.Cover(left.Span, right.Span)) { OperatorSpan = operation.Span }
                 : new BinaryExpr(op, left, right, SourceSpan.Cover(left.Span, right.Span)) { OperatorSpan = operation.Span };
@@ -344,7 +345,7 @@ public sealed class Parser
         return IsExpressionEnd(header) || Current.Span.Start > Previous.Span.End && Operator() is
             "and" or "or" or "is" or "as" or "==" or "!=" or "<" or "<=" or ">" or ">=" or "|" or "=";
     }
-    private Expr Prefix(bool header)
+    private Expr Prefix(bool header, bool stopSelection = false)
     {
         Token token = Current;
         if (Word("release") || Word("acquire") || Word("acqrel")) return Barrier(header);
@@ -391,6 +392,8 @@ public sealed class Parser
             Require(TokenKind.RightBracket, "Expected ']'.");
             return new RangeExpr(items, SourceSpan.Cover(token.Span, Previous.Span));
         }
+        if (stopSelection && At(TokenKind.Slash) && Peek().Kind == TokenKind.Regex)
+            return new PathExpr("/", token.Span);
         if (Take(TokenKind.Slash))
         {
             if (IsPathEnd(header)) return new PathExpr("/", token.Span);

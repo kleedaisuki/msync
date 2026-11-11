@@ -105,7 +105,7 @@ fn build(values: Range, directory: Path, endpoint: Connection) {
     $std::storage::Buffer::snapshot(records)
 };
 let endpoint = $local;
-let directory = ./files/ @ endpoint;
+let directory = endpoint @ ./files/;
 let rows = build($std::ranges::iota(seed, seed + ROW_COUNT), directory, endpoint);
 let total = 0;
 let last_name = "";

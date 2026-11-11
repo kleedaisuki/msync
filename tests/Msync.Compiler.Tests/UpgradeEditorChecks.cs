@@ -21,7 +21,7 @@ internal static class UpgradeEditorChecks
         Require(analysis.At(module).Receiver!.Members!.Where(item => item.Type == "Scope").All(item => item.SemanticRole == "type"), "Unloaded named standard modules lost type highlighting.");
         Require(analysis.Occurrences.Any(item => item.Span.Start == module && item.SemanticRole == "type"), "Loaded standard module lost type highlighting.");
         Require(analysis.DefinitionsAt(annotation).Any(item => item.Span.Start == declaration), "Concept annotation cannot navigate to its declaration.");
-        string path = "let remote = ssh://forge; ./input/child @ remote;";
+        string path = "let remote = ssh://forge; remote @ ./input/child;";
         EditorAnalysis physical = EditorCompiler.Analyze(path, "qualified-editor.msync");
         Require(physical.Diagnostic is null, physical.Diagnostic?.Message ?? "Unexpected qualification diagnostic.");
         EditorContext context = physical.At(path.IndexOf("child", StringComparison.Ordinal));
@@ -29,7 +29,7 @@ internal static class UpgradeEditorChecks
         const string namedPath = "scope Config { root: ./actual }; Config::root/fi";
         EditorAnalysis named = EditorCompiler.Analyze(namedPath, "named-path-editor.msync");
         Require(named.At(namedPath.Length).Receiver?.KnownPath?.Raw == "./actual", "A named Scope field lost its initial path completion value.");
-        const string namedEndpoint = "scope Endpoints { host: ssh://forge }; (./remote-dir/) @ Endpoints::host";
+        const string namedEndpoint = "scope Endpoints { host: ssh://forge }; Endpoints::host @ (./remote-dir/)";
         EditorAnalysis selectedEndpoint = EditorCompiler.Analyze(namedEndpoint, "named-endpoint-editor.msync");
         EditorContext selected = selectedEndpoint.At(namedEndpoint.IndexOf("remote-dir/", StringComparison.Ordinal) + "remote-dir/".Length);
         Require(selected.HasPhysicalOwner && selected.PhysicalEndpoint?.Kind == ConnectionKind.Ssh,

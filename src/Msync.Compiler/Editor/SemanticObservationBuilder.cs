@@ -60,6 +60,8 @@ internal sealed partial class SemanticObservationBuilder
         for (int index = 0; index < program.Hir.Nodes.Count; index++)
         {
             HirNode node = program.Hir.Nodes[index];
+            if (node.Kind == HirKind.Scope && program.Hir.Scopes[node.Data].Self is { } self)
+                initializers.TryAdd(self, new(index));
             if (node.Kind != HirKind.Declare || node.Children.Count == 0) continue;
             HirNodeId initializer = program.Hir.Edges[node.Children.Start];
             initializers[new(node.Data)] = initializer;
@@ -107,8 +109,6 @@ internal sealed partial class SemanticObservationBuilder
                     receivers.Add(new(Span(use.ReceiverSpan), receiver, EditorReceiverKind.PathJoin));
         if (standardUses.TryGetValue(original, out var standards))
             foreach (var use in standards) RecordStandard(use, result, concrete: true);
-        if (node.Kind == HirKind.Qualify)
-            RecordPhysicalOwner(original, context);
         if (globalImports.TryGetValue(node.Source, out var selectedImports))
             foreach (var import in selectedImports)
                 imports.Add(new(Span(import.Source), import.Bindings, Snapshot(context), true));
@@ -135,9 +135,10 @@ internal sealed partial class SemanticObservationBuilder
                 declaration.Kind == DeclarationKind.Parameter, concrete: false);
             references.Add(new(Span(declaration.Source), [Definition(declaration.Location)], false));
         }
+        var receiverSpans = receivers.Select(item => item.Span).ToHashSet();
         foreach (var selection in program.MemberUses)
         {
-            if (selection.ReceiverSpan.Source != source || receivers.Any(item => item.Span == Span(selection.ReceiverSpan))) continue;
+            if (selection.ReceiverSpan.Source != source || !receiverSpans.Add(Span(selection.ReceiverSpan))) continue;
             var children = program.Children(selection.Node);
             if (children.Length == 0) continue;
             SemanticValue receiver = BoundExpression(children[0]);
@@ -148,6 +149,7 @@ internal sealed partial class SemanticObservationBuilder
             var origins = FieldDefinitions(shape, selection.Name);
             if (!origins.IsDefaultOrEmpty) references.Add(new(Span(selection.MemberSpan), origins, false));
         }
+        RecordDraftPaths(generic, receiverSpans);
         foreach (var use in program.StandardUses)
             if (use.NameSpan.Source == source)
                 RecordStandard(use, Value(BoundValue(program.StandardLocations[use.Module]), generic), concrete: false);
@@ -326,83 +328,6 @@ internal sealed partial class SemanticObservationBuilder
 
     private TypeRef RuntimeType(SemanticValueId value) => values[value.Value].CurrentType
         ?? program.Hir.Types[values[value.Value].Type.Value].RuntimeType;
-
-    private SemanticPathView? KnownPath(SemanticValue value, SemanticContext context)
-    {
-        if (value.Observation?.Path is { } imported)
-            return new(imported.Raw, imported.WorkingDirectory,
-                imported.Connection is { } importedEndpoint ? new(importedEndpoint.Kind, importedEndpoint.Address) : null,
-                imported.HomeDirectory, imported.LocalSpelling);
-        if (value.Literal is { Kind: HirLiteralKind.Path } literal) return new(literal.Text ?? "");
-        if (value.Node.IsNone) return null;
-        HirNode node = program.Hir.Nodes[value.Node.Value];
-        if (node.Kind is not (HirKind.PathJoin or HirKind.Qualify) || node.Children.Count != 2) return null;
-        HirNodeId first = program.Hir.Edges[node.Children.Start], second = program.Hir.Edges[node.Children.Start + 1];
-        SemanticValueView? left = NodeValue(first, context), right = NodeValue(second, context);
-        SemanticPathView? path = left?.Path ?? (left?.Text is { } text ? new(text) : null);
-        if (path is null) return null;
-        PathValue current = new(path.Raw, path.WorkingDirectory,
-            path.Connection is { } owner ? new(owner.Kind, owner.Address) : null, path.HomeDirectory, path.LocalSpelling);
-        PathValue? result = node.Kind == HirKind.Qualify
-            ? right?.Connection is { } endpoint
-                ? PathSemantics.Qualify(current, new(endpoint.Kind, endpoint.Address)) : null
-            : right?.Path is { } fragment ? PathSemantics.JoinValue(current, new PathValue(fragment.Raw))
-                : right?.Text is { } component ? PathSemantics.JoinValue(current, new StringValue(component)) : null;
-        return result is null ? null : new(result.Raw, result.WorkingDirectory,
-            result.Connection is { } connection ? new(connection.Kind, connection.Address) : null,
-            result.HomeDirectory, result.LocalSpelling);
-    }
-
-    private SemanticValueView? NodeValue(HirNodeId typedNode, SemanticContext context)
-    {
-        if (typedValues.TryGetValue(typedNode, out var selected)) return values[selected.Value];
-        var node = program.Hir.Nodes[typedNode.Value];
-        if (node.Kind == HirKind.Literal)
-        {
-            HirLiteral literal = program.Hir.Literals[node.Data];
-            return new(node.Type,
-                Connection: literal.Kind == HirLiteralKind.Connection ? new(literal.ConnectionKind, literal.Text ?? "") : null,
-                Path: literal.Kind == HirLiteralKind.Path ? new(literal.Text ?? "") : null,
-                Text: literal.Kind == HirLiteralKind.String ? literal.Text : null);
-        }
-        if (node.Kind == HirKind.ReadLocation && context.Values.TryGetValue(new(node.Data), out var value))
-            return values[Value(value, context).Value];
-        return null;
-    }
-
-    private void RecordPhysicalOwner(HirNodeId id, SemanticContext context)
-    {
-        var children = program.Children(id);
-        if (children.Length != 2) return;
-        SemanticConnectionView? endpoint = nodeValues.TryGetValue((children[1], context.Function), out var selected)
-            ? values[selected.Value].Connection : null;
-        Collect(children[0]);
-
-        void Collect(HirNodeId current)
-        {
-            HirNode node = program.Node(current);
-            var nested = program.Children(current);
-            if (node.Kind is HirKind.PathJoin or HirKind.Qualify)
-            {
-                if (nested.Length != 0) Collect(nested[0]);
-                if (node.Kind == HirKind.PathJoin && nested.Length > 1) Collect(nested[1]);
-                return;
-            }
-            if (node.Kind == HirKind.Block && nested.Length != 0) { Collect(nested[^1]); return; }
-            if (node.Kind == HirKind.If)
-            {
-                if (nested.Length > 1) Collect(nested[1]);
-                if (nested.Length > 2) Collect(nested[2]);
-                return;
-            }
-            if (node.Kind == HirKind.Match)
-            {
-                foreach (var arm in program.Hir.Matches[node.Data].Arms) Collect(arm.Value);
-                return;
-            }
-            if (node.Source.Source == source) pathOwners.Add(new(Span(node.Source), endpoint));
-        }
-    }
 
     private SemanticValue BoundValue(HirLocationId location)
     {

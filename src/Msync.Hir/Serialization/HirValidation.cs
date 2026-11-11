@@ -203,7 +203,7 @@ public static class HirValidation
                 if (!module.Ranges[node.Data].Deferred.IsDefaultOrEmpty && module.Ranges[node.Data].Deferred.Length != count)
                     Fail("range item modes disagree with the item expressions");
                 break;
-            case HirKind.Qualify or HirKind.PathJoin or HirKind.Transfer: Arity(count, 2, 2); break;
+            case HirKind.Qualify or HirKind.QualifyOn or HirKind.PathJoin or HirKind.Transfer: Arity(count, 2, 2); break;
             case HirKind.Barrier: Id(node.Data, module.Barriers.Length, "barrier node"); Arity(count, 0, 1); break;
         }
     }

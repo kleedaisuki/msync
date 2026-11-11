@@ -50,8 +50,12 @@ internal static class EndpointChecks
         Check(hosts.Members!.Single(item => item.Name == "primary").Endpoint == Forge, "Scope member endpoint identity was lost");
         var nested = hosts.Members!.Single(item => item.Name == "nested");
         Check(nested.Members!.Single().Endpoint == new ConnectionValue(ConnectionKind.Wsl, "Ubuntu"), "nested Scope descriptors lost their endpoint identity");
-        EditorAnalysis recovery = EditorCompiler.Analyze(source + "./ @ ", "file:///endpoints.msync");
-        Check(recovery.RecoveryBindings!.Single(item => item.Name == "alias").Endpoint == Forge, "incomplete qualifier recovery lost its accepted endpoint alias");
+        const string prefix = "$wsl @ ";
+        string incomplete = source + prefix;
+        EditorContext recovery = EditorCompiler.Analyze(incomplete, "file:///endpoints.msync").At(incomplete.Length);
+        Check(recovery.Bindings.Single(item => item.Name == "alias").Endpoint == Forge, "incomplete qualifier recovery lost its accepted endpoint alias");
+        Check(recovery.HasPhysicalOwner && recovery.PhysicalEndpoint == new ConnectionValue(ConnectionKind.Wsl),
+            "an empty WSL operand did not select its physical owner");
     }
 
     private static void GenericMetadataIsolation()
@@ -98,12 +102,16 @@ internal static class EndpointChecks
     private static void SessionBindingDescriptions()
     {
         CompilerSession session = new();
-        _ = session.Compile("let remote = ssh://forge; scope Hosts { guest: $wsl }; fn send(file) { file -> file @ remote };");
+        _ = session.Compile("let remote = ssh://forge; scope Hosts { guest: $wsl }; fn send(file) { file -> remote @ file };");
         session.AcceptSubmission();
         IReadOnlyList<SemanticMember> first = session.DescribeBindings();
         Check(first.Single(item => item.Name == "remote").Endpoint == Forge, "live session lost its accepted endpoint");
         Check(first.Single(item => item.Name == "Hosts").Members!.Single().Endpoint == new ConnectionValue(ConnectionKind.Wsl), "live Scope members lost endpoint metadata");
         Check(first.Single(item => item.Name == "send").Signature.StartsWith("fn send(", StringComparison.Ordinal), "live session lost callable signature metadata");
+        const string selected = "remote @ ";
+        EditorContext query = session.AnalyzeEditor(selected).At(selected.Length);
+        Check(query.HasPhysicalOwner && query.PhysicalEndpoint == Forge,
+            "an empty right operand lost the accepted session alias");
         _ = session.Compile("let remote = ssh://other;");
         session.ReconcileSubmission(_ => false);
         Check(session.DescribeBindings().Single(item => item.Name == "remote").Endpoint == Forge, "failed shadow replaced an accepted endpoint hint");

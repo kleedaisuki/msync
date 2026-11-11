@@ -427,7 +427,7 @@ INVALID: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ),
     (
         "physical-endpoint-store",
-        '(./input @ $local) = "not a lexical field";',
+        '($local @ ./input) = "not a lexical field";',
         ("E0211", "not writable", "Scope member"),
     ),
 )

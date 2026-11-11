@@ -67,7 +67,7 @@ let zero = -0;
 let arithmetic = 2/3+4%2;
 let power = 2**3**2;
 let converted = "42" as Number;
-let qualified = ./marker.txt @ $local;
+let qualified = $local @ ./marker.txt;
 let trimmed = $std::string::trim(" x ");
 """
     client = Client(binary, cwd=directory)
@@ -142,14 +142,14 @@ let trimmed = $std::string::trim(" x ");
         assert any(
             item["label"] == "HasItem" and item["kind"] == 7 for item in completions
         ), completions
-        path_text = "let target = ./mar @ $local;"
+        path_text = "let target = $local @ ./mar;"
         notify(client, uri, 3, path_text)
         completions = request_at(
-            client, "textDocument/completion", uri, path_text, path_text.index(" @")
+            client, "textDocument/completion", uri, path_text, path_text.index(";")
         )
         item = next(item for item in completions if item["label"] == "marker.txt")
         assert item["textEdit"]["newText"] == "marker.txt", item
-        assert item["textEdit"]["range"]["end"]["character"] <= path_text.index(" @"), (
+        assert item["textEdit"]["range"]["end"]["character"] == path_text.index(";"), (
             item
         )
         unary_text = "let value = 2; -val"
@@ -181,7 +181,7 @@ concept HasItem { item: Path, };
 fn fetch(value: HasItem) -> Path { value::item };
 scope Named { item: ./marker.txt, };
 fetch(Named)
-./marker.txt @ $local
+$local @ ./marker.txt
 /quit
 """
     completed = subprocess.run(
@@ -204,7 +204,7 @@ fetch(Named)
 
 
 def terminal_palette(binary: Path, directory: Path) -> dict[str, object]:
-    source = 'concept Numeric { value: Number, }; let numeric = 0xff + 1e-3; "42" as Number; ./marker.txt @ $local; 2**3**2'
+    source = 'concept Numeric { value: Number, }; let numeric = 0xff + 1e-3; "42" as Number; $local @ ./marker.txt; 2**3**2'
     if os.name == "nt":
         from windows_terminal_journey import Terminal as WindowsTerminal
 

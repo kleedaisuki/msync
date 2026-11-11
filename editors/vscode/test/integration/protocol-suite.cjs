@@ -56,7 +56,7 @@ async function run() {
     const lines = uris.map((uri, index) => `let remote${index} = ${uri};`);
     const quoted = ['"ssh://forge"', '"tcp://[::1]:8022/path"'];
     lines.push(...quoted.map((literal, index) => `let quoted${index} = ${literal};`));
-    lines.push('let local_path = file @ $local;');
+    lines.push('let local_path = $local @ file;');
     const filename = path.join(workspace, 'protocol-style.msync');
     await fs.writeFile(filename, lines.join('\n') + '\n');
     const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filename));

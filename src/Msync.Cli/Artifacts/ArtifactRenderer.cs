@@ -259,7 +259,7 @@ internal sealed partial class ArtifactRenderer(Module module, int version, strin
         OpCode.GetSingleton => "Push this named Scope declaration's shared instance, or Null before its first selected initialization. Anonymous Scopes do not use this table.",
         OpCode.SetSingleton => "Replace the initializer Scope with this declaration's canonical session-owned singleton. The first published instance wins, including recursive initialization; later declarations reuse that identity.",
         OpCode.GetMember => "Pop a receiver and push its named member value.",
-        OpCode.Qualify => "Attach the selected Connection to a Path/String value and push its Path. This lowers source 'path @ connection'; lexical 'scope::member' uses GetMember instead.",
+        OpCode.Qualify => "Attach the selected Connection to a Path/String value and push its Path. This lowers source 'connection @ path'; lexical 'scope::member' uses GetMember instead.",
         OpCode.SetMember => "Pop assigned value and receiver, update the existing Scope field, and push Null.",
         OpCode.MakeClosure => "Pop captured locations and create a callable with the indicated bytecode identity.",
         OpCode.Barrier => "Apply the specified directional ordering boundary; paired region markers retain statement ownership.",

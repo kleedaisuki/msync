@@ -100,6 +100,7 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
                 }
             case HirKind.PathJoin:
             case HirKind.Qualify:
+            case HirKind.QualifyOn:
                 return Fact(hir.Type(TypeRef.Path));
             case HirKind.Range:
             case HirKind.LazyRange:

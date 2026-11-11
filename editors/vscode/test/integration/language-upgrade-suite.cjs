@@ -48,7 +48,7 @@ async function run() {
         'let numbers = [1.5, .5, 1e3, 0xFF, 0b10_01, 0o77, 1_000, -0];',
         'let text = 1.5e2 as String;',
         'let power = 2**3**2;',
-        'let local_path = ./input @ $local;',
+        'let local_path = $local @ ./input;',
         'let absolute = $std::math::abs(-0);',
         'let decision = true and true and true and true and true and true and true and true and true and true and true and true;',
         'let untouched = "literal \\target and doubled ""quotes""";',

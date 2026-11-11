@@ -53,11 +53,11 @@ def main() -> None:
                 "remote-files",
                 f"""
 let endpoint = ssh://Perf_Fixture;
-let file = {remote_file} @ endpoint;
+let file = endpoint @ {remote_file};
 $std::io::write_text(file, "星🙂\ntext");
 $std::io::append_text(file, "\0");
 $std::io::read_text(file) -> ./result;
-let bytes = {remote_bytes} @ endpoint;
+let bytes = endpoint @ {remote_bytes};
 $std::io::write_bytes(bytes, [0, 255, 128, 10]);
 $std::io::write_bytes(./binary, $std::io::read_bytes(bytes));
 """,
@@ -70,7 +70,7 @@ $std::io::write_bytes(./binary, $std::io::read_bytes(bytes));
                 "remote-pipe",
                 f"""
 let endpoint = ssh://Perf_Fixture;
-let process = $std::process::spawn({executable} @ endpoint, ["--child-identity"]);
+let process = $std::process::spawn(endpoint @ {executable}, ["--child-identity"]);
 let identity = $std::process::pid(process);
 $std::process::write_stdin(process, "remote 星🙂");
 $std::process::close_stdin(process);
@@ -85,7 +85,7 @@ if $std::process::stdout(completed) == expected {{ "remote-pipe-ok" -> ./result;
                     f"remote-{operation}",
                     f"""
 let endpoint = ssh://Perf_Fixture;
-let process = $std::process::spawn({executable} @ endpoint, ["--child-wait"]);
+let process = $std::process::spawn(endpoint @ {executable}, ["--child-wait"]);
 let requested = $std::process::{operation}(process);
 let completed = $std::process::wait(process);
 if requested and not $std::process::success(completed) {{ "stopped" -> ./result; }};

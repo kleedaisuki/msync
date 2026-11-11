@@ -329,11 +329,30 @@ retain their runtime branch.
 
 Scopes are lexical member values; Connections are physical endpoint values.
 `$wsl`, `$local`, native endpoint contexts and `ssh://...` produce Connections.
-Scope/Process `::` selects a member. `path @ connection` qualifies a Path/String
-value, evaluates the left operand before the right, and preserves raw path
-provenance. For example `(~/.codex @ ssh://forge) -> ./backup;` selects a remote
-source without introducing lexical endpoint members. The old physical
-`connection::path` spelling is rejected with migration guidance. A scope selected
+Scope/Process `::` selects a member. `connection @ path` evaluates the Connection
+first, then qualifies a Path or String without discarding raw path provenance.
+For example `ssh://forge @ ~/.codex -> ./backup;` selects a remote source.
+`remote @ ./reports/<.*>` selects entries after qualifying the directory; call
+a qualified executable as `(remote @ ./tool)(arguments)`. Separate a literal
+URI from the operator with whitespace: an internal `@` in `ssh://user@host`
+belongs to its authority, not to the expression.
+
+Source with `path @ connection` or the former physical `connection::path`
+spelling is rejected with migration guidance. If swapping effectful operands
+would change the order of work, bind the Path first and then qualify the
+binding. Existing format-5 bytecode retains its original operation and order.
+Format-1 HIR distinguishes old `Qualify` (path first) from the new appended
+`QualifyOn` node (connection first); 0.8.6 reads both, and older HIR readers
+reject the new node explicitly instead of misreading its order.
+
+The operand-order control records two writes in a captured Number. Published
+0.8.5 HIR, relocatable bytecode and executable bytecode all produce `12` under
+the new reader; the connection-first source and newly emitted artifacts produce
+`21`. The released 0.8.5 reader also executes the new format-5 bytecode with
+`21`, while rejecting the new HIR node tag. The language-upgrade tests retain
+the source/portable/executable check and both serialized HIR node orders.
+
+A scope selected
 by control flow exposes the intersection of member names
 that exist in every alternative, with each member's joined semantic type.
 Identical dictionary allocation identity is not required for member projection.

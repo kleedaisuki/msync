@@ -350,7 +350,9 @@ internal sealed partial class SemanticAnalyzer
                     System.Runtime.InteropServices.CollectionsMarshal.AsSpan(parameterInitializers))
                 };
             }
-            instance.Result = result with { Node = HirNodeId.None, Location = null };
+            var observation = context.Publish && Runtime(result) == TypeRef.Path
+                ? observations?.ReturnedPath(body, context) : null;
+            instance.Result = result with { Node = HirNodeId.None, Location = null, Observation = observation ?? result.Observation };
             FreezeSummary(instance, context);
             instance.Complete = true;
             caller.Output?.SealFunction(function, new(template.Name,

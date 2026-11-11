@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PAYLOAD = b"nullable Scope\x00\xff\r\n"
 HEADER = """scope SomeClass {
  new: fn -> Scope { scope { item: ~/.codex/AGENTS.md } },
- copy: fn(where: Connection, object: Scope) { object::item @ where -> ./ }
+ copy: fn(where: Connection, object: Scope) { where @ object::item -> ./ }
 };
 """
 
@@ -125,7 +125,7 @@ def execution_cases(binary: Path, directory: Path) -> int:
     for rebuilt in (False, True):
         for exists, item in ((False, missing), (True, present)):
             controlled = source(rebuilt).replace(
-                "~/.codex/AGENTS.md", "(" + quote(item.as_posix()) + " @ $local)"
+                "~/.codex/AGENTS.md", "($local @ " + quote(item.as_posix()) + ")"
             )
             controlled = controlled.replace(
                 "SomeClass::copy($wsl, object)", "SomeClass::copy($local, object)"

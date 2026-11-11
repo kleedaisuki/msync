@@ -7,7 +7,7 @@ internal static class OriginAndRoleChecks
         const string header = """
             scope SomeClass {
                 new: fn -> Scope { scope { item: ~/.codex/AGENTS.md } },
-                copy: fn(where: Connection, object: Scope) { object::item @ where -> ./ }
+                copy: fn(where: Connection, object: Scope) { where @ object::item -> ./ }
             };
             """;
         foreach (bool rebuilt in new[] { false, true })

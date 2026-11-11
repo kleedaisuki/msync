@@ -268,7 +268,7 @@ internal sealed class SemanticValuePresenter(SemanticObservationView view,
         TypeRef core = type.WithoutNull;
         string description = core == TypeRef.Scope ? "A lexical Scope. Select a declared member with `::`; a Scope is not a physical endpoint."
             : core == TypeRef.Path ? "A filesystem path. Bare unbound names denote Paths. Calling a Path starts a Process."
-            : core == TypeRef.Connection ? "A physical endpoint. Select it with `path @ connection`; `::` selects lexical Scope members."
+            : core == TypeRef.Connection ? "A physical endpoint. Select it with `connection @ path`; `::` selects lexical Scope members."
             : core == TypeRef.Function ? "A callable value. Unannotated parameters are specialized from each call's argument types."
             : core == TypeRef.Type ? "A type value. `decltype(expression)` infers without executing the expression."
             : core == TypeRef.Null ? "The absence of a value. Test with `is null` or `is not null`; postfix `?` means `is null`."

@@ -33,7 +33,7 @@ internal static class SemanticStandardCatalog
             };
             string address = name is "pwd" or "file" ? name : "";
             result.Add(new("$" + name, "Connection", $"${name}: Connection",
-                "A physical endpoint. Qualify a path with `path @ connection`.",
+                "A physical endpoint. Qualify a path with `connection @ path`.",
                 Endpoint: new(kind, address)));
         }
         return result.ToArray();

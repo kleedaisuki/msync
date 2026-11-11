@@ -107,7 +107,7 @@ control-keyword role with `if`, `else`, `match`, postfix `?` and ordering fences
 Semantic roles augment rather than replace the source grammar, following the
 [VS Code semantic-highlighting model][semantic-highlighting].
 
-Physical qualification is `path @ connection`; lexical member access remains
+Physical qualification is `connection @ path`; lexical member access remains
 `scope::member`. All prompt, source-LSP, syntax-reference and snippet examples
 must use the same contract. Number token presentation consumes the source
 lexer's numeric spans rather than reclassifying arbitrary digit-prefixed paths.
@@ -116,7 +116,7 @@ token collection. Physical completion consumes compiler flow context; obsolete
 Connection `::` resolver chains are removed rather than kept as a second path.
 The `@` inside a native SSH authority remains URI data, not qualification syntax.
 Runtime value display follows the same direction: remote Path values print
-`raw @ ssh://alias` or `raw @ wsl://distribution`, while local paths retain their
+`ssh://alias @ raw` or `wsl://distribution @ raw`, while local paths retain their
 native spelling without a synthesized `$local`. This is presentation only:
 `Path as String` still projects `NativeText`, not the endpoint-qualified display.
 

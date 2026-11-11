@@ -157,8 +157,8 @@ def minimal_paths(binary: Path, directory: Path) -> dict[str, int]:
         ("let file = ./pl" + CARET + ";\n", "let file = ./plain.txt;\n"),
         ("let file = ./normal-f" + CARET + ";\n", "let file = ./normal-folder/;\n"),
         (
-            "let file = ./pl" + CARET + " @ $local;\n",
-            "let file = ./plain.txt @ $local;\n",
+            "let file = $local @ ./pl" + CARET + ";\n",
+            "let file = $local @ ./plain.txt;\n",
         ),
         ('let file = "./pl' + CARET + '";\n', 'let file = "./plain.txt";\n'),
         ('"payload" -> ./pl' + CARET + ";\n", '"payload" -> ./plain.txt;\n'),
@@ -253,16 +253,16 @@ def builtin_edits(binary: Path, directory: Path) -> dict[str, int]:
         ("let endpoint = $" + CARET + ";\n", "let endpoint = $local;\n"),
         ("let endpoint = $ws" + CARET + ";\n", "let endpoint = $wsl;\n"),
         (
-            "let value = $env::MSYNC_COMPLETION_AL" + CARET + ";\n",
-            "let value = $env::MSYNC_COMPLETION_ALPHA;\n",
+            "let value = $env @ MSYNC_COMPLETION_AL" + CARET + ";\n",
+            "let value = $env @ MSYNC_COMPLETION_ALPHA;\n",
         ),
         (
-            "fn query() { $env::MSYNC_COMPLETION_BE" + CARET + " }\n",
-            "fn query() { $env::MSYNC_COMPLETION_BETA }\n",
+            "fn query() { $env @ MSYNC_COMPLETION_BE" + CARET + " }\n",
+            "fn query() { $env @ MSYNC_COMPLETION_BETA }\n",
         ),
         (
-            "let environment = $env;\nenvironment::MSYNC_COMPLETION_AL" + CARET + "\n",
-            "let environment = $env;\nenvironment::MSYNC_COMPLETION_ALPHA\n",
+            "let environment = $env;\nenvironment @ MSYNC_COMPLETION_AL" + CARET + "\n",
+            "let environment = $env;\nenvironment @ MSYNC_COMPLETION_ALPHA\n",
         ),
     ]
     cases.extend(
@@ -279,19 +279,22 @@ def builtin_edits(binary: Path, directory: Path) -> dict[str, int]:
                 "let helper = $std::ranges::take;\n",
             ),
             (
-                "let tool = $path::msync_completion_to" + CARET + ";\n",
-                "let tool = $path::" + executable_name + ";\n",
+                "let tool = $path @ msync_completion_to" + CARET + ";\n",
+                "let tool = $path @ " + executable_name + ";\n",
             ),
-            ("let current = $pwd::pw" + CARET + ";\n", "let current = $pwd::pwd;\n"),
-            ("let source = $file::th" + CARET + ";\n", "let source = $file::this;\n"),
-            ("let parent = $file::pa" + CARET + ";\n", "let parent = $file::parent;\n"),
+            ("let current = $pwd @ pw" + CARET + ";\n", "let current = $pwd @ pwd;\n"),
+            ("let source = $file @ th" + CARET + ";\n", "let source = $file @ this;\n"),
             (
-                "let current = ./pwd-ph" + CARET + " @ $pwd;\n",
-                "let current = ./pwd-physical.txt @ $pwd;\n",
+                "let parent = $file @ pa" + CARET + ";\n",
+                "let parent = $file @ parent;\n",
             ),
             (
-                "let source = ./file-ph" + CARET + " @ $file;\n",
-                "let source = ./file-physical.txt @ $file;\n",
+                "let current = $pwd @ ./pwd-ph" + CARET + ";\n",
+                "let current = $pwd @ ./pwd-physical.txt;\n",
+            ),
+            (
+                "let source = $file @ ./file-ph" + CARET + ";\n",
+                "let source = $file @ ./file-physical.txt;\n",
             ),
         ]
     )

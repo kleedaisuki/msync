@@ -279,7 +279,7 @@ internal static class SourceCompletion
         return (NeedsQuotes(name) || binding || numericAtom ? Quote(name) : name) + suffix;
     }
 
-    private static bool NeedsQuotes(string name) => name.Any(character => char.IsWhiteSpace(character)
+    internal static bool NeedsQuotes(string name) => name.Any(character => char.IsWhiteSpace(character)
         || "{}()[],;?\"$|<>!=:+*%@".Contains(character, StringComparison.Ordinal))
         || name is "true" or "false" or "null" or "fn" or "scope" or "if" or "else" or "match" or "for"
             or "in" or "is" or "not" or "and" or "or" or "exists" or "decltype" or "return" or "break" or "loop" or "native" or "concept" or "type" or "typename" or "as"

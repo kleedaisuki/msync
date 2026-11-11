@@ -156,7 +156,7 @@ frame/region rather than a shared mutable module.
   `global` explicitly imports definition-time lexical ancestor locations under
   the same shared-cell contract; it is not process-global name lookup.
 * Scope is a lexical member object. Connection identifies a physical endpoint.
-  Scope/Process member selection uses `::`; `Path | String @ Connection` is
+  Scope/Process member selection uses `::`; `Connection @ (Path | String)` is
   physical qualification and evaluates left then right. Connection `::` is
   rejected with migration guidance. Named Scope declarations initialize once on
   first execution and share an instance within a program/REPL session; anonymous

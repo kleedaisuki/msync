@@ -17,7 +17,7 @@ def run(binary: Path) -> dict[str, Any]:
     uri: str = "file:///msync-editor-probe-recovery.msync"
     malformed: str = (
         "let ready = scope { useful: true }; "
-        "fn inspect(scope) { (/tmp/ @ scope::endpoint) }; "
+        "fn inspect(scope) { (scope::endpoint @ /tmp/) }; "
         "inspect(scope { endpoint: ssh://one }); "
         "inspect(scope { endpoint: true });"
     )

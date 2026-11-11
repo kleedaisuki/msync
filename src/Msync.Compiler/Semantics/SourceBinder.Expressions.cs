@@ -119,7 +119,7 @@ internal sealed partial class SourceBinder
                 MissingExpr => null,
                 _ => throw Error("A lexical member must be selected by name.", binary.Right.Span, "E0205")
             };
-            var selected = Node(HirKind.MemberRead, OpenType(member ?? "member"), binary.Span,
+            var selected = Node(member is null ? HirKind.Error : HirKind.MemberRead, OpenType(member ?? "member"), binary.Span,
                 [receiver], text: member, effects: HirEffects.ReadMemory);
             if (observations)
             {
@@ -132,7 +132,16 @@ internal sealed partial class SourceBinder
         if (binary.Operator == "|") return Pipe(binary);
         var left = Expression(binary.Left);
         var right = Expression(binary.Right);
-        if (binary.Operator == "@") return Node(HirKind.Qualify, hir.Type(TypeRef.Path), binary.Span, [left, right]);
+        if (binary.Operator == "@")
+        {
+            var qualification = Node(HirKind.QualifyOn, hir.Type(TypeRef.Path), binary.Span, [left, right]);
+            if (observations)
+            {
+                int start = binary.OperatorSpan?.End ?? binary.Right.Span.Start;
+                program.QualificationPaths.Add(qualification, Range(new(start, binary.Right.Span.End - start)));
+            }
+            return qualification;
+        }
         if (binary.Operator == "->") return Node(HirKind.Transfer, hir.Type(TypeRef.Bool), binary.Span,
             [left, right], effects: HirEffects.ReadExternal | HirEffects.WriteExternal | HirEffects.MayFail);
         if (binary.Operator is "is" or "is not")
@@ -200,6 +209,7 @@ internal sealed partial class SourceBinder
                 _ => null
             };
             if (selected is null) throw Error("A lexical member assignment requires a name.", member.Right.Span, "E0205");
+            if (observations) program.WrittenMembers.Add(selected);
             var value = Expression(assignment.Value);
             return Node(HirKind.MemberAssign, hir.Type(TypeRef.Null), assignment.Span,
                 [receiver, value], text: selected, effects: HirEffects.WriteMemory);

@@ -5,7 +5,7 @@ native fn unique_lines(values: Range<String>) -> Range<String>;
 native fn which(name: String) -> Path?;
 native fn process_table() -> Range<Scope>;
 
-# Session context is local. Physical remote work uses explicit Path @ Connection.
+# Session context is local. Physical remote work uses explicit Connection @ Path.
 fn pwd() {
     $std::environment::working_directory()
 };

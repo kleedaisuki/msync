@@ -12,6 +12,8 @@ internal sealed partial class SemanticAnalyzer
         switch (node.Kind)
         {
             case HirKind.Error:
+                if (context.Publish && observations is not null && !children.IsEmpty)
+                    Analyze(children[0], context);
                 return new(hir.Type(TypeRef.Any), Add(node, hir.Type(TypeRef.Any), [], context));
             case HirKind.TypeValue:
                 return new(hir.Type(TypeRef.Type), Add(node, hir.Type(TypeRef.Type), [], context),
@@ -86,9 +88,10 @@ internal sealed partial class SemanticAnalyzer
             var type = RangeType(element.Type);
             return new(type, Add(node, type, [operand!.Node], context), Element: element);
         }
-        if (node.Kind is HirKind.PathJoin or HirKind.Qualify or HirKind.Transfer)
+        if (node.Kind is HirKind.PathJoin or HirKind.QualifyOn or HirKind.Transfer)
         {
             var other = Analyze(children[1], context);
+            if (node.Kind == HirKind.QualifyOn) observations?.RecordQualification(id, context);
             return PairOperation(node, operand!, other, context, program.Node(children[0]).Source, program.Node(children[1]).Source);
         }
         throw Error(node.Source, $"Unknown semantic operation '{node.Kind}'.");
@@ -157,7 +160,8 @@ internal sealed partial class SemanticAnalyzer
     private SemanticValue PairOperation(HirNode node, SemanticValue left, SemanticValue right, SemanticContext context,
         HirSourceRange leftSource, HirSourceRange rightSource)
     {
-        var path = hir.Type(new TypeRef(TypeKind.Path | TypeKind.String));
+        TypeRef pathname = new(TypeKind.Path | TypeKind.String);
+        var path = hir.Type(pathname);
         if (node.Kind == HirKind.Transfer)
         {
             Require(left, hir.Type(new TypeRef(TypeKind.Path | TypeKind.String | TypeKind.Range)), leftSource);
@@ -165,8 +169,17 @@ internal sealed partial class SemanticAnalyzer
             Require(right, path, rightSource);
             return new(hir.Type(TypeRef.Bool), Add(node, hir.Type(TypeRef.Bool), [left.Node, right.Node], context));
         }
-        Require(left, path, leftSource);
-        Require(right, node.Kind == HirKind.Qualify ? hir.Type(TypeRef.Connection) : path, rightSource);
+        if (node.Kind == HirKind.QualifyOn)
+        {
+            TypeRef first = Runtime(left), second = Runtime(right);
+            if (pathname.Accepts(first) && TypeRef.Connection.Accepts(second)
+                && first.Kind != TypeKind.Never && second.Kind != TypeKind.Never)
+                throw SemanticDiagnosticFactory.QualificationOrder(hir.Sources[node.Source.Source.Value],
+                    new(node.Source.Start, node.Source.Length));
+            Require(left, hir.Type(TypeRef.Connection), leftSource);
+        }
+        else Require(left, path, leftSource);
+        Require(right, path, rightSource);
         return new(hir.Type(TypeRef.Path), Add(node, hir.Type(TypeRef.Path), [left.Node, right.Node], context));
     }
 
@@ -199,6 +212,8 @@ internal sealed partial class SemanticAnalyzer
                 Effects = node.Effects | NativeEffects(NativeSignatures.Get("process." + node.Text))
             },
                 hir.Type(processType), [receiver.Node], context));
+        if (Runtime(receiver) == TypeRef.Connection)
+            throw Error(node.Source, "Write 'connection @ path' to qualify a path; '::' selects lexical members.", "E0206");
         if (Runtime(receiver) != TypeRef.Scope)
             throw Error(node.Source, $"Cannot select '{node.Text}' from {Runtime(receiver)}; '::' requires Scope or Process.", "E0206");
         var scope = receiver.Scope;

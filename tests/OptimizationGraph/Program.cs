@@ -250,7 +250,7 @@ async Task ValueNumberingChecks()
         {
             ("cse-bool", "let value = exists ./absent; scope { first: not value, second: not value }", OpCode.Not, "Scope:first=Bool:True;second=Bool:True"),
             ("cse-number", "let value = if exists ./absent { 3 } else { 5 }; scope { first: - value, second: - value }", OpCode.Negate, "Scope:first=Number:-5;second=Number:-5"),
-            ("cse-string", "native fn string.concat(left: String, right: String) -> String; let value: String = $env::MSYNC_OPT_GRAPH_INPUT; scope { first: string.concat(value, \"x\"), second: string.concat(value, \"x\") }", OpCode.NativeCall, "Scope:first=String:runtime textx;second=String:runtime textx")
+            ("cse-string", "native fn string.concat(left: String, right: String) -> String; let value: String = $env @ MSYNC_OPT_GRAPH_INPUT; scope { first: string.concat(value, \"x\"), second: string.concat(value, \"x\") }", OpCode.NativeCall, "Scope:first=String:runtime textx;second=String:runtime textx")
         })
         {
             Module original = Compiler.Compile(source, name, 0);

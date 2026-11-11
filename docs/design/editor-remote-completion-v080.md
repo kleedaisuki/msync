@@ -180,6 +180,32 @@ have no directory to enumerate until a server and share have been specified.
 Complete UNC and device roots retain normal native enumeration and diagnostics.
 See [Windows lookup roots](windows-completion-roots-v080.md).
 
+## Connection-first source (0.8.6)
+
+Typing `remote @ ` and requesting completion lists the already selected
+endpoint's current directory; adding a path narrows the same native query.
+Selection is derived from the bound left operand, not from scanning for the
+nearest URI string. Aliases and Scope fields use the same semantic facts as
+ordinary execution. A draft function can resolve unchanged lexical Connection
+initializers, but an unresolved parameter, mutated declaration or disagreeing
+specialization cannot silently query a guessed endpoint or the local directory.
+
+The lookup owner follows transparent right-side path joins, nested
+qualifications, block tails and branch results. It does not cross calls,
+conditions or function bodies. Contextual `$env @ name`, `$path @ program` and
+`$file @ relative` keep their dedicated completions. Source analysis still
+performs no native directory query. The connection-first syntax leaves
+[OpenSSH's URI authority and command transport](https://man.openbsd.org/ssh.1)
+unchanged and reuses the retained endpoint session on a selected completion.
+
+The owned Linux OpenSSH journey exercised the empty right operand and fifteen
+distinct local/remote domains, with one retained native client for the domain
+queries. The bare completion listed remote entries and excluded an entry that
+existed only in the editor's local working directory. It also applied an alias
+completion and copied the selected remote bytes through the actual CLI.
+The journey accepts an owned WSL distribution when available; the Linux result
+does not stand in for running that Windows fixture.
+
 REPL matching uses the text before the caret to rank candidates while retaining
 the full replacement span. The pinned prompt's public `CompletionItem` priority
 hook supplies this behavior; completion in `plZZ` before `ZZ` can select

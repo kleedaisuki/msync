@@ -96,7 +96,7 @@ if parameters is not null {
     "must not execute" -> ./forbidden-argument.txt;
     3
 }) as String) -> ./unevaluated-arguments.txt;
-(meta::is_invocable(./never-start-this @ ssh://never-login.invalid, String)
+(meta::is_invocable(ssh://never-login.invalid @ ./never-start-this, String)
     as String) -> ./unevaluated-process.txt;
 (meta::has_member({
     "must not execute" -> ./forbidden-member.txt;

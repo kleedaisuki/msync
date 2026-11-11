@@ -10,7 +10,7 @@ Directory.CreateDirectory(directory);
 File.WriteAllText(Path.Combine(directory, "entry.txt"), "entry");
 foreach (string name in new[] { "and", "or", "is", "as" }) File.WriteAllText(Path.Combine(directory, name), name);
 
-foreach (string path in new[] { "./", "../", "~/", "/", "C:/", "./nested/", "./ @ $local" })
+foreach (string path in new[] { "./", "../", "~/", "/", "C:/", "./nested/", "$local @ ./" })
 {
     Check(Expression($"if exists {path} {{ true }} else {{ false }}") is IfExpr
         { Condition: UnaryExpr { Operator: "exists" }, Then.Statements.Count: 1, Else: BlockExpr },

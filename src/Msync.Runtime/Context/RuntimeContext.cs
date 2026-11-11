@@ -62,7 +62,7 @@ public sealed class RuntimeContext
     {
         PathValue path = AsPath(value);
         if (path.Connection?.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl)
-            throw new MsyncException("cd changes the local execution directory; qualify remote command paths with 'path @ connection'.");
+            throw new MsyncException("cd changes the local execution directory; qualify remote command paths with 'connection @ path'.");
         string directory = Path.GetFullPath(LocalPath(path));
         if ((File.GetAttributes(directory) & FileAttributes.Directory) == 0)
             throw new IOException($"Cannot cd to '{directory}': it is not a directory.");

@@ -233,6 +233,7 @@ public static class HirLowerer
                 case HirKind.LazyRange: LazyRange(node); break;
                 case HirKind.DeferRange: Emit(Child(node, 0)); Add(OpCode.DeferRange, source: node.Source); break;
                 case HirKind.Qualify: Qualify(node); break;
+                case HirKind.QualifyOn: AllChildren(node); Add(OpCode.Qualify, source: node.Source); break;
                 case HirKind.PathJoin: AllChildren(node); Add(OpCode.PathJoin, source: node.Source); break;
                 case HirKind.SelectPath: Emit(Child(node, 0)); Add(OpCode.SelectPath, text: node.Text, source: node.Source); break;
                 case HirKind.Transfer: AllChildren(node); Add(OpCode.Transfer, source: node.Source); break;
@@ -391,6 +392,7 @@ public static class HirLowerer
         }
         private void Qualify(HirNode node)
         {
+            // Format-1 HIR emitted before connection-first source evaluates the path first.
             Emit(Child(node, 0)); int path = Temporary(); Add(OpCode.InitializeLocal, path);
             Emit(Child(node, 1)); Add(OpCode.LoadLocal, path); Add(OpCode.Qualify, source: node.Source);
         }

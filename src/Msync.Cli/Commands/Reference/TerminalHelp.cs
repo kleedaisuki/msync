@@ -144,7 +144,7 @@ internal static class TerminalHelp
         Heading("TRANSFERS AND CONNECTIONS", color);
         Code("source -> ~/backup;", color);
         Code("let remote = ssh://forge;", color);
-        Code("source -> ~/.codex @ remote;", color);
+        Code("source -> remote @ ~/.codex;", color);
         Console.WriteLine("\n'->' returns Bool. A String source is literal data; a Path source is a file");
         Console.WriteLine("or directory. $local, $wsl, and SSH URLs are physical Connections.");
         Console.WriteLine();
@@ -158,7 +158,7 @@ internal static class TerminalHelp
         Code("Settings::copy(Settings::home, ~/backup);", color);
         Console.WriteLine("\nUnannotated parameters are generic and inferred at each call. Functions and");
         Console.WriteLine("Scopes are values and may be anonymous. Scope::member selects a lexical");
-        Console.WriteLine("member; path @ connection selects a physical endpoint. These are distinct types.");
+        Console.WriteLine("member; connection @ path selects a physical endpoint. These are distinct types.");
         Console.WriteLine("Named Scopes are shared singletons; anonymous scope expressions create fresh");
         Console.WriteLine("instances. Both permit mutable values with fixed field types.");
         Console.WriteLine("Inside fn, 'global source;' explicitly imports a prior ancestor location.");

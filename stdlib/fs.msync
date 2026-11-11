@@ -68,7 +68,7 @@ native fn is_absolute(path: Path | String) -> Bool;
 native fn path_empty(path: Path | String) -> Bool;
 native fn is_relative(path: Path | String) -> Bool;
 
-fn current_path() { $pwd::pwd };
+fn current_path() { $pwd @ pwd };
 fn relative(path, base) { lexically_relative(weakly_canonical(path), weakly_canonical(base)) };
 fn proximate(path, base) { lexically_proximate(weakly_canonical(path), weakly_canonical(base)) };
 fn status_known(status: String) { status != "none" };

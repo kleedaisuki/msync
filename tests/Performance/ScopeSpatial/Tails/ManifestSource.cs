@@ -12,7 +12,7 @@ internal static class ManifestSource
             $std::storage::Buffer::snapshot(records)
         };
         let endpoint = $local;
-        let directory = ./files/ @ endpoint;
+        let directory = endpoint @ ./files/;
         let rows = build($std::ranges::iota(0, {{rows}}), directory, endpoint);
         let total = 0;
         for pass in $std::ranges::iota(0, {{passes}}) {

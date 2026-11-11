@@ -65,6 +65,7 @@ internal sealed class BoundProgram(HirBuilder hir)
     public List<BoundTypeUse> TypeUses { get; } = [];
     public List<BoundMemberUse> MemberUses { get; } = [];
     public List<BoundPathUse> PathUses { get; } = [];
+    public Dictionary<HirNodeId, HirSourceRange> QualificationPaths { get; } = [];
     public List<BoundGlobalImport> GlobalImports { get; } = [];
     public List<SourceDiagnostic> Diagnostics { get; } = [];
     public List<BoundStandardUse> StandardUses { get; } = [];
@@ -75,6 +76,7 @@ internal sealed class BoundProgram(HirBuilder hir)
     public Dictionary<HirNodeId, int> ConceptUses { get; } = [];
     public Dictionary<int, string> TypeParameterNames { get; } = [];
     public HashSet<HirLocationId> WrittenLocations { get; } = [];
+    public HashSet<string> WrittenMembers { get; } = new(StringComparer.Ordinal);
     public Dictionary<string, BoundModule> StandardModules { get; } = new(StringComparer.Ordinal);
     public Dictionary<string, HirLocationId> StandardLocations { get; } = new(StringComparer.Ordinal);
     public ImmutableDictionary<string, HirLocationId> Exports { get; set; }
@@ -96,6 +98,7 @@ internal sealed class BoundProgram(HirBuilder hir)
         foreach (var pair in previous.StandardModules) StandardModules.Add(pair.Key, pair.Value);
         foreach (var pair in previous.StandardLocations) StandardLocations.Add(pair.Key, pair.Value);
         WrittenLocations.UnionWith(previous.WrittenLocations);
+        WrittenMembers.UnionWith(previous.WrittenMembers);
         Exports = previous.Exports;
         RootConcepts = previous.RootConcepts;
         Entry = previous.Entry;

@@ -5,7 +5,7 @@ namespace Msync.Cli;
 
 internal enum BuiltinCompletionKind { Root, Environment, SearchPath, WorkingDirectory, SourceFile }
 internal sealed record BuiltinCompletionContext(int Start, int Length, string Prefix, BuiltinCompletionKind Kind,
-    bool Quoted = false);
+    bool Quoted = false, IReadOnlySet<string>? BoundNames = null);
 
 internal static class BuiltinCompletion
 {
@@ -23,7 +23,7 @@ internal static class BuiltinCompletion
             return new(start, end - start, text[start..caret], BuiltinCompletionKind.Root);
         }
 
-        if (insight?.ReceiverKind != EditorReceiverKind.Member || insight.Receiver?.Endpoint is not { } endpoint)
+        if (insight?.PhysicalEndpoint is not { } endpoint || insight.Receiver is not null)
             return null;
         BuiltinCompletionKind? kind = endpoint.Kind switch
         {
@@ -34,23 +34,24 @@ internal static class BuiltinCompletion
             _ => null
         };
         if (kind is null) return null;
-        int selection = caret < 2 ? -1 : text.LastIndexOf("::", caret - 1, caret, StringComparison.Ordinal);
+        int selection = caret == 0 ? -1 : text.LastIndexOf('@', caret - 1);
         while (selection >= 0 && PromptSyntax.InsideLiteral(text, selection))
-            selection = selection < 2 ? -1 : text.LastIndexOf("::", selection - 1, selection, StringComparison.Ordinal);
+            selection = selection == 0 ? -1 : text.LastIndexOf('@', selection - 1);
         if (selection < 0) return null;
-        start = selection + 2;
+        start = selection + 1;
         while (start < caret && char.IsWhiteSpace(text[start])) start++;
         bool quoted = start < caret && text[start] == '"';
+        var boundNames = insight.Bindings.Where(item => !item.IsConstraint).Select(item => item.Name).ToHashSet(StringComparer.Ordinal);
         if (!quoted)
         {
             foreach (char character in text.AsSpan(start, caret - start))
                 if (!MemberPart(character)) return null;
             int end = caret;
             while (end < text.Length && MemberPart(text[end])) end++;
-            return new(start, end - start, text[start..caret], kind.Value);
+            return new(start, end - start, text[start..caret], kind.Value, BoundNames: boundNames);
         }
         if (!TryQuotedPrefix(text, start, caret, out string prefix, out int quotedEnd)) return null;
-        return new(start, quotedEnd - start, prefix, kind.Value, Quoted: true);
+        return new(start, quotedEnd - start, prefix, kind.Value, Quoted: true, BoundNames: boundNames);
     }
 
     public static IReadOnlyList<SourceCompletionItem> Complete(BuiltinCompletionContext context, string workingDirectory, string? sourceFile = null)
@@ -66,18 +67,18 @@ internal static class BuiltinCompletion
             return Environment.GetEnvironmentVariables().Keys.Cast<string>()
                 .Where(name => name.StartsWith(context.Prefix, comparison))
                 .Order(TextSemantics.Ordinal)
-                .Select(name => new SourceCompletionItem(name, MemberSpelling(name, context.Quoted),
-                    "Path · environment variable\nRead this process's environment with $env::name. The value is interpreted as a Path.", FilterText: name))
+                .Select(name => new SourceCompletionItem(name, MemberSpelling(name, context),
+                    "Path · environment variable\nRead this process's environment with $env @ name. The value is interpreted as a Path.", FilterText: name))
                 .ToArray();
         if (context.Kind == BuiltinCompletionKind.WorkingDirectory)
             return "pwd".StartsWith(context.Prefix, comparison)
-                ? [new("pwd", MemberSpelling("pwd", context.Quoted), "Path · current working directory", IsDirectory: true, FilterText: "pwd")]
+                ? [new("pwd", MemberSpelling("pwd", context), "Path · current working directory", IsDirectory: true, FilterText: "pwd")]
                 : [];
         if (context.Kind == BuiltinCompletionKind.SourceFile)
             return sourceFile is null ? [] : new[]
             {
-                new SourceCompletionItem("this", MemberSpelling("this", context.Quoted), "Path · this source file", FilterText: "this"),
-                new SourceCompletionItem("parent", MemberSpelling("parent", context.Quoted), "Path · source file directory", IsDirectory: true, FilterText: "parent")
+                new SourceCompletionItem("this", MemberSpelling("this", context), "Path · this source file", FilterText: "this"),
+                new SourceCompletionItem("parent", MemberSpelling("parent", context), "Path · source file directory", IsDirectory: true, FilterText: "parent")
             }.Where(item => item.Label.StartsWith(context.Prefix, comparison)).ToArray();
         return Programs(context, workingDirectory, comparison);
     }
@@ -100,7 +101,7 @@ internal static class BuiltinCompletion
             }
             catch (Exception error) when (error is DirectoryNotFoundException or UnauthorizedAccessException) { }
         }
-        return names.Order(TextSemantics.Ordinal).Select(name => new SourceCompletionItem(name, MemberSpelling(name, context.Quoted),
+        return names.Order(TextSemantics.Ordinal).Select(name => new SourceCompletionItem(name, MemberSpelling(name, context),
             "Path · executable on PATH\nResolve an existing executable through the native PATH and PATHEXT search.", FilterText: name)).ToArray();
     }
 
@@ -114,10 +115,11 @@ internal static class BuiltinCompletion
     private static bool IdentifierPart(char value) => char.IsLetterOrDigit(value) || value == '_';
     private static bool MemberPart(char value) => IdentifierPart(value) || value is '.' or '-';
 
-    private static string MemberSpelling(string name, bool quoted) => quoted || name.Length == 0
-        || name.Any(value => char.IsWhiteSpace(value) || "{}()[],;?:=$|<>!+-*/\\\"".Contains(value, StringComparison.Ordinal))
-        || PromptSyntax.Keywords.Contains(name, StringComparer.Ordinal) || long.TryParse(name, out _)
-            ? "\"" + name.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"" : name;
+    private static string MemberSpelling(string name, BuiltinCompletionContext context) =>
+        context.Quoted || name.Length == 0 || context.BoundNames?.Contains(name) == true
+            || SourceCompletion.NeedsQuotes(name) || NumberSyntax.TryParse(name, out _)
+            || name.Any(value => value is '/' or '\\' or '-')
+            ? SourceCompletion.Quote(name) : name;
 
     private static bool TryQuotedPrefix(string text, int start, int caret, out string prefix, out int end)
     {

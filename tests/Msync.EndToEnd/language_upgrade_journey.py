@@ -17,12 +17,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 PROGRAM = r"""
 concept Semigroup {
-    type Self;
-    combine: fn(left: Self, right: Self) -> Self,
+    combine: fn(left: typename Self, right: Self) -> Self,
 };
 concept Monoid {
     Semigroup,
-    type Self;
     identity: Self,
 };
 scope TextConcat {
@@ -55,7 +53,13 @@ let changed = fresh("before");
 changed::item = "changed";
 fresh("fresh")::item -> ./anonymous.txt;
 let source = "./input data.bin" as Path;
-source @ $local -> ./copied.bin;
+$local @ source -> ./copied.bin;
+let order = 0;
+fn endpoint() { global order; order = order * 10 + 2; $local };
+fn pathname() { global order; order = order * 10 + 1; ./copied.bin };
+let qualified = endpoint() @ pathname();
+(order as String) -> ./qualification-order.txt;
+for selected in $local @ ./fixture/<.*> { selected -> ./qualified-selection.txt };
 acquire;
 """
 
@@ -68,6 +72,8 @@ OUTPUTS: dict[str, bytes] = {
     "singleton.txt": b"shared",
     "anonymous.txt": b"fresh",
     "copied.bin": bytes(range(256)) + b"\x00\r\n",
+    "qualification-order.txt": b"21",
+    "qualified-selection.txt": b"selected after qualification",
 }
 
 NEGATIVE: tuple[tuple[str, str, tuple[str, ...]], ...] = (
@@ -82,6 +88,7 @@ NEGATIVE: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("forbidden-cast", 'let impossible = "not a process" as Process;', ("Process",)),
     ("no-implicit-number-text", "let text: String = 42;", ("String",)),
     ("old-endpoint-operator", "$local::./file;", ("@",)),
+    ("old-qualification-order", "./file @ $local;", ("connection @ path",)),
 )
 
 
@@ -92,6 +99,10 @@ def execute(binary: Path, parent: Path, levels: list[int]) -> int:
             directory: Path = parent / f"O{level}" / stage
             directory.mkdir(parents=True)
             (directory / "input data.bin").write_bytes(OUTPUTS["copied.bin"])
+            (directory / "fixture").mkdir()
+            (directory / "fixture" / "entry.txt").write_bytes(
+                OUTPUTS["qualified-selection.txt"]
+            )
             source: Path = directory / "language 体验.msync"
             source.write_text(PROGRAM, encoding="utf-8")
             accept(
@@ -178,12 +189,12 @@ def artifact_versions(binary: Path, parent: Path) -> int:
         "current format compile",
     )
     image: bytes = artifact.read_bytes()
-    assert image[:8] == b"MSYNCBC\0" and int.from_bytes(image[8:10], "little") == 4
+    assert image[:8] == b"MSYNCBC\0" and int.from_bytes(image[8:10], "little") == 5
     source.unlink()
     accept(
         invoke(binary, directory, "run-ir", str(artifact)), "source-free current format"
     )
-    for version in (1, 2, 3):
+    for version in (1, 2, 3, 4):
         obsolete: Path = directory / f"obsolete-{version}.mso"
         obsolete.write_bytes(image[:8] + version.to_bytes(2, "little") + image[10:])
         result: subprocess.CompletedProcess[str] = invoke(
@@ -193,7 +204,7 @@ def artifact_versions(binary: Path, parent: Path) -> int:
         assert f"format {version}" in result.stderr and "Recompile" in result.stderr, (
             result.stderr
         )
-    return 4
+    return 5
 
 
 def main() -> None:

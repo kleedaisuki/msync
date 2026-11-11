@@ -28,7 +28,7 @@ let selected = shell::head(shell::grep("error", ./application.log), 20);
 $std::io::write_text(./errors.txt, $std::text::join_lines(selected));
 
 let remote = ssh://forge;
-let remote_files = shell::find(~/reports @ remote);
+let remote_files = shell::find(remote @ ~/reports);
 let text_files = $std::ranges::filter(remote_files, fn(path: Path) {
     shell::basename(path) as String == "summary.txt"
 });
@@ -141,7 +141,7 @@ was not used for this acceptance run.
 `environment.set_working_directory` and `shell.cd` change an execution's local
 context. `ExecutionSession` retains that directory for future submissions;
 neither the function nor `/cd` changes `Environment.CurrentDirectory`. Physical
-remote operations retain explicit `path @ connection` selection rather than
+remote operations retain explicit `connection @ path` selection rather than
 pretending that a remote directory is the host process's directory.
 
 Existing Path values keep their captured origin. Future submissions capture

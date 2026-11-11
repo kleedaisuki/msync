@@ -35,7 +35,7 @@ internal static class StaticPathChecks
             let annotatedResult = annotated();
             fn explicitReturn() -> Path { return "returned" };
             let returnedResult = explicitReturn();
-            let contextual = $env::HOME;
+            let contextual = $env @ HOME;
             """;
         EditorAnalysis analysis = EditorCompiler.Analyze(source, "file:///known-paths.msync");
         Check(analysis.Diagnostic is null, "known Path sample rejected: " + analysis.Diagnostic?.EditorMessage);

@@ -178,7 +178,7 @@ internal static class PromptSyntax
         string? message = source.EndsWith("->", StringComparison.Ordinal) ? Msync.Compiler.Syntax.TypeSyntaxFacts.IsReturnTypeArrow(source)
                 ? "return type: choose a type, union or nullable type; finish with { result }"
                 : "destination: Path or String; '->' returns Bool"
-            : source.EndsWith("@", StringComparison.Ordinal) ? "endpoint: Connection; Path | String @ Connection keeps path provenance"
+            : source.EndsWith("@", StringComparison.Ordinal) ? "operand: Path or String; Connection @ path keeps path provenance"
             : EndsWithWord(source, "as") ? "explicit conversion: expression as Type; only Path/String conversion is implicit"
             : source.EndsWith("concept", StringComparison.Ordinal) ? "concept Name { Base, member: typename Item, operation: fn(value: Item) -> Item };"
             : EndsWithWord(source, "typename") ? "declare an associated type inline: member?: typename Item; reuse Item in related requirements"
@@ -251,7 +251,7 @@ internal static class PromptSyntax
         while (begin > 0 && (char.IsLetterOrDigit(qualifier[begin - 1]) || qualifier[begin - 1] is '_' or ':' or '$')) begin--;
         return bindings.TryGetValue(qualifier[begin..], out var value) && value.Members is { Count: > 0 } members
             ? string.Join(", ", members.Select(member => $"{member.Name}: {member.Type}"))
-            : "Scope::member selects a member; path @ Connection qualifies a path";
+            : "Scope::member selects a member; Connection @ path qualifies a path";
     }
 
     private static bool RegexStart(string text, int offset)
