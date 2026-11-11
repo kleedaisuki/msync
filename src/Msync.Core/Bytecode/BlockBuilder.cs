@@ -29,11 +29,8 @@ public static class BlockBuilder
             if (instruction.Op == OpCode.IteratorNext) marks[instruction.B] |= boundary;
             bool hasEffects = InstructionEffects.Effects(instruction) != InstructionEffect.None;
             if (hasEffects) marks[index] |= effect;
-            if (hasEffects || instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.IteratorNext or OpCode.Return)
-            {
-                marks[index] |= boundary;
+            if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.IteratorNext or OpCode.Return)
                 marks[index + 1] |= boundary;
-            }
         }
         var start = 0;
         bool effects = (marks[0] & effect) != 0;

@@ -33,20 +33,23 @@ public static partial class ContextualBackend
         CancellationToken cancellationToken = default)
     {
         if (module.ExecutionPlans is not null) return module;
-        Module prepared = PrepareContinuation(module, module.EntryPoint, 0, options: options,
-            cancellationToken: cancellationToken);
+        Module prepared = PrepareInstructions(module, options, cancellationToken);
         if (prepared.Blocks is not null) return prepared;
         return BlockBuilder.Form(prepared);
     }
 
-    internal static Module Prepare(Module module, ExecutionOptions? options, ContextualResources resources,
+    public static Module PrepareInstructions(Module module, ExecutionOptions? options = null,
+        CancellationToken cancellationToken = default) =>
+        module.ExecutionPlans is not null ? module : PrepareContinuation(module, module.EntryPoint, 0, options: options,
+            cancellationToken: cancellationToken);
+
+    internal static Module PrepareInstructions(Module module, ExecutionOptions? options, ContextualResources resources,
         CancellationToken cancellationToken = default)
     {
         if (module.ExecutionPlans is not null) return module;
-        Module prepared = NeedsPreparation(module.Functions[module.EntryPoint])
+        return NeedsPreparation(module.Functions[module.EntryPoint])
             ? new Preparation(module, module.EntryPoint, 0, null, null, options, resources, cancellationToken).Run().Module
             : module with { ExecutionPlans = [] };
-        return prepared.Blocks is null ? BlockBuilder.Form(prepared) : prepared;
     }
 
     public static Module PrepareContinuation(Module module, int function, int start,
@@ -76,6 +79,7 @@ public static partial class ContextualBackend
     {
         private sealed record Site(int Instruction, IReadOnlyList<KnownValue> Inputs, bool Observed,
             int? LoopEnd = null, IReadOnlyList<Instruction>? Restores = null);
+        private CopyReachability? copyReachability;
         private readonly Module module;
         private readonly int function;
         private readonly int start;
@@ -334,10 +338,6 @@ public static partial class ContextualBackend
                     .SelectMany(value => filesystem.ObservationResources(context.AsPath(value.Value!), follows)).ToArray();
                 if (paths.Any(graph.HasWrites)) return Stop(paths);
             }
-            using var selectedSession = NativeEvaluation.RequiresPathSession(instruction.Text)
-                && inputs.Select(value => value.Value).OfType<PathValue>()
-                .FirstOrDefault(path => path.Connection?.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl) is { } selected
-                    ? filesystem.SelectSession(selected) : null;
             Value result;
             try { result = filesystem.Invoke(instruction.Text!, arguments); }
             catch (Exception error) when (error is MsyncException or IOException or UnauthorizedAccessException
@@ -440,7 +440,8 @@ public static partial class ContextualBackend
             int header = pc + 2, exit = code[header].B, iterator = code[header].A;
             if (exit <= header || exit > code.Count || code[exit - 1] is not { Op: OpCode.Jump } back
                 || back.A != header) return false;
-            if (!KnownLoop.MayCopy(code, header + 1, exit)) return false;
+            if (!(copyReachability ??= new(module.Functions)).MayEmitCopy(code, header + 1, exit, out bool sawCall)
+                && (!sawCall || !HasContextualSuffix(exit))) return false;
             KnownLoop.Result? evaluated = new KnownLoop(module, code, constants, locals, context, filesystem,
                 ResolveKnownCapture, ReadKnownMember,
                 header + 1, header, exit, iterator).Run(values, cancellationToken);
@@ -482,6 +483,18 @@ public static partial class ContextualBackend
             for (int index = pc + 1; index < exit; index++) Replace(index, [new(OpCode.Nop)]);
             pc = exit - 1;
             return true;
+        }
+
+        // A scalar loop can still supply operands or a condition for later contextual work.
+        private bool HasContextualSuffix(int start)
+        {
+            for (int index = start; index < code.Count; index++)
+            {
+                Instruction instruction = code[index];
+                if (instruction.Op is OpCode.Transfer or OpCode.LocalTransfer or OpCode.SelectPath
+                    || instruction.Op == OpCode.NativeCall && IsMetadata(instruction.Text)) return true;
+            }
+            return copyReachability!.MayEmitCopy(code, start, code.Count, out _);
         }
 
         private bool AddTransfer(Value source, PathValue destination, SourceSpan? span, bool observed, int instruction,

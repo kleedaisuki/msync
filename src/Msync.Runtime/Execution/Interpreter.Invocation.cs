@@ -121,9 +121,9 @@ public sealed partial class Interpreter
                 return new DeferredValue(Complete(), resultType, inputs.SelectMany(Processes).Distinct().ToArray(), endpoint);
             }
             if (deferred >= 0) arguments = await ResolveDeferredArgumentsAsync(arguments, deferred);
-            if (operation.UsesDependencies)
+            if (operation.ImmediateExternal)
                 await AwaitNativeDependenciesAsync(operation.Signature, arguments, cancellationToken);
-            using var selectedSession = operation.OpensPathSession ? EnterPathSession(arguments, cancellationToken) : null;
+            using var selectedSession = operation.ImmediateExternal ? EnterPathSession(arguments, cancellationToken) : null;
             if (name == "text.format_fields") return await TextFormatting.FormatAsync("format_fields", arguments, ResolveAsync);
             return await NativeRegistry.InvokeAsync(operation, arguments, name == "cast" ? context.CaptureDirectory() : context, NativeCallback, cancellationToken);
         }

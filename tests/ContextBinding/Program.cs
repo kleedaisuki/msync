@@ -34,6 +34,63 @@ try
         Stage: ArtifactStage.Executable, Context: context));
     Check(ReferenceEquals(ExecutionLowering.Lower(scalar), scalar), "Ordinary scalar code allocated a new execution image");
 
+    Module Loop(bool copies, bool suffix)
+    {
+        Instruction[] tail = suffix
+            ? [new(OpCode.Constant, 3), new(OpCode.Constant, 4), new(OpCode.Transfer), new(OpCode.Pop)]
+            : [];
+        Instruction[] leaf = copies
+            ? [new(OpCode.Constant, 3), new(OpCode.Constant, 4), new(OpCode.Transfer), new(OpCode.Pop),
+                new(OpCode.LoadLocal, 0), new(OpCode.Return)]
+            : [new(OpCode.LoadLocal, 0), new(OpCode.Return)];
+        return new([new RangeValue([new NumberValue(7)], TypeRef.Number), new FunctionValue(1), new FunctionValue(2),
+            new StringValue("planned"), new PathValue("./loop-copy")],
+            [new("main", 0, 2,
+                [new(OpCode.Constant, 0), new(OpCode.GetIterator), new(OpCode.InitializeLocal, 0),
+                    new(OpCode.IteratorNext, 0, 10), new(OpCode.InitializeLocal, 1),
+                    new(OpCode.Constant, 1), new(OpCode.LoadLocal, 1), new(OpCode.Call, 1, 2), new(OpCode.Pop),
+                    new(OpCode.Jump, 3), .. tail, new(OpCode.Null), new(OpCode.Return)], TypeRef.Null),
+            new("wrapper", 1, 1, [new(OpCode.Constant, 2), new(OpCode.LoadLocal, 0),
+                new(OpCode.Call, 1, Text: "2:2"), new(OpCode.Return)], TypeRef.Number),
+            new("leaf", 1, 1, leaf, TypeRef.Number)], Stage: ArtifactStage.Executable, Context: context);
+    }
+    Module scalarLoop = ContextualBackend.PrepareInstructions(Loop(false, false));
+    Check(scalarLoop.Blocks is null && scalarLoop.ExecutionPlans is { Count: 0 }
+        && scalarLoop.Functions[0].Instructions.Any(instruction => instruction.Op == OpCode.IteratorNext),
+        "A copy-free call graph triggered contextual loop evaluation");
+    foreach (Module image in new[] { Loop(true, false), Loop(false, true) })
+    {
+        Module prepared = ContextualBackend.PrepareInstructions(image);
+        Check(prepared.Blocks is null && prepared.ExecutionPlans is { Count: 1 }
+            && prepared.Functions[0].Instructions.All(instruction => instruction.Op != OpCode.IteratorNext),
+            "Contextual preparation missed a nested or subsequent copy");
+        await Interpreter.ExecuteAsync(RoundTrip(prepared));
+        string path = Path.Combine(root, "loop-copy");
+        Check(await File.ReadAllTextAsync(path) == "planned", "Contextual call graph changed selected transfer bytes");
+        File.Delete(path);
+    }
+
+    Check(NativeSignatures.Get("fs.relative").Effect == NativeEffect.Read
+        && NativeSignatures.Get("fs.lexically_relative").Effect == NativeEffect.Pure,
+        "Canonical and lexical relative paths have different observable dependencies");
+    if (OperatingSystem.IsLinux())
+    {
+        Directory.CreateDirectory(Path.Combine(root, "targets"));
+        await File.WriteAllTextAsync(Path.Combine(root, "targets", "new"), "target");
+        File.CreateSymbolicLink(Path.Combine(root, "source-link"), "targets/new");
+        Module relative = new([new PathValue("./source-link"), new PathValue("./published-link"), new PathValue("./")],
+            [new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Constant, 1),
+                new(OpCode.Transfer), new(OpCode.Pop), new(OpCode.Constant, 1), new(OpCode.Constant, 2),
+                new(OpCode.NativeCall, 2, Text: "fs.relative"), new(OpCode.Return)], TypeRef.Path)],
+            Stage: ArtifactStage.Executable, Context: context);
+        Module prepared = ContextualBackend.PrepareInstructions(relative);
+        Check(prepared.ExecutionPlans is { Count: 1 }
+            && prepared.Functions[0].Instructions.Any(instruction => instruction.Text == "fs.relative"),
+            "Canonical relative path was speculated across a link publication");
+        Check(await Interpreter.ExecuteAsync(RoundTrip(prepared)) is PathValue { Raw: "targets/new" },
+            "Canonical relative path did not observe the selected publication");
+    }
+
     Module branch = new([new PathValue("./layout-switch"), new StringValue("off"),
         new PathValue("./layout-trace"), new StringValue("one"), new StringValue("on"), new StringValue("two")],
         [new("main", 0, 0, [
@@ -52,6 +109,9 @@ try
         && arranged.Functions[0].Instructions.All(op => op.Op != OpCode.Jump)
         && arranged.Blocks!.Count < relocatable.Blocks!.Count,
         "Executable layout did not eliminate the jump and its block");
+    Check(arranged.Blocks!.Count(block => arranged.Functions[block.Function].Instructions.Skip(block.Start)
+        .Take(block.End - block.Start).Count(instruction => instruction.Op == OpCode.NativeCall) == 2
+        && block.HasEffects) == 1, "Linear effects unnecessarily split the inspection CFG");
     string marker = Path.Combine(root, "layout-trace");
     Value cold = await Interpreter.ExecuteAsync(arranged);
     Check(cold is StringValue { Data: "off" } && !File.Exists(marker), "Layout executed an unselected effect");

@@ -4,12 +4,17 @@ public static class Binding
 {
     public static Module Bind(Module module, BindingContext context)
     {
+        var executable = BindInstructions(module, context);
+        return ReferenceEquals(executable, module) ? module : BlockBuilder.Form(executable);
+    }
+
+    public static Module BindInstructions(Module module, BindingContext context)
+    {
         if (module.Stage == ArtifactStage.Executable) return module;
         var bound = Relocate(module, context);
-        var optimized = Optimizer.Optimize(ExecutionLowering.Rewrite(bound), module.OptimizationLevel);
+        var optimized = Optimizer.OptimizeInstructions(ExecutionLowering.Rewrite(bound), module.OptimizationLevel);
         // The final lowering selects native transfers exposed by folding; it introduces no new pure expressions.
-        var executable = ExecutableLayout.Arrange(ExecutionLowering.Rewrite(optimized));
-        return executable.Blocks is null ? BlockBuilder.Form(executable) : executable;
+        return ExecutableLayout.Arrange(ExecutionLowering.Rewrite(optimized));
     }
 
     public static Module Relocate(Module module, BindingContext context)

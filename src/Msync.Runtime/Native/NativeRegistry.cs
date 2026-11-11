@@ -6,7 +6,7 @@ namespace Msync.Runtime;
 public static partial class NativeRegistry
 {
     internal sealed record Operation(NativeSignature Signature, string Group, string Member,
-        InstructionEffect Effects, bool UsesDependencies, bool OpensPathSession);
+        InstructionEffect Effects, bool ImmediateExternal);
 
     private static readonly ConcurrentDictionary<string, Operation> operations = new(StringComparer.Ordinal);
 
@@ -15,11 +15,12 @@ public static partial class NativeRegistry
         string name = signature.Name;
         int separator = name.IndexOf('.');
         InstructionEffect effects = InstructionEffects.NativeEffects(name);
-        bool localMemory = (signature.Behavior.GetValueOrDefault() & NativeBehavior.LocalMemory) != 0;
-        bool external = !localMemory && !NativeEvaluation.DefersFileRead(name);
+        // Enumeration/callback effects are not immediate native I/O. The
+        // selected producer or callback owns its own scheduling dependencies.
+        bool external = !NativeEvaluation.DefersFileRead(name) && signature.Effect != NativeEffect.Pure
+            && (signature.Behavior.GetValueOrDefault() & NativeBehavior.LocalMemory) == 0;
         return new(signature, separator < 0 ? "" : name[..separator], name[(separator + 1)..], effects,
-            external && (effects & (InstructionEffect.Read | InstructionEffect.Write)) != 0,
-            external && signature.Effect != NativeEffect.Pure);
+            external);
     }
 
     internal static Operation GetOperation(string name) => operations.GetOrAdd(name, static key =>

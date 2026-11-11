@@ -36,7 +36,7 @@ internal sealed class SemanticSession(string sourceName, int optimization)
         SemanticAnalyzer analyzer = new(bound, codeCache: instances, sessionDispatch: nextDispatches);
         HirModule module = analyzer.Analyze(facts);
         HirLoweringResult result = lowering.Lower(module, new(optimization, PreserveLocals: true));
-        Module executable = Optimizer.Optimize(result.Module, optimization);
+        Module executable = Optimizer.OptimizeInstructions(result.Module, optimization);
         pending = new(bound, analyzer.FinalState, result.Layout, nextDispatches);
         additions.Commit();
         transaction.Commit();

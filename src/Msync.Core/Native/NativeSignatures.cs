@@ -29,6 +29,7 @@ public static partial class NativeSignatures
         Add("fs", "exists is_regular_file is_directory is_symlink is_block_file is_character_file is_fifo is_socket is_other is_empty is_readonly", TypeRef.Bool, NativeEffect.Read, path);
         Add("fs", "status symlink_status", TypeRef.String, NativeEffect.Read, path);
         Add("fs", "absolute canonical weakly_canonical read_symlink", TypeRef.Path, NativeEffect.Read, path);
+        Add("fs", "relative proximate", TypeRef.Path, NativeEffect.Read, path, path);
         Add("fs", "temp_directory_path current_path", TypeRef.Path, NativeEffect.Read);
         Add("fs", "equivalent", TypeRef.Bool, NativeEffect.Read, path, path);
         Add("fs", "permissions", new(TypeKind.Range, TypeRef.String), NativeEffect.Read, path);
@@ -40,7 +41,7 @@ public static partial class NativeSignatures
         Add("fs", "rename create_hard_link create_symlink create_directory_symlink copy_symlink", TypeRef.Null, NativeEffect.Write, path, path);
         Add("fs", "copy_file copy", TypeRef.Bool, NativeEffect.Write, path, path);
         Add("fs", "root_name root_directory root_path relative_path parent_path filename stem extension lexically_normal remove_filename make_preferred", TypeRef.Path, NativeEffect.Pure, path);
-        Add("fs", "lexically_relative lexically_proximate replace_filename replace_extension append concat relative proximate", TypeRef.Path, NativeEffect.Pure, path, path);
+        Add("fs", "lexically_relative lexically_proximate replace_filename replace_extension append concat", TypeRef.Path, NativeEffect.Pure, path, path);
         Add("fs", "string generic_string native", TypeRef.String, NativeEffect.Pure, path);
         Add("fs", "has_root_name has_root_directory has_root_path has_relative_path has_parent_path has_filename has_stem has_extension is_absolute path_empty is_relative", TypeRef.Bool, NativeEffect.Pure, path);
         Add("fs", "components", new(TypeKind.Range, TypeRef.Path), NativeEffect.Pure, path);

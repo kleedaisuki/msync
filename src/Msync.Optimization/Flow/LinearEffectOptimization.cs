@@ -17,8 +17,7 @@ internal static class LinearEffectOptimization
         }
         var normalized = changed ? module with { Functions = functions, Blocks = null, OptimizationLevel = level }
             : module with { OptimizationLevel = level };
-        var compact = ModuleOptimization.Compact(normalized);
-        result = compact.Blocks is null ? BlockBuilder.Form(compact) : compact;
+        result = ModuleOptimization.Compact(normalized);
         return true;
     }
 

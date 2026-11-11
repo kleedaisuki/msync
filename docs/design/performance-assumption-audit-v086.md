@@ -280,3 +280,85 @@ the baseline and final runners measures approximately 2,338 to 2,235 ms
 and not whole-product latency estimates.
 
 Receipts: `artifacts/benchmarks/library-matrix-v086/decision-integration/`.
+
+## Object representation, control flow, and selected effects
+
+Treat these as separate contracts, not different views of one universal
+"effect block":
+
+| Layer | Observable commitment | Implementation freedom |
+| --- | --- | --- |
+| Scope and captures | Fresh anonymous identities, one named instance per program/session, stable logical names and enumeration order, fixed field types, shared updates through aliases and cells | Field addresses, box identity of Numbers, contiguous layout, allocation granularity, and even whether a proved nonescaping object is allocated |
+| Scalar execution | Values, selected failure and effects, strict binary64 behavior | Slot representation, transport of arguments, frame allocation, order of independent non-observable operations |
+| Finite external work | Selected endpoint/operand, resource dependencies, directional fences, demanded results and operation failures | Graph shape, batch granularity, number and order of independent workers |
+
+The execution loop has not dispatched by BasicBlock since the earlier VM
+thinning. The old BlockBuilder nonetheless split before and after almost every
+instruction with any effect bit, including member reads, conversions, calls,
+and local captures. These were not useful scheduling boundaries. The
+inspection projection now uses branch/iteration targets and terminators; the
+effect bit describes the resulting block, not its shape. CLI run, export,
+binding and the REPL use instruction-only APIs; textual plans and artifact
+disassembly still materialize the projection. Execution-plan region addresses,
+dependency edges and bytecode artifact format do not change.
+
+Contextual finite-loop expansion follows the exact source alternatives encoded
+in direct/finite dispatch calls, with a per-preparation cache of closed
+copy-free subgraphs. Native alternatives cannot add transfer nodes in the
+known-call evaluator; this does **not** certify them as pure, interchangeable,
+or safe to speculate. Unbounded target sets retain the existing evaluator
+fallback, and session calls are not executed by this evaluator. A scalar loop
+that can feed a later transfer or
+contextual observation is still eligible under the existing rules. A no-copy
+proof is not a reason to discard source execution.
+
+Native operation descriptors now distinguish immediate external operations
+from the effects of evaluating lazy inputs or invoking callbacks. A pure
+enumerator does not wait on the scheduler's external ordering fence merely
+because the compiler must conservatively model what its producer might do.
+Selected I/O instructions still own their dependencies. The converse matters:
+`fs.relative` and `fs.proximate` resolve the filesystem; only the
+`lexically_*` variants are pure. Contextual native calls enter the selected
+transport at one invocation boundary instead of twice.
+
+For member loads, one storage projection returns either an already-existing
+Value (including a NumberValue or the language's Null singleton), or the raw
+double in a numeric page. The old two-stage load first attempted numeric
+extraction and then read the same reference field a second time; it could
+also unbox an existing NumberValue and rebox it as a call argument. Operand
+stack bookkeeping lives inline in the invocation state, and argument
+collection resolves Cell operands in its existing copying pass. No changes to
+object identity, aliasing or physical placement are required.
+
+Follow-up design: publish separate summaries for logical memory and external
+resource effects at the same specialization that owns the finite call-target
+set. A footprint is a function of arguments/captures and selected endpoint,
+not a Boolean on the entire function. Instantiation can use relocatable path
+expressions; physical aliases or an opaque child process may still need
+selected observations or residual dependencies. Partition execution by true
+control dependencies, resource hazards and observed results, and choose
+batch size independently. Two admitted operations have no read/write hazard
+when both `W_i ∩ (R_j ∪ W_j)` and `W_j ∩ (R_i ∪ W_i)` are empty on
+resolved resource identities. Result edges and fences still apply. For a
+group of k ready operations, amortizing launch work by roughly `(k-1)h`
+is useful only if it outweighs any increase in the critical path from lost
+parallelism or waiting to assemble the batch. For compute, prioritize unboxed locals/arguments
+and direct internal call frames before adding more layout machinery for
+reference-heavy trees. [Lua's call implementation](https://lua.org/source/5.4/ldo.c.html)
+is a concrete example of using existing stack arguments for internal calls;
+msync still needs its own lifetime boundary for suspending or escaping work.
+[LLVM's IR](https://llvm.org/docs/LangRef.html) separates block terminators
+from call memory effects. [Choi et al.](https://research.ibm.com/publications/escape-analysis-for-java)
+use escape information to make stack placement a representation choice, not
+an object semantics change.
+
+The exact same frozen bound Set artifact renders 1,253 inspection blocks
+before and 235 after, without changing a byte of the artifact. This is not
+an execution-speed measurement. On Linux x86-64 Native AOT, with load outside
+the timer, checked checksums, CPU 5 and alternating AB/BA runner order, the
+8,192-key Set and Heap medians change from 2,189 to 2,060 ms and 905 to 874 ms,
+respectively (four observations per runner). The first SHA-256 batch was
+mixed (514 to 533 ms); a separate 12-pair follow-up measures 537 to 503 ms,
+with a median paired difference of -33.8 ms and 10/12 faster pairs. Report
+both SHA measurements, not a stable throughput or tail guarantee.
+Receipts are under `artifacts/benchmarks/library-matrix-v086/object-execution/`.

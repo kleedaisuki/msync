@@ -16,7 +16,7 @@ internal static class HirCommands
             throw new MsyncException($"Typed HIR requires session locations: {string.Join(", ", imports)}. Export a self-contained program for standalone compilation or execution; live session values are not stored in .mhir files.");
         if (!module.SessionDispatches.IsDefaultOrEmpty)
             throw new MsyncException("Typed HIR requires live session callable dispatch. Inspect this semantic artifact in read-only mode, or export a self-contained program for standalone compilation or execution; live session values are not stored in .mhir files.");
-        return Optimizer.Optimize(HirLowerer.Lower(module, new(optimization)).Module, optimization);
+        return Optimizer.OptimizeInstructions(HirLowerer.Lower(module, new(optimization)).Module, optimization);
     }
 
     internal static void Write(HirModule module, string output)

@@ -10,11 +10,11 @@ public static class ExecutionHost
         if (module.Stage != ArtifactStage.Relocatable) return new(module, options, cancellationToken);
 
         var origin = new RuntimeContext(options);
-        var bound = Binding.Bind(module, new(origin.WorkingDirectory, origin.HomeDirectory, origin.SourceFile));
+        var bound = Binding.BindInstructions(module, new(origin.WorkingDirectory, origin.HomeDirectory, origin.SourceFile));
         var resources = new ContextualResources(cancellationToken);
         try
         {
-            var prepared = ContextualBackend.Prepare(bound, options, resources, cancellationToken);
+            var prepared = ContextualBackend.PrepareInstructions(bound, options, resources, cancellationToken);
             return new(prepared, options, null, cancellationToken, resources);
         }
         catch

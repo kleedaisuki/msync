@@ -33,7 +33,8 @@ internal static class ArtifactCommands
                 Console.WriteLine($"  {i,4}: {operation} {instruction.A} {instruction.B} {instruction.Text}");
             }
         }
-        foreach (BasicBlock block in module.Blocks ?? []) Console.WriteLine($"block fn#{block.Function} [{block.Start},{block.End}) effects={block.HasEffects} successors=[{string.Join(',', block.Successors)}]");
+        foreach (BasicBlock block in module.Blocks ?? BlockBuilder.Form(module).Blocks!)
+            Console.WriteLine($"block fn#{block.Function} [{block.Start},{block.End}) effects={block.HasEffects} successors=[{string.Join(',', block.Successors)}]");
         for (int index = 0; index < (module.ExecutionPlans?.Count ?? 0); index++)
         {
             ExecutionPlan plan = module.ExecutionPlans![index];

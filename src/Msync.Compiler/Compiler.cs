@@ -13,6 +13,9 @@ public static class Compiler
     public static Module Compile(string source, string? sourceName = null, int optimization = 2)
         => Optimizer.Optimize(LowerSource(source, sourceName, optimization), optimization);
 
+    public static Module CompileInstructions(string source, string? sourceName = null, int optimization = 2)
+        => Optimizer.OptimizeInstructions(LowerSource(source, sourceName, optimization), optimization);
+
     private static Module LowerSource(string source, string? sourceName, int optimization) =>
         HirLowerer.Lower(Analyze(source, sourceName),
             new(OptimizationLevel: optimization, RetainLayout: false)).Module;

@@ -371,9 +371,10 @@ internal sealed class PlanFileSystem(RuntimeContext context, ContextualResources
 
     internal Value Invoke(string name, IReadOnlyList<Value> values)
     {
-        using var selectedSession = NativeEvaluation.RequiresPathSession(name) && values.OfType<PathValue>().FirstOrDefault(path =>
+        var operation = NativeRegistry.GetOperation(name);
+        using var selectedSession = operation.ImmediateExternal && values.OfType<PathValue>().FirstOrDefault(path =>
             path.Connection?.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl) is { } remote ? SelectSession(remote) : null;
-        return NativeRegistry.InvokeAsync(name, values, context,
+        return NativeRegistry.InvokeAsync(operation, values, context,
             static (_, _, _) => throw new InvalidOperationException("Contextual evaluation cannot invoke a source callback."),
             cancellationToken).AsTask().GetAwaiter().GetResult();
     }

@@ -100,9 +100,8 @@ internal static class Program
                 return Complete(0, telemetry);
             }
             Module module = semanticInput is not null ? HirCommands.Lower(semanticInput, options.Optimization)
-                : binary ? Artifact.Read(file, formBlocks: options.Command is "plan" or "plan-ir"
-                    || options.Command is ("compile" or "emit-ir") && options.Output is null)
-                : SourceCompiler.Compile(source!, file, options.Optimization);
+                : binary ? Artifact.Read(file, formBlocks: false)
+                : SourceCompiler.CompileInstructions(source!, file, options.Optimization);
             telemetry?.Observe(new("compile", "ok", Source: file, DurationNanoseconds: (long)(Stopwatch.GetElapsedTime(compileStart).TotalMilliseconds * 1_000_000)));
             if (options.Command is "compile" or "emit-ir")
             {
@@ -118,8 +117,8 @@ internal static class Program
                 if (options.Command == "bind-ir")
                 {
                     string? sourceFile = options.SourceFile is null ? null : Path.GetFullPath(options.SourceFile);
-                    Module bound = Binding.Bind(module, new(Environment.CurrentDirectory, HostContext.HomeDirectory, sourceFile));
-                    Module prepared = ContextualBackend.Prepare(bound,
+                    Module bound = Binding.BindInstructions(module, new(Environment.CurrentDirectory, HostContext.HomeDirectory, sourceFile));
+                    Module prepared = ContextualBackend.PrepareInstructions(bound,
                         RuntimeOptions(options, sourceFile, telemetry, color, snapshot), cancellation.Token);
                     Write(prepared, options.Output ?? Path.ChangeExtension(file, ".mexe"));
                     return Complete(0, telemetry);
@@ -130,7 +129,7 @@ internal static class Program
                     {
                         string? sourceFile = options.SourceFile is { } explicitSource ? Path.GetFullPath(explicitSource)
                             : binary || file == "-" ? null : Path.GetFullPath(file);
-                        module = ContextualBackend.Prepare(Binding.Bind(module,
+                        module = ContextualBackend.PrepareInstructions(Binding.BindInstructions(module,
                             new(Environment.CurrentDirectory, HostContext.HomeDirectory, sourceFile)),
                             RuntimeOptions(options, sourceFile, telemetry, color, snapshot), cancellation.Token);
                     }

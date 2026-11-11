@@ -3,15 +3,19 @@ namespace Msync.Optimization;
 public static class Optimizer
 {
     public static Module Optimize(Module module, int level = 2)
+        => BlockBuilder.Form(OptimizeInstructions(module, level));
+
+    public static Module OptimizeInstructions(Module module, int level = 2)
     {
         if (level is < 0 or > 3) throw new MsyncException($"Optimization level must be 0, 1, 2, or 3; received {level}");
-        if (level == 0) return BlockBuilder.Form(module with { OptimizationLevel = level });
+        module = module with { OptimizationLevel = level, Blocks = null };
+        if (level == 0) return module;
         if (LinearEffectOptimization.TryOptimize(module, level, out var linear)) return linear;
         if (module.Functions.All(FunctionAnalysis.LiteralBody))
-            return BlockBuilder.Form(ModuleOptimization.Compact(LocalSlotCompaction.Compact(module with { OptimizationLevel = level })));
+            return ModuleOptimization.Compact(LocalSlotCompaction.Compact(module));
         var preparation = module.Functions.Select(_ => new Dictionary<FunctionCode, FunctionCode>(ReferenceEqualityComparer.Instance)).ToList();
         var graphs = module.Functions.Select(_ => new Dictionary<FunctionCode, (OptimizationDependencies Dependencies, FunctionCode Result)>(ReferenceEqualityComparer.Instance)).ToList();
-        var current = module with { OptimizationLevel = level, Blocks = null };
+        var current = module;
         while (true)
         {
             while (preparation.Count < current.Functions.Count)
@@ -20,7 +24,7 @@ public static class Optimizer
                 graphs.Add(new(ReferenceEqualityComparer.Instance));
             }
             if (current.Functions.All(FunctionAnalysis.LiteralBody))
-                return BlockBuilder.Form(ModuleOptimization.Compact(LocalSlotCompaction.Compact(current)));
+                return ModuleOptimization.Compact(LocalSlotCompaction.Compact(current));
             var constants = current.Constants.ToList();
             var constantInterner = new ConstantInterner(constants);
             var context = current with { Constants = constants };
@@ -86,7 +90,7 @@ public static class Optimizer
                 var numberedInterner = new ConstantInterner(numberedConstants);
                 var numberedEffects = EffectAnalysis.FunctionEffects(numbered);
                 var cleaned = numbered with { Functions = numbered.Functions.Select(Clean).ToArray(), Constants = numberedConstants };
-                return BlockBuilder.Form(ModuleOptimization.Compact(LocalSlotCompaction.Compact(cleaned)));
+                return ModuleOptimization.Compact(LocalSlotCompaction.Compact(cleaned));
 
                 FunctionCode Clean(FunctionCode function, int index)
                 {
