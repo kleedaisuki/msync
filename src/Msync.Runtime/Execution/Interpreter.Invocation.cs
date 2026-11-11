@@ -127,6 +127,7 @@ public sealed partial class Interpreter
             using var selectedSession = !NativeEvaluation.DefersFileRead(name)
                 && NativeSignatures.TryGet(name, out var operation) && operation.Effect != NativeEffect.Pure
                     ? EnterPathSession(arguments, cancellationToken) : null;
+            if (name == "text.format_fields") return await TextFormatting.FormatAsync("format_fields", arguments, ResolveAsync);
             return await NativeRegistry.InvokeAsync(name, arguments, name == "cast" ? context.CaptureDirectory() : context, NativeCallback, cancellationToken);
         }
         catch (Exception error) when (error is not OperationCanceledException)

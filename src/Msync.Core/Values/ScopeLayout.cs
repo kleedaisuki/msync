@@ -18,6 +18,8 @@ public sealed class ScopeLayout
     public IReadOnlyList<string> Names { get; }
     public int Count => Names.Count;
     public bool TryGetOffset(string name, out int offset) => offsets.TryGetValue(name, out offset);
+    public bool TryGetOffset(ReadOnlySpan<char> name, out int offset) =>
+        offsets.GetAlternateLookup<ReadOnlySpan<char>>().TryGetValue(name, out offset);
     public int GetOffset(string name) => offsets[name];
 
     public static ScopeLayout Parse(string? members) => new(members?.Split('\0', StringSplitOptions.RemoveEmptyEntries) ?? []);

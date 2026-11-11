@@ -14,6 +14,7 @@ internal sealed partial class SemanticAnalyzer
         if (IsDependentMeta(name))
             throw Error(source, "Dependent metadata queries require a direct, statically known invocation.", "E0222");
         var inputs = CheckNativeArguments(signature, arguments, source, context).ToArray();
+        if (name is "text.format" or "text.format_fields") CheckFormatCall(name, inputs, source, context);
         SemanticValue? callback = null;
         ImmutableArray<SemanticDeferredWrite> callbackEffects = [];
         if (signature.Parameters.Count > 0 && inputs.Length >= signature.Parameters.Count

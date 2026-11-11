@@ -6,6 +6,7 @@ internal static class TextBuilderOperations
 {
     internal static ValueTask<Value> InvokeAsync(string operation, IReadOnlyList<Value> args, CancellationToken token)
     {
+        if (operation is "format" or "format_fields") return TextFormatting.FormatAsync(operation, args);
         if (operation != "append_chunk") throw new MsyncException($"Unknown text native '{operation}'");
         RangeValue source = (RangeValue)args[0];
         StringValue text = (StringValue)args[1];

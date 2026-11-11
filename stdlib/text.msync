@@ -3,6 +3,13 @@ let newline = "
 ";
 native fn append_chunk(chunks: Range<String>, text: String) -> Range<String>;
 
+# Invariant brace formatting; the arguments after template may be any values.
+# Use {} or zero-based {0} fields, and double literal braces as {{ or }}.
+native fn format(template: String, values?) -> String;
+
+# Resolve named placeholders against a Scope, not implicit caller bindings.
+native fn format_fields(template: String, fields: Scope) -> String;
+
 # Chunk policies preserve ordered concatenation; their storage need not be eager.
 scope ChunkStorage {
     append: fn(chunks: Range<String>, text: String) -> Range<String> {

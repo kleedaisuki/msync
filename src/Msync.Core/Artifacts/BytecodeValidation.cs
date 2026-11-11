@@ -171,7 +171,7 @@ internal static class BytecodeValidation
                     var arguments = PopMany(instruction.A);
                     if (!signature.Variadic && arguments.Length != signature.Parameters.Count || signature.Variadic && arguments.Length < signature.Parameters.Count)
                         throw Error("native argument count disagrees with registry signature");
-                    for (var i = 0; i < arguments.Length; i++) Require(arguments[i], signature.Parameters[Math.Min(i, signature.Parameters.Count - 1)].Kind);
+                    for (var i = 0; i < signature.Parameters.Count; i++) Require(arguments[i], signature.Parameters[i].Kind);
                     Push(signature.Result); break;
                 case OpCode.LoadBuiltin: Push(instruction.Text?.TrimStart('$') is "std" ? TypeRef.Scope : TypeRef.Connection); break;
                 case OpCode.MakeRange: PopMany(instruction.A); Push(new(TypeKind.Range)); break;

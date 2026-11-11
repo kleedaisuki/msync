@@ -89,6 +89,72 @@ contracts after migration to `as` and `Path @ Connection` syntax.
 Range operations. The latter two normalize line boundaries to LF and do not
 retain a final input line terminator, following `string.lines`.
 
+## Invariant brace formatting (0.8.6)
+
+Use `$std::text::format(template, ...values)` for positional arguments or
+`$std::text::format_fields(template, scope)` for named fields:
+
+```msync
+let text = $std::text;
+let total = text::format("{}: {:.2f}", "total", 12.5);
+let row = text::format_fields("{name:<10} {count:04d}",
+    scope { name: "files", count: 12 });
+```
+
+Templates are ordinary Strings, including dynamically supplied Strings.
+Positional fields use either automatic `{}` or zero-based `{0}` indexes; the
+two modes cannot mix. Named fields select exact members of the supplied Scope,
+not lexical caller names. `{{` and `}}` write literal braces. Additional
+arguments are evaluated normally and need not all be referenced.
+
+After a colon, a field admits `[fill/alignment][sign][#][0][width][.precision][presentation]`.
+Alignment is `<`, `>`, or `^`, optionally preceded by one Unicode scalar fill.
+Text defaults left, Number right. Width is a minimum; width and text truncation
+count Unicode scalars, not UTF-16 units, grapheme clusters, or terminal columns.
+For example, `{:🙂^5}` centers text in a five-scalar field and `{:.3s}` takes at
+most three scalars. Debug `{:?}` quotes String/Path text with backslash escapes;
+it is readable diagnostic text, not a source literal or serialized artifact.
+
+Number formats include `f/F` (fixed), `e/E` (scientific), `g/G` (general), and
+`d`, `x/X`, `b/B`, `o` (integer representations). Floating output uses .NET
+invariant binary64 rounding and exponent spelling. Default Number output
+preserves signed zero; precision without an explicit floating presentation is
+general/significant-digit precision. Integer formats require a finite integral
+Number and describe the actual represented magnitude, including values beyond
+Int64; they do not truncate fractions or introduce another public number type.
+`#` adds the language's base prefix to binary, octal, or hex. `+` and space
+select a positive sign, and `0` pads after sign/prefix. Use an explicit fill
+before alignment, such as `0>`, instead of combining alignment and the zero flag.
+
+The surface takes brace fields from [Rust `std::fmt`](https://doc.rust-lang.org/std/fmt/)
+and [WG21 P0645](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2019/p0645r10.html),
+strict incompatible-flag diagnostics from
+[Java Formatter](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/Formatter.html),
+and invariant numeric conversion from
+[.NET standard formatting](https://learn.microsoft.com/en-us/dotnet/standard/base-types/standard-numeric-format-strings).
+This is one small format language, not a mix of percent, composite-format, and
+interpolation grammars. One Core reader serves literal checking and execution.
+Literal calls diagnose malformed fields, absent arguments/members and known
+type mismatches at the template expression; dynamic calls report the same
+field error at execution, with its one-based scalar position in the template.
+
+The formatter returns a String and owns no output stream. A Range, Scope,
+Function or Process has a compact display; the formatter does not enumerate
+ranges, traverse object graphs, or wait for a Process to exit. Named formatting
+reads only selected members and resolves a selected deferred value normally.
+Unselected deferred fields do not delay formatting. The named native has an
+explicit local-memory read effect, so a change to a Scope field cannot be
+hidden by pure-call reuse. Positional formatting checks the actual value
+provided by ordinary argument evaluation. Bytecode validates the fixed prefix
+of a variadic native call, matching source checking instead of repeating the
+template parameter's String type over the argument pack.
+
+The actual CLI journey in `tests/Msync.EndToEnd/stdlib_format_journey.py` checks
+byte-exact results at O0/O2, source-free HIR, relocatable and executable stages.
+A child waits on a file written by formatting, proving that formatting its
+Process, a lazy Range, and a Scope with an unselected pending field does not
+block the publication; selecting the pending field then reads its output.
+
 ## Regular expressions
 
 `$std::regex` exposes `is_match`, `find`, `matches`, `replace`, `split`, and
