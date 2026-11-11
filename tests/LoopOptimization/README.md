@@ -72,9 +72,25 @@ dominating backedge, single latch and unique preheader establish the
 records graph membership independent of bytecode layout; this first
 transform handles two-block loops with one ordered comparison and an
 exact positive integral induction recurrence. The private counter has
-one preheader seed and one backedge update. The scalar body may read the
+one entering seed and one backedge update. The scalar body may read the
 counter but may not call code, write the counter or bound, or expose a
 carried slot. A mutable cell is not an invariant bound.
+
+The shared sparse definition-use analysis identifies the exact counter seed
+and latch update reaching the header, and follows the selected bound's
+operand definitions through private slot copies. That proof is independent
+of bytecode adjacency: a dominating bound writer or a cast operand may
+cross a block boundary. It is not an alias proof. A frame-owned slot
+holding a raw Cell remains aliased after `StoreLocal` writes a Number into
+it; only a known plain prior value or a detaching `InitializeLocal` of a
+plain value licenses the storage proof. The direct tests cover a cross-block
+cast with equal serialized execution, two distinct reaching bound writers
+that remain unresolved, and a raw Cell initialized before a numeric seed
+store that must not be treated as private. In the isolated Release migration,
+the runner passed 429 contracts and both recurrence fixtures' O2 relocatable
+artifacts were byte-identical to the previous integrated compiler's output.
+Receipts: `.temp/defuse-loops/snapshot-tests.log` and
+`.temp/defuse-loops/compiler-comparison.log`.
 
 The fast region uses the last counter of a four-iteration chunk to prove
 that all four iterations enter. A finite bound within the exact integer

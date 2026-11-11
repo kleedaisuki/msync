@@ -6,27 +6,33 @@ internal static class GraphOptimization
     private const int Unpromoted = -1;
     private static readonly DefinitionSet FreshStorage = new(Unpromoted);
 
-    internal static FunctionCode Optimize(Module module, FunctionCode function, List<Value> constants, IReadOnlyList<InstructionEffect>? summaries = null, ConstantInterner? interner = null)
+    internal static FunctionCode Optimize(Module module, FunctionCode function, List<Value> constants,
+        IReadOnlyList<InstructionEffect>? summaries = null, ConstantInterner? interner = null)
+        => OptimizeWithAnalysis(module, function, constants, summaries, interner, new());
+
+    internal static FunctionCode OptimizeWithAnalysis(Module module, FunctionCode function, List<Value> constants,
+        IReadOnlyList<InstructionEffect>? summaries, ConstantInterner? interner, FunctionAnalysisContext context)
     {
         interner ??= new(constants);
         var previous = function;
         while (true)
         {
-            var graph = new Graph(module, previous, constants, summaries, interner);
+            var graph = new Graph(module, previous, constants, summaries, interner, context.DefUse(previous));
             var next = graph.Rewrite();
-            if (next.Instructions.SequenceEqual(previous.Instructions)) return next;
+            if (next.Instructions.SequenceEqual(previous.Instructions))
+                return next.LocalCount == previous.LocalCount ? previous : next;
             previous = next;
         }
     }
 
-    private sealed class Node(Instruction instruction, int index)
+    private sealed class Node(Instruction instruction, int index, SparseDefUse definitions)
     {
         internal readonly Instruction Instruction = instruction;
         internal readonly int Index = index;
-        internal DefinitionSet[] Inputs = [];
-        internal int StackInputs;
-        internal DefinitionSet TargetDefinitions;
-        internal bool Reachable;
+        private readonly ReadOnlyMemory<DefinitionSet> operands = definitions.InputMemory(index);
+        internal ReadOnlySpan<DefinitionSet> Inputs => operands.Span;
+        internal readonly int StackInputs = definitions.StackInputCount(index);
+        internal readonly bool Reachable = definitions.IsReachable(index);
         internal Value? Constant;
         internal bool ConstantVisited;
         internal bool ConstantResolving;
@@ -36,19 +42,10 @@ internal static class GraphOptimization
         internal int LiveOutputs;
     }
 
-    private sealed record State(List<DefinitionSet> Stack, DefinitionSet[] Locals, DefinitionSet[] Promotions)
-    {
-        internal State Copy() => new([.. Stack], (DefinitionSet[])Locals.Clone(),
-            Promotions.Length == 0 ? [] : (DefinitionSet[])Promotions.Clone());
-    }
-
     private sealed class Graph(Module module, FunctionCode function, List<Value> constants,
-        IReadOnlyList<InstructionEffect>? summaries, ConstantInterner interner, bool simplifySameSuccessor = true)
+        IReadOnlyList<InstructionEffect>? summaries, ConstantInterner interner, SparseDefUse definitions, bool simplifySameSuccessor = true)
     {
-        private readonly Node[] nodes = function.Instructions.Select((instruction, index) => new Node(instruction, index)).ToArray();
-        private readonly State?[] states = new State?[function.Instructions.Count + 1];
-        private readonly Queue<int> pending = new();
-        private readonly bool[] queued = new bool[function.Instructions.Count + 1];
+        private readonly Node[] nodes = function.Instructions.Select((instruction, index) => new Node(instruction, index, definitions)).ToArray();
         private readonly HashSet<int> demanded = [];
         private readonly Queue<int> demands = new();
         private readonly HashSet<int> mutableSlots = function.Instructions.Where(instruction => instruction.Op == OpCode.LoadCell).Select(instruction => instruction.A).ToHashSet();
@@ -62,14 +59,13 @@ internal static class GraphOptimization
         private readonly HashSet<int> escapedScopes = [];
         private readonly Dictionary<int, List<int>> equivalent = [];
         private readonly int[] representatives = Enumerable.Range(0, function.Instructions.Count * 2).ToArray();
-        private Dictionary<int, int>? promotionSlots;
         private Dictionary<int, DefinitionSet>? promotionInputs;
         private List<int>? transfers;
         private bool removedSameSuccessor;
 
         internal FunctionCode Rewrite()
         {
-            Discover();
+            DiscoverStorageActivations();
             EquateStackJoins();
             DiscoverCellAliases();
             DiscoverEscapes();
@@ -110,116 +106,78 @@ internal static class GraphOptimization
             return Emit();
         }
 
-        private void Discover()
+        private void DiscoverStorageActivations()
         {
-            var locals = new DefinitionSet[function.LocalCount];
-            for (var slot = 0; slot < function.ParameterCount + function.CaptureCount; slot++) locals[slot] = new(-slot - 1);
-            var starts = new bool[nodes.Length + 1];
-            starts[0] = starts[^1] = true;
-            HashSet<int>? seenPromotions = null;
-            for (var index = 0; index < nodes.Length; index++)
+            // Promotion is a change to storage identity, not a stack value
+            // definition. Keep this DCE-specific lattice outside def-use.
+            HashSet<int>? seen = null;
+            Dictionary<int, int>? slots = null;
+            foreach (var node in nodes)
             {
-                var instruction = nodes[index].Instruction;
-                if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse)
-                    starts[instruction.A] = starts[index + 1] = true;
-                else if (instruction.Op == OpCode.IteratorNext) starts[instruction.B] = starts[index + 1] = true;
-                else if (instruction.Op == OpCode.Return) starts[index + 1] = true;
-                else if (simplifySameSuccessor && instruction.Op is OpCode.Transfer or OpCode.LocalTransfer)
-                    (transfers ??= []).Add(index);
-                else if (instruction.Op == OpCode.LoadStorage && mutableSlots.Contains(instruction.A)
-                    || instruction.Op == OpCode.LoadCell && !(seenPromotions ??= []).Add(instruction.A))
+                var instruction = node.Instruction;
+                if (simplifySameSuccessor && instruction.Op is OpCode.Transfer or OpCode.LocalTransfer)
+                    (transfers ??= []).Add(node.Index);
+                if (instruction.Op == OpCode.LoadStorage && mutableSlots.Contains(instruction.A)
+                    || instruction.Op == OpCode.LoadCell && !(seen ??= []).Add(instruction.A))
                 {
-                    var slots = promotionSlots ??= [];
+                    slots ??= [];
                     slots.TryAdd(instruction.A, slots.Count);
                 }
             }
-            DefinitionSet[] initialPromotions = promotionSlots is { } promotions ? new DefinitionSet[promotions.Count] : [];
-            Array.Fill(initialPromotions, FreshStorage);
-            states[0] = new([], locals, initialPromotions);
-            Enqueue(0);
-            while (pending.TryDequeue(out var start))
+            if (slots is null) return;
+            var graph = definitions.Graph;
+            var states = new DefinitionSet[]?[graph.Blocks.Count];
+            var queued = new bool[states.Length];
+            Queue<int> pending = new();
+            var initial = new DefinitionSet[slots.Count];
+            Array.Fill(initial, FreshStorage);
+            Merge(0, initial);
+            while (pending.TryDequeue(out int block))
             {
-                queued[start] = false;
-                if (start == nodes.Length) continue;
-                var state = states[start]!.Copy();
-                for (var pc = start; pc < nodes.Length; pc++)
+                queued[block] = false;
+                var state = (DefinitionSet[])states[block]!.Clone();
+                var range = graph.Blocks[block];
+                for (int pc = range.Start; pc < range.End; pc++)
                 {
-                    var node = nodes[pc];
-                    node.Reachable = true;
-                    var instruction = node.Instruction;
-                    var operands = new List<DefinitionSet>();
-                    DefinitionSet Pop()
+                    var instruction = nodes[pc].Instruction;
+                    if (instruction.Op is not (OpCode.InitializeLocal or OpCode.LoadCell or OpCode.LoadStorage)
+                        || !slots.TryGetValue(instruction.A, out int storage)) continue;
+                    if (instruction.Op == OpCode.InitializeLocal)
                     {
-                        var value = state.Stack[^1]; state.Stack.RemoveAt(state.Stack.Count - 1); return value;
+                        state[storage] = FreshStorage;
+                        continue;
                     }
-                    void Consume(int count)
+                    var preceding = state[storage];
+                    if (preceding.Count > 1 || !preceding.Contains(Unpromoted))
                     {
-                        for (var index = 0; index < count; index++) operands.Insert(0, Pop());
+                        var observed = promotionInputs ??= [];
+                        observed[pc] = observed.GetValueOrDefault(pc).Union(preceding);
                     }
-                    void Push(int output = 0) => state.Stack.Add(new(pc * 2 + output));
-                    switch (instruction.Op)
-                    {
-                        case OpCode.Nop: break;
-                        case OpCode.Constant: case OpCode.Null: case OpCode.True: case OpCode.False: case OpCode.LoadBuiltin: case OpCode.GetSingleton: Push(); break;
-                        case OpCode.LoadCell:
-                        case OpCode.LoadStorage:
-                            if (promotionSlots is { } slots && slots.TryGetValue(instruction.A, out var storage))
-                            {
-                                var preceding = state.Promotions[storage];
-                                if (preceding.Count > 1 || !preceding.Contains(Unpromoted))
-                                {
-                                    var observed = promotionInputs ??= [];
-                                    observed[pc] = observed.GetValueOrDefault(pc).Union(preceding);
-                                }
-                                if (instruction.Op == OpCode.LoadCell) state.Promotions[storage] = Promote(preceding, pc);
-                            }
-                            goto case OpCode.LoadLocal;
-                        case OpCode.LoadLocal:
-                            operands.Add(state.Locals[instruction.A]); Push(); break;
-                        case OpCode.InitializeLocal:
-                            if (promotionSlots is { } tracked && tracked.TryGetValue(instruction.A, out var reset))
-                                state.Promotions[reset] = FreshStorage;
-                            goto case OpCode.StoreLocal;
-                        case OpCode.StoreLocal:
-                            Consume(1); node.TargetDefinitions = node.TargetDefinitions.Union(state.Locals[instruction.A]); state.Locals[instruction.A] = new(pc * 2); break;
-                        case OpCode.Dup: Consume(1); Push(); Push(1); break;
-                        case OpCode.Pop: Consume(1); break;
-                        case OpCode.SetSingleton: Consume(1); Push(); break;
-                        case OpCode.Jump: break;
-                        case OpCode.JumpIfFalse: case OpCode.JumpIfTrue: Consume(1); break;
-                        case OpCode.Return: if (state.Stack.Count != 0) Consume(1); break;
-                        case OpCode.MakeClosure: Consume(instruction.B); Push(); break;
-                        case OpCode.Call: case OpCode.ProcessCall: Consume(instruction.A + 1); Push(); break;
-                        case OpCode.NativeCall: Consume(instruction.A); Push(); break;
-                        case OpCode.MakeRange: case OpCode.MakeLazyRange: case OpCode.MakeScope: Consume(instruction.A); Push(); break;
-                        case OpCode.SpecializeClosure:
-                        case OpCode.GetMember:
-                        case OpCode.GetCapture:
-                        case OpCode.Not:
-                        case OpCode.IsNull:
-                        case OpCode.Negate:
-                        case OpCode.GetIterator:
-                        case OpCode.SelectPath:
-                        case OpCode.Convert:
-                        case OpCode.DeferRange:
-                            Consume(1); Push(); break;
-                        case OpCode.RegexMatch: Consume(instruction.Text is null ? 2 : 1); Push(); break;
-                        case OpCode.IteratorNext:
-                            operands.Add(state.Locals[instruction.A]);
-                            Merge(instruction.B, state); Push(); break;
-                        case OpCode.Barrier: break;
-                        case OpCode.Acquire: if (instruction.A != 0) { Consume(1); Push(); } break;
-                        default: Consume(2); Push(); break;
-                    }
-                    node.StackInputs = instruction.Op is OpCode.LoadLocal or OpCode.LoadCell or OpCode.LoadStorage or OpCode.IteratorNext ? 0 : operands.Count;
-                    MergeInputs(node, operands);
-                    if (instruction.Op == OpCode.Return) break;
-                    if (instruction.Op == OpCode.Jump) { Merge(instruction.A, state); break; }
-                    if (instruction.Op is OpCode.JumpIfTrue or OpCode.JumpIfFalse) Merge(instruction.A, state);
-                    if (!starts[pc + 1]) continue;
-                    Merge(pc + 1, state);
-                    break;
+                    if (instruction.Op == OpCode.LoadCell) state[storage] = Promote(preceding, pc);
                 }
+                foreach (int target in graph.Successors(block)) Merge(target, state);
+            }
+
+            void Merge(int block, DefinitionSet[] incoming)
+            {
+                bool changed = false;
+                if (states[block] is { } previous)
+                {
+                    for (int index = 0; index < incoming.Length; index++)
+                    {
+                        var merged = previous[index].Union(incoming[index]);
+                        changed |= merged.Count != previous[index].Count;
+                        previous[index] = merged;
+                    }
+                }
+                else
+                {
+                    states[block] = (DefinitionSet[])incoming.Clone();
+                    changed = true;
+                }
+                if (!changed || queued[block]) return;
+                queued[block] = true;
+                pending.Enqueue(block);
             }
         }
 
@@ -232,46 +190,6 @@ internal static class GraphOptimization
             foreach (var preceding in incoming)
                 if (preceding != Unpromoted) result = result.Union(new(preceding));
             return result;
-        }
-
-        private void Enqueue(int pc)
-        {
-            if (queued[pc]) return;
-            queued[pc] = true;
-            pending.Enqueue(pc);
-        }
-
-        private static void MergeInputs(Node node, List<DefinitionSet> operands)
-        {
-            if (node.Inputs.Length == 0) { node.Inputs = operands.ToArray(); return; }
-            for (var index = 0; index < operands.Count; index++) node.Inputs[index] = node.Inputs[index].Union(operands[index]);
-        }
-
-        private void Merge(int pc, State incoming)
-        {
-            if (states[pc] is not { } previous) { states[pc] = incoming.Copy(); Enqueue(pc); return; }
-            var changed = false;
-            for (var index = 0; index < incoming.Stack.Count; index++)
-            {
-                var merged = previous.Stack[index].Union(incoming.Stack[index]);
-                changed |= merged.Count != previous.Stack[index].Count;
-                previous.Stack[index] = merged;
-            }
-            changed |= MergeDefinitions(previous.Locals, incoming.Locals);
-            if (incoming.Promotions.Length != 0) changed |= MergeDefinitions(previous.Promotions, incoming.Promotions);
-            if (changed) Enqueue(pc);
-        }
-
-        private static bool MergeDefinitions(DefinitionSet[] previous, DefinitionSet[] incoming)
-        {
-            bool changed = false;
-            for (var index = 0; index < incoming.Length; index++)
-            {
-                var merged = previous[index].Union(incoming[index]);
-                changed |= merged.Count != previous[index].Count;
-                previous[index] = merged;
-            }
-            return changed;
         }
 
         private Value? Resolve(DefinitionSet tokens)
@@ -628,10 +546,10 @@ internal static class GraphOptimization
             if (node.Kept) return;
             node.Kept = true;
             if (node.Instruction.Op == OpCode.StoreLocal && mutableSlots.Contains(node.Instruction.A))
-                foreach (var token in node.TargetDefinitions) Demand(token);
+                foreach (var token in definitions.DefinitionsBefore(pc, node.Instruction.A)) Demand(token);
             if (node.Constant is not null && HasOutput(node.Instruction)) return;
             if (node.Instruction.Op is OpCode.JumpIfTrue or OpCode.JumpIfFalse && Resolve(node.Inputs[0]) is BoolValue) return;
-            foreach (var operand in node.Inputs.Skip(node.NativeName is null ? 0 : 1)) foreach (var token in operand) Demand(token);
+            foreach (var operand in node.Inputs[(node.NativeName is null ? 0 : 1)..]) foreach (var token in operand) Demand(token);
         }
 
         private FunctionCode Emit()
@@ -686,7 +604,7 @@ internal static class GraphOptimization
             }
             positions[^1] = emitted.Count;
             if (removedSameSuccessor && transfers is { } transferSites && ChangedTransferDisposition(transferSites, emitted, positions))
-                return new Graph(module, function, constants, summaries, interner, simplifySameSuccessor: false).Rewrite();
+                return new Graph(module, function, constants, summaries, interner, definitions, simplifySameSuccessor: false).Rewrite();
             for (var index = 0; index < emitted.Count; index++)
             {
                 var instruction = emitted[index];
@@ -723,6 +641,6 @@ internal static class GraphOptimization
             return new(OpCode.Constant, interner.Intern(value), Span: span);
         }
 
-        private static bool HasOutput(Instruction instruction) => instruction.Op == OpCode.Acquire ? instruction.A != 0 : instruction.Op is not (OpCode.Nop or OpCode.Pop or OpCode.StoreLocal or OpCode.InitializeLocal or OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.Return or OpCode.Barrier);
+        private static bool HasOutput(Instruction instruction) => instruction.Op == OpCode.Acquire ? instruction.A != 0 : instruction.Op is not (OpCode.Nop or OpCode.Pop or OpCode.StoreLocal or OpCode.InitializeLocal or OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.Return or OpCode.Barrier or OpCode.ExecutePlan);
     }
 }

@@ -17,89 +17,56 @@ internal static class NaturalLoopOptimization
         internal double SafeBound => ExactIntegerLimit - Factor * Step;
     }
 
-    private sealed class LocalFacts(FunctionCode function, IReadOnlyList<Value> constants, ControlFlowGraph graph)
+    private sealed class LocalFacts(FunctionCode function, IReadOnlyList<Value> constants, FunctionAnalysisContext analysis)
     {
-        private readonly LocalUse[] uses = Scan(function);
+        private bool[]? exposed;
 
-        private struct LocalUse
+        private static bool[] ExposedSlots(FunctionCode function)
         {
-            internal int FirstStore;
-            internal int SecondStore;
-            internal bool MayShare;
+            var slots = new bool[function.LocalCount];
+            foreach (var instruction in function.Instructions)
+                if (instruction.Op is OpCode.LoadCell or OpCode.LoadStorage or OpCode.IteratorNext)
+                    slots[instruction.A] = true;
+            return slots;
         }
 
-        private static LocalUse[] Scan(FunctionCode function)
+        private bool IsPrivate(int slot) => slot >= function.CaptureCount + function.ParameterCount
+            && !(exposed ??= ExposedSlots(function))[slot];
+
+        internal double? PrivateNumericSeed(int header, int slot, int update)
         {
-            var uses = new LocalUse[function.LocalCount];
-            for (int pc = 0; pc < function.Instructions.Count; pc++)
-            {
-                var instruction = function.Instructions[pc];
-                switch (instruction.Op)
-                {
-                    case OpCode.LoadCell or OpCode.LoadStorage or OpCode.IteratorNext:
-                        uses[instruction.A].MayShare = true;
-                        break;
-                    case OpCode.StoreLocal or OpCode.InitializeLocal:
-                        ref var use = ref uses[instruction.A];
-                        if (use.FirstStore == 0) use.FirstStore = pc + 1;
-                        else if (use.SecondStore == 0) use.SecondStore = pc + 1;
-                        else use.MayShare = true;
-                        break;
-                }
-            }
-            return uses;
+            if (!IsPrivate(slot)) return null;
+            var reaching = analysis.DefUse(function).DefinitionsBefore(header, slot);
+            int updated = update * 2;
+            if (reaching.Count != 2 || !reaching.Contains(updated)) return null;
+            foreach (int definition in reaching)
+                if (definition != updated && ProveBoundValue(InstructionOf(definition), out var number))
+                    return number;
+            return null;
         }
 
-        internal double? PrivateNumericSeed(BasicBlock preheader, int slot, int update)
-        {
-            if (slot < function.CaptureCount + function.ParameterCount || uses[slot].MayShare) return null;
-            int first = uses[slot].FirstStore - 1, second = uses[slot].SecondStore - 1;
-            int seed = first == update ? second : second == update ? first : -1;
-            // A constant store in the unique preheader owns the slot before
-            // either version of the loop; no cell or other writer can replace it.
-            return seed > preheader.Start && seed < preheader.End
-                && function.Instructions[seed - 1] is { Op: OpCode.Constant, A: var id }
-                && constants[id] is NumberValue number ? number.Data : null;
-        }
-
-        internal bool TryInvariantBound(BasicBlock preheader, int slot, out double? known)
-        {
-            known = null;
-            if (uses[slot].FirstStore - 1 <= preheader.Start
-                || Math.Max(uses[slot].FirstStore, uses[slot].SecondStore) > preheader.End) return false;
-            int store = ValueWriter(slot, preheader.End, graph.BlockAt(preheader.Start));
-            if (store <= preheader.Start) return false;
-            return ProveBoundValue(store - 1, out known);
-        }
-
-        private int ValueWriter(int slot, int before, int useBlock)
-        {
-            var use = uses[slot];
-            if (slot < function.CaptureCount + function.ParameterCount || use.MayShare) return -1;
-            int first = use.FirstStore - 1, second = use.SecondStore - 1;
-            int store = second >= 0 && second < before ? second : first;
-            if (store <= 0 || store >= before) return -1;
-            int storeBlock = graph.BlockAt(store);
-            if (graph.BlockAt(store - 1) != storeBlock) return -1;
-            if (second >= 0 && (storeBlock != useBlock || function.Instructions[store].Op != OpCode.InitializeLocal))
-                return -1;
-            return graph.Dominates(storeBlock, useBlock) ? store : -1;
-        }
+        internal bool TryInvariantBound(int load, out double? known) => ProveBoundValue(load, out known);
 
         private bool ProveBoundValue(int pc, out double? known)
         {
             known = null;
             var code = function.Instructions;
+            var definitions = analysis.DefUse(function);
             bool castInput = false;
-            while (pc >= 0)
+            // This follows a single definition at each step. Revisiting a
+            // producer cannot establish a new value fact.
+            for (int remaining = code.Count; pc >= 0 && remaining > 0; remaining--)
             {
                 var producer = code[pc];
                 switch (producer.Op)
                 {
-                    case OpCode.LoadLocal:
-                        // The inliner can initialize an argument from an
-                        // earlier private slot, even the same compacted slot.
-                        pc = ValueWriter(producer.A, pc, graph.BlockAt(pc)) - 1;
+                    case OpCode.LoadLocal when IsPrivate(producer.A):
+                    case OpCode.InitializeLocal when IsPrivate(producer.A):
+                    case OpCode.Dup:
+                        pc = Source(definitions, pc, 0);
+                        break;
+                    case OpCode.StoreLocal when IsPrivate(producer.A) && HasPlainStorage(definitions, pc, producer.A):
+                        pc = Source(definitions, pc, 0);
                         break;
                     case OpCode.Constant when constants[producer.A] is NumberValue number:
                         if (!castInput) known = number.Data;
@@ -112,14 +79,14 @@ internal static class NaturalLoopOptimization
                         return true;
                     case OpCode.NativeCall when castInput && producer is { A: 0, Text: "io.read_line" }:
                         return true;
-                    case OpCode.NativeCall when producer is { A: 2, Text: "cast" } && pc >= 2
-                        && graph.BlockAt(pc - 2) == graph.BlockAt(pc)
-                        && code[pc - 1] is { Op: OpCode.Constant, A: var type }
-                        && constants[type] is TypeValue target && target.Data == TypeRef.Number:
+                    case OpCode.NativeCall when producer is { A: 2, Text: "cast" }:
+                        int target = Source(definitions, pc, 1);
+                        if (target < 0 || code[target] is not { Op: OpCode.Constant, A: var type }
+                            || constants[type] is not TypeValue value || value.Data != TypeRef.Number) return false;
                         // A cast can return its input as-is. Its Number type
                         // alone is not evidence that the input was not a cell.
                         castInput = true;
-                        pc -= 2;
+                        pc = Source(definitions, pc, 0);
                         break;
                     default:
                         return false;
@@ -127,6 +94,41 @@ internal static class NaturalLoopOptimization
             }
             return false;
         }
+
+        private bool HasPlainStorage(SparseDefUse definitions, int store, int slot)
+        {
+            // StoreLocal writes through a Cell already in the slot. A sole
+            // reaching writer proves the write, not the raw slot's contents.
+            var reaching = definitions.DefinitionsBefore(store, slot);
+            foreach (int token in reaching)
+            {
+                if (token < 0) continue; // Frame-owned slots start as Null.
+                int writer = InstructionOf(token);
+                if (function.Instructions[writer].Op != OpCode.InitializeLocal) return false;
+                int source = Source(definitions, writer, 0);
+                if (source < 0 || !IsPlainProducer(function.Instructions[source])) return false;
+            }
+            return reaching.Count != 0;
+        }
+
+        private bool IsPlainProducer(Instruction producer) => producer.Op switch
+        {
+            OpCode.Constant => constants[producer.A] is not CellValue,
+            OpCode.Null or OpCode.False or OpCode.True or OpCode.Add or OpCode.Subtract or OpCode.Multiply
+                or OpCode.Divide or OpCode.Remainder or OpCode.Negate or OpCode.Convert => true,
+            _ => producer is { Op: OpCode.NativeCall, A: 0, Text: "io.read_line" }
+        };
+
+        private static int Source(SparseDefUse definitions, int pc, int operand)
+        {
+            var inputs = definitions.Inputs(pc);
+            if (operand >= inputs.Length || inputs[operand].Count != 1) return -1;
+            var tokens = inputs[operand].GetEnumerator();
+            tokens.MoveNext();
+            return InstructionOf(tokens.Current);
+        }
+
+        private static int InstructionOf(int token) => token >= 0 ? token / 2 : -1;
     }
 
     internal static FunctionCode Optimize(FunctionCode function, List<Value> constants, ConstantInterner interner,
@@ -134,13 +136,14 @@ internal static class NaturalLoopOptimization
     {
         var code = function.Instructions;
         if (level < 2 || !HasScalarBackedge(code)) return function;
-        var graph = analysis?.ControlFlow(function) ?? new ControlFlowGraph(function);
+        analysis ??= new FunctionAnalysisContext();
+        var graph = analysis.ControlFlow(function);
         LocalFacts? locals = null;
         List<Candidate> selected = [];
         foreach (var loop in NaturalLoopAnalysis.Discover(graph, maximumBlocks: 2))
         {
             if (loop.Blocks.Count != 2) continue;
-            var candidate = Recognize(code, constants, graph, loop, locals ??= new(function, constants, graph));
+            var candidate = Recognize(code, constants, graph, loop, locals ??= new(function, constants, analysis));
             if (candidate is not null) selected.Add(candidate);
         }
         return selected.Count == 0 ? function : Emit(function, selected, interner);
@@ -183,30 +186,34 @@ internal static class NaturalLoopOptimization
             || code[update + 2].Op != OpCode.Add
             || code[update + 3] is not { Op: OpCode.StoreLocal, A: var target } || target != counter)
             return null;
-        var preheader = graph.Blocks[loop.Preheader];
-        double? start = locals.PrivateNumericSeed(preheader, counter, update + 3);
-        if (start is not double initial || !double.IsInteger(initial) || initial < -ExactIntegerLimit
-            || initial > ExactIntegerLimit - Factor * step) return null;
         var bound = code[test + 1];
         if (bound.Op is not (OpCode.Constant or OpCode.LoadLocal)
             || bound.Op == OpCode.LoadLocal && bound.A == counter) return null;
+        if (AnalyzeBody(code, constants, latch.Start, update, counter, bound) is not { } plan) return null;
+
+        // A body with an unsupported operation cannot use these facts; do
+        // not make it build a def-use projection just to decline the loop.
+        double? start = locals.PrivateNumericSeed(test, counter, update + 3);
+        if (start is not double initial || !double.IsInteger(initial) || initial < -ExactIntegerLimit
+            || initial > ExactIntegerLimit - Factor * step) return null;
         double? knownBound;
         if (bound.Op == OpCode.Constant)
         {
             if (constants[bound.A] is not NumberValue number) return null;
             knownBound = number.Data;
         }
-        else if (!locals.TryInvariantBound(preheader, bound.A, out knownBound)) return null;
-        if (AnalyzeBody(code, constants, preheader, latch.Start, update, counter, bound, locals) is not { } plan)
-            return null;
+        else if (!locals.TryInvariantBound(test + 1, out knownBound)) return null;
+        for (int pc = latch.Start; pc < update; pc++)
+            if (code[pc] is { Op: OpCode.StoreLocal, A: var slot } && locals.PrivateNumericSeed(test, slot, pc) is null)
+                return null;
         var candidate = new Candidate(test, latch.Start, update, latch.End - 1, bodyIsTarget ? header.End : branch.A,
             initial, step, bound, knownBound, comparison, keepOnTrue, plan);
         return knownBound is double known && !(known <= candidate.SafeBound)
             && CountSmall(candidate) is null ? null : candidate;
     }
 
-    private static BodyPlan? AnalyzeBody(IReadOnlyList<Instruction> code, IReadOnlyList<Value> constants, BasicBlock preheader,
-        int start, int end, int counter, Instruction bound, LocalFacts locals)
+    private static BodyPlan? AnalyzeBody(IReadOnlyList<Instruction> code, IReadOnlyList<Value> constants,
+        int start, int end, int counter, Instruction bound)
     {
         int depth = 0, stores = 0;
         bool readsCounter = false;
@@ -229,8 +236,7 @@ internal static class NaturalLoopOptimization
                     break;
                 case OpCode.StoreLocal when depth >= 1 && instruction.A != counter
                     && (bound.Op != OpCode.LoadLocal || instruction.A != bound.A)
-                    && IsNonCellProducer(code[pc - 1].Op)
-                    && locals.PrivateNumericSeed(preheader, instruction.A, pc) is not null:
+                    && IsNonCellProducer(code[pc - 1].Op):
                     stores++;
                     depth--;
                     break;

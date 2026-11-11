@@ -3,15 +3,31 @@
 `GraphOptimization` works over the executable typed bytecode, not debug source.
 The optimizer orchestrator alternates it with call specialization/inlining and
 finishes with module reachability and literal-table compaction. Executable
-binding reruns that pipeline after context-dependent path lowering.
+binding relocates and performs context-dependent path lowering; it does not
+replay the portable optimizer.
 
 ## Representation and rewrites
 
 Each bytecode instruction owns stable output tokens. `Dup` has two distinct
-outputs; local stores have a non-stack definition token. A forward CFG worklist
-computes reaching definitions for local slots and operand-stack positions.
-Only block-entry states are copied: the state inside a block has one mutable
-owner. Join propagation is monotone and queued blocks are coalesced.
+outputs; local stores have a non-stack definition token. The shared
+`SparseDefUse` projects each reachable block once, naming operands by a
+producer or by a preserved incoming stack column. It resolves a column or
+slot backward only when an instruction or transform asks for it, stopping at
+the nearest definition along each predecessor path. This borrows the lazy
+lookup discipline of [Braun et al.](https://pp.ipd.kit.edu/publication.php?id=braun13cc&lang=en)
+without replacing stack bytecode with emitted SSA or assuming a reducible CFG.
+Inverse uses are indexed lazily from the same operands.
+
+Local write sites are stored by slot, not as locals-by-block snapshots.
+The entry value of every slot is an explicit unknown token, so a bypassing
+path cannot turn a partial definition into a unique writer. Iterator yield
+and exhaustion preserve distinct stack shapes. The graph belongs to one
+instruction-stream revision within a `FunctionAnalysisContext`; no rewrite,
+serialization, or binding operation treats these facts as imported proofs.
+The graph's raw-slot definitions describe which instructions wrote a slot,
+not whether its Cell payload is stable. DCE retains its separate storage
+activation and observable demand rules. Natural-loop proof consumes the
+same definitions, with separate alias/write-through and exact Number checks.
 
 Primitive constants propagate through those definitions. The evaluator does
 not allocate mutable Scope objects into the constant table. It delegates
@@ -64,6 +80,48 @@ backing field even if the enclosing Scope would otherwise be dead.
 
 `tests/OptimizationGraph` compares optimized/unoptimized execution, artifact
 round trips, bound execution, observable output bytes and selected errors.
+Its `--def-use` controls inspect exact forward and inverse edges, both Dup
+outputs, loop latches, iterator exhaustion, absent writers and body revision
+ownership. The [natural-loop suite](../../tests/LoopOptimization/README.md)
+also tests bound provenance across lexical blocks and rejects raw storage
+aliases that would make a slot's payload unstable.
+
+### Shared def-use acceptance on the four library workloads
+
+A separate managed Release compiler snapshot changed only shared def-use,
+its graph consumer, and the migrated loop proof. Three alternating pairs
+compiled the same source at O2 with the CLI's SQLite profile, pinned to CPU
+10. Each pair's output artifact SHA-256 matched; Set also showed
+between-process hash variation on the unchanged baseline, so the matching
+unit is the pair, not a claim of repeat-build determinism. The
+`optimizer.graph` event's measured compiler-thread allocation was:
+
+| Source | Invocations | Allocation, old → shared |
+| --- | ---: | ---: |
+| Set | 37 → 37 | 5,974,376 → 2,737,896 B |
+| Heap | 20 → 20 | 14,417,072 → 8,704,952 B |
+| Hash | 7 → 7 | 980,792 → 469,336 B |
+| SHA-256 | 9 → 9 | 2,064,872 → 1,066,280 B |
+
+Matching bytes and invocations isolate less allocation in the analysis;
+they do not establish execution speedup. Elapsed optimizer observations were
+noisy on the shared host (one Heap pair reversed), so the architectural
+claim is the measured allocation reduction, not an end-to-end timing gain.
+Raw observations: `.temp/defuse-acceptance/compare.log`; the isolated
+graph semantic suite passed 890 contracts and the natural-loop suite 429.
+
+The same graph also resolves actual Set operands. For the frozen Set
+`.mexe`, the four hot comparator sites in functions 24 and 36 trace their
+callee to `GetMember less ← GetMember order ← LoadLocal self`, whose final
+definition is an unknown entry slot. The Buffer get in helper function 8
+traces its receiver to `GetMember nodes ← LoadLocal self` and its index to
+the index parameter. This is useful provenance but not a call-target or
+mod/ref proof: a user callback can be native, and member storage is mutable.
+The source-call hint is only meaningful after determining the actual
+source/native callable class. Keep this boundary in comparator experiments
+instead of treating a matching opcode shape or a positive hint as a static
+closure identity. The exact fixture and query are recorded in
+`.temp/defuse-acceptance/set-provenance.log`.
 Its mutable cases include external captured writes, shared Scope aliases,
 private dead mutations and escaped field storage. Unknown-parameter
 short-circuit cases exercise both actual edges rather than relying only on

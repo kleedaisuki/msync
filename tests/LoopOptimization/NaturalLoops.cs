@@ -112,6 +112,24 @@ internal static class NaturalLoops
         Require(ReferenceEquals(rawBound, OptimizeDirect(rawBound)),
             "A cast target was incorrectly treated as proof that an aliased bound was a private value");
 
+        var crossBlockBound = CrossBlockBound(join: false);
+        var crossBlockOptimized = OptimizeDirect(crossBlockBound, out var crossBlockConstants);
+        Require(!ReferenceEquals(crossBlockBound, crossBlockOptimized),
+            "A unique bound writer or cast operand stopped at a lexical block boundary");
+        foreach (string input in new[] { "0", "3.1", "17" })
+        {
+            var before = new Module(DirectConstants, [crossBlockBound], OptimizationLevel: 0);
+            var after = new Module(crossBlockConstants, [crossBlockOptimized], OptimizationLevel: 0);
+            Require(await Execute(before, input) == await Execute(RoundTrip(after), input),
+                "Cross-block bound reaching definitions changed the serialized loop");
+        }
+        var joinedBound = CrossBlockBound(join: true);
+        Require(ReferenceEquals(joinedBound, OptimizeDirect(joinedBound)),
+            "A bound with two reaching writes was mistaken for one proven value");
+        var aliasedSeed = AliasedSeed();
+        Require(ReferenceEquals(aliasedSeed, OptimizeDirect(aliasedSeed)),
+            "A numeric StoreLocal seed was mistaken for detaching a previously aliased slot");
+
         var infinite = Compiler.Compile(Program("0", "1", ">=", "line as Number"), "nan-loop", 2);
         using var cancellation = new CancellationTokenSource();
         cancellation.CancelAfter(TimeSpan.FromMilliseconds(100));
@@ -170,15 +188,52 @@ internal static class NaturalLoops
          new(OpCode.LoadLocal, 3), new(OpCode.Constant, 2), new(OpCode.Add), new(OpCode.StoreLocal, 3), new(OpCode.Jump, 12),
          new(OpCode.LoadLocal, 4), new(OpCode.Return)], TypeRef.Number, CaptureCount: raw ? 1 : 0);
 
-    private static FunctionCode OptimizeDirect(FunctionCode function)
+    private static FunctionCode CrossBlockBound(bool join)
+    {
+        Instruction[] prefix = join
+            ? [new(OpCode.NativeCall, Text: "io.read_line"), new(OpCode.RegexMatch, Text: "^first$"),
+               new(OpCode.JumpIfFalse, 6), new(OpCode.Constant, 3), new(OpCode.InitializeLocal, 1), new(OpCode.Jump, 8),
+               new(OpCode.Constant, 4), new(OpCode.InitializeLocal, 1)]
+            : [new(OpCode.NativeCall, Text: "io.read_line"), new(OpCode.InitializeLocal, 0), new(OpCode.LoadLocal, 0),
+               new(OpCode.Constant, 0), new(OpCode.Jump, 5), new(OpCode.NativeCall, 2, Text: "cast"),
+               new(OpCode.InitializeLocal, 1), new(OpCode.Jump, 8)];
+        return new("cross-block-bound", 0, 4,
+            [.. prefix, new(OpCode.Constant, 1), new(OpCode.StoreLocal, 2), new(OpCode.Constant, 1), new(OpCode.StoreLocal, 3),
+             new(OpCode.LoadLocal, 2), new(OpCode.LoadLocal, 1), new(OpCode.GreaterEqual), new(OpCode.JumpIfFalse, 17),
+             new(OpCode.Jump, 26),
+             new(OpCode.LoadLocal, 3), new(OpCode.LoadLocal, 2), new(OpCode.Add), new(OpCode.StoreLocal, 3),
+             new(OpCode.LoadLocal, 2), new(OpCode.Constant, 2), new(OpCode.Add), new(OpCode.StoreLocal, 2), new(OpCode.Jump, 12),
+             new(OpCode.LoadLocal, 3), new(OpCode.Return)], TypeRef.Number);
+    }
+
+    private static readonly Value[] DirectConstants =
+        [new TypeValue(TypeRef.Number), new NumberValue(0), new NumberValue(1), new NumberValue(17), new NumberValue(29)];
+
+    private static FunctionCode AliasedSeed()
+    {
+        var function = CrossBlockBound(join: false);
+        var code = function.Instructions.ToArray();
+        code[0] = new(OpCode.LoadStorage, 0);
+        code[1] = new(OpCode.InitializeLocal, 3);
+        code[2] = new(OpCode.Constant, 3);
+        code[3] = new(OpCode.InitializeLocal, 1);
+        code[4] = new(OpCode.Jump, 8);
+        return function with { Instructions = code, CaptureCount = 1 };
+    }
+
+    private static FunctionCode OptimizeDirect(FunctionCode function) => OptimizeDirect(function, out _);
+
+    private static FunctionCode OptimizeDirect(FunctionCode function, out IReadOnlyList<Value> outputConstants)
     {
         var assembly = typeof(Optimizer).Assembly;
-        List<Value> constants = [new TypeValue(TypeRef.Number), new NumberValue(0), new NumberValue(1)];
+        List<Value> constants = [.. DirectConstants];
         object interner = assembly.GetType("Msync.Optimization.ConstantInterner")!
             .GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).Single().Invoke([constants]);
         var optimize = assembly.GetType("Msync.Optimization.NaturalLoopOptimization")!
             .GetMethod("Optimize", BindingFlags.Static | BindingFlags.NonPublic)!;
-        return (FunctionCode)optimize.Invoke(null, [function, constants, interner, 2, null])!;
+        var optimized = (FunctionCode)optimize.Invoke(null, [function, constants, interner, 2, null])!;
+        outputConstants = constants;
+        return optimized;
     }
 
     private static string Program(string start, string step, string comparison, string bound,
