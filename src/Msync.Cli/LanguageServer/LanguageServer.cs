@@ -5,7 +5,7 @@ using System.Text.Json.Nodes;
 
 namespace Msync.Cli;
 
-internal sealed partial class LanguageServer(Func<string, string> format)
+internal sealed partial class LanguageServer(Func<string, string> format, LanguageServerObservation? observation = null)
 {
     private readonly Dictionary<string, EditorDocument> documents = new(StringComparer.Ordinal);
     private readonly JsonRpcTransport transport = new();

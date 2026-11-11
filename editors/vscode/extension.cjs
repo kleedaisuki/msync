@@ -4,9 +4,10 @@ const vscode = require('vscode');
 const { LanguageClient } = require('vscode-languageclient/node');
 const { registerSshPrompts } = require('./ssh-prompts.cjs');
 const { registerArtifactViews } = require('./artifact-viewer.cjs');
+const { prepareTelemetry, telemetryConfigurationChanged } = require('./observability/editor-telemetry.cjs');
 
-let client;
-let sshPrompts;
+let connection;
+let telemetryStorage;
 let artifactViews;
 let enabled = false;
 let lifecycle = Promise.resolve();
@@ -26,11 +27,11 @@ function startupMessage(message) {
 }
 
 async function stop() {
-    const running = client;
-    client = undefined;
-    sshPrompts?.dispose();
-    sshPrompts = undefined;
-    if (running) await running.dispose();
+    const running = connection;
+    connection = undefined;
+    if (!running) return;
+    running.prompts.dispose();
+    await running.client.dispose();
 }
 
 async function start() {
@@ -40,9 +41,15 @@ async function start() {
         startupMessage('msync.serverPath is empty or not a string. Set it to the msync executable to enable language services.');
         return;
     }
+    let recording;
+    try {
+        recording = await prepareTelemetry(vscode, telemetryStorage);
+    } catch (error) {
+        void vscode.window.showWarningMessage(`msync editor telemetry was not enabled: ${error.message}`);
+    }
     const candidate = new LanguageClient('msync', 'msync Language Server', {
         command,
-        args: ['--language-server'],
+        args: ['--language-server', ...(recording?.serverArguments ?? [])],
         options: { shell: false },
     }, {
         documentSelector: [
@@ -52,12 +59,13 @@ async function start() {
         ],
         outputChannelName: 'msync Language Server',
         initializationOptions: { sshPrompt: true },
+        ...(recording ? { middleware: recording.middleware(() => candidate) } : {}),
     });
     const prompts = registerSshPrompts(vscode, candidate);
     try {
-        await candidate.start();
-        client = candidate;
-        sshPrompts = prompts;
+        if (recording) await recording.measure(candidate, 'startup', () => candidate.start());
+        else await candidate.start();
+        connection = { client: candidate, prompts, telemetry: recording };
     } catch (error) {
         prompts.dispose();
         await candidate.dispose();
@@ -70,31 +78,39 @@ function restart() {
     return serialize(async () => {
         if (!enabled) return;
         await stop();
+        if (!enabled) return;
         await start();
         artifactViews?.serverChanged();
     });
 }
 
+function request(operation, method, parameters, token) {
+    const { client, telemetry } = connection;
+    const send = () => client.sendRequest(method, parameters, token);
+    return telemetry ? telemetry.measure(client, operation, send, token) : send();
+}
+
 async function activate(context) {
     enabled = true;
+    telemetryStorage = context.globalStorageUri;
     context.subscriptions.push(
         vscode.commands.registerCommand('msync.restartLanguageServer', restart),
         vscode.workspace.onDidChangeConfiguration(event => {
-            if (event.affectsConfiguration('msync.serverPath')) {
+            if (event.affectsConfiguration('msync.serverPath') || telemetryConfigurationChanged(event)) {
                 void restart().catch(error => startupMessage(`Cannot restart msync language services: ${error.message}`));
             }
         }),
         vscode.workspace.registerTextDocumentContentProvider('msync-stdlib', {
             provideTextDocumentContent(uri, token) {
-                if (!client) throw new Error('msync language server is not running. Use msync: Restart Language Server.');
-                return client.sendRequest('msync/stdlibSource', { uri: uri.toString() }, token);
+                if (!connection) throw new Error('msync language server is not running. Use msync: Restart Language Server.');
+                return request('stdlibSource', 'msync/stdlibSource', { uri: uri.toString() }, token);
             },
         }),
     );
     artifactViews = registerArtifactViews(vscode, context, async (parameters, token) => {
         await lifecycle;
-        if (!client) throw new Error('msync language server is not running. Configure msync.serverPath, then use msync: Restart Language Server.');
-        return client.sendRequest('msync/artifact', parameters, token);
+        if (!connection) throw new Error('msync language server is not running. Configure msync.serverPath, then use msync: Restart Language Server.');
+        return request('artifact', 'msync/artifact', parameters, token);
     });
     await restart();
 }
@@ -103,7 +119,10 @@ function deactivate() {
     enabled = false;
     artifactViews?.dispose();
     artifactViews = undefined;
-    return serialize(stop);
+    return serialize(async () => {
+        await stop();
+        if (!enabled) telemetryStorage = undefined;
+    });
 }
 
 module.exports = { activate, deactivate };

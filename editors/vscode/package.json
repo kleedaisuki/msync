@@ -68,6 +68,28 @@
           "default": "msync",
           "scope": "machine",
           "description": "Path to the msync 0.8 executable. Launched directly with --language-server; shell arguments are not accepted. Changes restart the server automatically."
+        },
+        "msync.telemetry.enabled": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "tags": ["telemetry"],
+          "description": "Record local msync editor diagnostics to SQLite. Nothing is uploaded. Changes restart the language server."
+        },
+        "msync.telemetry.level": {
+          "type": "string",
+          "enum": ["summary", "phases", "profile", "instructions", "diagnostics"],
+          "default": "phases",
+          "scope": "machine",
+          "tags": ["telemetry"],
+          "description": "Detail level for local msync editor diagnostics when enabled."
+        },
+        "msync.telemetry.database": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "tags": ["telemetry"],
+          "description": "Absolute SQLite database path on the extension host. Leave empty to use editor-telemetry.sqlite in the extension's global storage."
         }
       }
     },

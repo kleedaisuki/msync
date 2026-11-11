@@ -7,6 +7,11 @@ const { test } = require('node:test');
 
 function harness(command = 'msync', startError) {
     const errors = [];
+    const warnings = [];
+    const storageCreates = [];
+    const telemetry = {};
+    const storage = { scheme: 'file', fsPath: path.resolve('editor storage') };
+    let createStorageError;
     const created = [];
     const providers = [];
     const commands = new Map();
@@ -19,6 +24,7 @@ function harness(command = 'msync', startError) {
             this.started = 0;
             this.stopped = 0;
             this.requests = [];
+            this.notifications = [];
             created.push(this);
         }
         onRequest() { return { dispose() {} }; }
@@ -29,6 +35,7 @@ function harness(command = 'msync', startError) {
         }
         async stop() { this.stopped += 1; }
         async dispose() { await this.stop(); }
+        async sendNotification(method, params) { this.notifications.push({ method, params }); }
         async sendRequest(method, params) { this.requests.push(method); return `${method}:${params.uri}`; }
     }
     const host = {
@@ -54,15 +61,23 @@ function harness(command = 'msync', startError) {
                 providers.push(registration);
                 return registration;
             },
-            getConfiguration: section => {
-            assert.equal(section, 'msync');
-            return { get: (key, fallback) => {
-                assert.equal(key, 'serverPath');
-                assert.equal(fallback, 'msync');
-                return command;
-            } };
-        } },
-        window: { registerCustomEditorProvider() { return { dispose() {} }; }, showErrorMessage: (message, action) => {
+            fs: {
+                async createDirectory(uri) {
+                    storageCreates.push(uri);
+                    if (createStorageError) throw createStorageError;
+                },
+            },
+            getConfiguration(section) {
+                if (section === 'msync.telemetry') return { get: (key, fallback) => telemetry[key] ?? fallback };
+                assert.equal(section, 'msync');
+                return { get: (key, fallback) => {
+                    assert.equal(key, 'serverPath');
+                    assert.equal(fallback, 'msync');
+                    return command;
+                } };
+            },
+        },
+        window: { showWarningMessage(message) { warnings.push(message); return Promise.resolve(); }, registerCustomEditorProvider() { return { dispose() {} }; }, showErrorMessage: (message, action) => {
             errors.push(message);
             assert.equal(action, 'Open Settings');
             return Promise.resolve(selectedAction);
@@ -78,14 +93,15 @@ function harness(command = 'msync', startError) {
     };
     let extension;
     try { extension = require(filename); } finally { Module._load = originalLoad; }
-    return { extension, errors, created, providers, commands, executed, configurationListeners,
+    return { extension, errors, warnings, created, providers, commands, executed, configurationListeners, storageCreates, telemetry,
         setCommand(value) { command = value; },
         selectSettingsAction() { selectedAction = 'Open Settings'; },
-        context: { subscriptions: [] } };
+        failStorage(error) { createStorageError = error; },
+        context: { subscriptions: [], globalStorageUri: storage } };
 }
 
 test('activation launches stdio client without shell and registers user/library documents', async () => {
-    const { extension, errors, created, context } = harness('/path with spaces/msync');
+    const { extension, errors, created, context, storageCreates } = harness('/path with spaces/msync');
     await extension.activate(context);
     assert.equal(created.length, 1);
     const client = created[0];
@@ -97,9 +113,12 @@ test('activation launches stdio client without shell and registers user/library 
         { scheme: 'msync-stdlib', language: 'msync' },
     ]);
     assert.deepEqual(client.args[3].initializationOptions, { sshPrompt: true });
+    assert.equal(client.args[3].middleware, undefined);
     assert.equal(context.subscriptions.length, 12);
     assert.equal(client.started, 1);
     assert.equal(errors.length, 0);
+    assert.deepEqual(client.notifications, []);
+    assert.deepEqual(storageCreates, []);
     await extension.deactivate();
     await extension.deactivate();
     assert.equal(client.stopped, 1);
@@ -187,4 +206,87 @@ test('startup error settings action and corrected configuration recover without 
     assert.equal(h.created.length, 1);
     assert.equal(h.created[0].started, 1);
     await h.extension.deactivate();
+});
+
+test('explicit telemetry opt-in uses the same stdio server and times startup and library requests', async () => {
+    const h = harness();
+    h.telemetry.enabled = true;
+    h.telemetry.level = 'diagnostics';
+    await h.extension.activate(h.context);
+    try {
+        const client = h.created[0];
+        assert.deepEqual(h.storageCreates, [h.context.globalStorageUri]);
+        assert.deepEqual(client.args[2].args, ['--language-server', '--telemetry-db',
+            path.join(h.context.globalStorageUri.fsPath, 'editor-telemetry.sqlite'), '--telemetry-level', 'diagnostics']);
+        const text = await h.providers[0].provider.provideTextDocumentContent({ toString: () => 'msync-stdlib:///0.8.0/fs.msync' });
+        assert.equal(text, 'msync/stdlibSource:msync-stdlib:///0.8.0/fs.msync');
+        const { middleware } = client.args[3];
+        const document = {};
+        const position = {};
+        const token = { isCancellationRequested: false };
+        const hover = {};
+        assert.equal(await middleware.provideHover(document, position, token, (...args) => {
+            assert.deepEqual(args, [document, position, token]);
+            return Promise.resolve(hover);
+        }), hover);
+        const context = {};
+        const cancelled = { isCancellationRequested: true };
+        assert.equal(await middleware.provideCompletionItem(document, position, context, cancelled, (...args) => {
+            assert.deepEqual(args, [document, position, context, cancelled]);
+            return Promise.resolve(null);
+        }), null);
+        const failure = new Error('provider failed');
+        await assert.rejects(middleware.provideHover(document, position, token, () => Promise.reject(failure)),
+            error => error === failure);
+        assert.deepEqual(client.notifications.map(value => value.params.operation),
+            ['startup', 'stdlibSource', 'hover', 'completion', 'hover']);
+        assert.deepEqual(client.notifications.map(value => value.params.outcome), ['ok', 'ok', 'ok', 'cancelled', 'error']);
+        for (const { method, params } of client.notifications) {
+            assert.equal(method, 'msync/observeClient');
+            assert.deepEqual(Object.keys(params), ['operation', 'durationNanoseconds', 'outcome']);
+            assert.ok(Number.isSafeInteger(params.durationNanoseconds) && params.durationNanoseconds >= 0);
+        }
+    } finally {
+        await h.extension.deactivate();
+    }
+});
+
+test('telemetry settings restart the client and explicit disable returns to plain argv', async () => {
+    const h = harness();
+    h.telemetry.enabled = true;
+    h.telemetry.database = path.resolve('diagnostics with spaces.sqlite');
+    await h.extension.activate(h.context);
+    try {
+        assert.deepEqual(h.storageCreates, []);
+        assert.deepEqual(h.created[0].args[2].args, ['--language-server', '--telemetry-db',
+            h.telemetry.database, '--telemetry-level', 'phases']);
+        h.telemetry.enabled = false;
+        h.configurationListeners[0]({ affectsConfiguration: name => name === 'msync.telemetry.enabled' });
+        await h.commands.get('msync.restartLanguageServer')();
+        assert.equal(h.created[0].stopped, 1);
+        const client = h.created.at(-1);
+        assert.deepEqual(client.args[2].args, ['--language-server']);
+        await h.providers[0].provider.provideTextDocumentContent({ toString: () => 'msync-stdlib:///0.8.0/ranges.msync' });
+        assert.deepEqual(client.notifications, []);
+    } finally {
+        await h.extension.deactivate();
+    }
+});
+
+test('invalid database settings and unavailable storage do not disable language features', async () => {
+    for (const reason of ['relative path', 'unavailable storage']) {
+        const h = harness();
+        h.telemetry.enabled = true;
+        if (reason === 'relative path') h.telemetry.database = 'relative.sqlite';
+        else h.failStorage(new Error('cannot create storage'));
+        await h.extension.activate(h.context);
+        try {
+            assert.deepEqual(h.created[0].args[2].args, ['--language-server']);
+            assert.equal(h.created[0].started, 1);
+            assert.equal(h.warnings.length, 1);
+            assert.match(h.warnings[0], reason === 'relative path' ? /absolute path/ : /cannot create storage/);
+        } finally {
+            await h.extension.deactivate();
+        }
+    }
 });

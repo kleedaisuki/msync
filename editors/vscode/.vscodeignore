@@ -10,3 +10,4 @@ ssh-prompts.cjs
 artifact-viewer.cjs
 artifact-code.cjs
 artifact-page*.cjs
+observability/**

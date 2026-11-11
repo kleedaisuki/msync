@@ -7,6 +7,8 @@ const path = require('node:path');
 const { Writable } = require('node:stream');
 const { finished } = require('node:stream/promises');
 const { createHash } = require('node:crypto');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
 const { createServer } = require('node:net');
 
 async function loopbackPort() {
@@ -83,7 +85,16 @@ async function main() {
     const artifactOnly = process.env.MSYNC_TEST_ARTIFACT_ONLY === '1';
     const artifactUiOnly = process.env.MSYNC_TEST_ARTIFACT_UI_ONLY === '1';
     const stdlibOnly = process.env.MSYNC_TEST_STDLIB_ONLY === '1';
-    const suite = artifactUiOnly ? 'artifact-ui' : hirOnly ? 'hir' : standardConceptsOnly ? 'standard-concepts' : languageUpgradeOnly ? 'language-upgrade' : stdlibOnly ? 'stdlib' : artifactOnly ? 'artifact' : protocolOnly ? 'protocol' : 'full';
+    const telemetryOnly = process.env.MSYNC_TEST_TELEMETRY_ONLY === '1';
+    if (telemetryOnly) {
+        const workspaceConfig = path.join(directories.workspace, '.vscode');
+        await fs.mkdir(workspaceConfig, { recursive: true });
+        await fs.writeFile(path.join(workspaceConfig, 'settings.json'), JSON.stringify({
+            'msync.telemetry.enabled': true,
+            'msync.telemetry.database': path.join(runRoot, 'workspace telemetry.sqlite'),
+        }));
+    }
+    const suite = telemetryOnly ? 'telemetry' : artifactUiOnly ? 'artifact-ui' : hirOnly ? 'hir' : standardConceptsOnly ? 'standard-concepts' : languageUpgradeOnly ? 'language-upgrade' : stdlibOnly ? 'stdlib' : artifactOnly ? 'artifact' : protocolOnly ? 'protocol' : 'full';
     const debugPort = artifactUiOnly ? await loopbackPort() : undefined;
     const metadata = { serverPath, serverSha256, managedAssemblies, runRoot, suite, startedAt: new Date().toISOString() };
     await fs.writeFile(path.join(runRoot, 'run.json'), JSON.stringify(metadata, null, 2));
@@ -121,6 +132,15 @@ async function main() {
             stdout: tee(process.stdout),
             stderr: tee(process.stderr),
         });
+        if (telemetryOnly) {
+            const python = process.env.MSYNC_TEST_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+            const result = await promisify(execFile)(python, [
+                path.join(__dirname, 'verify-telemetry.py'), path.join(runRoot, 'editor telemetry.sqlite'),
+            ]);
+            const profile = JSON.parse(result.stdout);
+            await fs.writeFile(path.join(runRoot, 'telemetry-results.json'), JSON.stringify(profile, null, 2));
+            console.log(`msync local editor profile: ${result.stdout.trim()}`);
+        }
         await fs.writeFile(path.join(runRoot, 'result.json'), JSON.stringify({ ...metadata, status: 'passed' }, null, 2));
     } catch (error) {
         await fs.writeFile(path.join(runRoot, 'result.json'), JSON.stringify({

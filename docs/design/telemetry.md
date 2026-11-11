@@ -1,5 +1,8 @@
 # Unified local telemetry
 
+See [observability ownership](observability-architecture-v086.md) for the
+compiler, runtime, CLI/LSP, exporter and extension boundaries.
+
 ## Native AOT implementation (0.8)
 
 The C# CLI retains opt-in `--trace FILE`, `--trace -`, `--telemetry-db FILE`,
@@ -10,11 +13,12 @@ explicit diagnostics level instead waits for the writer. Disabled
 execution supplies no runtime observer, compiler trace or profile. The
 uninstrumented interpreter does not test for profile counters per opcode.
 
-Runtime observations describe actual transfer completion/failure, native
-failures, and process lifecycle. The CLI records which stages really ran, with
-an explicit parent span ID and without thread-local ancestry. Runtime effects
-in a standalone command attach to the runtime owner; REPL effects attach to
-the session because a Process can outlive its submission. The root record is
+Compatibility runtime observations describe actual transfer completion/failure,
+native failures, and process lifecycle. The CLI records which stages really
+ran, with an explicit parent span ID. Ordinary runtime effects attach to the
+runtime owner in a standalone command or the session in REPL, because a
+Process can outlive its submission. Diagnostics additionally propagates its
+selected operation ancestry through asynchronous work. The root record is
 held outside the bounded queue and
 written after admitted records drain, so a full queue cannot silently lose the
 command outcome. Root errors retain the exception chain; runtime failure records

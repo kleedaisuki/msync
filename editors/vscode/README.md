@@ -266,6 +266,40 @@ The view renders actual semantic data or optimized bytecode; it does not claim
 to recover discarded source.
 Available source references open only when explicitly selected.
 
+## Local editor telemetry
+
+The extension records nothing by default. To collect a local SQLite profile
+for editor diagnostics, opt in from **User Settings** (or **Remote Settings**
+when the extension runs remotely):
+
+```json
+{
+  "msync.telemetry.enabled": true,
+  "msync.telemetry.level": "phases"
+}
+```
+
+`msync.telemetry.database` optionally selects an absolute path on the host
+running the extension and its language server. The default is
+`editor-telemetry.sqlite` in this extension's VS Code global storage directory.
+These settings are machine-scoped: a workspace cannot turn recording on, and
+the database path is not synchronized. Changes restart the server; disabling
+it stops new recording without deleting the database.
+
+The extension measures server startup and its hover, completion, artifact,
+and standard-library round trips. The language server measures requests
+through their actual reply or cancellation, and phase detail includes
+background document analysis. Both producers record elapsed time from their
+own monotonic clocks. A client round trip includes server time, so it is not
+additive with the server span. The client sends only the operation name,
+duration and outcome on its existing private stdio connection; the native
+server writes the shared msync SQLite schema. There is no network upload or
+additional JavaScript database. This local profiler is independent of VS Code
+product telemetry.
+
+See [VS Code machine settings](https://code.visualstudio.com/api/references/contribution-points#contributes.configuration)
+and [extension storage](https://code.visualstudio.com/api/extension-capabilities/common-capabilities#data-storage).
+
 ## Verification
 
 `npm test` uses the actual `vscode-textmate` engine and Oniguruma WASM. It checks
@@ -293,6 +327,11 @@ function/Scope aliases, inferred semantic roles, useful hovers, 80-column
 formatting and member-access diagnostics with call context. A transfer fixture
 must remain unexecuted throughout. `MSYNC_TEST_PROTOCOL_ONLY=1`
 selects the narrower semantic URI journey, including incomplete edits.
+
+`MSYNC_TEST_TELEMETRY_ONLY=1` exercises local opt-in, restart and opt-out in
+the real extension host, then inspects the SQLite database with Python's
+standard `sqlite3` module. Set `MSYNC_TEST_PYTHON` if the test Python executable
+is not named `python3` (Unix) or `python` (Windows).
 
 `MSYNC_TEST_STANDARD_CONCEPTS_ONLY=1` selects the independent standard-concept
 journey: inline associated binders, embedded definitions, qualified constraints,

@@ -22,8 +22,8 @@ execution works without a recorder. A framed LSP stream never doubles as an
 exporter; only allowlisted editor observations cross that stream as normal
 notifications. The VS Code client measures elapsed round trips on its own
 monotonic clock; a server span measures server work. Compare those durations
-as different observations of the same request, not as timestamps that can
-be subtracted across clocks.
+by operation family and session; the client measurement does not manufacture a
+JSON-RPC request ID. Timestamps from the two clocks cannot be subtracted.
 
 ## Measurement and causal contracts
 

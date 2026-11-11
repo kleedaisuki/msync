@@ -702,3 +702,49 @@ November 9, 2026, with zero build warnings. The selected lexical/member lookup
 check additionally matched all 16 exposed values after the parameter-role
 change. These checks use shared product DLLs and compile only the test project;
 actual protocol and native host journeys remain separate delivery evidence.
+
+## Local editor observability
+
+The VS Code extension owns machine-scoped consent and client-side measurement
+in [its observability adapter](../../editors/vscode/observability/editor-telemetry.cjs).
+The default is off. With explicit user opt-in, the extension starts the same
+language server with an absolute SQLite path on the extension host; default
+storage is its `globalStorageUri`. The editor host never discovers CLI TOML
+telemetry settings. A remote extension host writes on that host, not on the
+desktop. This is local developer recording, not VS Code product telemetry or
+an upload. [VS Code's configuration scopes](https://code.visualstudio.com/api/references/contribution-points#contributes.configuration)
+explain why workspace configuration cannot opt in, and [extension storage](https://code.visualstudio.com/api/extension-capabilities/common-capabilities#data-storage)
+defines the default storage lifetime. The [VS Code telemetry guide](https://code.visualstudio.com/api/extension-guides/telemetry)
+governs sending telemetry to external services; the extension has no such
+sender.
+
+The language-server host opens the existing CLI telemetry session.
+[The LSP observation adapter](../../src/Msync.Cli/LanguageServer/Diagnostics/LanguageServerObservation.cs)
+owns request correlation in the server event loop and closes each request
+observation at its actual framed reply, including delayed, stale, failed and
+cancelled replies. The codec and language services do not know about SQLite.
+Compiler timings cross the existing sink-independent `CompilationTrace`
+contract; editor parsing, source-map reuse, prefix work, full semantic analysis
+and projection keep their own meaningful boundaries. Workers record no source
+text, artifact payload, completion text or credentials. Selected document
+URIs retain useful path identity without URI query or fragment.
+
+| Record | Clock and ownership | Interpretation |
+| --- | --- | --- |
+| `language-server` | Native process session | Startup metrics and session lifetime, not individual editor latency |
+| `lsp.request` | Server receipt, dispatch and actual reply | `lsp.queue_ns`, `lsp.dispatch_to_reply_ns`, and their inclusive `lsp.receive_to_reply_ns`; EOF can cancel a request without a reply |
+| `lsp.analysis` and `editor.*` phase spans | Worker, children of the selected revision's notification / analysis | Queue and analysis intervals can overlap a waiting LSP request; do not sum parent and child durations |
+| `editor.client.*` | VS Code monotonic clock | Startup handshake or round trip for hover, completion, standard-library source and artifact inspection; notification receipt is a server timestamp, **not** the original client end time |
+
+Client observations use the existing [LSP/JSON-RPC transport](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.18/specification/)
+with an allowlisted notification: operation, elapsed nanoseconds and outcome.
+They are not a second database writer or a second network transport. Both the
+server's SQLite and the extension's command output stay separate from framed
+LSP stdout. Client round-trip and server intervals overlap and may come from
+different clocks; never subtract their absolute timestamps.
+
+The focused tests are `tests/Telemetry/editor_protocol.py` against the Native
+CLI (framing, explicit consent, errors, and payload admission) and the VS Code
+`MSYNC_TEST_TELEMETRY_ONLY=1` extension-host suite (real edit/hover/completion,
+artifact and library queries, local SQLite, workspace setting isolation, and
+return to disabled without changing existing data).

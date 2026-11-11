@@ -23,7 +23,7 @@ internal static class Program
         string color = TerminalPresentation.RequestedColor(args);
         try
         {
-            if (args.Contains("--language-server", StringComparer.Ordinal)) return await new LanguageServer(source => Formatter.Format(source)).RunAsync();
+            if (args.Contains("--language-server", StringComparer.Ordinal)) return await LanguageServerHost.RunAsync(args, entered);
             consoleEncoding = ConsoleEncodingScope.Open();
             if (args.Contains("--help", StringComparer.Ordinal) || args.Contains("-h", StringComparer.Ordinal))
             {

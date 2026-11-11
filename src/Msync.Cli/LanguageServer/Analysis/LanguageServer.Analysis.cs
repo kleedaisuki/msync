@@ -1,4 +1,5 @@
 using Msync.Compiler;
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
@@ -8,11 +9,11 @@ namespace Msync.Cli;
 internal sealed partial class LanguageServer
 {
     private abstract record ServerEvent;
-    private sealed record MessageEvent(JsonDocument Message) : ServerEvent;
+    private sealed record MessageEvent(JsonDocument Message, long Received) : ServerEvent;
     private sealed record InputClosed : ServerEvent;
     private sealed record InputError(Exception Error) : ServerEvent;
     private sealed record AnalysisEvent(string Uri, EditorDocument Document, EditorAnalysis Analysis) : ServerEvent;
-    private sealed record AnalysisWork(string Uri, EditorDocument Document, CancellationTokenSource Cancellation);
+    private sealed record AnalysisWork(string Uri, EditorDocument Document, CancellationTokenSource Cancellation, string? Parent, long Queued);
     private sealed record PendingInsight(string Uri, long Generation, JsonNode Id, string Method, JsonElement Parameters);
 
     private readonly Channel<ServerEvent> events = Channel.CreateUnbounded<ServerEvent>(new() { SingleReader = true });
@@ -42,7 +43,7 @@ internal sealed partial class LanguageServer
                     case AuthEvent authentication: HandleAuthentication(authentication); break;
                     case MessageEvent incoming:
                         using (incoming.Message)
-                            if (Dispatch(incoming.Message.RootElement)) return 0;
+                            if (Dispatch(incoming.Message.RootElement, incoming.Received)) return 0;
                         break;
                 }
             }
@@ -50,14 +51,18 @@ internal sealed partial class LanguageServer
         }
         finally
         {
-            StopAnalysis();
-            await analysisWorker;
-            if (completionService is not null) await completionService.DisposeAsync();
-            events.Writer.TryComplete();
-            while (events.Reader.TryRead(out ServerEvent? item))
-                if (item is MessageEvent incoming) incoming.Message.Dispose();
-                else if (item is CompletionEvent completed) completed.Work.Cancellation.Dispose();
-                else if (item is ArtifactEvent artifactDone) artifactDone.Work.Cancellation.Dispose();
+            try
+            {
+                StopAnalysis();
+                await analysisWorker;
+                if (completionService is not null) await completionService.DisposeAsync();
+                events.Writer.TryComplete();
+                while (events.Reader.TryRead(out ServerEvent? item))
+                    if (item is MessageEvent incoming) incoming.Message.Dispose();
+                    else if (item is CompletionEvent completed) completed.Work.Cancellation.Dispose();
+                    else if (item is ArtifactEvent artifactDone) artifactDone.Work.Cancellation.Dispose();
+            }
+            finally { observation?.FinishRequests(); }
         }
     }
 
@@ -66,7 +71,8 @@ internal sealed partial class LanguageServer
         try
         {
             while (transport.Read() is { } message)
-                if (!events.Writer.TryWrite(new MessageEvent(message))) { message.Dispose(); return; }
+                if (!events.Writer.TryWrite(new MessageEvent(message, observation is null ? 0 : Stopwatch.GetTimestamp())))
+                { message.Dispose(); return; }
             events.Writer.TryWrite(new InputClosed());
         }
         catch (Exception error) when (error is IOException or JsonException or FormatException or ArgumentException)
@@ -75,7 +81,7 @@ internal sealed partial class LanguageServer
         }
     }
 
-    private bool Dispatch(JsonElement root)
+    private bool Dispatch(JsonElement root, long received)
     {
         if (!root.TryGetProperty("method", out _))
         {
@@ -91,10 +97,17 @@ internal sealed partial class LanguageServer
         string method = root.TryGetProperty("method", out JsonElement name) ? name.GetString() ?? "" : "";
         JsonNode? id = root.TryGetProperty("id", out JsonElement requestId) ? JsonNode.Parse(requestId.GetRawText()) : null;
         JsonElement parameters = root.TryGetProperty("params", out JsonElement value) ? value : default;
-        if (method == "exit") return true;
-        if (method == "shutdown") StopAnalysis();
+        if (id is null && method == "msync/observeClient")
+        {
+            observation?.ClientMeasurement(parameters);
+            return false;
+        }
+        using var notice = id is null ? observation?.BeginNotification(method, parameters, received) : null;
+        if (id is not null) observation?.BeginRequest(id, method, parameters, received);
         try
         {
+            if (method == "exit") { notice?.Complete(); return true; }
+            if (method == "shutdown") StopAnalysis();
             if (id is not null && method == "msync/artifact")
             {
                 BeginArtifact(id, parameters);
@@ -115,18 +128,26 @@ internal sealed partial class LanguageServer
                 BeginCompletion(id, parameters, completionDocument);
                 return false;
             }
-            if (id is not null) transport.Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id, ["result"] = Handle(method, parameters) });
-            else if (!shuttingDown) Notify(method, parameters);
+            if (id is not null) Reply(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id, ["result"] = Handle(method, parameters) });
+            else if (!shuttingDown) Notify(method, parameters, notice?.Id);
+            notice?.Complete();
         }
         catch (Exception error) when (error is JsonException or KeyNotFoundException or ArgumentException or InvalidOperationException)
         {
-            if (id is not null) transport.Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id.DeepClone(), ["error"] = new JsonObject { ["code"] = -32602, ["message"] = error.Message } });
+            notice?.Complete(false);
+            if (id is not null) Reply(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id.DeepClone(), ["error"] = new JsonObject { ["code"] = -32602, ["message"] = error.Message } });
             else Console.Error.WriteLine($"LSP {method}: {error.Message}");
         }
         return false;
     }
 
-    private void Notify(string method, JsonElement parameters)
+    private void Reply(JsonObject message, string? disposition = null)
+    {
+        transport.Write(message);
+        observation?.Reply(message, disposition);
+    }
+
+    private void Notify(string method, JsonElement parameters, string? parent)
     {
         if (method == "$/cancelRequest")
         {
@@ -136,7 +157,7 @@ internal sealed partial class LanguageServer
             for (int index = pendingInsights.Count - 1; index >= 0; index--)
                 if (pendingInsights[index].Id.ToJsonString() == requested)
                 {
-                    transport.Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = pendingInsights[index].Id, ["error"] = new JsonObject { ["code"] = -32800, ["message"] = "Editor request cancelled." } });
+                    Reply(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = pendingInsights[index].Id, ["error"] = new JsonObject { ["code"] = -32800, ["message"] = "Editor request cancelled." } });
                     pendingInsights.RemoveAt(index);
                 }
             return;
@@ -174,7 +195,7 @@ internal sealed partial class LanguageServer
             if (pendingAnalysis.TryGetValue(uri, out var pending)) pending.Cancellation.Dispose();
             else analysisReady.Writer.TryWrite(uri);
             if (activeAnalysis?.Uri == uri) activeAnalysis.Cancellation.Cancel();
-            pendingAnalysis[uri] = new(uri, current, new());
+            pendingAnalysis[uri] = new(uri, current, new(), parent, observation is null ? 0 : Stopwatch.GetTimestamp());
         }
     }
 
@@ -202,13 +223,17 @@ internal sealed partial class LanguageServer
                 activeAnalysis = work;
             }
             CancellationToken cancellation = work.Cancellation.Token;
+            using var measured = observation?.BeginWork("lsp.analysis", work.Parent, uri, work.Queued, work.Document);
             try
             {
-                EditorAnalysis analysis = work.Document.AnalysisSession!.Analyze(work.Document.Source.Text, cancellation);
+                EditorAnalysis analysis = work.Document.AnalysisSession!.Analyze(work.Document.Source.Text, cancellation, measured?.CompilerTrace);
+                cancellation.ThrowIfCancellationRequested();
+                if (analysis.Diagnostic is { } diagnostic) measured?.SetAttribute("diagnostic.code", diagnostic.Code);
+                measured?.Complete();
                 if (!cancellation.IsCancellationRequested)
                     events.Writer.TryWrite(new AnalysisEvent(uri, work.Document, analysis));
             }
-            catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+            catch (OperationCanceledException error) when (cancellation.IsCancellationRequested) { measured?.Fail(error); }
             finally
             {
                 lock (analysisGate) activeAnalysis = null;
@@ -279,7 +304,7 @@ internal sealed partial class LanguageServer
         CancelArtifacts();
         StopAuthentication();
         foreach (var request in pendingInsights)
-            transport.Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = request.Id, ["result"] = null });
+            Reply(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = request.Id, ["result"] = null }, "shutdown");
         pendingInsights.Clear();
         lock (analysisGate)
         {
@@ -302,8 +327,9 @@ internal sealed partial class LanguageServer
                 BeginCompletion(request.Id, request.Parameters, document);
                 continue;
             }
-            JsonNode? result = document?.Generation == request.Generation ? Handle(request.Method, request.Parameters) : null;
-            transport.Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = request.Id, ["result"] = result });
+            bool current = document?.Generation == request.Generation;
+            JsonNode? result = current ? Handle(request.Method, request.Parameters) : null;
+            Reply(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = request.Id, ["result"] = result }, current ? null : "superseded");
         }
     }
 
