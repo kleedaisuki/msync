@@ -39,6 +39,7 @@ dotnet run --project tests/HirSemanticTyping -c Release -- --range-identity
 dotnet run --project tests/HirSemanticTyping -c Release -- --nested-effects
 dotnet run --project tests/HirSemanticTyping -c Release -- --native-effects
 dotnet run --project tests/HirSemanticTyping -c Release -- --concept-pending
+dotnet run --project tests/HirSemanticTyping -c Release -- --recursive-captures
 ```
 
 Use an isolated artifacts path while other implementation lanes build the shared
@@ -86,3 +87,8 @@ consumers rather than requiring frontend bytecode queries.
 Pending-concept checks distinguish a genuinely unsolved Null-only field from a
 fixed nullable storage domain. They exercise cell aliases, cached source wrappers,
 isolated metadata queries and fresh constructor instances with different carriers.
+
+`--recursive-captures` checks recursive promise convergence while closures escape
+fresh activation cells, without conflating completed summaries across callers.
+It includes skipped-write passthrough, saved earlier closures, nested higher-order
+calls, read-capture changes, `.mhir`/bytecode round trips and persistent sessions.

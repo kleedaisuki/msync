@@ -86,7 +86,7 @@ public sealed partial class Interpreter
                             break;
                         }
                     case OpCode.NativeCall:
-                        if (instruction.Text == "math.pow" && instruction.A == 2
+                        if (instruction.Text == "math.pow"
                             && stack.TryPopNumbers(out double baseNumber, out double exponent))
                             stack.AddNumber(NativeRegistry.Power(baseNumber, exponent));
                         else stack.Add(await InvokeNativeAsync(instruction.Text!, stack.PopArguments(instruction.A), cancellationToken, direct: true));
@@ -111,7 +111,7 @@ public sealed partial class Interpreter
                     case OpCode.MakeLazyRange:
                         {
                             var values = stack.PopMany(instruction.A);
-                            var type = instruction.B > 0 && image.Constants[instruction.B - 1] is TypeValue typed ? typed.Data : TypeRef.Any;
+                            var type = instruction.B == 0 ? TypeRef.Any : ((TypeValue)image.Constants[instruction.B - 1]).Data;
                             stack.Add(new RangeValue(LazyItemsAsync(values, instruction.Text, cancellationToken), type)
                             { RetainedValues = values }); break;
                         }

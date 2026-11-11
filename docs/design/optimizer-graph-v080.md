@@ -220,3 +220,25 @@ record external singleton reads/publication and escaped candidate fields.
 `tests/OptimizationGraph --singletons` checks aliases across calls, fresh
 anonymous objects and exactly-once initialization at O0–O3 through both artifact
 stages.
+
+### Native behavior is a producer-owned contract
+
+`NativeSignatures.Build` publishes complete behavior metadata. Effect and memory
+analyses consume it directly; they no longer maintain unreachable alternatives
+that guess semantics from the function name when metadata is absent. Pure
+lexical filesystem/path operations do not inherit failure effects merely because
+they share a module name with I/O. Their admitted values are manipulated as
+strings and endpoint descriptors, without filesystem observation. Real value
+constraints and operational I/O failures remain separate effects.
+
+Terminal Range callbacks have explicit argument mappings, including invocation
+effects in addition to membership enumeration. Memory summaries apply the
+selected callback and converge across repeated invocations that can redirect
+captured cells; they do not clobber all memory merely because a callback exists.
+See `tests/MemoryEffects` and the actual CLI lexical-effect journey.
+
+This distinction parallels LLVM's separate memory and unwind attributes in
+the [language reference](https://llvm.org/docs/LangRef.html): absence of writes
+alone does not prove absence of failure, and the converse does not imply unknown
+memory mutation. msync uses its own defined language/error semantics rather than
+importing LLVM undefined behavior.

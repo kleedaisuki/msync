@@ -41,12 +41,20 @@ internal sealed class PlanFileSystem(RuntimeContext context, ContextualResources
 
     internal PlanResource Resource(PathValue path, bool subtree = false, bool followLeaf = false)
     {
-        var projectedKey = (path.Connection, Spelling(path));
+        var projectedKey = (Connection: path.Connection, Path: Spelling(path));
         if (projectedFootprints.TryGetValue(projectedKey, out var future)
             && (!followLeaf || Kind(path) != "symlink")) return future with { Subtree = subtree };
         var key = (path.Connection, Spelling(path), followLeaf);
         if (!footprints.TryGetValue(key, out var resource))
         {
+            // Reuse this observation's known nonlink entry, without another metadata query.
+            if (followLeaf && !projected.ContainsKey(projectedKey)
+                && kinds.TryGetValue(projectedKey, out string? kind) && kind is not ("unknown" or "symlink")
+                && footprints.TryGetValue((path.Connection, projectedKey.Path, false), out var entry))
+            {
+                footprints.Add(key, entry);
+                return entry with { Subtree = subtree };
+            }
             string endpoint = path.Connection is { Kind: ConnectionKind.Ssh or ConnectionKind.Wsl } remote
                 ? remote.ToString() : "local";
             string name;
@@ -55,9 +63,10 @@ internal sealed class PlanFileSystem(RuntimeContext context, ContextualResources
                 string local = path.LocalPath(context.WorkingDirectory, context.HomeDirectory)
                     .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
                 if (local.Length == 0) local = Path.GetPathRoot(context.WorkingDirectory)!;
+                // Resolve the parent before collapsing the leaf: link/.. follows the link first.
                 string? parent = Path.GetDirectoryName(local);
                 if (followLeaf || string.IsNullOrEmpty(parent)) name = ResolveLocal(local);
-                else name = Path.Combine(ResolveLocal(parent), Path.GetFileName(local));
+                else name = Path.GetFullPath(Path.Combine(ResolveLocal(parent), Path.GetFileName(local)));
             }
             else
             {
@@ -73,7 +82,12 @@ internal sealed class PlanFileSystem(RuntimeContext context, ContextualResources
                         canonical = ((PathValue)Invoke("fs.weakly_canonical", [path.WithRaw(parent)])).Raw;
                         parents.Add((path.Connection!, parent), canonical);
                     }
-                    name = canonical.TrimEnd('/') + "/" + leaf;
+                    name = leaf switch
+                    {
+                        "." => canonical,
+                        ".." => canonical == "/" ? "/" : RemoteParent(canonical),
+                        _ => canonical.TrimEnd('/') + "/" + leaf
+                    };
                 }
             }
             footprints.Add(key, resource = new(endpoint, name));
@@ -342,7 +356,7 @@ internal sealed class PlanFileSystem(RuntimeContext context, ContextualResources
             foreach (string directory in Directory.EnumerateDirectories(current))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0) continue;
+                if (NativeFileMetadata.IsLink(directory, File.GetAttributes(directory))) continue;
                 yield return Path.GetRelativePath(root, directory);
                 pending.Push(directory);
             }

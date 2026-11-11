@@ -7,10 +7,18 @@ internal static class TailCallOptimization
         var code = function.Instructions;
         if (!code.Select((instruction, index) => (instruction, index)).Any(pair => pair.instruction.Op == OpCode.Call
             && (pair.instruction.B == 0 || pair.instruction.B == functionIndex + 1) && Returns(code, pair.index + 1))) return function;
-        var targets = FunctionInlining.Targets(function, module.Constants, requireKnownCallee: !ClosedFunctions(module));
+        HashSet<int> knownClosures = [];
+        var targets = FunctionInlining.Targets(function, module.Constants, layouts: module.Functions,
+            knownClosures: knownClosures);
+        if (!targets.Any(pair => pair.Value == functionIndex && Returns(code, pair.Key + 1))) return function;
+        // Locally established closure identity and size do not depend on other
+        // functions' captures or on whether unrelated native values can escape.
+        if (targets.Keys.Any(pc => !knownClosures.Contains(pc))
+            && (!ClosedFunctions(module) || ExcessCaptures(module, function.LocalCount)))
+            foreach (int pc in targets.Keys.Where(pc => !knownClosures.Contains(pc)).ToArray()) targets.Remove(pc);
         var tailCalls = targets.Where(pair => pair.Value == functionIndex && Returns(code, pair.Key + 1))
             .Select(pair => pair.Key).ToHashSet();
-        if (tailCalls.Count == 0 || OwnsWork(function, targets, functionIndex) || ExcessCaptures(module, function.LocalCount)) return function;
+        if (tailCalls.Count == 0 || OwnsWork(function, targets, functionIndex)) return function;
 
         var closure = function.LocalCount;
         var arguments = closure + 1;

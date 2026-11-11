@@ -26,6 +26,8 @@ void Has(object summary, string category, params string[] expected)
 FunctionCode Function(string name, int parameters, int locals, TypeRef result, Instruction[] code, int captures = 0, TypeRef[]? types = null) =>
     new(name, parameters, locals, code, result, captures, types);
 Module Program(params FunctionCode[] functions) => new([], functions, OptimizationLevel: 0);
+Check(NativeSignatures.All.All(signature => signature.Behavior.HasValue),
+    "The native registry must publish complete behavior before consumers analyze it");
 var get = Function("get", 1, 1, TypeRef.Number, [new(OpCode.LoadLocal, 0), new(OpCode.GetMember, Text: "x"), new(OpCode.Return)], types: [TypeRef.Scope]);
 var set = Function("set", 1, 1, TypeRef.Null, [new(OpCode.LoadLocal, 0), new(OpCode.True), new(OpCode.SetMember, Text: "y"), new(OpCode.Return)], types: [TypeRef.Scope]);
 object summary = Summaries(Program(get))[0];
@@ -132,8 +134,8 @@ Check(Flag(summary, "ReturnsCallbackFreeRange") && !Flag(summary, "HasDeferredIn
 
 foreach ((string name, string source, bool unknownWrite, bool latent) in new[]
 {
-    ("lazy-creation", "fn make(object) { $std::ranges::transform([1], fn(item) { object::x = item; item }) }; make(scope { x: 0 });", false, true),
-    ("callback-execution", "fn change(object) { $std::ranges::any([true], fn(item) { object::x = item; item }) }; change(scope { x: false });", true, false)
+    ("lazy-creation", "fn make(object) { $std::ranges::transform([1], fn(item) { object::x = item; item }) }; let object = scope { x: 0 }; make(object); object::x", false, true),
+    ("callback-execution", "fn change(object) { $std::ranges::any([true], fn(item) { object::x = item; item }) }; let object = scope { x: false }; change(object); object::x", false, false)
 })
 {
     Module module = SourceCompiler.Compile(source, name, 0);
@@ -148,9 +150,10 @@ foreach ((string name, string source, bool unknownWrite, bool latent) in new[]
     {
         Module optimized = Optimizer.Optimize(module, level);
         Artifact.Validate(optimized);
-        await Interpreter.ExecuteAsync(optimized);
+        Value expected = latent ? new NumberValue(0) : Value.True;
+        Check(await Interpreter.ExecuteAsync(optimized) == expected, $"{name} O{level}: observable field result changed");
         using MemoryStream bytes = new(); Artifact.Write(optimized, bytes); bytes.Position = 0;
-        await Interpreter.ExecuteAsync(Artifact.Read(bytes));
+        Check(await Interpreter.ExecuteAsync(Artifact.Read(bytes)) == expected, $"{name} O{level}: artifact field result changed");
     }
 }
 var eager = Function("eager", 1, 2, TypeRef.Bool,
@@ -171,6 +174,29 @@ using (MemoryStream bytes = new())
     Artifact.Write(eagerModule, bytes); bytes.Position = 0;
     Check(await Interpreter.ExecuteAsync(Artifact.Read(bytes)) is BoolValue { Data: true }, "Known eager callback binary differs");
 }
+var redirectingPredicate = Function("redirecting-predicate", 1, 3, TypeRef.Bool,
+    [new(OpCode.LoadLocal, 0), new(OpCode.True), new(OpCode.SetMember, Text: "x"), new(OpCode.Pop),
+     new(OpCode.LoadLocal, 1), new(OpCode.StoreLocal, 0), new(OpCode.False), new(OpCode.Return)], captures: 2, types: [TypeRef.Bool]);
+var repeated = Function("repeated", 2, 2, TypeRef.Bool,
+    [new(OpCode.True), new(OpCode.False), new(OpCode.MakeRange, 2), new(OpCode.LoadCell, 0),
+     new(OpCode.LoadCell, 1), new(OpCode.MakeClosure, 1, 2), new(OpCode.NativeCall, 2, Text: "ranges.any"), new(OpCode.Return)],
+    types: [TypeRef.Scope, TypeRef.Scope]);
+summary = Summaries(Program(repeated, redirectingPredicate))[0];
+Check(Flag(summary, "UnknownWrites") || Accesses(summary, "Writes").Contains("Parameter[1]::x"),
+    "Repeated predicate ignored the pointee selected by a previous invocation");
+var emptyTerminal = repeated with { Instructions = [new(OpCode.MakeRange, 0), .. repeated.Instructions.Skip(3)] };
+summary = Summaries(Program(emptyTerminal, redirectingPredicate))[0];
+Has(summary, "Writes");
+Check(!Flag(summary, "UnknownWrites"), "Empty terminal invoked its predicate");
+const string redirectedSource = "fn change(first, second) { let selected = first; $std::ranges::any([false, false, false], fn(item) { selected::x = true; selected = second; item }); }; let first = scope { x: false }; let second = scope { x: false }; change(first, second); second::x";
+Module redirected = SourceCompiler.Compile(redirectedSource, "repeated-callback-rebinding", 0);
+foreach (int level in new[] { 0, 2, 3 })
+{
+    Module optimized = Optimizer.Optimize(redirected, level);
+    Check(await Interpreter.ExecuteAsync(optimized) == Value.True, $"O{level} repeated callback lost later alias writes");
+    using MemoryStream bytes = new(); Artifact.Write(optimized, bytes); bytes.Position = 0;
+    Check(await Interpreter.ExecuteAsync(Artifact.Read(bytes)) == Value.True, $"O{level} repeated callback artifact lost later alias writes");
+}
 const int chainLength = 1500;
 var chain = Enumerable.Range(0, chainLength).Select(index => index + 1 == chainLength ? get
     : Function("relay" + index, 1, 1, TypeRef.Number,
@@ -188,9 +214,16 @@ try
     const string source = "fn write(other) { other::flag = true; exists ./marker; }; let left = scope { file: ./input }; let other = scope { flag: false }; let before = left::file; if exists ./choose { write(other); } else { write(other); }; let after = left::file; after -> ./result; left";
     Module raw = SourceCompiler.Compile(source, "memory-field-io", 0);
     var footprints = Summaries(raw);
-    int writer = raw.Functions.Select((function, index) => (function, index)).Single(pair => pair.function.Name == "write").index;
-    Has(footprints[writer], "Writes", "Parameter[0]::flag");
-    Check(!Flag(footprints[writer], "UnknownWrites"), "Real filesystem read globally clobbered distinct fields");
+    int[] writers = raw.Functions.SelectMany(function => function.Instructions)
+        .Where(instruction => instruction.Op == OpCode.Call && instruction.B > 0)
+        .Select(instruction => instruction.B - 1).Distinct()
+        .Where(index => raw.Functions[index].Name == "write").ToArray();
+    Check(writers.Length != 0, "Real field-write calls were not retained");
+    foreach (int writer in writers)
+    {
+        Has(footprints[writer], "Writes", "Parameter[0]::flag");
+        Check(!Flag(footprints[writer], "UnknownWrites"), "Real filesystem read globally clobbered distinct fields");
+    }
     foreach (int level in new[] { 0, 2, 3 })
     {
         Module optimized = Optimizer.Optimize(raw, level);

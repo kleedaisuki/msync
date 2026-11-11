@@ -11,14 +11,14 @@ internal static class TransferOverlap
     {
         if (!Path.Exists(target)) return false;
         FileAttributes attributes = File.GetAttributes(source);
-        if ((attributes & FileAttributes.ReparsePoint) != 0 || (File.GetAttributes(target) & FileAttributes.ReparsePoint) != 0) return false;
+        if (NativeFileMetadata.IsLink(source, attributes) || NativeFileMetadata.IsLink(target, File.GetAttributes(target))) return false;
         return NativeFileIdentity.Equivalent(source, target);
     }
 
     internal static bool NeedsSnapshot(string source, string target, bool replace)
     {
         FileAttributes attributes = File.GetAttributes(source);
-        if ((attributes & FileAttributes.Directory) == 0 || (attributes & FileAttributes.ReparsePoint) != 0) return false;
+        if ((attributes & FileAttributes.Directory) == 0 || NativeFileMetadata.IsLink(source, attributes)) return false;
         return Within(source, target) || replace && Within(target, source);
     }
 
@@ -122,9 +122,10 @@ internal static class TransferOverlap
         FileMetadata metadata = NativeFileMetadata.Capture(source);
         FileAttributes attributes = metadata.Attributes;
         bool directory = (attributes & FileAttributes.Directory) != 0;
-        bool link = (attributes & FileAttributes.ReparsePoint) != 0;
+        bool link = metadata.IsLink;
         FileSystemInfo info = directory ? new DirectoryInfo(source) : new FileInfo(source);
-        nodes.Add(new(source, relative, attributes, metadata.Modified, metadata.Mode, link ? info.LinkTarget : null));
+        nodes.Add(new(source, relative, attributes, metadata.Modified, metadata.Mode,
+            link ? info.LinkTarget ?? throw new IOException($"Cannot read symbolic link '{source}'.") : null));
         if (!directory || link) return;
         foreach (string child in Directory.EnumerateFileSystemEntries(source).Select(path =>
         {

@@ -11,7 +11,7 @@ internal sealed partial class SemanticAnalyzer
         InstanceKey(id, arguments, captures, caller, readOnlyInput: true);
 
     private string InstanceKey(HirTemplateId id, IReadOnlyList<SemanticValue> arguments,
-        IReadOnlyList<SemanticValue> captures, SemanticContext caller, bool readOnlyInput)
+        IReadOnlyList<SemanticValue> captures, SemanticContext caller, bool readOnlyInput, bool recursive = false)
     {
         StringBuilder key = new();
         key.Append(id.Value).Append(caller.DeferredReads ? 'd' : 'i').Append(':');
@@ -23,18 +23,18 @@ internal sealed partial class SemanticAnalyzer
             return key.ToString();
         }
         int prefix = key.Length;
-        if (readOnlyInput && AppendInputKey(key, arguments, captures, caller, new(readOnlyInput: true)))
+        if (readOnlyInput && AppendInputKey(key, id, arguments, captures, caller, new(readOnlyInput: true, recursive: recursive)))
             return key.ToString();
         key.Length = prefix;
         SemanticInputSchema schema = CodeSchema(arguments, captures, caller);
-        AppendInputKey(key, schema.Arguments, schema.Captures, schema.Context, new());
+        AppendInputKey(key, id, schema.Arguments, schema.Captures, schema.Context, new(recursive: recursive));
         return key.ToString();
 
         void AppendScalarKey(SemanticValue value) => key.Append(value.Type.Value).Append('T')
             .Append(value.DenotedType?.Value ?? -1).Append(';');
     }
 
-    private bool AppendInputKey(StringBuilder key, IReadOnlyList<SemanticValue> arguments,
+    private bool AppendInputKey(StringBuilder key, HirTemplateId template, IReadOnlyList<SemanticValue> arguments,
         IReadOnlyList<SemanticValue> captures, SemanticContext context, KeyProvenance provenance)
     {
         HashSet<SemanticValue> active = new(ReferenceEqualityComparer.Instance);
@@ -46,10 +46,42 @@ internal sealed partial class SemanticAnalyzer
         key.Append('|');
         for (int index = 0; index < captures.Count && provenance.Supported; index++)
         {
-            AppendValueKey(key, captures[index], context, active, provenance);
+            if (!provenance.Recursive || ReadsCapture(template, index)) AppendValueKey(key, captures[index], context, active, provenance);
+            else key.Append(captures[index].Type.Value);
             key.Append(';');
         }
         return provenance.Supported;
+    }
+
+    private readonly Dictionary<HirTemplateId, HashSet<HirLocationId>> captureReads = [];
+
+    private bool ReadsCapture(HirTemplateId template, int index)
+    {
+        if (!captureReads.TryGetValue(template, out var reads))
+        {
+            reads = [];
+            HashSet<HirTemplateId> visited = [];
+            VisitTemplate(template);
+            captureReads.Add(template, reads);
+
+            void VisitTemplate(HirTemplateId current)
+            {
+                if (visited.Add(current)) Visit(hir.Templates[current.Value].Body);
+            }
+
+            void Visit(HirNodeId id)
+            {
+                var node = program.Node(id);
+                if (node.Kind is HirKind.ReadLocation or HirKind.ReadStorage)
+                    reads.Add(program.Original(new(node.Data)));
+                if (node.Kind == HirKind.TemplateClosure)
+                    VisitTemplate(hir.TemplateClosures[node.Data].Template);
+                if (node.Kind == HirKind.Match)
+                    foreach (var arm in hir.Matches[node.Data].Arms) Visit(arm.Value);
+                foreach (var child in program.Children(id)) Visit(child);
+            }
+        }
+        return reads.Contains(program.Original(hir.Templates[template.Value].Captures[index].Target));
     }
 
     private static bool IsScalarSchema(SemanticValue value) => value.Scope is null
@@ -137,8 +169,9 @@ internal sealed partial class SemanticAnalyzer
         {
             key.Append('F').Append(callable.NativeName ?? callable.Template?.Value.ToString()).Append('(');
             if (!callable.Captures.IsDefault)
-                foreach (var capture in callable.Captures)
+                for (int index = 0; index < callable.Captures.Length; index++)
                 {
+                    var capture = callable.Captures[index];
                     if (provenance.ReadOnlyInput && (capture.Mode != HirCaptureMode.Location || context is null
                         || StorageOwner(capture.Source, context) != capture.Source || !context.Values.ContainsKey(capture.Source)))
                     {
@@ -146,6 +179,11 @@ internal sealed partial class SemanticAnalyzer
                         return;
                     }
                     key.Append('C').Append(provenance.Location(capture.Source));
+                    if (provenance.Recursive && callable.Template is { } template && !ReadsCapture(template, index))
+                    {
+                        key.Append(':').Append(capture.Value.Type.Value);
+                        continue;
+                    }
                     if (context is not null && context.Values.TryGetValue(capture.Source, out var captured))
                     {
                         if (provenance.DefineLocation(capture.Source)) AppendValueKey(key, captured, context, active, provenance);
@@ -197,9 +235,10 @@ internal sealed partial class SemanticAnalyzer
     // Canonical alias partitions contain no allocation identities: two unrelated
     // calls with the same alias topology share code. Aliased and disjoint inputs
     // cannot share flow proofs after writes to nullable fields or captured cells.
-    private sealed class KeyProvenance(bool readOnlyInput = false)
+    private sealed class KeyProvenance(bool readOnlyInput = false, bool recursive = false)
     {
         public bool ReadOnlyInput { get; } = readOnlyInput;
+        public bool Recursive { get; } = recursive;
         public bool Supported { get; set; } = true;
         private Dictionary<int, int>? regions;
         private Dictionary<HirLocationId, int>? locations;

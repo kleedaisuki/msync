@@ -19,8 +19,9 @@ family replacement and can invoke the previous body with a new closure's
 capture layout.
 
 The generated dependency representation establishes these as reads; ordinary
-write-only lexical captures still omit their old callable identity to preserve
-convergence for recursive stores. This does not merge detached namespace aliases
+write-only lexical captures omit their old callable identity only when matching
+an active recursive promise. Completed summary cache keys retain the full domain
+so a conditional store can preserve a later caller's incoming callable. This does not merge detached namespace aliases
 or reload a module. `tests/StdlibLoading --captured-modules` checks warm calls
 before and after replacement, retained aliases, callee evaluation before a
 mutating argument, nested closures and lexical `std` shadowing. Its 81 focused
@@ -178,3 +179,45 @@ replacing a closure's environment from a root object or counting its fields.
 This normalization never merges by-value captures or distinct parameter/factory
 cells merely because their function template or structural type is equal. Code
 sharing and closure-environment identity remain separate contracts.
+
+## Recursive closure stores and active promises (2026-11-11)
+
+A recursive body can store a closure over a fresh local into an outer location
+without reading that location. For example, `walk(n)` saves `fn { snapshot }`
+when `n == 3` and then recurses. Its incoming callable domain grows with every
+abstract activation if each saved location creates a new specialization. This
+was a compiler-time allocation loop, not VM recursion: the O0 reproducer grew
+past 1 GB while repeatedly instantiating and freezing closure summaries.
+
+The instance cache now separates two contracts:
+
+* Completed instances use the existing full semantic input key, including
+  callable environments and alias topology.
+* Active recursive promises use a demand-projected key. A location capture's
+  old callable domain is irrelevant when its template never reads that
+  declaration. Reads are identified from bound HIR declaration identities,
+  including nested closure bodies, not source spellings. Argument shapes,
+  actually read captures and nested callable identities remain significant.
+
+The projected key lives only while that body is being analyzed. It must not
+become a permanent cache alias: a later call that takes the no-store branch
+must preserve its own incoming callable. The regression changes that incoming
+callable to a third template between two calls; permanent key projection would
+compile a dispatch table missing the actual runtime target.
+
+Two associated provenance fixes are necessary after closing the recursive edge.
+Control-flow joins retain declaration mappings for newly projected escaping
+locations. Future callable enrichment recognizes an uninstantiated generic
+capture recipe already represented by a concrete capture in the current domain;
+it does not add an unrelated `Any`-typed phantom capture. Existing concrete
+closure identities remain distinct, so saved closures continue to reference their
+own activation's cells.
+
+Validation: `tests/HirSemanticTyping --recursive-captures` passes 24 journeys
+across O0/O2/O3, independent `.mhir` and bytecode round trips, and persistent
+sessions. Cases cover the original recursion, retained earlier snapshots, a
+skipped store, nonrecursive conditional writes, the third-template passthrough
+counterexample, nested higher-order calls, and a changed read capture.
+`tests/HirSessionDispatch --factories-only` passes 15 source-session contracts.
+The standalone O0 reproducer compiles to eight functions without unbounded
+specialization.

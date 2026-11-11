@@ -26,3 +26,8 @@ Capture-count bounds also preserve the old direct-specialization behavior: an
 actual closure larger than the target frame raises its original frame-copy
 error rather than becoming a tail loop. The test constructs and validates that
 artifact and compares its O0, isolated-pass and integrated O3 failures.
+
+Known call-site closures establish identity and size locally. Unrelated large
+closures or native values elsewhere in the image do not veto those tail sites.
+Only unresolved callees request the closed-module proof. A serialized
+100,000-step loop with both unrelated closure kinds checks this distinction.

@@ -153,6 +153,7 @@ internal static class MemoryEffects
         private readonly HashSet<int> starts = [0];
         private readonly Dictionary<int, string[]> allocationFields = [];
         private int instructionPosition;
+        private long invalidationVersion;
 
         internal FunctionMemoryEffects Run()
         {
@@ -242,8 +243,15 @@ internal static class MemoryEffects
             {
                 if (cell.External) writes.Add(new(new(MemoryRootKind.Capture, cell.Slot)));
                 if (cell.External || state.EscapedCells.Contains(cell)) Escape(state, value, []);
-                state.Cells[cell] = value;
+                SetCell(state, cell, value);
             }
+        }
+
+        private void SetCell(State state, Cell cell, ValueInfo value)
+        {
+            if (state.Cells.TryGetValue(cell, out var previous) && ValueSame(previous, value)) return;
+            state.Cells[cell] = value;
+            invalidationVersion++;
         }
 
         private void Transfer(State state, Instruction instruction, int pc)
@@ -383,7 +391,11 @@ internal static class MemoryEffects
                 if (External(field)) { writes.Add(field); Escape(state, value, []); }
                 if (state.Fields.TryGetValue(field, out var previous) && previous.UnknownCell) { unknownWrites = true; Invalidate(state); }
                 if (previous is not null && previous.Cells.Length > 0) StoreCells(state, previous, value);
-                else state.Fields[field] = value;
+                else
+                {
+                    if (!ValueSame(FieldValue(state, field), value)) invalidationVersion++;
+                    state.Fields[field] = value;
+                }
             }
         }
 
@@ -444,7 +456,7 @@ internal static class MemoryEffects
                     foreach (var cell in mapped.Cells)
                     {
                         if (cell.External) output.Add(new(new(MemoryRootKind.Capture, cell.Slot)));
-                        if (write) state.Cells[cell] = ValueInfo.Top;
+                        if (write) SetCell(state, cell, ValueInfo.Top);
                     }
                     continue;
                 }
@@ -485,12 +497,12 @@ internal static class MemoryEffects
         private void Clobber(State state, MemoryAccess location, HashSet<MemoryAccess> visited)
         {
             if (!visited.Add(location)) return;
-            state.Clobbers.Add(location);
+            if (state.Clobbers.Add(location)) invalidationVersion++;
             if (!location.Descendants)
             {
                 if (state.Fields.TryGetValue(location, out var value) && value.Cells.Length > 0)
                     StoreCells(state, value, ValueInfo.Top);
-                else state.Fields.Remove(location);
+                else if (state.Fields.Remove(location)) invalidationVersion++;
                 return;
             }
             foreach (var field in state.Fields.Keys.Where(location.PrefixOf).ToArray())
@@ -498,7 +510,7 @@ internal static class MemoryEffects
                 var value = state.Fields[field];
                 foreach (var child in Dereference(state, value).Origins) Clobber(state, child.Subtree(), visited);
                 if (value.Cells.Length > 0) StoreCells(state, value, ValueInfo.Top);
-                else state.Fields.Remove(field);
+                else if (state.Fields.Remove(field)) invalidationVersion++;
             }
         }
 
@@ -506,49 +518,47 @@ internal static class MemoryEffects
         {
             if (!NativeSignatures.TryGet(name, out var signature)) { Unknown(state, arguments); return ValueInfo.Top; }
             if (signature.ResultRule == NativeResultRule.CastTarget && arguments.Length > 0) return arguments[0];
-            if (signature.Behavior is { } behavior)
+            NativeBehavior behavior = signature.Behavior.GetValueOrDefault();
+            if ((behavior & NativeBehavior.LocalMemory) != 0)
+                return IndexedStorage(state, name, signature, arguments);
+            if ((behavior & NativeBehavior.Deferred) != 0)
             {
-                if ((behavior & NativeBehavior.LocalMemory) != 0)
-                    return IndexedStorage(state, name, signature, arguments);
-                if ((behavior & NativeBehavior.Deferred) != 0)
-                {
-                    foreach (var argument in arguments) Escape(state, argument, []);
-                    deferred = true;
-                    return new([], [], [], Deferred: true);
-                }
-                if ((behavior & NativeBehavior.Enumerates) != 0)
-                    for (var index = 0; index < arguments.Length && index < signature.Parameters.Count; index++)
-                        if ((signature.Parameters[index].Kind & TypeKind.Range) != 0 && MayEnumerate(arguments[index]))
-                            Enumerate(state, arguments[index]);
-                if ((behavior & NativeBehavior.Invokes) != 0) Unknown(state, arguments);
-                if (signature.ResultRule == NativeResultRule.RangeItem && arguments.Length > 0)
-                    return RangeContents(state, arguments[0]);
-                return signature.ResultRule == NativeResultRule.FirstArgument && arguments.Length > 0 ? arguments[0]
-                    : signature.Result.Kind == TypeKind.Range ? new([], [], [], CallbackFreeRange: true) : ValueInfo.Empty;
-            }
-            if (name.StartsWith("ranges.", StringComparison.Ordinal))
-            {
-                if ((InstructionEffects.NativeEffects(name) & InstructionEffect.Invoke) != 0)
-                {
-                    if (arguments.Length > 0 && MayEnumerate(arguments[0])) Enumerate(state, arguments[0]);
-                    if (arguments.Length > 1 && signature.Parameters.LastOrDefault()?.Kind == TypeKind.Function
-                        && arguments[0].Elements is not { Length: 0 })
-                    {
-                        var element = arguments[0].Elements?.Aggregate(ValueInfo.Empty, Union) ?? ValueInfo.Top;
-                        Call(state, arguments[^1], [element], new(OpCode.Call, 1));
-                    }
-                    return ValueInfo.Top;
-                }
                 foreach (var argument in arguments) Escape(state, argument, []);
-                if (name is "ranges.of" or "ranges.single") return new([], [], [], Elements: arguments, CallbackFreeRange: true);
-                if (arguments.Length > 0 && arguments[0].CallbackFreeRange && !signature.Parameters.Any(type => type.Kind == TypeKind.Function))
-                    return arguments[0];
-                deferred = true; return new([], [], [], Deferred: true);
+                deferred = true;
+                return new([], [], [], Deferred: true);
             }
-            return signature.Result.Kind == TypeKind.Range ? new([], [], [], CallbackFreeRange: true) : ValueInfo.Empty;
+            if ((behavior & NativeBehavior.Enumerates) != 0)
+                for (var index = 0; index < arguments.Length && index < signature.Parameters.Count; index++)
+                    if ((signature.Parameters[index].Kind & TypeKind.Range) != 0 && MayEnumerate(arguments[index]))
+                        Enumerate(state, arguments[index]);
+            if (signature.ElementCallback is { } callback)
+            {
+                var source = arguments[callback.RangeArgument];
+                if (source.Elements is not { Length: 0 })
+                    InvokeElements(state, arguments[callback.FunctionArgument], source);
+            }
+            else if ((behavior & NativeBehavior.Invokes) != 0) Unknown(state, arguments);
+            if (signature.ResultRule == NativeResultRule.RangeItem && arguments.Length > 0)
+                return RangeContents(state, arguments[0]);
+            return signature.ResultRule == NativeResultRule.FirstArgument && arguments.Length > 0 ? arguments[0]
+                : signature.Result.Kind == TypeKind.Range ? new([], [], [], CallbackFreeRange: true) : ValueInfo.Empty;
         }
 
         private const string IndexedContents = "<indexed-items>";
+
+        private void InvokeElements(State state, ValueInfo callback, ValueInfo source)
+        {
+            // A callback can redirect captured locations between elements. Its
+            // summary invalidates writes, so remap until those invalidations
+            // stabilize rather than treating the terminal as a single call.
+            long previous;
+            do
+            {
+                previous = invalidationVersion;
+                Call(state, callback, [RangeContents(state, source)], new(OpCode.Call, 1));
+            }
+            while (previous != invalidationVersion);
+        }
 
         private ValueInfo RangeContents(State state, ValueInfo value) => value.Elements is { } elements
             ? elements.Aggregate(ValueInfo.Empty, Union) : ReadField(state, value, IndexedContents);
@@ -639,9 +649,10 @@ internal static class MemoryEffects
             foreach (var value in values) Escape(state, value, []);
             Invalidate(state);
         }
-        private static void Invalidate(State state)
+        private void Invalidate(State state)
         {
-            foreach (var cell in state.Cells.Keys.Where(cell => cell.External).ToArray()) state.Cells[cell] = ValueInfo.Top;
+            foreach (var cell in state.Cells.Keys.Where(cell => cell.External).ToArray()) SetCell(state, cell, ValueInfo.Top);
+            if (!state.AllFieldsUnknown || state.Fields.Count != 0) invalidationVersion++;
             state.AllFieldsUnknown = true;
             state.Fields.Clear();
         }

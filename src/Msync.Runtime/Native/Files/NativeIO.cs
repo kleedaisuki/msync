@@ -72,7 +72,7 @@ public static partial class NativeRegistry
         try { attributes = File.GetAttributes(local); }
         catch (FileNotFoundException) { return local; }
         catch (DirectoryNotFoundException) { return local; }
-        return (attributes & FileAttributes.ReparsePoint) != 0
+        return NativeFileMetadata.IsLink(local, attributes)
             ? File.ResolveLinkTarget(local, returnFinalTarget: true)?.FullName ?? local : local;
     }
 

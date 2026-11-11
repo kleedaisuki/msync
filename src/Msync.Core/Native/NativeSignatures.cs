@@ -18,13 +18,18 @@ public static partial class NativeSignatures
         void Add(string group, string names, TypeRef output, NativeEffect effect, params TypeRef[] inputs)
         {
             foreach (string name in names.Split(' ', StringSplitOptions.RemoveEmptyEntries))
-                result.Add($"{group}.{name}", new($"{group}.{name}", inputs, output, effect));
+                result.Add($"{group}.{name}", new($"{group}.{name}", inputs, output, effect,
+                    Behavior: effect == NativeEffect.Pure && group is "fs" or "path" ? NativeBehavior.None : null));
         }
         void Range(string names, TypeRef output, NativeResultRule rule, params TypeRef[] inputs)
         {
             foreach (string name in names.Split(' ', StringSplitOptions.RemoveEmptyEntries))
                 result.Add($"ranges.{name}", new($"ranges.{name}", inputs, output, ResultRule: rule,
-                    Behavior: name is "identity" or "all" ? NativeBehavior.Deferred | NativeBehavior.PreservesIdentity : null));
+                    Behavior: name is "identity" or "all" ? NativeBehavior.Deferred | NativeBehavior.PreservesIdentity : null)
+                {
+                    ElementCallback = output.Kind != TypeKind.Range && inputs.Length == 2 && inputs[1] == TypeRef.Function
+                        ? new(1, 0) : null
+                });
         }
         Add("fs", "exists is_regular_file is_directory is_symlink is_block_file is_character_file is_fifo is_socket is_other is_empty is_readonly", TypeRef.Bool, NativeEffect.Read, path);
         Add("fs", "status symlink_status", TypeRef.String, NativeEffect.Read, path);
@@ -96,6 +101,7 @@ public static partial class NativeSignatures
             {
                 behavior = signature.Result.WithoutNull.Kind == TypeKind.Range ? NativeBehavior.Deferred
                     : NativeBehavior.Enumerates | NativeBehavior.MayFail;
+                if (signature.ElementCallback is not null) behavior |= NativeBehavior.Invokes;
                 if (name is "ranges.take" or "ranges.drop" or "ranges.stride" or "ranges.step") behavior |= NativeBehavior.MayFail;
             }
             else if (name.StartsWith("process.", StringComparison.Ordinal))

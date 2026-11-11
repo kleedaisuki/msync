@@ -24,7 +24,7 @@ public static partial class TransferEngine
         }
         if (item.Mode == TransferDestinationMode.Replace) TransferFiles.RemoveNode(target);
         else if (item.Mode == TransferDestinationMode.Exact && Directory.Exists(target)
-            && (File.GetAttributes(target) & FileAttributes.ReparsePoint) == 0)
+            && !NativeFileMetadata.IsLink(target, File.GetAttributes(target)))
             throw new IOException($"Exact destination '{target}' is an existing directory; append '/' for container insertion or '/.' for replacement.");
         Directory.CreateDirectory(target);
     }
@@ -93,7 +93,7 @@ public static partial class TransferEngine
             string[] fields = data.Split('\0');
             string fractional = fields[2][(fields[2].IndexOf('.') + 1)..].Split(' ')[0];
             metadata = new(FileAttributes.Directory, 0, (UnixFileMode)Convert.ToInt32(fields[0], 8),
-                new(long.Parse(fields[1], CultureInfo.InvariantCulture), long.Parse(fractional, CultureInfo.InvariantCulture)));
+                new(long.Parse(fields[1], CultureInfo.InvariantCulture), long.Parse(fractional, CultureInfo.InvariantCulture)), false);
         }
         var targetConnection = Remote(item.Destination);
         if (targetConnection is null) ApplyDirectoryAction(item, metadata, context);

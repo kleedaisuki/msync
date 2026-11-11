@@ -2,6 +2,7 @@ namespace Msync.Core;
 
 public enum NativeEffect : byte { Pure, Read, Write }
 public enum NativePathAccess : byte { None, Read, Write, ReadIfPath }
+public sealed record NativeElementCallback(int FunctionArgument, int RangeArgument);
 [Flags]
 public enum NativeBehavior : byte { None = 0, MayFail = 1, Enumerates = 2, Deferred = 4, Invokes = 8, EagerRange = 16, LocalMemory = 32, PreservesIdentity = 64 }
 public enum NativeResultRule : byte
@@ -15,6 +16,7 @@ public sealed record NativeSignature(string Name, IReadOnlyList<TypeRef> Paramet
     NativeBehavior? Behavior = null)
 {
     public IReadOnlyList<NativePathAccess>? PathAccess { get; init; }
+    public NativeElementCallback? ElementCallback { get; init; }
 
     public NativePathAccess AccessOfPathArgument(int argument) => PathAccess is { } access ? access[argument] : Effect switch
     {

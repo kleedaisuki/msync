@@ -140,7 +140,7 @@ internal static class FunctionInlining
     }
 
     internal static Dictionary<int, int> Targets(FunctionCode function, IReadOnlyList<Value> constants, bool requireKnownCallee = false,
-        IReadOnlyList<FunctionCode>? layouts = null)
+        IReadOnlyList<FunctionCode>? layouts = null, ISet<int>? knownClosures = null)
     {
         var targets = new Dictionary<int, int>();
         if (!function.Instructions.Any(instruction => instruction.Op == OpCode.Call)) return targets;
@@ -197,7 +197,11 @@ internal static class FunctionInlining
                         ? instruction.B - 1 : instruction.Text is null ? closure?.Function : null;
                     if (instruction.B >= 0 && instruction.Text is not null && closure?.Function is { } identity
                         && FunctionDispatch.Parse(instruction.Text).TryGetValue(identity, out var dispatched)) target = dispatched;
-                    if (target is { } known && (layouts is null || closure?.Captures is not { } count || count <= layouts[known].LocalCount)) targets[pc] = known;
+                    if (target is { } known && (layouts is null || closure?.Captures is not { } count || count <= layouts[known].LocalCount))
+                    {
+                        targets[pc] = known;
+                        if (closure?.Function is not null && closure.Captures is not null) knownClosures?.Add(pc);
+                    }
                     stack.Add(null); Array.Clear(locals); break;
                 case OpCode.NativeCall: PopMany(instruction.A); stack.Add(null); Array.Clear(locals); break;
                 case OpCode.ProcessCall: PopMany(instruction.A + 1); stack.Add(null); Array.Clear(locals); break;

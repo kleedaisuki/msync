@@ -72,36 +72,17 @@ public static class InstructionEffects
     {
         if (name is null || !NativeSignatures.TryGet(name, out var signature))
             return InstructionEffect.Read | InstructionEffect.Write | InstructionEffect.Invoke | InstructionEffect.MayFail;
-        if (signature.Behavior is { } behavior)
-        {
-            var effects = signature.Effect switch
-            {
-                NativeEffect.Read => InstructionEffect.Read | InstructionEffect.MayFail,
-                NativeEffect.Write => InstructionEffect.Read | InstructionEffect.Write | InstructionEffect.MayFail,
-                _ => InstructionEffect.None
-            };
-            if ((behavior & NativeBehavior.MayFail) != 0) effects |= InstructionEffect.MayFail;
-            if ((behavior & NativeBehavior.Enumerates) != 0) effects |= InstructionEffect.Read | InstructionEffect.Invoke | InstructionEffect.MayFail;
-            if ((behavior & NativeBehavior.Invokes) != 0) effects |= InstructionEffect.Invoke | InstructionEffect.MayFail;
-            return effects;
-        }
-        if (name == "string.replace") return InstructionEffect.MayFail;
-        if (name.StartsWith("process.", StringComparison.Ordinal)) return InstructionEffect.Read | InstructionEffect.Invoke | InstructionEffect.MayFail;
-        if (name.StartsWith("ranges.", StringComparison.Ordinal))
-            return name is "ranges.identity" or "ranges.all" or "ranges.as_const" or "ranges.as_rvalue" or "ranges.common"
-                or "ranges.reverse" or "ranges.unique" or "ranges.filter" or "ranges.transform" or "ranges.take_while"
-                or "ranges.drop_while" or "ranges.single" or "ranges.of"
-                ? InstructionEffect.None
-                : name is "ranges.take" or "ranges.drop" or "ranges.stride" or "ranges.step"
-                    ? InstructionEffect.MayFail
-                    : InstructionEffect.Read | InstructionEffect.Invoke | InstructionEffect.MayFail;
-        return signature.Effect switch
+        NativeBehavior behavior = signature.Behavior.GetValueOrDefault();
+        var effects = signature.Effect switch
         {
             NativeEffect.Read => InstructionEffect.Read | InstructionEffect.MayFail,
             NativeEffect.Write => InstructionEffect.Read | InstructionEffect.Write | InstructionEffect.MayFail,
-            _ => name.StartsWith("fs.", StringComparison.Ordinal) || name.StartsWith("path.", StringComparison.Ordinal)
-                ? InstructionEffect.MayFail : InstructionEffect.None
+            _ => InstructionEffect.None
         };
+        if ((behavior & NativeBehavior.MayFail) != 0) effects |= InstructionEffect.MayFail;
+        if ((behavior & NativeBehavior.Enumerates) != 0) effects |= InstructionEffect.Read | InstructionEffect.Invoke | InstructionEffect.MayFail;
+        if ((behavior & NativeBehavior.Invokes) != 0) effects |= InstructionEffect.Invoke | InstructionEffect.MayFail;
+        return effects;
     }
 
 }

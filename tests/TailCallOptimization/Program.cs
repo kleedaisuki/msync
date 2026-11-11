@@ -49,6 +49,7 @@ foreach ((string name, string source, Value expected) in new (string, string, Va
 }
 
 Module deepOriginal = Compiler.Compile("fn sum(n, acc) { if n == 0 { acc } else { sum(n - 1, acc + n) } }; sum(100000, 0)", "deep-tail", 0);
+Console.WriteLine("Tail case: deep source");
 Module deep = Transform(deepOriginal);
 Require(await Run(deep) == new NumberValue(5_000_050_000), "100000-step frame reuse result");
 Require(await Run(Optimizer.Optimize(deepOriginal, 3)) == new NumberValue(5_000_050_000), "100000-step integrated optimization result");
@@ -99,6 +100,35 @@ Module captureChanged = Transform(changingCapture);
 Artifact.Validate(captureChanged);
 Require(!ReferenceEquals(captureChanged.Functions[1], changingCapture.Functions[1]), "Changing closure was not transformed");
 Require(await Run(captureChanged) == new NumberValue(20), "Tail jump retained the caller's capture instead of the callee's");
+
+Module unrelatedClosures = changingCapture with
+{
+    Constants = [.. changingCapture.Constants,
+        new FunctionValue(2, [Value.True, Value.True, Value.True, Value.True, Value.True]),
+        new FunctionValue(-1, NativeName: "bool.identity"), new NumberValue(100000)],
+    Functions = [changingCapture.Functions[0] with
+    {
+        Instructions = [new(OpCode.Constant, 4), new(OpCode.Pop), new(OpCode.Constant, 5), new(OpCode.Pop),
+            .. changingCapture.Functions[0].Instructions]
+    }, changingCapture.Functions[1],
+        new("unrelated-large-closure", 0, 5, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, 5)]
+};
+Console.WriteLine("Tail case: unrelated closures");
+Artifact.Validate(unrelatedClosures);
+Require(await Run(unrelatedClosures) == new NumberValue(20), "Unrelated closure baseline");
+Module localTail = Transform(unrelatedClosures);
+Require(!ReferenceEquals(localTail.Functions[1], unrelatedClosures.Functions[1]),
+    "Unrelated large/native closures disabled a locally established tail call");
+Require(await Run(localTail) == new NumberValue(20), "Local tail proof changed capture replacement");
+var deepEntry = localTail.Functions[0].Instructions.ToArray();
+deepEntry[6] = new(OpCode.Constant, 6);
+Module deepLocalTail = localTail with { Functions = [localTail.Functions[0] with { Instructions = deepEntry }, .. localTail.Functions.Skip(1)] };
+using (MemoryStream bytes = new())
+{
+    Artifact.Write(deepLocalTail, bytes); bytes.Position = 0;
+    Require(await Run(Artifact.Read(bytes)) == new NumberValue(20),
+        "100000 local tail calls failed in the presence of unrelated closure kinds");
+}
 
 Module excessCaptures = new([new NumberValue(7), new NumberValue(8)],
 [

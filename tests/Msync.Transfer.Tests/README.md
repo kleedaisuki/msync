@@ -41,6 +41,14 @@ code has no dependency on that fixture or Python. The current link/mode journeys
 run on Unix; native Windows installation, filesystem behavior and WSL transport
 are separate platform acceptance work.
 
+Run the focused node-kind journey with `--node-kind-only`. It checks the Windows
+name-surrogate tag contract on every host and ordinary recursive copies and
+Unix links using real files. On Windows/NTFS it additionally creates a WOF file
+with `compact.exe /c /exe:lzx`, verifies its reparse attribute, copies its bytes
+directly and through an overlap snapshot, and checks junction status, traversal
+and removal. A real provider-backed cloud directory remains separate platform
+acceptance; a synthetic tag check is not a substitute for that provider journey.
+
 ## Contextual transfer batches
 
 ```sh

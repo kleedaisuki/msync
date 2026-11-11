@@ -101,6 +101,10 @@ internal sealed partial class SemanticAnalyzer
                 SemanticCapture capture = candidate.Captures[index];
                 if (capture.Mode != HirCaptureMode.Location) continue;
                 HirLocationId declaration = program.Original(context.Definitions.GetValueOrDefault(capture.Source, capture.Source));
+                // A bound generic local is a declaration recipe, not another live
+                // closure. Prefer the matching instantiated capture already in the domain.
+                bool uninstantiated = program.TryDeclaration(capture.Source, out BoundDeclaration bound)
+                    && bound.Template is not null && !context.Values.ContainsKey(capture.Source);
                 bool programBinding = program.TryDeclaration(declaration, out BoundDeclaration defined)
                     && defined.Template is null
                     && defined.Kind is DeclarationKind.Scope or DeclarationKind.StandardModule or DeclarationKind.StandardRoot;
@@ -111,7 +115,7 @@ internal sealed partial class SemanticAnalyzer
                     SemanticCapture actual = current.Captures[index];
                     if (actual.Mode != HirCaptureMode.Location) continue;
                     HirLocationId actualDeclaration = program.Original(context.Definitions.GetValueOrDefault(actual.Source, actual.Source));
-                    if (actualDeclaration != declaration || !programBinding
+                    if (actualDeclaration != declaration || !programBinding && !uninstantiated
                         && StorageOwner(actual.Source, context) != StorageOwner(capture.Source, context)) continue;
                     SemanticValue live = StorageValue(actual.Source, context) ?? actual.Value;
                     if (actual.Source != capture.Source || !ReferenceEquals(live, capture.Value))

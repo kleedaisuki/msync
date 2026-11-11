@@ -198,7 +198,12 @@ internal sealed partial class SemanticAnalyzer
             // A new specialization could add concrete facts to an earlier
             // function body. That edit must replace the whole projection.
             if (id.Value < reusedEditorTemplates) throw new EditorPrefixChanged();
-            instance = BuildInstance(id, template, arguments, captureValues, actualCaptures, source, caller, cache, key);
+            // Write-only environments may grow across recursive edges without
+            // changing the body. Completed summaries still need the full input
+            // key: a branch that skips a write must retain that caller's value.
+            string recursiveKey = InstanceKey(id, arguments, captureValues, caller, readOnlyInput: true, recursive: true);
+            if (!cache.Active.TryGetValue(recursiveKey, out instance))
+                instance = BuildInstance(id, template, arguments, captureValues, actualCaptures, source, caller, cache, key, recursiveKey);
         }
         return ProjectInvocation(instance, arguments, captureValues, actualCaptures, caller, applyEffects, source);
     }
@@ -206,7 +211,7 @@ internal sealed partial class SemanticAnalyzer
     private FunctionInstance BuildInstance(HirTemplateId id, HirTemplate template,
         IReadOnlyList<SemanticValue> arguments, IReadOnlyList<SemanticValue> captureValues,
         ImmutableArray<SemanticCapture> captured, HirSourceRange source, SemanticContext caller,
-        SemanticInstanceCache cache, string key)
+        SemanticInstanceCache cache, string key, string recursiveKey)
     {
         SemanticValue? recursiveSignature = null;
         if (caller.Publish && template.ResultAnnotation is null
@@ -331,6 +336,7 @@ internal sealed partial class SemanticAnalyzer
         };
         // Both query and code generation reserve before examining a recursive body.
         cache.Add(key, instance);
+        cache.Active.Add(recursiveKey, instance);
         try
         {
             var body = Analyze(template.Body, context);
@@ -368,6 +374,10 @@ internal sealed partial class SemanticAnalyzer
             error.Diagnostic.Related.Add(new(document.Name, document.Text ?? "",
                 new(source.Start, source.Length), "while checking this call"));
             throw;
+        }
+        finally
+        {
+            cache.Active.Remove(recursiveKey);
         }
     }
 

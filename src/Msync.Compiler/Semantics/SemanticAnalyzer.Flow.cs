@@ -378,6 +378,7 @@ internal sealed partial class SemanticAnalyzer
         MergeSessionContracts(destination, branches);
         foreach (SemanticContext branch in branches)
         {
+            foreach (var pair in branch.Definitions.LocalEntries) destination.Definitions[pair.Key] = pair.Value;
             destination.CellWrites.UnionWith(branch.CellWrites);
             destination.IndexedWrites.UnionWith(branch.IndexedWrites);
             destination.FieldWrites.UnionWith(branch.FieldWrites);

@@ -40,10 +40,9 @@ internal readonly record struct NativeTimestamp(long Seconds, long Nanoseconds)
     }
 }
 
-internal readonly record struct FileMetadata(FileAttributes Attributes, long Length, UnixFileMode Mode, NativeTimestamp Modified)
+internal readonly record struct FileMetadata(FileAttributes Attributes, long Length, UnixFileMode Mode, NativeTimestamp Modified, bool IsLink)
 {
     internal bool IsDirectory => (Attributes & FileAttributes.Directory) != 0;
-    internal bool IsLink => (Attributes & FileAttributes.ReparsePoint) != 0;
     internal void Apply(string target)
     {
         Modified.Apply(target, IsDirectory, IsLink);
@@ -58,8 +57,40 @@ internal static partial class NativeFileMetadata
         if (OperatingSystem.IsLinux()) return CaptureLinux(path);
         var info = new FileInfo(path);
         FileAttributes attributes = info.Attributes;
-        bool ordinary = (attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) == 0;
-        return new(attributes, ordinary ? info.Length : 0, OperatingSystem.IsWindows() ? default : info.UnixFileMode, NativeTimestamp.FromDateTime(info.LastWriteTimeUtc));
+        bool link = IsLink(path, attributes);
+        bool ordinary = (attributes & FileAttributes.Directory) == 0 && !link;
+        return new(attributes, ordinary ? info.Length : 0, OperatingSystem.IsWindows() ? default : info.UnixFileMode, NativeTimestamp.FromDateTime(info.LastWriteTimeUtc), link);
+    }
+
+    internal static bool IsLink(string path, FileAttributes attributes)
+    {
+        if ((attributes & FileAttributes.ReparsePoint) == 0) return false;
+        return !OperatingSystem.IsWindows() || IsNameSurrogate(WindowsReparseTag(path));
+    }
+
+    internal static bool IsNameSurrogate(uint tag) => (tag & 0x20000000) != 0;
+
+    private static uint WindowsReparseTag(string path)
+    {
+        // Attribute queries omit the tag. Find data supplies it without opening
+        // or hydrating a cloud file; ordinary files never need this query.
+        string name = WindowsPath(Path.TrimEndingDirectorySeparator(path));
+        if (Path.GetDirectoryName(name) is null) return WindowsRootReparseTag(name);
+        nint search = FindFirstFile(name, out WindowsFindData data);
+        if (search == -1)
+            throw new IOException($"Cannot inspect reparse point '{path}': {new Win32Exception(Marshal.GetLastPInvokeError()).Message}");
+        try { return data.ReparseTag; }
+        finally { FindClose(search); }
+    }
+
+    private static uint WindowsRootReparseTag(string path)
+    {
+        // FindFirstFile cannot inspect a volume/share root. Query its entry,
+        // not its referent, using the same metadata-only handle contract.
+        using SafeFileHandle handle = OpenWindowsAttributes(path, 0, 7, 0, 3, 0x02200000, 0);
+        if (handle.IsInvalid || !GetAttributeTag(handle, 9, out WindowsAttributeTag data, 8))
+            throw new IOException($"Cannot inspect reparse point '{path}': {new Win32Exception(Marshal.GetLastPInvokeError()).Message}");
+        return data.ReparseTag;
     }
     private static FileMetadata CaptureLinux(string path)
     {
@@ -77,7 +108,7 @@ internal static partial class NativeFileMetadata
             0xa000 => FileAttributes.ReparsePoint,
             _ => FileAttributes.Normal
         };
-        return new(attributes, length, (UnixFileMode)(mode & 0xfff), new(seconds, nanoseconds));
+        return new(attributes, length, (UnixFileMode)(mode & 0xfff), new(seconds, nanoseconds), (mode & 0xf000) == 0xa000);
     }
     private static unsafe FileMetadata CaptureLegacyLinux(string path)
     {
@@ -123,6 +154,25 @@ internal static partial class NativeFileMetadata
         [FieldOffset(112)] public long ModifiedSeconds;
         [FieldOffset(120)] public uint ModifiedNanoseconds;
     }
+    [StructLayout(LayoutKind.Explicit, Size = 592)]
+    private struct WindowsFindData
+    {
+        [FieldOffset(36)] public uint ReparseTag;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WindowsAttributeTag
+    {
+        public uint Attributes;
+        public uint ReparseTag;
+    }
+    [LibraryImport("kernel32.dll", EntryPoint = "GetFileInformationByHandleEx", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetAttributeTag(SafeFileHandle handle, int informationClass, out WindowsAttributeTag data, uint size);
+    [LibraryImport("kernel32.dll", EntryPoint = "FindFirstFileW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+    private static partial nint FindFirstFile(string path, out WindowsFindData data);
+    [LibraryImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool FindClose(nint search);
     [StructLayout(LayoutKind.Sequential)]
     private readonly struct Timespec(long seconds, long nanoseconds)
     { public readonly long Seconds = seconds; public readonly long Nanoseconds = nanoseconds; }

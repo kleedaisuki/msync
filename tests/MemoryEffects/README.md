@@ -47,6 +47,15 @@ creation retains aliases but does not execute callbacks. Function values use
 the actual known closure/native identity; `Call.B` by itself does not prove a
 nonnative callee. Unknown indirect calls keep opaque effects.
 
+The native registry owns terminal callback argument mappings. Known empty
+ranges do not invoke; other terminals remap the callback summary until actual
+abstract-memory invalidations stabilize. This accounts for captured-cell
+rebinding between elements without assigning unrelated fields global unknown
+effects. Membership alternatives are not an iteration-count proof. An
+analysis-local invalidation version avoids copying whole states for callback
+convergence and is not part of CFG equality. Focused source/artifact checks
+observe fields after a three-element callback redirects its captured pointer.
+
 ## Convergence and cost
 
 Only block-entry states are copied. Function changes queue actual callers.

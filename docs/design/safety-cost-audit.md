@@ -1,5 +1,13 @@
 # Safety mechanisms: user value and cost audit
 
+## Current C# implementation
+
+The [2026-11-11 C# audit](safety-cost-audit-v086.md) supersedes the old Rust
+inventory as an assessment of current code. It includes process-gated CLI
+reproductions, filesystem syscall observations, session optimization gates,
+and the remaining distinctions between useful boundaries and broad fallback
+policies. The historical entries below are not claims about current C# defects.
+
 ## Scope and decision rule (2026-11-01)
 
 A native Windows v0.6.5 user reported 35,399.5 ms for one 1,795-byte upload.

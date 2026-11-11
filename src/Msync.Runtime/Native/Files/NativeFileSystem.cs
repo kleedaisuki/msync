@@ -166,7 +166,7 @@ public static partial class NativeRegistry
         {
             FileAttributes? attributes = Attributes(local);
             if (attributes is null) return name == "delete" ? Value.Null : Value.False;
-            bool directory = (attributes.Value & FileAttributes.Directory) != 0 && (attributes.Value & FileAttributes.ReparsePoint) == 0;
+            bool directory = (attributes.Value & FileAttributes.Directory) != 0 && !NativeFileMetadata.IsLink(local, attributes.Value);
             if (name == "delete" && directory) throw new IOException($"fs.delete does not recursively remove directory '{local}'; use fs.remove_all");
             if ((attributes.Value & FileAttributes.Directory) != 0) Directory.Delete(local, name == "remove_all" && directory); else File.Delete(local);
             return name == "delete" ? Value.Null : Value.True;
@@ -175,7 +175,7 @@ public static partial class NativeRegistry
         {
             FileAttributes? attributes = Attributes(local);
             if (attributes is null) return Value.False;
-            if ((attributes.Value & FileAttributes.Directory) == 0 || (attributes.Value & FileAttributes.ReparsePoint) != 0)
+            if ((attributes.Value & FileAttributes.Directory) == 0 || NativeFileMetadata.IsLink(local, attributes.Value))
                 throw new IOException($"rmdir requires a directory, not a file or symbolic link: '{local}'.");
             Directory.Delete(local);
             return Value.True;
@@ -184,7 +184,7 @@ public static partial class NativeRegistry
         switch (name)
         {
             case "rename":
-                if (Directory.Exists(local) && (File.GetAttributes(local) & FileAttributes.ReparsePoint) == 0) Directory.Move(local, destination);
+                if (Directory.Exists(local) && !NativeFileMetadata.IsLink(local, File.GetAttributes(local))) Directory.Move(local, destination);
                 else File.Move(local, destination, true);
                 return Value.Null;
             case "create_hard_link": NativeFileIdentity.CreateHardLink(destination, local); return Value.Null;
@@ -209,8 +209,9 @@ public static partial class NativeRegistry
         if (!OperatingSystem.IsWindows()) return NativeFileIdentity.Kind(path, noFollow);
         FileAttributes? attributes = Attributes(path);
         if (attributes is null) return "not_found";
-        if (noFollow && (attributes.Value & FileAttributes.ReparsePoint) != 0) return "symlink";
-        if (!noFollow && (attributes.Value & FileAttributes.ReparsePoint) != 0 && File.ResolveLinkTarget(path, true)?.Exists == false) return "not_found";
+        bool link = NativeFileMetadata.IsLink(path, attributes.Value);
+        if (noFollow && link) return "symlink";
+        if (!noFollow && link && File.ResolveLinkTarget(path, true)?.Exists == false) return "not_found";
         if ((attributes.Value & FileAttributes.Directory) != 0) return "directory";
         return "regular";
     }
@@ -224,7 +225,7 @@ public static partial class NativeRegistry
             current = Path.Combine(current, component);
             FileAttributes? attributes = Attributes(current);
             if (attributes is null) { if (required) throw new FileNotFoundException($"Cannot canonicalize missing path '{current}'", current); continue; }
-            if ((attributes.Value & FileAttributes.ReparsePoint) == 0) continue;
+            if (!NativeFileMetadata.IsLink(current, attributes.Value)) continue;
             FileSystemInfo info = (attributes.Value & FileAttributes.Directory) != 0 ? new DirectoryInfo(current) : new FileInfo(current);
             current = info.ResolveLinkTarget(true)?.FullName ?? current;
         }
@@ -302,7 +303,7 @@ public static partial class NativeRegistry
             PathValue child = path.WithRaw(raw, projected ? new NativePath(path.NativeText, true).Append(name) : null);
             yield return child;
             FileAttributes attributes = File.GetAttributes(entry);
-            if (!recursive || (attributes & FileAttributes.Directory) == 0 || (attributes & FileAttributes.ReparsePoint) != 0) continue;
+            if (!recursive || (attributes & FileAttributes.Directory) == 0 || NativeFileMetadata.IsLink(entry, attributes)) continue;
             await foreach (Value value in EnumerateDirectory(child, entry, true, token)) yield return value;
         }
     }

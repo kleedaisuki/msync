@@ -83,7 +83,7 @@ internal static class TransferFiles
         cancellationToken.ThrowIfCancellationRequested();
         FileMetadata info = NativeFileMetadata.Capture(source);
         FileAttributes attributes = info.Attributes;
-        if ((attributes & FileAttributes.ReparsePoint) != 0)
+        if (info.IsLink)
         {
             CopyLink(source, target, (attributes & FileAttributes.Directory) != 0, info.Modified);
             return;
@@ -215,8 +215,8 @@ internal static class TransferFiles
             return;
         }
         FileAttributes attributes = File.GetAttributes(target);
-        if ((attributes & FileAttributes.Directory) != 0 && (attributes & FileAttributes.ReparsePoint) == 0)
-            Directory.Delete(target, recursive: true);
+        if ((attributes & FileAttributes.Directory) != 0)
+            Directory.Delete(target, recursive: !NativeFileMetadata.IsLink(target, attributes));
         else
             File.Delete(target);
     }

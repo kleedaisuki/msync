@@ -133,7 +133,7 @@ public static partial class TransferEngine
             || item.Kind == PlannedTransferKind.GenericCopy && Directory.Exists(source);
         if (replace && !directory) throw new IOException($"Tree replacement requires a directory source: '{source}'.");
         if (!container && !replace && item.Mode != TransferDestinationMode.Merge && Directory.Exists(destination)
-            && (File.GetAttributes(destination) & FileAttributes.ReparsePoint) == 0)
+            && !NativeFileMetadata.IsLink(destination, File.GetAttributes(destination)))
             throw new IOException($"Exact destination '{destination}' is an existing directory; append '/' for container insertion or '/.' for replacement.");
         if (directory && TransferOverlap.NeedsSnapshot(source, destination, replace))
         {

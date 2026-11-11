@@ -6,6 +6,7 @@ internal sealed class SemanticInstanceCache
 {
     private readonly Dictionary<string, SemanticAnalyzer.FunctionInstance> instances = new(StringComparer.Ordinal);
     private AdditionLease? additions;
+    internal Dictionary<string, SemanticAnalyzer.FunctionInstance> Active { get; } = new(StringComparer.Ordinal);
 
     public AdditionLease BeginAdditions() => additions = new(this, additions);
 

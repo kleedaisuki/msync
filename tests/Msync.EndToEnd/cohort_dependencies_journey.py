@@ -14,11 +14,21 @@ CASES: tuple[str, ...] = (
     "scalar",
     "cohort",
     "cohort-replace",
+    "cohort-lazy",
+    "cohort-lazy-dependent",
+    "cohort-lazy-callback-dependent",
+    "cohort-merge",
+    "cohort-merge-alias",
+    "cohort-merge-alias-dependent",
     "scalar-dependent",
     "cohort-dependent",
     "cohort-replace-dependent",
     "native-shared-reader",
     "native-source-dependent",
+    "native-source-alias-dependent",
+    "native-dot-dependent",
+    "native-dotdot-dependent",
+    "native-link-dotdot-dependent",
     "native-destination-dependent",
 )
 
@@ -59,6 +69,34 @@ child::stdout -> ./held.txt;
     elif kind == "cohort-replace":
         source += "let members = $std::ranges::materialize([./input.txt]);\nmembers -> ./output/.;\n"
         output = work / "output/input.txt"
+    elif kind.startswith("cohort-lazy"):
+        path: str = "./held.txt" if kind == "cohort-lazy-dependent" else "./input.txt"
+        callback: str = "count = count + 1; p"
+        if kind == "cohort-lazy-callback-dependent":
+            callback = "$std::io::read_text(./held.txt); count = count + 1; p"
+        source += (
+            "let count = 0;\n"
+            f"let members = $std::ranges::transform([{path}], fn(p) {{ {callback} }});\n"
+            "members -> ./output/;\n"
+            'if count != 1 { $std::io::write_text(./callback-error, "replayed"); };\n'
+        )
+        output = work / (
+            "output/held.txt" if path == "./held.txt" else "output/input.txt"
+        )
+    elif kind.startswith("cohort-merge"):
+        (work / "tree/sub/deep").mkdir(parents=True)
+        (work / "tree/sub/deep/nested.txt").write_bytes(b"nested")
+        (work / "tree/sub/input.txt").write_bytes(b"independent")
+        (work / "output/tree").mkdir(parents=True)
+        if kind.startswith("cohort-merge-alias"):
+            (work / "alias").mkdir()
+            (work / "output/tree/sub").symlink_to(
+                work / "alias", target_is_directory=True
+            )
+            if kind.endswith("dependent"):
+                source = source.replace("./held.txt", "./alias/input.txt")
+        source += "let members = $std::ranges::materialize([./tree]);\nmembers -> ./output/;\n"
+        output = work / "output/tree/sub/input.txt"
     elif kind == "scalar-dependent":
         source += "./held.txt -> ./output.txt;\n"
         output = work / "output.txt"
@@ -73,6 +111,29 @@ child::stdout -> ./held.txt;
         output = work / "output.txt"
     elif kind == "native-source-dependent":
         source += "$std::fs::copy_file(./held.txt, ./output.txt);\n"
+        output = work / "output.txt"
+    elif kind in (
+        "native-dot-dependent",
+        "native-dotdot-dependent",
+        "native-link-dotdot-dependent",
+    ):
+        (work / "watched").mkdir()
+        observed: str = "./watched/."
+        if kind != "native-dot-dependent":
+            (work / "watched/child").mkdir()
+            observed = "./watched/child/.."
+        if kind == "native-link-dotdot-dependent":
+            (work / "folder-link").symlink_to(
+                work / "watched/child", target_is_directory=True
+            )
+            observed = "./folder-link/.."
+        source = source.replace("./held.txt", "./watched/file")
+        source += f'if $std::fs::is_empty("{observed}") {{ "unexpected" }} else {{ "independent" }} -> ./output.txt;\n'
+        output = work / "output.txt"
+    elif kind == "native-source-alias-dependent":
+        (work / "source-alias").symlink_to(work / "input.txt")
+        source = source.replace("./held.txt", "./input.txt")
+        source += "$std::fs::copy_file(./source-alias, ./output.txt);\n"
         output = work / "output.txt"
     else:
         source += (
@@ -113,9 +174,16 @@ child::stdout -> ./held.txt;
     reads_held: bool = kind in (
         "scalar-dependent",
         "cohort-dependent",
+        "cohort-lazy-dependent",
         "cohort-replace-dependent",
         "native-source-dependent",
+        "native-source-alias-dependent",
     )
+    assert not (work / "callback-error").exists(), work
+    if kind.startswith("cohort-merge"):
+        assert (work / "output/tree/sub/deep/nested.txt").read_bytes() == b"nested", (
+            work
+        )
     assert output.read_bytes() == (b"held" if reads_held else b"independent"), work
     if kind in ("native-shared-reader", "native-destination-dependent"):
         assert (work / "held.txt").read_bytes() == b"independent", work

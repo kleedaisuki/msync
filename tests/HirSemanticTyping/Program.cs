@@ -3,6 +3,12 @@ using Msync.Core;
 using Msync.Hir;
 using Msync.Runtime;
 
+if (args.Contains("--recursive-captures", StringComparer.Ordinal))
+{
+    await RecursiveCaptureChecks.Run();
+    return;
+}
+
 int checks = 0;
 bool metadataOnly = args.Contains("--meta", StringComparer.Ordinal);
 bool typeIdentityOnly = args.Contains("--type-is", StringComparer.Ordinal);
