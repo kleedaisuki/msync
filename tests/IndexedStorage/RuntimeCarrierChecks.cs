@@ -50,6 +50,29 @@ internal static class RuntimeCarrierChecks
         ordinary.RetainedValues = [new StringValue("ownership")];
         Check(ordinary == equal && ordinary.GetHashCode() == equal.GetHashCode(), "Ownership roots do not affect value keys");
 
+        ValueTask<Value> Front(RangeValue range) => NativeRegistry.InvokeAsync("ranges.front", [range], context,
+            (_, _, _) => throw new InvalidOperationException("Front should consume its selected producer only"));
+        var item = new ScopeValue(new Dictionary<string, Value>());
+        var owned = RangeValue.TakeSnapshotOwnership([item], TypeRef.Scope);
+        Check(ReferenceEquals(await Front(owned), item), "Snapshot head preserves object identity");
+        Check(await Front(new RangeValue([Value.Null], TypeRef.Null)) is NullValue, "Null is a present snapshot head");
+        int observed = 0;
+        async IAsyncEnumerable<Value> Selected()
+        {
+            observed++;
+            yield return Value.True;
+            await Task.CompletedTask;
+        }
+        var changed = owned with { Items = Selected() };
+        Check(changed.OwnedSnapshot is null && await Front(changed) is BoolValue { Data: true } && observed == 1,
+            "A replaced producer must not inherit the old snapshot evidence");
+        try
+        {
+            await Front(new RangeValue(Array.Empty<Value>(), never));
+            throw new InvalidOperationException("An empty snapshot acquired a head");
+        }
+        catch (MsyncException error) { Check(error.Message.Contains("found no matching item", StringComparison.Ordinal), "Empty head diagnostic"); }
+
         const string source = """
             let buffer = $std::storage::Buffer::new([]);
             let before = $std::storage::Buffer::snapshot(buffer);

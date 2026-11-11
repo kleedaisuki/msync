@@ -99,6 +99,9 @@ public static partial class NativeRegistry
     private static async ValueTask<Value> ConsumeRangeAsync(RangeValue source, string operation, IReadOnlyList<Value> args,
         Func<Value, IReadOnlyList<Value>, CancellationToken, ValueTask<Value>> invoke, CancellationToken token)
     {
+        if (operation is ("front" or "first") && source.OwnedSnapshot is { } snapshot)
+            return snapshot.Count != 0 ? snapshot[0]
+                : throw new MsyncException($"ranges.{operation} found no matching item");
         Value? last = null;
         await foreach (Value value in source.Items.WithCancellation(token))
         {

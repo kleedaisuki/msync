@@ -27,8 +27,21 @@ public sealed record RangeValue(IAsyncEnumerable<Value> Items, TypeRef ItemType,
     // enumerates a Range or keeps discarded snapshot inputs alive.
     public IReadOnlyList<Value>? RetainedValues { get; set; }
     public IReadOnlyList<Value>? SnapshotValues { get; private init; }
+    private readonly IAsyncEnumerable<Value>? snapshotProducer;
     public RangeValue(IEnumerable<Value> items, TypeRef itemType) : this(Enumerate(items), itemType)
-        => RetainedValues = SnapshotValues = items as IReadOnlyList<Value>;
+    {
+        RetainedValues = SnapshotValues = items as IReadOnlyList<Value>;
+        if (items is Value[]) snapshotProducer = Items;
+    }
+
+    private RangeValue(List<Value> items, TypeRef itemType) : this((IEnumerable<Value>)items, itemType)
+        => snapshotProducer = Items;
+
+    /// <summary>Publish a private list that the caller will no longer mutate.</summary>
+    public static RangeValue TakeSnapshotOwnership(List<Value> items, TypeRef itemType) => new(items, itemType);
+
+    public IReadOnlyList<Value>? OwnedSnapshot =>
+        ReferenceEquals(Items, snapshotProducer) ? SnapshotValues : null;
     private static async IAsyncEnumerable<Value> Enumerate(IEnumerable<Value> items)
     {
         foreach (var item in items) yield return item;

@@ -236,7 +236,7 @@ public static partial class NativeRegistry
     {
         List<Value> values = [];
         await foreach (Value value in source.Items.WithCancellation(token)) values.Add(value);
-        return new RangeValue(values, source.ItemType);
+        return RangeValue.TakeSnapshotOwnership(values, source.ItemType);
     }
 
     private static async IAsyncEnumerable<Value> Scanned(RangeValue source, Value initial, Value operation,
