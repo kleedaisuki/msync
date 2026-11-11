@@ -84,6 +84,8 @@ async function main() {
     const protocolOnly = process.env.MSYNC_TEST_PROTOCOL_ONLY === '1';
     const artifactOnly = process.env.MSYNC_TEST_ARTIFACT_ONLY === '1';
     const artifactUiOnly = process.env.MSYNC_TEST_ARTIFACT_UI_ONLY === '1';
+    const artifactSearch = process.env.MSYNC_TEST_ARTIFACT_SEARCH === '1';
+    assert.ok(!artifactSearch || artifactUiOnly, 'Artifact search measurement needs the artifact UI suite');
     const stdlibOnly = process.env.MSYNC_TEST_STDLIB_ONLY === '1';
     const telemetryOnly = process.env.MSYNC_TEST_TELEMETRY_ONLY === '1';
     if (telemetryOnly) {
@@ -112,6 +114,7 @@ async function main() {
                 MSYNC_TEST_SERVER_PATH: serverPath,
                 MSYNC_TEST_WORKSPACE: directories.workspace,
                 MSYNC_TEST_ROOT: runRoot,
+                ...(artifactSearch ? { MSYNC_TEST_ARTIFACT_SEARCH: '1' } : {}),
                 ...(debugPort ? { MSYNC_TEST_DEBUG_PORT: String(debugPort) } : {}),
             },
             vscodeExecutablePath: process.env.MSYNC_TEST_VSCODE_EXECUTABLE,

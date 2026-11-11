@@ -19,6 +19,10 @@ async function run() {
     const { MSYNC_TEST_WORKSPACE: workspace, MSYNC_TEST_ROOT: runRoot, MSYNC_TEST_SERVER_PATH: binary,
         MSYNC_TEST_DEBUG_PORT: port } = process.env;
     assert.ok(workspace && runRoot && binary && port, 'Launch with MSYNC_TEST_ARTIFACT_UI_ONLY=1');
+    if (process.env.MSYNC_TEST_ARTIFACT_SEARCH === '1') {
+        await require('./artifact-search-benchmark.cjs').run({ workspace, runRoot, binary, port });
+        return;
+    }
     const cwd = path.join(workspace, 'Inspector 𐐀');
     await fs.mkdir(path.join(cwd, 'input', 'nested'), { recursive: true });
     await fs.writeFile(path.join(cwd, 'input', 'one.txt'), 'first payload');

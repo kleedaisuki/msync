@@ -369,6 +369,58 @@ flow and `?`. It inspected Connection, Bool, String and Path members, displayed
 the typed call context on the failing member expression. It used VS Code 1.144.0
 and fingerprinted the development compiler assemblies in its isolated metadata.
 
+### Artifact search: refine a result instead of rescanning
+
+The artifact inspector owns its search state inside the read-only WebView.
+If the lowercased new needle extends the lowercased previous completed needle,
+every matching line must already be in that result. Backspace and unrelated
+edits scan the full model. Checking the folded query, rather than the raw
+input prefix, preserves context-dependent Unicode case mapping. The first
+budgeted scan slice runs in the input event; longer scans yield between slices
+and a superseded scan cannot publish. The sorted result serves both match
+navigation and visible-row membership without a duplicate set of line IDs.
+Neither the artifact reader nor the language server participates in a search.
+No full-text index, dependency, or
+[retained hidden-WebView policy](https://code.visualstudio.com/api/extension-guides/webview#persistence) is needed.
+This is exact Boolean refinement, unlike ranked
+[refined-query retrieval](https://research.ibm.com/publications/evaluating-refined-queries-in-top-k-retrieval-systems),
+where a previous top-k list need not contain the new top-k.
+
+```sh
+MSYNC_TEST_SERVER_PATH=/absolute/path/to/msync \
+MSYNC_TEST_ARTIFACT_UI_ONLY=1 MSYNC_TEST_ARTIFACT_SEARCH=1 \
+xvfb-run -a npm run test:integration
+```
+
+The mode compiles real 16- and 8,192-constant O0 artifacts. To replay exactly
+the same bytes on another build, set `MSYNC_TEST_ARTIFACT_SEARCH_FIXTURES` to the
+first run's scratch workspace. The browser checks each query against the
+reader's full disassembly and writes artifact hashes and raw elapsed samples
+to `artifact-search-results.json`. It measures input dispatch through a
+ready count and controls inside the WebView, not paint, opening, or LSP time.
+
+VS Code 1.144.0 / Linux, the same Native reader and artifact hashes, two fresh
+hosts per version in baseline/candidate/candidate/baseline order, CPUs 12–13.
+After one warm-up sequence per artifact and host, twelve measured sequences
+extended a needle through 321 → 65 → 1 → 0 matches on the larger listing,
+then backspaced, changed the query, and cleared it. Median times in ms:
+
+| Listing | Step | Before | After |
+| --- | --- | ---: | ---: |
+| 64 lines | First query | 12.65 | 0.70 |
+| 64 lines | Query extension | 17.20 | 0.60 |
+| 24,592 lines | First query | 52.55 | 20.30 |
+| 24,592 lines | Query extension | 47.20 | 1.10 |
+
+The extension median pools 72 observations per variant; the first-query
+median uses 24. The small listing shows the removed frame wait; the large
+listing also avoids repeated full scans. Full-rescan steps were more
+variable. These are diagnostic local measurements, not latency gates.
+Raw receipts are under `.temp/{esb,esc}/.temp/{b,c}/`. The separate full artifact
+UI journey passed across HIR, object and executable artifacts, including
+query restoration and cross-page navigation (
+`.temp/esc/.temp/ui/artifact-ui-results.json`).
+
 References:
 [VS Code syntax highlighting](https://code.visualstudio.com/api/language-extensions/syntax-highlight-guide),
 [semantic highlighting and theme fallback](https://code.visualstudio.com/api/language-extensions/semantic-highlight-guide),

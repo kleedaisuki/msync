@@ -1,7 +1,7 @@
 'use strict';
 
 // No extension-host references: this function is bundled, then run inside the webview.
-function startArtifactPage(renderer, generation) {
+function startArtifactPage(renderer, createSearch, generation) {
     const host = acquireVsCodeApi();
     const get = id => document.getElementById(id);
     const dataElement = get('artifact-data');
@@ -31,7 +31,8 @@ function startArtifactPage(renderer, generation) {
         for (const node of plan.transfers) transfers.set(`@p${plan.id}n${node.id}`, node);
     buildOutline();
     let selected = restoredLine(), page = -1, outlinePage = 0, outlineEntries = [];
-    let matches = [], matchLines = new Set(), searchGeneration = 0, saving = false;
+    const searchLines = createSearch(text);
+    let matches = [], saving = false;
     go.max = String(text.length);
 
     function byLine(items, indexed = false) {
@@ -134,7 +135,7 @@ function startArtifactPage(renderer, generation) {
             const item = definitionAt(selected);
             host.setState({ line: selected, anchor: item?.identifier, caption: item?.caption,
                 anchorGroup: item?.group, offset: item && selected - item.line,
-                page, top: code.scrollTop, left: code.scrollLeft, query: search.value, match: matchLines.has(selected),
+                page, top: code.scrollTop, left: code.scrollLeft, query: search.value, match: hasMatch(selected),
                 group: category.value, outlinePage, outline: !outline.hidden, detail: !detail.hidden });
         });
     }
@@ -153,7 +154,7 @@ function startArtifactPage(renderer, generation) {
             last = end;
         }
         body += syntax(value.slice(last));
-        return `<div class="line${matchLines.has(line) ? ' match' : ''}" data-line="${line}">
+        return `<div class="line${hasMatch(line) ? ' match' : ''}" data-line="${line}">
 <button class="line-number" type="button" tabindex="-1" aria-label="Inspect line ${line + 1}">${line + 1}</button><code>${body || ' '}</code></div>`;
     }
 
@@ -351,38 +352,29 @@ function startArtifactPage(renderer, generation) {
         const label = get('match-count');
         if (label.dataset.busy) return;
         label.textContent = !search.value ? '' : !matches.length ? 'No matches'
-            : matchLines.has(selected) ? `${index + 1} / ${matches.length}` : `${matches.length} lines`;
+            : matches[index] === selected ? `${index + 1} / ${matches.length}` : `${matches.length} lines`;
         get('match-next').disabled = get('match-prev').disabled = !matches.length;
     }
 
+    function hasMatch(line) {
+        return matches[lowerBound(matches, line)] === line;
+    }
+
     function find(move = true) {
-        const run = ++searchGeneration, query = search.value.toLowerCase(), found = [];
-        let index = 0;
         const count = get('match-count');
         count.dataset.busy = 'true';
-        count.textContent = query ? 'Searching…' : '';
+        count.textContent = search.value ? 'Searching…' : '';
         get('match-next').disabled = get('match-prev').disabled = true;
-        const scan = () => {
-            if (run !== searchGeneration) return;
-            const deadline = performance.now() + 7;
-            while (query && index < text.length) {
-                if (text[index].toLowerCase().includes(query)) found.push(index);
-                if ((++index & 127) === 0 && performance.now() >= deadline) {
-                    requestAnimationFrame(scan);
-                    return;
-                }
-            }
+        searchLines(search.value, found => {
             matches = found;
-            matchLines = new Set(found);
             delete count.dataset.busy;
             for (const row of code.querySelectorAll('[data-line]'))
-                row.classList.toggle('match', matchLines.has(Number(row.dataset.line)));
-            if (move && found.length && !matchLines.has(selected))
+                row.classList.toggle('match', hasMatch(Number(row.dataset.line)));
+            if (move && found.length && !hasMatch(selected))
                 showLine(found[lowerBound(found, selected) % found.length]);
             else updateSearchStatus();
             save();
-        };
-        requestAnimationFrame(scan);
+        });
     }
 
     function moveMatch(direction) {

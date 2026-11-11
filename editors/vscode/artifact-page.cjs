@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const { createCodeRenderer } = require('./artifact-code.cjs');
+const { createArtifactSearch } = require('./artifact-search.cjs');
 const { startArtifactPage } = require('./artifact-page-client.cjs');
 const { styles } = require('./artifact-page-style.cjs');
 const { escape } = createCodeRenderer();
@@ -64,7 +65,7 @@ function renderPage(uri, model, error, generation = 0) {
   <div class="facts">${facts}<span class="explanation">${explanation}</span><span id="status" role="status"></span></div>
 </header>${content}
 <script type="application/json" id="artifact-data" nonce="${nonce}">${data}</script>
-<script nonce="${nonce}">(${startArtifactPage.toString()})( (${createCodeRenderer.toString()})(), ${generation} );</script>
+<script nonce="${nonce}">(${startArtifactPage.toString()})( (${createCodeRenderer.toString()})(), ${createArtifactSearch.toString()}, ${generation} );</script>
 </body></html>`;
 }
 
