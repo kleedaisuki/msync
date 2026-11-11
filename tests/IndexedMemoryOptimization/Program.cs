@@ -59,6 +59,67 @@ foreach (var item in cases)
     }
 }
 
+foreach (var item in new[]
+{
+    (Name: "edge-copy", Program: SelectedEdge(), Gets: 2, Left: 10d, Right: 20d),
+    (Name: "edge-expression", Program: SelectedExpression(), Gets: 2, Left: 20d, Right: 30d),
+    (Name: "edge-local", Program: SelectedLocal(false, false), Gets: 2, Left: 20d, Right: 40d),
+    (Name: "edge-alias-write", Program: SelectedLocal(true, false), Gets: 3, Left: 109d, Right: 40d),
+    (Name: "edge-callback", Program: SelectedLocal(false, true), Gets: 3, Left: 109d, Right: 40d),
+    (Name: "edge-receiver", Program: SelectedReceiver(), Gets: 2, Left: 10d, Right: 20d),
+    (Name: "edge-mixed-cell", Program: MixedCell(), Gets: 2, Left: 40d, Right: 30d),
+})
+{
+    var program = item.Program;
+    var original = program.Function();
+    var rewritten = Rewrite(original, program.Constants);
+    Check(GetCount(rewritten) == item.Gets, item.Name + " edge pass residual gets");
+    Check(Rewrite(rewritten, program.Constants).Instructions.SequenceEqual(rewritten.Instructions),
+        item.Name + " edge pass idempotence");
+    if (item.Name == "edge-local")
+        Check(rewritten.LocalCount == original.LocalCount, "reuse the existing selected-result local");
+    foreach (int level in new[] { 0, 2, 3 })
+    {
+        Module raw = new(program.Constants, [original, .. program.Helpers], OptimizationLevel: 0);
+        Module optimized = Optimizer.Optimize(raw, level);
+        if (level >= 2)
+            Check(optimized.Functions.Sum(GetCount) == item.Gets, item.Name + " public residual gets");
+        foreach (Module image in Images(optimized))
+        foreach (bool left in new[] { true, false })
+        {
+            var options = new ExecutionOptions { Input = new StringReader(left ? "" : "right\n") };
+            Value result = await Interpreter.ExecuteAsync(image, options);
+            Check(result is NumberValue number && number.Data == (left ? item.Left : item.Right),
+                $"{item.Name} O{level}, left={left}: {result}");
+        }
+    }
+}
+
+foreach (bool left in new[] { true, false })
+{
+    Code code = new(); code.Buffer(10);
+    code.InputIsNull(); int other = code.Jump(OpCode.JumpIfFalse);
+    code.Number(3); code.Emit(OpCode.InitializeLocal, 1);
+    code.GetLocal(1, 71); code.Emit(OpCode.Pop); int join = code.Jump(OpCode.Jump);
+    code.Target(other); code.Number(4); code.Emit(OpCode.InitializeLocal, 1);
+    code.GetLocal(1, 81); code.Emit(OpCode.Pop);
+    code.Target(join); code.GetLocal(1, 91); code.Emit(OpCode.Return);
+    foreach (int level in new[] { 0, 2, 3 })
+    {
+        Module optimized = Optimizer.Optimize(new(code.Constants, [code.Function()], OptimizationLevel: 0), level);
+        if (level >= 2) Check(optimized.Functions.Sum(GetCount) == 2, "edge failures retained, selected reread removed");
+        foreach (Module image in Images(optimized))
+        {
+            var options = new ExecutionOptions { Input = new StringReader(left ? "" : "right\n") };
+            try { await Interpreter.ExecuteAsync(image, options); throw new InvalidOperationException("Missing edge bounds failure"); }
+            catch (MsyncException error)
+            {
+                Check(error.Span?.Start == (left ? 71 : 81), $"O{level}: wrong first failing edge span: {error.Span}");
+            }
+        }
+    }
+}
+
 foreach (bool resize in new[] { false, true })
 {
     Code program = new(); program.Buffer(10);
@@ -89,6 +150,8 @@ Check(ReferenceEquals(Rewrite(noBufferFunction, noBuffer.Constants), noBufferFun
 Console.WriteLine($"PASS {checks} indexed memory contracts");
 
 FunctionCode Rewrite(FunctionCode function, IReadOnlyList<Value> constants) => (FunctionCode)pass.Invoke(null, [function, constants])!;
+int GetCount(FunctionCode function) => function.Instructions.Count(instruction =>
+    instruction is { Op: OpCode.NativeCall, Text: "storage.buffer_get" });
 void Check(bool condition, string message)
 {
     checks++;
@@ -213,6 +276,95 @@ Code Loop()
     code.Emit(OpCode.Jump, header); code.Target(exit); code.Emit(OpCode.LoadLocal, 2); code.Emit(OpCode.Return); return code;
 }
 
+Code SelectedEdge()
+{
+    Code code = new(); code.Buffer(10, 20);
+    code.Get(0); code.Emit(OpCode.Pop); code.Get(1); code.Emit(OpCode.Pop);
+    code.Number(0); code.Emit(OpCode.InitializeLocal, 1);
+    code.InputIsNull(); int join = code.Jump(OpCode.JumpIfTrue);
+    code.Number(1); code.Emit(OpCode.StoreLocal, 1);
+    code.Target(join); code.GetLocal(1); code.Emit(OpCode.Return); return code;
+}
+
+Code SelectedExpression()
+{
+    Code code = new(); code.Buffer(10, 20, 30);
+    code.InputIsNull(); int other = code.Jump(OpCode.JumpIfFalse);
+    code.Number(0); code.Emit(OpCode.InitializeLocal, 1); Read(); code.Emit(OpCode.Pop);
+    int join = code.Jump(OpCode.Jump);
+    code.Target(other); code.Number(1); code.Emit(OpCode.InitializeLocal, 1); Read(); code.Emit(OpCode.Pop);
+    code.Target(join); Read(); code.Emit(OpCode.Return); return code;
+
+    void Read()
+    {
+        code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.LoadLocal, 1); code.Number(1);
+        code.Emit(OpCode.Add); code.Native("buffer_get", 2);
+    }
+}
+
+Code SelectedLocal(bool write, bool callback)
+{
+    Code code = new(); code.Buffer(10, 20);
+    code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.InitializeLocal, 3);
+    code.InputIsNull(); int other = code.Jump(OpCode.JumpIfFalse);
+    Read(0);
+    if (write)
+    {
+        code.Emit(OpCode.LoadLocal, 3); code.Number(0); code.Number(99);
+        code.Native("buffer_set", 3); code.Emit(OpCode.Pop);
+    }
+    if (callback)
+    {
+        int zero = code.Constant(new NumberValue(0)), changed = code.Constant(new NumberValue(99));
+        code.Helpers.Add(new("mutate", 0, 1,
+        [
+            new(OpCode.LoadLocal, 0), new(OpCode.Constant, zero), new(OpCode.Constant, changed),
+            new(OpCode.NativeCall, 3, Text: "storage.buffer_set"), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)
+        ], TypeRef.Null, CaptureCount: 1));
+        code.Emit(OpCode.LoadLocal, 3); code.Emit(OpCode.MakeClosure, 1, 1);
+        code.Emit(OpCode.Call, 0); code.Emit(OpCode.Pop);
+    }
+    int join = code.Jump(OpCode.Jump);
+    code.Target(other); Read(1);
+    code.Target(join); code.Emit(OpCode.LoadLocal, 2);
+    code.GetLocal(1); code.Emit(OpCode.Add); code.Emit(OpCode.Return); return code;
+
+    void Read(int index)
+    {
+        code.Number(index); code.Emit(OpCode.InitializeLocal, 1);
+        code.GetLocal(1); code.Emit(OpCode.InitializeLocal, 2);
+    }
+}
+
+Code SelectedReceiver()
+{
+    Code code = new(); code.Buffer(10);
+    code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.InitializeLocal, 1); code.Buffer(20);
+    code.InputIsNull(); int other = code.Jump(OpCode.JumpIfFalse);
+    code.Emit(OpCode.LoadLocal, 1); Read(true); int join = code.Jump(OpCode.Jump);
+    code.Target(other); code.Emit(OpCode.LoadLocal, 0); Read(true);
+    code.Target(join); code.Emit(OpCode.LoadLocal, 2); Read(false); code.Emit(OpCode.Return); return code;
+
+    void Read(bool remember)
+    {
+        if (remember) { code.Emit(OpCode.Dup); code.Emit(OpCode.InitializeLocal, 2); }
+        code.Number(0); code.Native("buffer_get", 2);
+        if (remember) code.Emit(OpCode.Pop);
+    }
+}
+
+Code MixedCell()
+{
+    Code code = new(); code.Buffer(20);
+    code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.InitializeLocal, 1); code.Buffer(10);
+    code.InputIsNull(); int join = code.Jump(OpCode.JumpIfFalse);
+    code.Emit(OpCode.LoadCell, 0); code.Native("buffer_size", 1); code.Emit(OpCode.Pop);
+    code.Target(join); code.Emit(OpCode.LoadStorage, 0); code.Emit(OpCode.InitializeLocal, 2);
+    code.Emit(OpCode.LoadLocal, 1); code.Emit(OpCode.StoreLocal, 0);
+    code.Get(0); code.Emit(OpCode.LoadLocal, 2); code.Number(0); code.Native("buffer_get", 2);
+    code.Emit(OpCode.Add); code.Emit(OpCode.Return); return code;
+}
+
 sealed class Code
 {
     internal List<Value> Constants { get; } = [];
@@ -231,6 +383,8 @@ sealed class Code
         Emit(OpCode.MakeRange, values.Length); Native("buffer_new", 1); Emit(OpCode.InitializeLocal, 0);
     }
     internal void Get(int index, int span = 0) { Emit(OpCode.LoadLocal, 0); Number(index); Native("buffer_get", 2, span); }
+    internal void GetLocal(int slot, int span = 0) { Emit(OpCode.LoadLocal, 0); Emit(OpCode.LoadLocal, slot); Native("buffer_get", 2, span); }
+    internal void InputIsNull() { Emit(OpCode.NativeCall, 0, text: "io.read_line"); Emit(OpCode.IsNull); }
     internal void Size() { Emit(OpCode.LoadLocal, 0); Native("buffer_size", 1); }
     internal void Set(int index, double value) { Emit(OpCode.LoadLocal, 0); Number(index); Number(value); Native("buffer_set", 3); Emit(OpCode.Pop); }
     internal int Jump(OpCode op) { int index = instructions.Count; Emit(op); return index; }

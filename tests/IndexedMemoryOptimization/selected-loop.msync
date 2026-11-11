@@ -1,0 +1,18 @@
+let Buffer = $std::storage::Buffer;
+let values = Buffer::new([20, 10, 1, 40]);
+let sum = 0;
+let iteration = 0;
+loop {
+    if iteration >= 131072 {
+        break;
+    };
+    let child = (iteration % 2) * 2;
+    let left = Buffer::get(values, child);
+    let right = Buffer::get(values, child + 1);
+    if right < left {
+        child = child + 1;
+    };
+    sum = sum + Buffer::get(values, child);
+    iteration = iteration + 1;
+};
+$std::io::println(sum as String);

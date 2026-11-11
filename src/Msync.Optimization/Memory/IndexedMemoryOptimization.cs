@@ -2,34 +2,49 @@ using System.Collections.Immutable;
 
 namespace Msync.Optimization;
 
-internal static class IndexedMemoryOptimization
+internal static partial class IndexedMemoryOptimization
 {
     private readonly record struct Atom(int Number, bool Storage = false);
     private readonly record struct Index(int Number, long Constant = 0, bool Known = false);
     private readonly record struct Access(string Operation, int Buffer, Index Index);
-    private readonly record struct Read(int Position, Atom Result);
+    private sealed record Read(int Position, Atom Result, Phi? Merge = null);
+    private readonly record struct Source(Read? Read, int Local = -1);
+    private readonly record struct PhiInput(ControlFlowEdge Edge, Source Source);
+    private sealed record Phi(PhiInput[] Inputs);
     private readonly record struct Identity(int Kind, int Left, int Right = 0, int Third = 0, string? Name = null);
+
+    private const int Definition = 0, CellRead = 1, CellsPhi = 2, MemoryPhi = 3, FieldPhi = 4,
+        CellsClobber = 5, MemoryClobber = 6, CellsWrite = 7, MemberVersion = 8, FieldWrite = 9,
+        Operator = 10, MemberRead = 80;
+
     private sealed class State(Atom[] locals, List<Atom> stack)
     {
         internal readonly Atom[] Locals = locals;
         internal readonly List<Atom> Stack = stack;
         internal ImmutableDictionary<Access, Read> Reads = ImmutableDictionary<Access, Read>.Empty;
         internal ImmutableDictionary<string, int> Fields = ImmutableDictionary<string, int>.Empty;
+        internal Join? Join;
+        internal ImmutableHashSet<long>? WrittenIndices;
+        internal bool UnknownIndexWrite;
         internal int Cells;
         internal int Memory;
         internal State Copy() => new((Atom[])Locals.Clone(), [.. Stack])
-        { Reads = Reads, Fields = Fields, Cells = Cells, Memory = Memory };
+        {
+            Reads = Reads, Fields = Fields, Cells = Cells, Memory = Memory,
+            Join = Join, WrittenIndices = WrittenIndices, UnknownIndexWrite = UnknownIndexWrite
+        };
     }
-    private sealed class Block(int start, int end)
+    private sealed class BlockState
     {
-        internal readonly int Start = start;
-        internal readonly int End = end;
-        internal readonly List<int> Predecessors = [];
         internal State? Output;
         internal State? IteratorFailure;
     }
 
-    internal static FunctionCode Optimize(FunctionCode function, IReadOnlyList<Value> constants)
+    internal static FunctionCode Optimize(FunctionCode function, IReadOnlyList<Value> constants) =>
+        OptimizeWithAnalysis(function, constants, null);
+
+    internal static FunctionCode OptimizeWithAnalysis(FunctionCode function, IReadOnlyList<Value> constants,
+        FunctionAnalysisContext? analysis)
     {
         int gets = 0, sizes = 0;
         bool unknown = false, repeated = false;
@@ -39,7 +54,7 @@ internal static class IndexedMemoryOptimization
         {
             var instruction = function.Instructions[pc];
             if (instruction.Op != OpCode.NativeCall) continue;
-            if (instruction.Text == "storage.buffer_size" && ++sizes == 2) return new Analysis(function, constants).Run();
+            if (instruction.Text == "storage.buffer_size" && ++sizes == 2) return Run();
             if (instruction.Text != "storage.buffer_get") continue;
             gets++;
             if (pc == 0 || function.Instructions[pc - 1] is not { Op: OpCode.Constant } literal
@@ -48,30 +63,31 @@ internal static class IndexedMemoryOptimization
             else if (first < 0) first = (long)index;
             else if (first == index) repeated = true;
             else repeated |= !(indices ??= [first]).Add((long)index);
-            if (gets >= 2 && (unknown || repeated)) return new Analysis(function, constants).Run();
+            if (gets >= 2 && (unknown || repeated)) return Run();
         }
         return function;
+
+        FunctionCode Run() => new Analysis(function, constants, analysis?.ControlFlow(function) ?? new(function)).Run();
     }
 
-    private sealed class Analysis(FunctionCode function, IReadOnlyList<Value> constants)
+    private sealed partial class Analysis(FunctionCode function, IReadOnlyList<Value> constants, ControlFlowGraph graph)
     {
         private readonly IReadOnlyList<Instruction> code = function.Instructions;
         private readonly Dictionary<Identity, int> identities = [];
         private readonly Dictionary<Value, int> literals = new(ValueRepresentation.Comparer);
-        private readonly Dictionary<int, long> indices = [];
-        private readonly Dictionary<int, int> replacements = [];
-        private readonly Dictionary<int, int> retained = [];
-        private int nextIdentity = 1;
-        private Block[] blocks = [];
-        private int[] blockAt = [];
+        private readonly Dictionary<int, double> numbers = [];
+        private readonly Dictionary<int, Source> replacements = [];
+        private readonly List<Identity> definitions = [default];
+        private BlockState[] states = [];
+        private bool[]? storageSlots;
 
         internal FunctionCode Run()
         {
-            BuildBlocks();
-            for (int index = 0; index < blocks.Length; index++)
+            states = new BlockState[graph.Blocks.Count];
+            foreach (int index in graph.ReversePostOrder)
             {
                 State? input = Input(index);
-                if (input is not null) Transfer(blocks[index], input);
+                if (input is not null) Transfer(graph.Blocks[index], states[index] = new(), input);
             }
             return replacements.Count == 0 ? function : Rewrite();
         }
@@ -79,115 +95,139 @@ internal static class IndexedMemoryOptimization
         private int Number(Identity identity)
         {
             if (identities.TryGetValue(identity, out int number)) return number;
-            identities.Add(identity, number = nextIdentity++);
+            identities.Add(identity, number = Define(identity));
+            return number;
+        }
+
+        private int Define(Identity identity = default)
+        {
+            int number = definitions.Count;
+            definitions.Add(identity);
             return number;
         }
 
         private Atom Unknown(int position, int operand = 0, bool storage = false) =>
-            new(Number(new(0, position, operand)), storage);
+            new(Number(new(Definition, position, operand)), storage);
 
         private Atom Literal(Value value)
         {
-            if (value is ScopeValue or FunctionValue or RangeValue or CellValue) return new(nextIdentity++);
-            if (!literals.TryGetValue(value, out int number)) literals.Add(value, number = nextIdentity++);
-            if (value is NumberValue { Data: var index } && index >= 0 && index <= int.MaxValue && index == Math.Truncate(index))
-                indices[number] = (long)index;
+            if (value is ScopeValue or FunctionValue or RangeValue or CellValue) return new(Define(), value is CellValue);
+            if (!literals.TryGetValue(value, out int number)) literals.Add(value, number = Define());
+            if (value is NumberValue numeric) numbers[number] = numeric.Data;
             return new(number);
         }
 
         private Atom Dereference(State state, Atom value) => value.Storage
-            ? new(Number(new(1, value.Number, state.Cells))) : value;
+            ? new(Number(new(CellRead, value.Number, state.Cells))) : value;
 
-        private Index Subscript(Atom value) => indices.TryGetValue(value.Number, out long index)
-            ? new(0, index, true) : new(value.Number);
-
-        private void BuildBlocks()
-        {
-            SortedSet<int> starts = [0, code.Count];
-            for (int pc = 0; pc < code.Count; pc++)
-            {
-                var instruction = code[pc];
-                if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse) starts.Add(instruction.A);
-                if (instruction.Op == OpCode.IteratorNext) starts.Add(instruction.B);
-                if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.IteratorNext or OpCode.Return)
-                    starts.Add(pc + 1);
-            }
-            int[] positions = starts.ToArray();
-            blocks = positions.Zip(positions.Skip(1), (start, end) => new Block(start, end)).ToArray();
-            blockAt = new int[code.Count + 1];
-            for (int index = 0; index < blocks.Length; index++)
-                for (int pc = blocks[index].Start; pc < blocks[index].End; pc++) blockAt[pc] = index;
-            blockAt[^1] = blocks.Length;
-            for (int index = 0; index < blocks.Length; index++)
-            {
-                Instruction last = code[blocks[index].End - 1];
-                if (last.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse) Edge(last.A);
-                if (last.Op == OpCode.IteratorNext) Edge(last.B);
-                if (last.Op is not (OpCode.Jump or OpCode.Return)) Edge(blocks[index].End);
-                void Edge(int target)
-                {
-                    if (target == code.Count) return;
-                    var predecessors = blocks[blockAt[target]].Predecessors;
-                    if (!predecessors.Contains(index)) predecessors.Add(index);
-                }
-            }
-        }
+        private Index Subscript(Atom value) => numbers.TryGetValue(value.Number, out double index)
+            && index >= 0 && index <= int.MaxValue && index == Math.Truncate(index)
+            ? new(0, (long)index, true) : new(value.Number);
 
         private State? Input(int index)
         {
-            Block block = blocks[index];
-            if (index == 0) return Initial(block.Start);
-            var previous = block.Predecessors.Where(parent => parent < index)
-                .Select(parent => Incoming(parent, block.Start)).Where(state => state is not null).Cast<State>().ToArray();
-            if (previous.Length == 0) return null;
-            State result = previous[0].Copy();
+            var block = graph.Blocks[index];
+            if (index == 0)
+            {
+                State entry = Initial(block.Start);
+                if (!graph.IncomingEdges(index).IsEmpty) ResetLoop(entry, block.Start);
+                return entry;
+            }
+
+            State? first = null;
+            List<JoinEdge>? edges = null;
+            ControlFlowEdge firstEdge = default;
+            bool missing = false;
+            foreach (var edge in graph.IncomingEdges(index))
+            {
+                if (!graph.IsReachable(edge.Source)) continue;
+                var state = edge.Kind == ControlFlowEdgeKind.IteratorExhausted
+                    ? states[edge.Source]?.IteratorFailure : states[edge.Source]?.Output;
+                if (state is null) { missing = true; continue; }
+                if (first is null) { first = state; firstEdge = edge; continue; }
+                if (state.Stack.Count != first.Stack.Count) return null;
+                (edges ??= [new(firstEdge, first)]).Add(new(edge, state));
+            }
+            if (first is null) return null;
+            State result = first.Copy();
+            // An unanalysed predecessor is a clobber boundary; a backedge
+            // cannot carry read availability into a new dynamic iteration.
+            if (missing)
+            {
+                ResetLoop(result, block.Start);
+                return result;
+            }
+            if (edges is null) return result;
+            var incoming = edges.ToArray();
+            bool translate = incoming.All(edge => edge.State.Reads.Count > 0 || edge.State.Join is not null);
             for (int slot = 0; slot < result.Locals.Length; slot++)
-                if (previous.Skip(1).Any(state => state.Locals[slot] != result.Locals[slot]))
-                    result.Locals[slot] = Unknown(block.Start, slot + 1, previous.Any(state => state.Locals[slot].Storage));
-            if (previous.Any(state => state.Stack.Count != result.Stack.Count)) return null;
+                result.Locals[slot] = Merge(incoming, block.Start, slot + 1, result.Locals[slot], slot, stack: false, translate);
             for (int item = 0; item < result.Stack.Count; item++)
-                if (previous.Skip(1).Any(state => state.Stack[item] != result.Stack[item]))
-                    result.Stack[item] = Unknown(block.Start, -item - 1, previous.Any(state => state.Stack[item].Storage));
-            if (previous.Skip(1).Any(state => state.Cells != result.Cells)) result.Cells = Number(new(2, block.Start));
-            if (previous.Skip(1).Any(state => state.Memory != result.Memory)) result.Memory = Number(new(3, block.Start));
-            foreach (string field in previous.SelectMany(state => state.Fields.Keys).Distinct(StringComparer.Ordinal))
-                if (previous.Skip(1).Any(state => state.Fields.GetValueOrDefault(field) != result.Fields.GetValueOrDefault(field)))
-                    result.Fields = result.Fields.SetItem(field, Number(new(4, block.Start, Name: field)));
+                result.Stack[item] = Merge(incoming, block.Start, -item - 1, result.Stack[item], item, stack: true, translate);
+            if (incoming.Skip(1).Any(edge => edge.State.Cells != result.Cells)) result.Cells = Number(new(CellsPhi, block.Start));
+            if (incoming.Skip(1).Any(edge => edge.State.Memory != result.Memory)) result.Memory = Number(new(MemoryPhi, block.Start));
+            foreach (string field in incoming.SelectMany(edge => edge.State.Fields.Keys).Distinct(StringComparer.Ordinal))
+                if (incoming.Skip(1).Any(edge => edge.State.Fields.GetValueOrDefault(field) != result.Fields.GetValueOrDefault(field)))
+                    result.Fields = result.Fields.SetItem(field, Number(new(FieldPhi, block.Start, Name: field)));
             foreach (var entry in result.Reads)
-                if (previous.Skip(1).Any(state => !state.Reads.TryGetValue(entry.Key, out var read) || read != entry.Value))
+                if (incoming.Skip(1).Any(edge => !edge.State.Reads.TryGetValue(entry.Key, out var read) || read != entry.Value))
                     result.Reads = result.Reads.Remove(entry.Key);
-            // A backedge starts a new dynamic iteration. Reuse within an
-            // iteration needs no loop-invariance or speculative-load proof.
-            if (block.Predecessors.Any(parent => parent >= index)) ResetLoop(result, block.Start);
+            result.Join = translate ? new(index, incoming, result) : null;
+            result.WrittenIndices = null;
+            result.UnknownIndexWrite = false;
             return result;
         }
 
-        private State? Incoming(int parent, int start)
-        {
-            var block = blocks[parent];
-            Instruction last = code[block.End - 1];
-            return last.Op == OpCode.IteratorNext && last.B == start ? block.IteratorFailure : block.Output;
-        }
-
         private State Initial(int start) => new(Enumerable.Range(0, function.LocalCount)
-            .Select(slot => Unknown(start, slot + 1, slot < function.CaptureCount)).ToArray(), []);
+            .Select(slot => Unknown(start, slot + 1, slot < function.CaptureCount + function.ParameterCount)).ToArray(), []);
 
         private void ResetLoop(State state, int start)
         {
             Invalidate(state, start);
-            for (int slot = 0; slot < state.Locals.Length; slot++) state.Locals[slot] = Unknown(start, slot + 1, state.Locals[slot].Storage);
-            for (int item = 0; item < state.Stack.Count; item++) state.Stack[item] = Unknown(start, -item - 1, state.Stack[item].Storage);
+            var storage = storageSlots ??= FindStorageSlots();
+            for (int slot = 0; slot < state.Locals.Length; slot++)
+                state.Locals[slot] = Unknown(start, slot + 1, storage[slot]);
+            for (int item = 0; item < state.Stack.Count; item++) state.Stack[item] = Unknown(start, -item - 1, storage: true);
         }
+
+        private bool[] FindStorageSlots()
+        {
+            var result = new bool[function.LocalCount];
+            Array.Fill(result, true, 0, function.CaptureCount + function.ParameterCount);
+            for (int pc = 0; pc < code.Count; pc++)
+            {
+                var instruction = code[pc];
+                if (instruction.Op == OpCode.LoadCell
+                    || (instruction.Op is OpCode.StoreLocal or OpCode.InitializeLocal)
+                    && (graph.Blocks[graph.BlockAt(pc)].Start == pc || !ProducesPlainValue(code[pc - 1])))
+                    result[instruction.A] = true;
+            }
+            return result;
+        }
+
+        private bool ProducesPlainValue(Instruction instruction) => instruction.Op switch
+        {
+            OpCode.Constant => constants[instruction.A] is not CellValue,
+            OpCode.NativeCall when instruction.Text is "storage.buffer_new" or "storage.buffer_snapshot"
+                or "storage.buffer_size" => true,
+            OpCode.Null or OpCode.True or OpCode.False or OpCode.MakeClosure or OpCode.MakeScope or OpCode.MakeRange
+                or OpCode.MakeLazyRange or OpCode.GetIterator or OpCode.SpecializeClosure or OpCode.SelectPath
+                or OpCode.DeferRange or OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide
+                or OpCode.Remainder or OpCode.Negate or OpCode.Equal or OpCode.NotEqual or OpCode.Less
+                or OpCode.LessEqual or OpCode.Greater or OpCode.GreaterEqual or OpCode.Not or OpCode.IsNull
+                or OpCode.IsType => true,
+            _ => false
+        };
 
         private void Invalidate(State state, int pc)
         {
-            state.Reads = ImmutableDictionary<Access, Read>.Empty;
-            state.Cells = Number(new(5, pc));
-            state.Memory = Number(new(6, pc));
+            ForgetReads(state);
+            state.Cells = Number(new(CellsClobber, pc));
+            state.Memory = Number(new(MemoryClobber, pc));
             state.Fields = ImmutableDictionary<string, int>.Empty;
         }
 
-        private void Transfer(Block block, State state)
+        private void Transfer(BasicBlock block, BlockState output, State state)
         {
             Atom Pop() { var item = state.Stack[^1]; state.Stack.RemoveAt(state.Stack.Count - 1); return item; }
             Atom[] Arguments(int count)
@@ -209,12 +249,19 @@ internal static class IndexedMemoryOptimization
                     case OpCode.LoadLocal: state.Stack.Add(Dereference(state, state.Locals[instruction.A])); break;
                     case OpCode.LoadStorage: state.Stack.Add(state.Locals[instruction.A]); break;
                     case OpCode.LoadCell:
-                        if (!state.Locals[instruction.A].Storage) state.Locals[instruction.A] = Unknown(pc, instruction.A + 1, true);
+                        state.Locals[instruction.A] = Unknown(pc, instruction.A + 1, storage: true);
                         state.Stack.Add(state.Locals[instruction.A]); break;
                     case OpCode.InitializeLocal: state.Locals[instruction.A] = Pop(); break;
                     case OpCode.StoreLocal:
                         Atom stored = Pop();
-                        if (state.Locals[instruction.A].Storage) state.Cells = Number(new(7, pc));
+                        if (state.Locals[instruction.A].Storage)
+                        {
+                            // The old value might be a cell or a plain value
+                            // also copied into a different local. Neither proves
+                            // that both locals still read the same value.
+                            state.Cells = Number(new(CellsWrite, pc));
+                            state.Locals[instruction.A] = Unknown(pc, instruction.A + 1, storage: true);
+                        }
                         else state.Locals[instruction.A] = stored;
                         break;
                     case OpCode.Pop: Pop(); break;
@@ -223,26 +270,31 @@ internal static class IndexedMemoryOptimization
                     case OpCode.Return: if (state.Stack.Count > 0) Pop(); break;
                     case OpCode.GetMember:
                         Atom receiver = Pop();
-                        int stamp = Number(new(8, state.Memory, state.Cells,
+                        int stamp = Number(new(MemberVersion, state.Memory, state.Cells,
                             state.Fields.GetValueOrDefault(instruction.Text!), instruction.Text));
-                        state.Stack.Add(new(Number(new(80, receiver.Number, stamp))));
+                        state.Stack.Add(new(Number(new(MemberRead, receiver.Number, stamp))));
                         break;
                     case OpCode.SetMember:
                         Arguments(2);
-                        state.Fields = state.Fields.SetItem(instruction.Text!, Number(new(9, pc)));
-                        state.Cells = Number(new(7, pc));
+                        state.Fields = state.Fields.SetItem(instruction.Text!, Number(new(FieldWrite, pc)));
+                        state.Cells = Number(new(CellsWrite, pc));
                         state.Stack.Add(Literal(Value.Null)); break;
                     case OpCode.NativeCall: Native(state, instruction, pc, Arguments(instruction.A)); break;
                     case OpCode.Call: case OpCode.ProcessCall:
                         Arguments(instruction.A + 1); Invalidate(state, pc); state.Stack.Add(Unknown(pc, storage: true)); break;
                     case OpCode.Barrier: Invalidate(state, pc); break;
+                    case OpCode.ExecutePlan: case OpCode.PlanResult:
+                        for (int item = 0; item < instruction.B; item++) Pop();
+                        Invalidate(state, pc);
+                        if (instruction.Op == OpCode.PlanResult) state.Stack.Add(Unknown(pc));
+                        break;
                     case OpCode.Acquire:
                         if (instruction.A != 0) { Atom acquired = Pop(); state.Stack.Add(acquired); }
                         Invalidate(state, pc); break;
                     case OpCode.GetIterator:
                         Pop(); Invalidate(state, pc); state.Stack.Add(Unknown(pc)); break;
                     case OpCode.IteratorNext:
-                        Invalidate(state, pc); block.IteratorFailure = state.Copy(); state.Stack.Add(Unknown(pc, storage: true)); break;
+                        Invalidate(state, pc); output.IteratorFailure = state.Copy(); state.Stack.Add(Unknown(pc, storage: true)); break;
                     case OpCode.MakeClosure: Arguments(instruction.B); state.Stack.Add(Unknown(pc)); break;
                     case OpCode.MakeScope: case OpCode.MakeRange: case OpCode.MakeLazyRange:
                         Arguments(instruction.A); state.Stack.Add(Unknown(pc)); break;
@@ -256,15 +308,15 @@ internal static class IndexedMemoryOptimization
                     default:
                         Atom right = Pop(), left = Pop();
                         if (instruction.Op is OpCode.Transfer or OpCode.LocalTransfer) Invalidate(state, pc);
-                        state.Stack.Add(new(Number(new(10 + (int)instruction.Op, left.Number, right.Number, Name: instruction.Text))));
+                        state.Stack.Add(new(ExpressionNumber(new(Operator + (int)instruction.Op, left.Number, right.Number, Name: instruction.Text))));
                         break;
                 }
             }
-            block.Output = state;
+            output.Output = state;
         }
 
-        private void Unary(State state, Instruction instruction, Atom input) => state.Stack.Add(new(Number(
-            new(10 + (int)instruction.Op, input.Number, Name: instruction.Text))));
+        private void Unary(State state, Instruction instruction, Atom input) => state.Stack.Add(new(ExpressionNumber(
+            new(Operator + (int)instruction.Op, input.Number, Name: instruction.Text))));
 
         private void Native(State state, Instruction instruction, int pc, Atom[] arguments)
         {
@@ -273,12 +325,12 @@ internal static class IndexedMemoryOptimization
             {
                 var access = new Access(name, Dereference(state, arguments[0]).Number,
                     name == "storage.buffer_get" ? Subscript(Dereference(state, arguments[1])) : default);
-                if (state.Reads.TryGetValue(access, out var read))
+                if (Available(state, access) is { } read)
                 {
-                    // Keep the first selected read, including its failure span.
-                    // An available result proves success on every incoming edge.
-                    replacements[pc] = read.Position;
-                    retained.TryAdd(read.Position, -1);
+                    // Keep the selected first read and its failure span on each
+                    // path. Only the redundant access is replaced.
+                    replacements[pc] = read.Merge is null ? new(read) : ExistingSource(state, read);
+                    state.Reads = state.Reads.SetItem(access, read);
                     state.Stack.Add(read.Result);
                 }
                 else
@@ -296,9 +348,15 @@ internal static class IndexedMemoryOptimization
                 foreach (var entry in state.Reads)
                     if (entry.Key.Operation == "storage.buffer_get" && MayOverlap(entry.Key.Index, first, second))
                         state.Reads = state.Reads.Remove(entry.Key);
+                if (state.Join is not null)
+                {
+                    if (!first.Known || !second.Known) state.UnknownIndexWrite = true;
+                    else if (!state.UnknownIndexWrite)
+                        state.WrittenIndices = (state.WrittenIndices ?? ImmutableHashSet<long>.Empty).Add(first.Constant).Add(second.Constant);
+                }
             }
             else if (name is "storage.buffer_push" or "storage.buffer_pop" or "storage.buffer_insert" or "storage.buffer_remove" or "storage.buffer_clear")
-                state.Reads = ImmutableDictionary<Access, Read>.Empty;
+                ForgetReads(state);
             else if ((InstructionEffects.NativeEffects(name) & (InstructionEffect.Write | InstructionEffect.Invoke)) != 0)
                 Invalidate(state, pc);
             bool item = NativeSignatures.TryGet(name, out var signature) && signature.ResultRule == NativeResultRule.RangeItem;
@@ -308,37 +366,5 @@ internal static class IndexedMemoryOptimization
         private static bool MayOverlap(Index read, Index first, Index second) =>
             !read.Known || !first.Known || !second.Known || read.Constant == first.Constant || read.Constant == second.Constant;
 
-        private FunctionCode Rewrite()
-        {
-            int localCount = function.LocalCount;
-            foreach (int position in retained.Keys) retained[position] = localCount++;
-            int[] positions = new int[code.Count + 1];
-            List<Instruction> output = [];
-            List<int> branches = [];
-            for (int pc = 0; pc < code.Count; pc++)
-            {
-                positions[pc] = output.Count;
-                Instruction instruction = code[pc];
-                if (replacements.TryGetValue(pc, out int producer))
-                {
-                    for (int argument = 0; argument < instruction.A; argument++) output.Add(new(OpCode.Pop, Span: instruction.Span));
-                    output.Add(new(OpCode.LoadStorage, retained[producer], Span: instruction.Span));
-                    continue;
-                }
-                if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.IteratorNext) branches.Add(output.Count);
-                output.Add(instruction);
-                if (!retained.TryGetValue(pc, out int slot)) continue;
-                output.Add(new(OpCode.Dup, Span: instruction.Span));
-                output.Add(new(OpCode.InitializeLocal, slot, Span: instruction.Span));
-            }
-            positions[^1] = output.Count;
-            foreach (int position in branches)
-            {
-                Instruction instruction = output[position];
-                output[position] = instruction.Op == OpCode.IteratorNext ? instruction with { B = positions[instruction.B] }
-                    : instruction with { A = positions[instruction.A] };
-            }
-            return function with { LocalCount = localCount, Instructions = output };
-        }
     }
 }
