@@ -6,14 +6,14 @@ namespace Msync.Compiler.Semantics;
 
 internal sealed partial class SemanticAnalyzer
 {
-    private sealed record MetaQueryResult(SemanticValue Value, ImmutableArray<SemanticValue> Items = default)
+    private sealed record MetaQueryResult(SemanticValue Value, ImmutableArray<MetaQueryResult> Items = default)
     {
         public static implicit operator MetaQueryResult(SemanticValue value) => new(value);
     }
     internal static bool IsDependentMeta(string? name) => name is
-        "meta.is_invocable" or "meta.is_invocable_r" or "meta.invoke_result" or
-        "meta.parameter_count" or "meta.parameter_types" or "meta.is_variadic" or
-        "meta.has_member" or "meta.member_type" or "meta.member_names" or "meta.member_count";
+        "meta.is_invocable" or "meta.is_invocable_r" or "meta.invoke_result" or "meta.try_invoke_result" or "meta.common_type_of" or
+        "meta.parameter_count" or "meta.parameter_types" or "meta.is_variadic" or "meta.signature_of" or
+        "meta.has_member" or "meta.member_type" or "meta.member_names" or "meta.member_count" or "meta.members_of";
 
     private bool TryMetaCall(HirNode node, ReadOnlySpan<HirNodeId> children,
         SemanticContext context, out SemanticValue result)
@@ -77,10 +77,13 @@ internal sealed partial class SemanticAnalyzer
     private MetaQueryResult DependentMetaResult(string operation, SemanticValue[] arguments,
         HirSourceRange source, SemanticContext context)
     {
-        if (operation is "is_invocable" or "is_invocable_r" or "invoke_result")
+        if (operation == "common_type_of") return CommonTypeOf(arguments, source);
+        if (operation is "is_invocable" or "is_invocable_r" or "invoke_result" or "try_invoke_result")
             return MetaInvocation(operation, arguments, source, context);
         if (operation is "parameter_count" or "parameter_types" or "is_variadic")
             return MetaSignature(operation, arguments[0]);
+        if (operation == "signature_of") return DescribeSignature(arguments[0]);
+        if (operation == "members_of") return DescribeMembers(arguments[0], context);
         var members = MetaMembers(arguments[0], context);
         if (operation == "member_names")
             return MetaRange(members.Keys.Order(StringComparer.Ordinal).Select(name =>
@@ -104,17 +107,37 @@ internal sealed partial class SemanticAnalyzer
         try
         {
             SemanticValue value = InvokeType(callee, arguments, source, context);
-            if (operation == "invoke_result") return MetaType(value.Type);
+            if (operation is "invoke_result" or "try_invoke_result") return MetaType(value.Type);
             return MetaBoolean(expected is null || MetaTypes.IsConvertible(Runtime(value), hir.Types[expected.Value.Value].RuntimeType));
         }
         catch (CompileException error)
         {
+            if (operation == "try_invoke_result") return MetaNull();
             if (operation != "invoke_result") return MetaBoolean(false);
             throw Error(source, $"Cannot infer the result of this invocation: {error.Diagnostic.Message}", "E0222");
         }
     }
 
     private SemanticValue MetaWitness(SemanticValue value) => value.DenotedType is { } type ? ValueForType(type) : value;
+
+    private readonly record struct DeclaredSignature(ImmutableArray<HirTypeId> Parameters, HirTypeId? Result,
+        bool Variadic);
+
+    private DeclaredSignature? CallableDeclaration(SemanticCallable choice)
+    {
+        if (choice.Template is { } template)
+        {
+            var definition = hir.Templates[template.Value];
+            return new(definition.Parameters.Select(location =>
+            {
+                var declaration = hir.Locations[location.Value];
+                return declaration.AdmitsNull ? Nullable(declaration.StorageType) : declaration.StorageType;
+            }).ToImmutableArray(), definition.ResultAnnotation, false);
+        }
+        if (choice.NativeName is not { } native) return null;
+        var signature = NativeSignatures.Get(native);
+        return new(signature.Parameters.Select(hir.Type).ToImmutableArray(), hir.Type(signature.Result), signature.Variadic);
+    }
 
     private MetaQueryResult MetaSignature(string operation, SemanticValue value)
     {
@@ -126,24 +149,10 @@ internal sealed partial class SemanticAnalyzer
         bool? variadic = null;
         foreach (var choice in Choices(value))
         {
-            ImmutableArray<HirTypeId> next;
-            bool variable;
-            if (choice.Template is { } template)
-            {
-                next = hir.Templates[template.Value].Parameters.Select(location =>
-                {
-                    var declaration = hir.Locations[location.Value];
-                    return declaration.AdmitsNull ? Nullable(declaration.StorageType) : declaration.StorageType;
-                }).ToImmutableArray();
-                variable = false;
-            }
-            else if (choice.NativeName is { } native)
-            {
-                var signature = NativeSignatures.Get(native);
-                next = signature.Parameters.Select(hir.Type).ToImmutableArray();
-                variable = signature.Variadic;
-            }
-            else return operation == "is_variadic" ? MetaBoolean(false) : MetaNull();
+            if (CallableDeclaration(choice) is not { } declared)
+                return operation == "is_variadic" ? MetaBoolean(false) : MetaNull();
+            var next = declared.Parameters;
+            bool variable = declared.Variadic;
             if (parameters is { } previous)
             {
                 if (previous.Length != next.Length || variadic != variable)
@@ -175,6 +184,9 @@ internal sealed partial class SemanticAnalyzer
     private SemanticValue MetaType(HirTypeId type) => new(hir.Type(TypeRef.Type), HirNodeId.None,
         new(HirLiteralKind.Type, Type: hir.Types[type.Value].RuntimeType), DenotedType: type);
     private MetaQueryResult MetaRange(IEnumerable<SemanticValue> values, HirTypeId element)
+        => MetaRange(values.Select(value => new MetaQueryResult(value)), element);
+
+    private MetaQueryResult MetaRange(IEnumerable<MetaQueryResult> values, HirTypeId element)
     {
         var items = values.ToImmutableArray();
         return new(new(RangeType(element), HirNodeId.None, Element: ValueForType(element), EagerRange: true), items);
@@ -183,6 +195,7 @@ internal sealed partial class SemanticAnalyzer
     private SemanticValue EmitMetaResult(MetaQueryResult answer, HirSourceRange source, SemanticContext context)
     {
         SemanticValue value = answer.Value;
+        if (value.Scope is { } scope) return EmitMetaRecord(answer, scope, source, context);
         if (!context.Publish) return value;
         if (value.Literal is { } literal) return value with { Node = context.Output!.Literal(literal, value.Type, source) };
         HirNodeId[] children = new HirNodeId[answer.Items.Length];

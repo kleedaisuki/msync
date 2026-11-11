@@ -158,6 +158,33 @@ public namespace. `$std::ranges` remains the only predefined
 range namespace; the removed `$view`, `$views`, `$ranges` and bare aliases are
 not restored. User-declared lexical names remain ordinary values.
 
+## Composable reflection in 0.8.6
+
+Reflection answers declaration questions separately from specialization
+questions. `signature_of(operation)` describes a single known declaration
+shape: `parameters`, `arity`, `result`, `result_declared`, and `variadic`.
+Unannotated results are `Any` with `result_declared: false`; unresolved or
+disagreeing callable alternatives yield `null` instead of a fabricated merged
+signature. `try_invoke_result(operation, Type, ...)` asks the compiler for a
+particular invocation's result in one query. A valid `Null` result is the Type
+value `Null`, distinct from the `null` of an ill-formed call.
+
+`members_of(value)` returns a Range of ordinary Scope descriptors in ordinal
+name order: `name`, `type`, `storage_type`, and `admits_null`. A field's current
+flow type can differ from its fixed storage contract; the descriptor exposes
+both. An empty result retains the descriptor element shape. `common_type_of`
+joins one or more static Type witnesses without promotion or a new type kind.
+
+These are small compiler queries, not a runtime reflection registry. Following
+the declaration/type distinction in
+[WG21 P2996R13](https://open-std.org/JTC1/SC22/WG21/docs/papers/2025/p2996r13.html),
+the result describes the supplied operand without executing it. msync emits
+ordinary typed Scope/Range construction for descriptors; it does not introduce
+C++ reflection handles, splicing, or a second language. The focused
+`stdlib_reflection_journey.py` exercises source, source-free `.mhir`, `.mso`,
+and `.mexe`, checking descriptor fields, type witnesses, fresh identity and
+absence of operand/call effects.
+
 The namespace is a mutable lexical Scope, not a hardcoded spelling prefix.
 Selective module loading must preserve shared module locations: a source
 function capturing a standard module and later code selecting it through the

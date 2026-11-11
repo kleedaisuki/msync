@@ -17,6 +17,8 @@ native fn add_null(type: Type) -> Type;
 native fn remove_null(type: Type) -> Type;
 # The common type is the finite union, retaining Range element alternatives.
 native fn common_type(first: Type, second: Type) -> Type;
+# Join one or more static Type witnesses without evaluating their operands.
+native fn common_type_of(type: Type) -> Type;
 native fn range_of(element: Type) -> Type;
 # Unknown Range elements yield Any; a non-Range yields null.
 native fn element_type(type: Type) -> Type?;
@@ -48,13 +50,19 @@ fn is_assignable(target: Type, source: Type) -> Bool {
 native fn is_invocable(operation, arguments?) -> Bool;
 native fn is_invocable_r(result: Type, operation, arguments?) -> Bool;
 native fn invoke_result(operation, arguments?) -> Type;
+# Returns null for an ill-formed call; a valid Null result is the Type value Null.
+native fn try_invoke_result(operation, arguments?) -> Type?;
 # A variadic callable reports its minimum arity. Unknown signatures yield null.
 native fn parameter_count(operation) -> Number?;
 # Generic unannotated parameters are Any; this reports declarations, not HKT.
 native fn parameter_types(operation) -> Range<Type>?;
 native fn is_variadic(operation) -> Bool;
+# A single declared signature, or null when the callable domain is ambiguous.
+native fn signature_of(operation) -> Scope?;
 # Nullable receivers must first be narrowed to guarantee a member exists.
 native fn has_member(value?, name: String) -> Bool;
 native fn member_type(value?, name: String) -> Type?;
 native fn member_names(value?) -> Range<String>;
 native fn member_count(value?) -> Number;
+# Ordered descriptors distinguish a field's current type from its storage type.
+native fn members_of(value?) -> Range<Scope>;
