@@ -777,3 +777,41 @@ replace public bytecode, preserve raw PC/source identity, and do not cache
 across a changed REPL image. Receipts:
 `.temp/vm-next/{ready-fixed,packed-fixed}/result.json`; the packed source
 overlay is under `.temp/vm-next/packed-source/`.
+
+### Integrated four-workload result
+
+The full candidate (through `dfdb23e` plus the editor-only changes) was
+compared with the preceding integrated Native CLI (`42700ce`, unchanged
+by its documentation follow-up). Both compilers generated O2 bound images
+from the same four fixtures; the Native probe checked the full results,
+including all SHA words and both padding controls. On Linux x86-64 CPU 10,
+six AB/BA probe pairs used one warmup per fresh probe process. Another five
+AB/BA pairs ran the actual CLI with recording off, including process startup
+and artifact loading. SQLite was recorded separately by the corresponding
+CLI. Medians are milliseconds per complete workload.
+
+| Workload | Checked preloaded probe | Fresh CLI | Faster pairs, probe / CLI |
+| --- | ---: | ---: | ---: |
+| Set | 1,630.80 → 1,270.08 | 1,568.66 → 1,185.31 | 6/6 / 5/5 |
+| Heap | 678.92 → 515.14 | 679.36 → 561.54 | 6/6 / 5/5 |
+| Hash | 130.15 → 102.91 | 155.26 → 127.05 | 5/6 / 5/5 |
+| SHA-256 | 430.91 → 369.09 | 449.35 → 422.47 | 6/6 / 5/5 |
+
+These are integrated before/after results, not a sum of the isolated VM
+effects. The same-final-VM Set control keeps 1,008,030 frames and 424,304
+Buffer gets in both compilers' output; the separate profiles keep the
+comparator's 478,589 and node wrapper's 309,586 entries distinct by
+image/function identity. A positive Call operand cannot prove the actual
+mutable policy member, so the optimizer does not elide those calls.
+On the integrated runtime, 940,146 source frames borrow the caller's
+slots and one detaches; all Buffer gets take the direct stack path.
+Set execute allocation drops from 152,385,952 to 82,896,984 bytes despite
+unchanged logical call counts. See the independent
+[indexed mod/ref control](../../tests/IndexedMemoryOptimization/README.md#selected-calls-and-resource-relative-modref)
+for actual read elimination across a retained source call.
+
+The final Native image `fa1972ca83f4c40649e8620f79197880437974ac989e7afccda3cf88a2b2f736`
+passed eleven CLI telemetry journeys, the indexed mod/ref source/object/
+executable routes, and the actual VS Code 1.144 telemetry/highlighting host.
+Raw pairs and SQLite data are under `.temp/vm-next/{final-matrix,final-set-compiler}/`;
+the exact editor receipt is `.temp/vm-next/final-editor-host/result.json`.
