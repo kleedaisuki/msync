@@ -34,6 +34,33 @@ try
         Stage: ArtifactStage.Executable, Context: context));
     Check(ReferenceEquals(ExecutionLowering.Lower(scalar), scalar), "Ordinary scalar code allocated a new execution image");
 
+    Module branch = new([new PathValue("./layout-switch"), new StringValue("off"),
+        new PathValue("./layout-trace"), new StringValue("one"), new StringValue("on"), new StringValue("two")],
+        [new("main", 0, 0, [
+            new(OpCode.Constant, 0), new(OpCode.NativeCall, 1, Text: "fs.exists"),
+            new(OpCode.JumpIfFalse, 4), new(OpCode.Jump, 6),
+            new(OpCode.Constant, 1), new(OpCode.Return),
+            new(OpCode.Constant, 2), new(OpCode.Constant, 3), new(OpCode.NativeCall, 2, Text: "io.append_text"),
+            new(OpCode.Pop), new(OpCode.Constant, 2), new(OpCode.Constant, 5), new(OpCode.NativeCall, 2, Text: "io.append_text"),
+            new(OpCode.Pop), new(OpCode.Constant, 4), new(OpCode.Return)
+        ], TypeRef.String)]);
+    Module relocatable = Optimizer.Optimize(branch, 2);
+    Module relocated = Binding.Relocate(relocatable, context);
+    Check(ReferenceEquals(relocated.Functions, relocatable.Functions), "Path relocation rewrote executable instructions");
+    Module arranged = RoundTrip(Binding.Bind(relocatable, context));
+    Check(relocatable.Functions[0].Instructions.Count(op => op.Op == OpCode.Jump) == 1
+        && arranged.Functions[0].Instructions.All(op => op.Op != OpCode.Jump)
+        && arranged.Blocks!.Count < relocatable.Blocks!.Count,
+        "Executable layout did not eliminate the jump and its block");
+    string marker = Path.Combine(root, "layout-trace");
+    Value cold = await Interpreter.ExecuteAsync(arranged);
+    Check(cold is StringValue { Data: "off" } && !File.Exists(marker), "Layout executed an unselected effect");
+    await File.WriteAllTextAsync(Path.Combine(root, "layout-switch"), "");
+    Value hot = await Interpreter.ExecuteAsync(arranged);
+    Check(hot is StringValue { Data: "on" } && await File.ReadAllTextAsync(marker) == "onetwo",
+        "Layout changed the selected effect or return value");
+    Console.WriteLine($"Executable trace layout: {relocatable.Blocks!.Count} -> {arranged.Blocks!.Count} blocks, one jump removed.");
+
     foreach (int level in new[] { 0, 1, 2, 3 })
     {
         Module raw = new([new PathValue("./selected"), new PathValue("./source"), new PathValue("./destination")],

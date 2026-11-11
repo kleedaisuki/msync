@@ -8,7 +8,8 @@ public static class Binding
         var bound = Relocate(module, context);
         var optimized = Optimizer.Optimize(ExecutionLowering.Rewrite(bound), module.OptimizationLevel);
         // The final lowering selects native transfers exposed by folding; it introduces no new pure expressions.
-        return ExecutionLowering.Lower(optimized);
+        var executable = ExecutableLayout.Arrange(ExecutionLowering.Rewrite(optimized));
+        return executable.Blocks is null ? BlockBuilder.Form(executable) : executable;
     }
 
     public static Module Relocate(Module module, BindingContext context)

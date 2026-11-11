@@ -288,3 +288,41 @@ Reports are under `.temp/csharp-organization/` and the component-specific
 organization directories. These are local behavior-preservation observations;
 the release workflow rebuilds Native packages and the editor host from the final
 commit rather than publishing an earlier binary under a reorganized source tag.
+
+## Representation handoff and execution hot path
+
+| Handoff | Owned work | Work not repeated by the next layer |
+| --- | --- | --- |
+| Source to typed HIR | Bind names, check semantics, seal reachable typed bodies | The seal is arena compaction, not a second source typecheck. |
+| HIR file to lowering | Decode and validate the external representation once; lower dense identities and slots | Lowering does not run the HIR validator again. Open session imports remain a separate binding requirement. |
+| HIR to relocatable bytecode | Emit instructions and run machine-independent optimization | An embedding that executes or reloads session code uses path-only relocation, not another optimizer pass inside the interpreter. |
+| Relocatable to prepared executable | The backend may lower context-specific operations, optimize known facts, lay out forward traces and prepare I/O plans | The first lowering pass does not materialize a block index that the optimizer would discard. The execution image is not replanned or rewritten by the VM. |
+| Bytecode file to execution | Decode and check the file's format, references and stack/control-flow contract | Execution/check loading does not materialize the separate inspection block projection. Public writer checks remain at the boundary that can receive independently constructed modules. |
+| Bytecode to work | A single PC loop per frame; native dispatch resolves one immutable descriptor; actual resource dependencies stay with the scheduler | No per-instruction block index, per-block async state machine, repeated argument unwrapping or repeated name splitting/signature lookups. |
+
+Executable trace layout runs at the backend, before contextual I/O planning.
+It chains forward jumps to uniquely targeted trace starts, keeping implicit fallthrough
+inside each segment, and remaps explicit PC targets. It does not interchange
+instructions along an executed path. Cyclic functions and already planned
+images are left to their existing owners; open session entry PCs are stable.
+Removing a jump must not expose a Transfer/Pop pair that would change discarded
+transfer scheduling. The regression fixture checks both branch outcomes,
+ordered file bytes and actual block/jump reduction after an artifact round trip.
+This is separate from the I/O graph's resource-version reordering.
+
+The original execution-only Native AOT Set showed 11 of 25 interrupted stacks
+at the former block dispatch entry/body. On the same checked 8,192-key bound
+image, two order-balanced pairs went from 4.77/5.19 s to 2.71/2.59 s when the
+per-block wrapper was removed. A second same-input comparison of normalized
+calls and one selected native descriptor gave approximately 2.21 s. The
+combined runtime result does not include any savings from re-layout of this
+already bound artifact. It is the cost of an old image on a thinner executor.
+[Ertl and Gregg's interpreter measurements](https://jilp.org/vol5/v5paper12.pdf)
+motivate measuring dispatch separately from instruction semantics; they are
+not evidence of the cause or the size of the msync result.
+
+No audit finding warrants weakening format checks, actual buffer index
+semantics, Scope shape compatibility for hinted fields, lexical cell ownership,
+or waits on selected in-flight I/O. The remaining collection cost includes
+generic calls, field/value materialization and the current singleton Range key
+representation, independently identified in the earlier source overlays.
