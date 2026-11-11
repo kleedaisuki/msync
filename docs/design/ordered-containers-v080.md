@@ -202,3 +202,14 @@ A typed fast path must still preserve comparator equivalence, nullable keys and
 ownership of arbitrary payloads. The simple benchmark-only linear-probing
 table is not an API replacement: it has no resizing, deletion or general key
 semantics.
+
+The subsequent [continuation ablation](contextual-io-backend.md#compute-only-continuation-admission-086-investigation)
+locates the dominant cost above the container representation. With that
+planning cost experimentally bypassed, a checked 1,024-key Set control still
+takes about 0.51 s. A local copy of the stock implementation takes 0.54 s,
+substituting direct finite Number comparisons takes 0.37 s, and also storing
+the key as a scalar instead of a singleton Range takes 0.30 s. Those source
+overlays isolate two further costs on this workload; their simpler comparison
+and storage are not semantically interchangeable with the generic library.
+Keep NaN/null/custom comparator behavior and general payload ownership in the
+design of any typed fast path.

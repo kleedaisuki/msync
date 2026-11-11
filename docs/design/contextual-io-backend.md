@@ -600,3 +600,45 @@ permit must let the observer return `new` before the unrelated old producer is
 released. This passes on Runtime
 `cb9080b66b196ba29f2d0a747456f53f2e999f7a067891959577c3abe444955d`;
 no task continues filesystem work after a pending admission stage.
+
+## Compute-only continuation admission (0.8.6 investigation)
+
+The library matrix exposed a runtime cost that survives initial binding. A
+pre-bound image bypasses the initial relocatable preparation, but not the
+execution-time admission at frame entry and call boundaries. Applicability
+currently treats any Call as an opportunity; the direct-call bypass needs
+both a statically resolved eligible callee and no adjacent preparation demand.
+Nested numerical container operations therefore repeatedly allocate a planning
+context, replay known prefixes and sometimes rebuild instruction/block maps,
+even in a closed program with no possible transfers or metadata reads.
+
+A diagnostic Native AOT build of the 0.8.6 VM adds a counter and an opt-out at
+that runtime admission point. The same binary executes the same bound modules
+with and without the opt-out; the modules have no plans, and all return values
+or digests match. Two fresh-process AB/BA rounds, 512 numeric keys and three
+timed executions per arm give:
+
+| Workload | Continuation preparations per run | Stock / bypass, ms | Stock / bypass, allocated MB |
+| --- | ---: | ---: | ---: |
+| Red-black Set | 40,144 | 933 / 201 | 398.1 / 18.4 |
+| Heap | 35,243 | 621 / 104 | 293.2 / 9.9 |
+| Linear-probing hash set | 2,056 | 49.2 / 17.8 | 19.6 / 2.2 |
+| Handwritten SHA-256, one padded block | 4,192 | 172 / 56.7 | 55.6 / 6.5 |
+
+One checked pair with the exact original 8,192-key Set image gives 26.03 s
+versus 5.30 s, 985,902 versus zero preparations and 9.73 GB versus 0.45 GB
+cumulative allocation, not peak memory. Independent interrupted Native AOT
+stacks also put preparation and block reindexing on the hot path. The bypass
+is an experimental intervention for these known compute-only programs, not
+an execution mode or a safe general optimization. An empty serialized plan
+table does not prove that a future continuation is free of I/O.
+
+A production fix should prove a negative: retain a compact, immutable
+contextual-effect and downstream-demand summary of the code, not a cache of
+argument values, object contents, filesystem observations, or previous frames.
+Propagate effects through proven call/dispatch targets, and keep unknown or
+effectful callbacks eligible. A call may be locally compute-only but still
+produce an input to a downstream transfer, so check result demand as well as
+the callee's own effects. Start with the closed computation case; test a
+mixed program that computes its destination, a late-bound effectful callback,
+and existing namespace/observation waits before broadening the proof.
