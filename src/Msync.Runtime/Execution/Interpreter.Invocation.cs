@@ -116,17 +116,7 @@ public sealed partial class Interpreter
             if (deferred >= 0
                 && (operation.Effects & (InstructionEffect.Read | InstructionEffect.Write | InstructionEffect.Invoke)) == 0
                 && !arguments.Any(value => (value.Type.Kind & (TypeKind.Range | TypeKind.Function)) != 0))
-            {
-                var inputs = arguments;
-                RuntimeContext origin = context.CaptureDirectory();
-                async Task<Value> Complete() => await NativeRegistry.InvokeAsync(operation, await ResolveDeferredArgumentsAsync(inputs, deferred), origin, NativeCallback, cancellationToken);
-                var signature = operation.Signature;
-                TypeRef resultType = signature.ResultRule == NativeResultRule.CastTarget && inputs[1] is TypeValue target
-                    ? target.Data : signature.Result;
-                string? endpoint = resultType.WithoutNull == TypeRef.Path
-                    ? inputs[0].Type == TypeRef.String ? "local" : PathEndpoint(inputs[0]) : null;
-                return new DeferredValue(Complete(), resultType, inputs.SelectMany(Processes).Distinct().ToArray(), endpoint);
-            }
+                return DeferNative(operation, arguments, deferred, cancellationToken);
             if (deferred >= 0) arguments = await ResolveDeferredArgumentsAsync(arguments, deferred);
             if (operation.ImmediateExternal)
                 await AwaitNativeDependenciesAsync(operation.Signature, arguments, cancellationToken);
@@ -140,4 +130,22 @@ public sealed partial class Interpreter
             throw;
         }
     }
+
+    private DeferredValue DeferNative(NativeRegistry.Operation operation, IReadOnlyList<Value> arguments, int deferred,
+        CancellationToken cancellationToken)
+    {
+        RuntimeContext origin = context.CaptureDirectory();
+        var signature = operation.Signature;
+        TypeRef resultType = signature.ResultRule == NativeResultRule.CastTarget && arguments[1] is TypeValue target
+            ? target.Data : signature.Result;
+        string? endpoint = resultType.WithoutNull == TypeRef.Path
+            ? arguments[0].Type == TypeRef.String ? "local" : PathEndpoint(arguments[0]) : null;
+        return new DeferredValue(CompleteDeferredNativeAsync(operation, arguments, deferred, origin, cancellationToken),
+            resultType, arguments.SelectMany(Processes).Distinct().ToArray(), endpoint);
+    }
+
+    private async Task<Value> CompleteDeferredNativeAsync(NativeRegistry.Operation operation, IReadOnlyList<Value> arguments,
+        int deferred, RuntimeContext origin, CancellationToken cancellationToken)
+        => await NativeRegistry.InvokeAsync(operation, await ResolveDeferredArgumentsAsync(arguments, deferred),
+            origin, NativeCallback, cancellationToken);
 }
