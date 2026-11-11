@@ -1,5 +1,11 @@
 # SQLite telemetry storage
 
+The current C# recorder and self-profiling levels are described in
+[Unified local telemetry](telemetry.md#end-to-end-self-profiling).
+It preserves application ID `0x4d53594e`, schema version 1 and the relational
+storage contract below. The older implementation notes refer to the retired
+Rust runtime, not to the current provider or command set.
+
 ## Ownership and durable contract
 
 The telemetry API retains its established span/context lifecycle and JSONL wire
@@ -137,3 +143,72 @@ when their own requested output is unavailable; recording health and application
 outcome are distinct states. Producers never wait for queue space. Completed
 sessions with dropped records are explicitly marked incomplete/error, not
 presented as complete traces.
+
+## Current typed VM profile counters
+
+The .NET runtime produces bounded-by-site summaries for the existing SQLite
+record schema; it does not know about SQLite, emit a row per executed opcode,
+or time each instruction. The CLI chooses aggregate or instruction-detail
+collection for an execution. An embedded host may do the same through
+`ExecutionOptions.Profile`, then call `RuntimeProfile.Drain()` after guest
+execution and any host-driven Range display have joined. Escaped REPL child
+processes can still complete in the background and emit I/O observations, but
+their output collection does not dispatch guest code. A deferred Range is
+counted in the submission that demands it, with the actual module projection
+of its executing frame.
+
+| Record | Scope | Meaning |
+| --- | --- | --- |
+| `vm.function` | Image and function ID | Entered frames, attempted instructions and operand-stack Number materializations |
+| `vm.opcode` | Image, function ID and opcode | Dispatch counts |
+| `vm.native` | Image and native name | Native invocation entries; `fast_calls` is the subset executed inline by the VM |
+| `vm.instruction` | Image, function ID and PC | Site visits, source span when present, and name of a direct native instruction |
+| `vm.edge` | Image, function ID and source/target PC | Actual next instruction reached after a jump, branch, or iterator test |
+| `vm.call` | Caller image/function/PC and resolved target image/function | Source calls dispatched from bytecode call sites |
+
+The last three records require instruction-detail collection. Function names
+alone are not unique; join on trace ID, image ID and function ID, and add PC
+for site queries. Image IDs are trace-local and weakly associated with live
+module projections, so clearing completed counters does not retain old REPL
+images. Counts include attempted dispatches even when an instruction fails;
+an edge is recorded only when its next instruction is fetched. Callbacks
+driven by native Range code count as function entries, not as fictitious
+guest call sites. The boxing metric counts only NumberValue materialization
+in the operand stack; native constructors and overall process allocation are
+different measurements.
+
+The interpreter chooses a statically specialized frame policy at function
+entry. The same switch and operand-stack implementation serve both modes.
+The disabled value-type specialization erases opcode, edge, call-target and
+boxing hooks; it does not evaluate a profiler branch at every instruction
+or box. The generic native invocation boundary still checks for the optional
+profile. See the [.NET Native AOT value-type specialization contract](https://learn.microsoft.com/en-us/dotnet/core/deploying/native-aot/).
+The counter design is analogous to [LLVM's instrumentation profiles](https://www.llvm.org/docs/InstrProfileFormat.html)
+in keeping code identity and dynamic counters separate. Here the profiles
+inform engineering decisions; they are neither artifact validity proofs nor
+inputs that change execution semantics.
+
+### Disabled-mode check
+
+An isolated Linux x64 SDK 10.0.403 Native AOT candidate applied only runtime
+profiling to `887eced`, excluding the concurrent array-fetch, scheduler, and
+native-helper changes. Disassembly shows separate enabled and disabled VM
+state machines and no atomic counter instruction or profile call in the
+disabled `MoveNext` body. The stripped runtime harness grew by 37,104 bytes
+(0.64%); the duplicated state machine is native code, not a second source
+evaluator. The semantic probe verifies counts, source spans,
+resolved targets, edges and Number materializations through serialized
+relocatable and executable input, and verifies concurrent accumulation
+with repeated image reuse. Run it with
+`dotnet run -c Release --project tests/Msync.Runtime.Tests -- --profile`.
+
+The frozen scalar, unrolled, and stacked artifacts from the
+[execution audit](performance-assumption-audit-v086.md#scalar-causal-control)
+ran with the same result bits and only 16 fixed extra managed bytes per
+execution with collection disabled. Eight alternating fresh-process pairs
+on logical CPU 12 (262,144 iterations per case, warmup and three measured
+samples) had a −5.2% median paired process CPU delta for the candidate,
+with six faster pairs and a −19.9% to +5.8% range. The wall-time native
+control had scheduling outliers, so this is a check against an evident
+disabled-path regression, not a throughput improvement attributed to
+telemetry. Receipts: `artifacts/benchmarks/vm-execution-head-v086/profile-off/`.

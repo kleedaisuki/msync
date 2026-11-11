@@ -6,13 +6,15 @@ The C# CLI retains opt-in `--trace FILE`, `--trace -`, `--telemetry-db FILE`,
 configured destinations, and `--no-telemetry`. `TelemetrySession` owns one
 bounded BCL channel and one writer task. Producers use nonblocking `TryWrite`;
 queue overflow is counted and reported as incomplete recording. Disabled
-execution supplies no runtime callback, so formatting event metadata and
-allocating observations do not occur on the ordinary unobserved path.
+execution supplies no runtime observer, compiler trace or profile. The
+uninstrumented interpreter does not test for profile counters per opcode.
 
 Runtime observations describe actual transfer completion/failure, native
-failures, and process lifecycle; the CLI records compile and command completion.
-All child spans identify their command root explicitly rather than depending on
-thread-local ancestry. The root record is held outside the bounded queue and
+failures, and process lifecycle. The CLI records which stages really ran, with
+an explicit parent span ID and without thread-local ancestry. Runtime effects
+in a standalone command attach to the runtime owner; REPL effects attach to
+the session because a Process can outlive its submission. The root record is
+held outside the bounded queue and
 written after admitted records drain, so a full queue cannot silently lose the
 command outcome. Root errors retain the exception chain; runtime failure records
 retain their operation-specific causes and useful source/destination metadata.
@@ -67,7 +69,106 @@ database and reported both sessions and the command/compile/transfer phases.
 Native results live below `.temp/telemetry-v080/c8333cd814b3/`. These are Linux
 native package results, not a claim of Windows execution.
 
-## SQLite recording and operator workflow
+## End-to-end self-profiling
+
+```sh
+msync run workload.msync --telemetry-db .temp/workload.sqlite --telemetry-level profile
+msync run-ir workload.mexe --telemetry-db .temp/workload.sqlite --telemetry-level instructions
+```
+
+Recording remains disabled unless a destination is supplied on the command
+line or configured under `[telemetry]` with `enabled = true`. The CLI
+`--telemetry-level` overrides the TOML `level` and does not itself enable
+recording. `--trace` writes the same records as JSONL, with stdout reserved
+for program or artifact output. Use separate trace IDs for repeated runs and
+compare matching workloads/optimization levels. Root attributes include
+`input.kind`, `optimization.level`, `telemetry.level` and
+`implementation.build` (assembly informational version).
+
+| Level | Additional recording |
+| --- | --- |
+| `summary` (default when enabled) | Command outcome, actual artifact read/write and compile containers, binding/preparation commands, runtime initialization and execution, existing transfer/process observations |
+| `phases` | Source reads, parse/bind/analyze/HIR lowering/optimization spans, preparation within the standalone execution host, scheduler counts on the execute span |
+| `profile` | Aggregate optimizer-pass events and VM function/opcode/native counts, process CPU and managed allocation/collection counts |
+| `instructions` | Aggregate dynamic bytecode positions, branch/iterator edges and actual source call-site targets |
+
+Object and executable loads are artifact reads, not compiler stages.
+An executable submitted for replay does not report binding or planning;
+relocatable source, HIR and objects report the stages their route actually
+enters. Standalone preparation uses the host's real binder and contextual
+planner and retains their resource ownership. The `execute` span begins
+after host initialization. A REPL submission has its own compile and execute
+children, including the result display that can demand a deferred Range;
+shell-prelude submissions are labeled separately. Runtime profile rows belong
+to the execute span via their event owner, and aggregate optimizer pass rows
+belong to the enclosing compile span. Pass event `duration_ns` is a metric
+summing disjoint invocations, not a wall-time interval.
+
+`vm.function` contains frame entries (`calls`), dynamic opcode attempts
+(`instructions`) and `number_boxes` at VM operand pop, peek and argument
+copy boundaries, not all allocations of numbers. `vm.opcode` and
+`vm.instruction` sum the same attempted instructions in different dimensions.
+`vm.edge` measures actual next-instruction transitions after jumps or
+iterator-next; it does not count a successor never entered after an abort.
+`vm.call` captures the actual selected source target; callbacks admitted
+by a native range adaptor contribute function entries without a fictitious
+source call-site. `vm.native.calls` includes `fast_calls` as a subset.
+`image.id` is a session-local identity, not a content hash. Group by trace
+and image before joining function IDs or instruction positions. Use exact
+artifact bytes or source revisions as separate benchmark inputs.
+
+The profile records aggregated counters, not one SQL write, timestamp or
+object per opcode. It drains at execution/submission boundaries after guest
+work settles, and queues the bounded-workload counter table as one envelope,
+then persists rows in bounded SQL transactions. Queue overload or sink
+failure leaves the recording explicitly incomplete. Profiling increases
+execution work: compare timing with telemetry off; use profile runs for
+work counts, and interpret `execute` allocation and CPU as process-wide
+deltas, which can include exporter and other work. Compiler allocation
+counts are synchronous thread-local deltas. Trace wall time starts with
+observer admission. Root metrics `startup.arguments_ns`,
+`startup.configuration_ns`, and `startup.exporter_ns` measure the completed
+early intervals, without inventing before-admission spans. Exporter startup
+overlaps the root span; process launch before managed entry is outside these
+metrics.
+
+The schema remains v1. For example, identify hot functions in the latest
+complete recording with the stock SQLite CLI:
+
+```sh
+sqlite3 -readonly .temp/workload.sqlite <<'SQL'
+WITH trace AS (
+  SELECT trace_id FROM sessions WHERE status = 'complete'
+  ORDER BY started_unix_ns DESC LIMIT 1
+)
+SELECT image.value AS image, fnid.value AS function_id, fn.value AS function,
+       sum(m.value_int) AS instructions
+FROM events AS e JOIN trace USING (trace_id)
+JOIN attributes AS image ON image.record_id = e.id AND image.key = 'image.id'
+JOIN attributes AS fnid ON fnid.record_id = e.id AND fnid.key = 'function.id'
+JOIN attributes AS fn ON fn.record_id = e.id AND fn.key = 'function.name'
+JOIN metrics AS m ON m.record_id = e.id AND m.key = 'instructions'
+WHERE e.name = 'vm.function'
+GROUP BY image.value, fnid.value, fn.value ORDER BY instructions DESC LIMIT 20;
+SQL
+```
+
+Compare the same checked workload with [the paired CLI measurement driver](../../tests/Performance/profile_compare.py).
+The collector follows the explicit parent/owner model of the
+[OpenTelemetry tracing API](https://opentelemetry.io/docs/specs/otel/trace/api/)
+without requiring a global tracing provider or a network exporter.
+
+The focused [CLI journey](../../tests/Telemetry/journeys.py) now checks all
+four levels, source/HIR/object/executable stage identities, optimizer-pass
+events, profile count reconciliation, REPL submission ownership, and scheduler
+counts plus a real destination payload. The nine journeys also exercise
+existing JSONL/SQLite behavior, sink failure, failed transfers, and disabled
+or sampled-out admission. They passed on the isolated Linux Native AOT
+candidate `3a605f6253525ef5959caad242073a53edc655737a0f2dcd16a14503a8139ea8`
+and the split CLI's isolated managed Release build. The Native receipt is
+`.temp/telemetry-v080/3a605f625352/results.json`.
+
+## Historical Rust SQLite recording and operator workflow
 
 The current backend is a normalized SQLite database (`rusqlite` with bundled
 SQLite), enabled by `--telemetry-db FILE` or `[telemetry]` configuration. Existing

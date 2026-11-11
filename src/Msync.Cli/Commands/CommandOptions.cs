@@ -59,6 +59,12 @@ internal sealed record CommandOptions(string Command, string? File, string? Outp
                 case "--no-config": noConfig = true; break;
                 case "--trace": tracePath = Next(); break;
                 case "--telemetry-db": telemetryDatabase = Next(); break;
+                case "--telemetry-level":
+                    string level = Next();
+                    if (TelemetryLevels.Parse(level) is null)
+                        throw new ArgumentException($"Unknown telemetry level '{level}'. Use summary, phases, profile, or instructions.");
+                    overrides["telemetry.level"] = level;
+                    break;
                 case "--no-telemetry": noTelemetry = true; break;
                 default:
                     if (arg.StartsWith('-') && arg != "-") throw new ArgumentException($"Unknown option '{arg}'.");

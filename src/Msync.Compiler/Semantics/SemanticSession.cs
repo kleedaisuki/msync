@@ -2,7 +2,6 @@ using System.Collections.Immutable;
 using Msync.Compiler.Syntax;
 using Msync.Core;
 using Msync.Hir;
-using Msync.Optimization;
 
 namespace Msync.Compiler.Semantics;
 
@@ -27,16 +26,20 @@ internal sealed class SemanticSession(string sourceName, int optimization)
 
     public IReadOnlyCollection<string> BindingNames => accepted?.Exports.Keys.ToArray() ?? [];
 
-    public Module Compile(string source, Document? document = null)
+    public Module Compile(string source, Document? document = null, CompilationTrace? trace = null)
     {
         using var transaction = workspace.BeginTransaction();
         using var additions = instances.BeginAdditions();
-        BoundProgram bound = Binder().Bind(source, sourceName, document);
+        BoundProgram bound = Compiler.Bind(Binder(), source, sourceName, document, trace);
         SemanticSessionDispatch nextDispatches = dispatches.Fork();
         SemanticAnalyzer analyzer = new(bound, codeCache: instances, sessionDispatch: nextDispatches);
-        HirModule module = analyzer.Analyze(facts);
-        HirLoweringResult result = lowering.Lower(module, new(optimization, PreserveLocals: true));
-        Module executable = Optimizer.OptimizeInstructions(result.Module, optimization);
+        HirModule module = Compiler.Analyze(analyzer, facts, trace);
+        var options = new HirLoweringOptions(optimization, PreserveLocals: true);
+        HirLoweringResult result = trace is null ? lowering.Lower(module, options)
+            : trace.Measure("compiler.lower", (lowering, module, options),
+                static state => state.lowering.Lower(state.module, state.options),
+                size: static result => CompilationSize.Of(result.Module));
+        Module executable = Compiler.Optimize(result.Module, optimization, trace);
         pending = new(bound, analyzer.FinalState, result.Layout, nextDispatches);
         additions.Commit();
         transaction.Commit();

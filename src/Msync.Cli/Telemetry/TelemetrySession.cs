@@ -1,24 +1,34 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Reflection;
 using System.Threading.Channels;
 using Microsoft.Data.Sqlite;
+using Msync.Core;
 using Msync.Runtime;
 
 namespace Msync.Cli;
 
 internal sealed class TelemetrySession : IDisposable
 {
+    internal const string RootId = "0000000000000001";
+    private readonly record struct Batch(TelemetryRecord? Record, IReadOnlyList<TelemetryRecord>? Group)
+    {
+        public int Count => Group?.Count ?? 1;
+    }
+
     private readonly string traceId = Guid.NewGuid().ToString("N");
     private readonly string command;
     private readonly string? source;
     private readonly string destination;
     private readonly long startedUnix = Timestamp();
     private readonly long started = Stopwatch.GetTimestamp();
-    private readonly Channel<TelemetryRecord> records;
+    private readonly Channel<Batch> records;
     private readonly Task worker;
     private readonly ITelemetrySink sink;
     private readonly TextWriter warnings;
     private readonly int batchSize;
+    private readonly Dictionary<string, string> attributes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ulong> rootMetrics = new(StringComparer.Ordinal);
     private long nextSpan = 1;
     private long dropped;
     private string? failure;
@@ -27,11 +37,15 @@ internal sealed class TelemetrySession : IDisposable
     private TelemetryRecord? terminal;
     private int disposed;
 
-    private TelemetrySession(string command, string? source, string destination, bool sqlite, TelemetryPolicy policy, TextWriter warnings)
+    public TelemetryLevel Level { get; }
+
+    private TelemetrySession(string command, string? source, string destination, bool sqlite, TelemetryPolicy policy,
+        TelemetryLevel level, TextWriter warnings)
     {
         this.command = command; this.source = source; this.destination = destination; this.warnings = warnings;
+        Level = level;
         batchSize = Math.Max(1, policy.BatchSize);
-        records = Channel.CreateBounded<TelemetryRecord>(new BoundedChannelOptions(policy.QueueCapacity)
+        records = Channel.CreateBounded<Batch>(new BoundedChannelOptions(policy.QueueCapacity)
         {
             FullMode = BoundedChannelFullMode.Wait,
             SingleReader = true,
@@ -58,6 +72,7 @@ internal sealed class TelemetrySession : IDisposable
             if (tracePath is null && sqlitePath is null && configuration.TelemetryBackend is not ("sqlite" or "jsonl"))
                 throw new ArgumentException("telemetry.backend must be sqlite or jsonl");
             TelemetryPolicy policy = TelemetryPolicy.From(configuration);
+            TelemetryLevel level = configuration.TelemetryLevel;
             if (path is null)
             {
                 string directory = configuration.StateDirectory ?? throw new IOException("A telemetry destination or execution.state_dir is required");
@@ -65,16 +80,43 @@ internal sealed class TelemetrySession : IDisposable
                 path = Path.Combine(directory, sqlite ? "telemetry.sqlite" : "telemetry.jsonl");
             }
             if (sqlite || path != "-") path = Path.GetFullPath(path);
-            return new(command, source, path, sqlite, policy, warnings);
+            return new(command, source, path, sqlite, policy, level, warnings);
         }
-        catch (Exception exception) when (IsObserverError(exception))
+        catch (Exception exception) when (IsObserverError(exception) || exception is MsyncException)
         {
             warnings.WriteLine($"msync: telemetry warning: cannot open '{path ?? "default destination"}': {exception.Message}");
             return null;
         }
     }
 
-    public void Observe(RuntimeObservation observation)
+    public void SetAttribute(string key, string value) => attributes[key] = value;
+    public void RecordStartup(long entered, long configurationStarted, long exporterStarted)
+    {
+        rootMetrics["startup.arguments_ns"] = Nanoseconds(entered, configurationStarted);
+        rootMetrics["startup.configuration_ns"] = Nanoseconds(configurationStarted, exporterStarted);
+        rootMetrics["startup.exporter_ns"] = Nanoseconds(exporterStarted, Stopwatch.GetTimestamp());
+
+        static ulong Nanoseconds(long from, long to) => (ulong)Stopwatch.GetElapsedTime(from, to).TotalNanoseconds;
+    }
+
+    public TelemetrySpan? Begin(string name, TelemetryLevel minimum = TelemetryLevel.Summary, string parent = RootId) =>
+        Level >= minimum ? new(this, name, NextSpan(), parent) : null;
+
+    public RuntimeProfile? CreateProfile() =>
+        Level >= TelemetryLevel.Profile ? new(instructionSites: Level >= TelemetryLevel.Instructions) : null;
+
+    public void PublishProfile(RuntimeProfile? profile, string parent)
+    {
+        if (profile is null) return;
+        var time = Timestamp();
+        var group = profile.Drain().Select(sample => new TelemetryRecord("event", traceId, parent, null, sample.Name,
+            null, null, time, null, "complete", sample.Attributes, sample.Metrics, [])).ToArray();
+        if (group.Length != 0) Enqueue(new Batch(null, group));
+    }
+
+    public void Observe(RuntimeObservation observation) => Observe(observation, RootId);
+
+    internal void Observe(RuntimeObservation observation, string parent)
     {
         string status = observation.Outcome switch { "success" => "ok", "failure" => "error", _ => observation.Outcome };
         Dictionary<string, string> attributes = [];
@@ -83,11 +125,54 @@ internal sealed class TelemetrySession : IDisposable
         if (observation.Detail is not null) attributes["detail"] = observation.Detail;
         long now = Timestamp();
         bool span = observation.DurationNanoseconds > 0;
-        string id = span ? Interlocked.Increment(ref nextSpan).ToString("x16", CultureInfo.InvariantCulture) : "0000000000000001";
+        string id = span ? NextSpan() : parent;
         TelemetryCause[] causes = status == "error" && observation.Detail is not null ? [new(observation.Detail, "runtime")] : [];
-        Enqueue(new(span ? "span" : "event", traceId, id, span ? "0000000000000001" : null, observation.Phase,
+        Record(new(span ? "span" : "event", traceId, id, span ? parent : null, observation.Phase,
             span ? now - observation.DurationNanoseconds : null, span ? observation.DurationNanoseconds : null,
             span ? null : now, status, "complete", attributes, [], causes));
+    }
+
+    internal void EndSpan(string name, string id, string parent, long startUnix, long elapsed,
+        string status, Exception? error, Dictionary<string, string> spanAttributes, Dictionary<string, ulong> metrics) =>
+        Record(new("span", traceId, id, parent, name, startUnix, elapsed, null, status,
+            status == "cancelled" ? "cancelled" : "complete", spanAttributes, metrics, Causes(error)));
+
+    internal void ObserveCompilation(CompilationObservation observation, string parent)
+    {
+        Dictionary<string, string> attributes = [];
+        Dictionary<string, ulong> metrics = new()
+        {
+            ["managed.allocated_bytes"] = (ulong)observation.AllocatedBytes,
+            ["invocations"] = (ulong)observation.Invocations
+        };
+        if (observation.ChangedInvocations is { } changed) metrics["changed_invocations"] = (ulong)changed;
+        if (observation.Input is { } input)
+        {
+            metrics["input.functions"] = (ulong)input.Functions;
+            metrics["input.instructions"] = (ulong)input.Instructions;
+            metrics["input.locals"] = (ulong)input.Locals;
+        }
+        if (observation.Output is { } output)
+        {
+            metrics["output.functions"] = (ulong)output.Functions;
+            metrics["output.instructions"] = (ulong)output.Instructions;
+            metrics["output.locals"] = (ulong)output.Locals;
+        }
+        string status = observation.Outcome switch
+        {
+            CompilationOutcome.Ok => "ok",
+            CompilationOutcome.Cancelled => "cancelled",
+            _ => "error"
+        };
+        if (observation.Aggregated)
+        {
+            metrics["duration_ns"] = (ulong)observation.DurationNanoseconds;
+            Record(new("event", traceId, parent, null, observation.Name, null, null, observation.StartUnixNanoseconds,
+                status, "complete", attributes, metrics, []));
+            return;
+        }
+        EndSpan(observation.Name, NextSpan(), parent, observation.StartUnixNanoseconds, observation.DurationNanoseconds,
+            status, null, attributes, metrics);
     }
 
     public void Finish(string outcome, Exception? error = null)
@@ -99,23 +184,35 @@ internal sealed class TelemetrySession : IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref disposed, 1) != 0) return;
-        Dictionary<string, string> attributes = [];
         if (source is not null) attributes["source.file"] = source;
         attributes["implementation"] = "csharp";
-        List<TelemetryCause> causes = [];
-        for (Exception? cause = error; cause is not null; cause = cause.InnerException)
-            causes.Add(new(cause.Message, cause.GetType().FullName, cause is IOException ? cause.HResult & 0xffff : null));
-        TelemetryRecord root = new("span", traceId, "0000000000000001", null, command, startedUnix,
-            Elapsed(started), null, outcome, outcome == "cancelled" ? "cancelled" : "complete", attributes, [], causes.ToArray());
+        attributes["telemetry.level"] = Level.Name();
+        attributes["implementation.build"] = typeof(TelemetrySession).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? ProductVersion.Current;
+        TelemetryRecord root = new("span", traceId, RootId, null, command, startedUnix,
+            Elapsed(started), null, outcome, outcome == "cancelled" ? "cancelled" : "complete", attributes, rootMetrics, Causes(error));
         terminal = root;
         records.Writer.TryComplete();
         worker.GetAwaiter().GetResult();
         if (failure is not null) warnings.WriteLine($"msync: telemetry warning: incomplete recording in '{destination}': {failure}");
     }
 
-    private void Enqueue(TelemetryRecord record)
+    private string NextSpan() => Interlocked.Increment(ref nextSpan).ToString("x16", CultureInfo.InvariantCulture);
+
+    private static TelemetryCause[] Causes(Exception? error)
     {
-        if (Volatile.Read(ref disposed) == 0 && !records.Writer.TryWrite(record)) Interlocked.Increment(ref dropped);
+        if (error is null) return [];
+        List<TelemetryCause> causes = [];
+        for (Exception? cause = error; cause is not null; cause = cause.InnerException)
+            causes.Add(new(cause.Message, cause.GetType().FullName, cause is IOException ? cause.HResult & 0xffff : null));
+        return causes.ToArray();
+    }
+
+    private void Record(TelemetryRecord record) => Enqueue(new Batch(record, null));
+
+    private void Enqueue(Batch batch)
+    {
+        if (Volatile.Read(ref disposed) == 0 && !records.Writer.TryWrite(batch)) Interlocked.Add(ref dropped, batch.Count);
     }
 
     private async Task WriteAsync()
@@ -123,10 +220,25 @@ internal sealed class TelemetrySession : IDisposable
         try
         {
             List<TelemetryRecord> batch = new(batchSize);
+            void Add(TelemetryRecord record)
+            {
+                batch.Add(record);
+                if (batch.Count == batchSize) Flush();
+            }
+            void Flush()
+            {
+                if (batch.Count == 0) return;
+                sink.Write(batch);
+                batch.Clear();
+            }
             while (await records.Reader.WaitToReadAsync())
             {
-                while (batch.Count < batchSize && records.Reader.TryRead(out TelemetryRecord? record)) batch.Add(record);
-                sink.Write(batch); batch.Clear();
+                while (records.Reader.TryRead(out Batch item))
+                {
+                    if (item.Record is { } record) Add(record);
+                    else foreach (TelemetryRecord sample in item.Group!) Add(sample);
+                }
+                Flush();
             }
             if (terminal is not null) sink.Write([terminal]);
         }

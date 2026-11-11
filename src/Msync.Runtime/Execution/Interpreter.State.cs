@@ -7,7 +7,8 @@ public sealed partial class Interpreter
     private Dictionary<string, ScopeLayout>? scopeLayouts;
     private ScopeAllocator? scopeAllocator;
 
-    private ScopeValue MakeScope(Instruction instruction, ref OperandStack stack)
+    private ScopeValue MakeScope<TFrame>(Instruction instruction, ref OperandStack<TFrame> stack)
+        where TFrame : struct, RuntimeProfile.IFrame
     {
         var spelling = instruction.Text ?? "";
         var layouts = scopeLayouts ??= new(StringComparer.Ordinal);
@@ -43,7 +44,8 @@ public sealed partial class Interpreter
         scope.SetNumber(ScopeOffset(scope, name, hint), value);
     }
 
-    private void LoadMember(ref OperandStack stack, string name, int hint)
+    private void LoadMember<TFrame>(ref OperandStack<TFrame> stack, string name, int hint)
+        where TFrame : struct, RuntimeProfile.IFrame
     {
         Value receiver = stack.Pop();
         if (receiver is not ScopeValue scope)

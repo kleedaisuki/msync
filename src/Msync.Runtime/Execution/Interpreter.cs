@@ -6,6 +6,7 @@ public sealed partial class Interpreter
 {
     private Module module;
     private readonly RuntimeContext context;
+    private readonly RuntimeProfile? profile;
     private readonly ContextualResources planResources;
     private readonly SemaphoreSlim slots;
     private readonly int transferConcurrency;
@@ -30,6 +31,7 @@ public sealed partial class Interpreter
         namespaceProducers = previous?.namespaceProducers ?? new();
         iterators = previous?.iterators ?? [];
         context = new(options, module.Context);
+        profile = options?.Profile;
         try { this.module = Binding.Relocate(module, ImageContext); }
         catch
         {
@@ -76,8 +78,8 @@ public sealed partial class Interpreter
         return RunCodeAsync(functionIndex, locals, 0, cancellationToken, captures, arguments);
     }
 
-    private ValueTask<Value> RunStackFunctionAsync(int functionIndex, FunctionValue callee, int count,
-        ref OperandStack operands, CancellationToken cancellationToken)
+    private ValueTask<Value> RunStackFunctionAsync<TFrame>(int functionIndex, FunctionValue callee, int count,
+        ref OperandStack<TFrame> operands, CancellationToken cancellationToken) where TFrame : struct, RuntimeProfile.IFrame
     {
         var function = module.Functions[functionIndex];
         var captures = callee.Captures ?? [];

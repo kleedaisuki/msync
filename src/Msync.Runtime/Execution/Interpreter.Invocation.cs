@@ -98,6 +98,7 @@ public sealed partial class Interpreter
     private async ValueTask<Value> InvokeNativeAsync(string name, IReadOnlyList<Value> arguments,
         CancellationToken cancellationToken, bool direct = false)
     {
+        profile?.Native(module, name);
         try
         {
             NativeRegistry.Operation? operation = null;

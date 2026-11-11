@@ -2,6 +2,12 @@ using Msync.Optimization;
 using Msync.Core;
 using Msync.Runtime;
 
+if (args.Contains("--profile", StringComparer.Ordinal))
+{
+    await RuntimeProfileChecks.RunAsync();
+    return;
+}
+
 if (args.Contains("--mutable-state", StringComparer.Ordinal))
 {
     await MutableStateChecks.RunCurrentState();

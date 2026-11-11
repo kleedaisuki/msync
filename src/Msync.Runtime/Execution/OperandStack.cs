@@ -3,16 +3,14 @@ using Msync.Core;
 
 namespace Msync.Runtime;
 
-internal struct OperandStack
+internal struct OperandStack<TFrame>(TFrame frame) where TFrame : struct, RuntimeProfile.IFrame
 {
-    public OperandStack() { }
-
     // A null slot denotes an unboxed Number; language null remains Value.Null.
     private Value?[] items = new Value?[4];
     // Literal ranges grow the reference stack without paying for numeric scratch.
     private double[] numbers = [];
     public int Count { get; private set; }
-    public Value this[int index] => items[index] ?? new NumberValue(numbers[index]);
+    public Value this[int index] => items[index] ?? BoxNumber(index);
     public Value Peek(int depth) => this[Count - depth - 1];
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -48,7 +46,7 @@ internal struct OperandStack
     {
         Value? item = items[--Count];
         items[Count] = null;
-        return item ?? new NumberValue(numbers[Count]);
+        return item ?? BoxNumber(Count);
     }
 
     public Value[] PopMany(int count)
@@ -79,7 +77,7 @@ internal struct OperandStack
             int source = start + index;
             Value? value = items[source];
             if (value is CellValue cell) items[source] = value = cell.Data;
-            locals[destination + index] = value ?? new NumberValue(numbers[source]);
+            locals[destination + index] = value ?? BoxNumber(source);
         }
         return new(items, start, count);
     }
@@ -136,4 +134,11 @@ internal struct OperandStack
 
     private void Grow() => Array.Resize(ref items, items.Length * 2);
     private void GrowNumbers() => Array.Resize(ref numbers, Math.Max(4, Math.Max(Count + 1, numbers.Length * 2)));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private NumberValue BoxNumber(int index)
+    {
+        frame.Box();
+        return new(numbers[index]);
+    }
 }

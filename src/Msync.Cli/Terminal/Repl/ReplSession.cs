@@ -5,18 +5,32 @@ using Msync.Runtime;
 
 namespace Msync.Cli;
 
-internal sealed class ReplSession(ExecutionOptions options, int optimization, string color)
+internal sealed class ReplSession
 {
     private static readonly string ShellPrelude = CreateShellPrelude();
-    private readonly CompilerSession compiler = new(optimization: optimization);
-    private readonly ExecutionSession execution = new(options);
-    private readonly TextReader? inputReader = Console.IsInputRedirected ? options.Input : null;
+    private readonly CompilerSession compiler;
+    private readonly ExecutionSession execution;
+    private readonly TextReader? inputReader;
+    private readonly string color;
+    private readonly TelemetrySession? telemetry;
+    private readonly RuntimeProfile? profile;
+    private long submissionIndex;
     private readonly SubmissionSyntax syntax = new();
     private readonly object cancellationGate = new();
     private CancellationTokenSource? active;
     private string pending = "";
     private bool interruptedInput;
     private bool editing;
+
+    public ReplSession(ExecutionOptions options, int optimization, string color, TelemetrySession? telemetry)
+    {
+        this.color = color;
+        this.telemetry = telemetry;
+        profile = options.Profile;
+        compiler = new(optimization: optimization);
+        execution = new(options);
+        inputReader = Console.IsInputRedirected ? options.Input : null;
+    }
 
     private static string CreateShellPrelude()
     {
@@ -37,7 +51,7 @@ internal sealed class ReplSession(ExecutionOptions options, int optimization, st
 
     public async Task<int> RunAsync()
     {
-        await ExecuteAsync(ShellPrelude, CancellationToken.None);
+        await ExecuteAsync(ShellPrelude, CancellationToken.None, prelude: true);
         await using InteractivePrompt? prompt = InteractivePrompt.IsSupported
             ? new(syntax.IsIncomplete, PromptNames, color: TerminalPresentation.Colors(color), describe: DescribePromptBindings, analyze: source => compiler.AnalyzeEditor(source), colorPolicy: color,
                 workingDirectory: () => execution.WorkingDirectory) : null;
@@ -102,31 +116,56 @@ internal sealed class ReplSession(ExecutionOptions options, int optimization, st
         return false;
     }
 
-    private async ValueTask ExecuteAsync(string source, CancellationToken cancellationToken)
+    private async ValueTask ExecuteAsync(string source, CancellationToken cancellationToken, bool prelude = false)
     {
+        using TelemetrySpan? submission = telemetry?.Begin("repl.submission");
+        if (submission is not null)
+        {
+            submission.SetMetric("submission.index", submissionIndex++);
+            submission.SetAttribute("submission.kind", prelude ? "prelude" : "input");
+        }
         using CancellationTokenSource cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         lock (cancellationGate) active = cancellation;
         try
         {
             Module module;
-            try { module = compiler.Compile(source, syntax.Take(source)); }
-            catch
+            using (TelemetrySpan? compile = submission?.Begin("compile"))
             {
-                compiler.ReconcileSubmission(_ => false);
-                throw;
+                try
+                {
+                    module = compiler.Compile(source, syntax.Take(source), compile?.CompilerTrace);
+                    compile?.Complete();
+                }
+                catch (Exception error)
+                {
+                    compile?.Fail(error);
+                    compiler.ReconcileSubmission(_ => false);
+                    throw;
+                }
             }
+            using TelemetrySpan? execute = submission?.Begin("execute");
+            ProcessCounters? before = execute?.MeasureProcess();
             try
             {
                 Value result = await execution.ExecuteAsync(module, cancellationToken: cancellation.Token);
                 if (result is not NullValue) await DisplayAsync(result, cancellation.Token);
                 compiler.AcceptSubmission(execution.GetLocalValue);
+                execute?.Complete();
+                submission?.Complete();
             }
-            catch
+            catch (Exception error)
             {
+                execute?.Fail(error);
                 compiler.ReconcileSubmission(execution.IsLocalInitialized, execution.GetLocalValue);
                 throw;
             }
+            finally
+            {
+                execute?.RecordProcess(before);
+                if (execute is not null) telemetry!.PublishProfile(profile, execute.Id);
+            }
         }
+        catch (Exception error) { submission?.Fail(error); throw; }
         finally { lock (cancellationGate) active = null; }
     }
 

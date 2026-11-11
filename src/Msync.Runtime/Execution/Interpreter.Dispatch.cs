@@ -10,19 +10,29 @@ public sealed partial class Interpreter
     private static bool LocalTransferOperand(Value value) =>
         value is StringValue or PathValue { Connection: null or { Kind: ConnectionKind.Local } };
 
-    private async ValueTask<Value> RunOwnedCodeAsync(int functionIndex, Value[] locals, int startInstruction,
+    private ValueTask<Value> RunOwnedCodeAsync(int functionIndex, Value[] locals, int startInstruction,
         CancellationToken cancellationToken)
     {
         Module image = module;
+        return profile is { } recorder
+            ? RunOwnedCodeAsync(image, functionIndex, locals, startInstruction, cancellationToken, recorder.Enter(image, functionIndex))
+            : RunOwnedCodeAsync(image, functionIndex, locals, startInstruction, cancellationToken, new RuntimeProfile.DisabledFrame());
+    }
+
+    // The disabled AOT specialization has no per-opcode profiling branch.
+    private async ValueTask<Value> RunOwnedCodeAsync<TFrame>(Module image, int functionIndex, Value[] locals,
+        int startInstruction, CancellationToken cancellationToken, TFrame frame) where TFrame : struct, RuntimeProfile.IFrame
+    {
         var code = image.Functions[functionIndex].Instructions;
         var array = code as Instruction[];
         int arrayLength = array?.Length ?? 0;
-        OperandStack stack = new();
+        OperandStack<TFrame> stack = new(frame);
         Dictionary<int, PlanSubmission>? submissions = null;
         for (int pc = startInstruction; pc < (array is null ? code.Count : arrayLength); pc++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var instruction = array is null ? code[pc] : array[pc];
+            frame.Visit(pc, instruction.Op);
             try
             {
                 switch (instruction.Op)
@@ -76,6 +86,7 @@ public sealed partial class Interpreter
                             if (callee is FunctionValue { NativeName: null } function)
                             {
                                 int target = SourceCallTarget(function, instruction);
+                                frame.Call(pc, module, target);
                                 Value value = await RunStackFunctionAsync(target, function, instruction.A, ref stack, cancellationToken);
                                 stack.CompleteCall(instruction.A, value);
                                 break;
@@ -90,7 +101,10 @@ public sealed partial class Interpreter
                     case OpCode.NativeCall:
                         if (instruction.Text == "math.pow"
                             && stack.TryPopNumbers(out double baseNumber, out double exponent))
+                        {
+                            frame.FastNative(image, "math.pow");
                             stack.AddNumber(NativeRegistry.Power(baseNumber, exponent));
+                        }
                         else stack.Add(await InvokeNativeAsync(instruction.Text!, stack.PopArguments(instruction.A), cancellationToken, direct: true));
                         break;
                     case OpCode.Barrier: await FenceAsync(instruction.A, instruction.B, instruction.Text); break;

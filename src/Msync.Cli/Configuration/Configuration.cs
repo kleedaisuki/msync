@@ -19,6 +19,8 @@ internal sealed class Configuration
     public string? StateDirectory => OptionalText("execution.state_dir");
     public bool TelemetryEnabled => settings["telemetry.enabled"].Value is true;
     public string TelemetryBackend => Text("telemetry.backend");
+    public TelemetryLevel TelemetryLevel => TelemetryLevels.Parse(Text("telemetry.level"))
+        ?? throw Error("telemetry.level", "must be summary, phases, profile, or instructions");
     public string? TelemetryPath => OptionalText("telemetry.path");
     internal ulong TelemetryUnsigned(string name) => Unsigned($"telemetry.{name}");
     internal bool TelemetryBoolean(string name) => settings[$"telemetry.{name}"].Value is bool value
@@ -184,6 +186,7 @@ internal sealed class Configuration
             ["progress.interval_ms"] = 250L,
             ["telemetry.enabled"] = false,
             ["telemetry.backend"] = "sqlite",
+            ["telemetry.level"] = "summary",
             ["telemetry.queue_capacity"] = 4096L,
             ["telemetry.batch_size"] = 128L,
             ["telemetry.flush_interval_ms"] = 100L,

@@ -1,13 +1,13 @@
 using System.Diagnostics;
+using System.Globalization;
 using Msync.Compiler;
 using Msync.Compiler.Syntax;
 using Msync.Core;
 using Msync.Hir;
-using Msync.Optimization;
 using Msync.Runtime;
 using static Msync.Cli.ArtifactCommands;
+using static Msync.Cli.CommandPipeline;
 using static Msync.Cli.SourceCommands;
-using SourceCompiler = Msync.Compiler.Compiler;
 
 namespace Msync.Cli;
 
@@ -15,6 +15,7 @@ internal static class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        long entered = Stopwatch.GetTimestamp();
         if (await SshPromptBroker.TryRunHelperAsync(args) is { } helperExit) return helperExit;
         TelemetrySession? telemetry = null;
         ConsoleEncodingScope? consoleEncoding = null;
@@ -46,6 +47,7 @@ internal static class Program
                 else Console.Write(TerminalPresentation.Syntax(document.Text, TerminalPresentation.Colors(color)));
                 return 0;
             }
+            long configurationStarted = Stopwatch.GetTimestamp();
             Configuration configuration = Configuration.Load(options.ConfigPath, options.NoConfig, options.Overrides);
             if (options.Command == "config") { configuration.Dump(Console.Out); return 0; }
             configuration.Validate();
@@ -58,20 +60,27 @@ internal static class Program
                 MemoryLimit = checked((long)configuration.MemoryLimit),
                 SpoolLimit = configuration.SpoolLimit is { } limit ? checked((long)limit) : null
             };
+            long exporterStarted = Stopwatch.GetTimestamp();
             telemetry = TelemetrySession.TryOpen(configuration, options.Command, options.File, options.TracePath, options.TelemetryDatabase, options.NoTelemetry);
+            telemetry?.RecordStartup(entered, configurationStarted, exporterStarted);
+            telemetry?.SetAttribute("optimization.level", options.Optimization.ToString(CultureInfo.InvariantCulture));
             bool executes = options.Command is "run" or "run-ir" or "repl";
             if (executes) consoleEncoding ??= ConsoleEncodingScope.Open(redirectedText: true);
             using TextReader? input = executes ? (TextReader?)RedirectedTextInput.Open() ?? new TerminalProgramInput() : null;
-            if (options.Command == "repl") return Complete(await Repl(options, telemetry, configuration, input), telemetry);
+            if (options.Command == "repl")
+            {
+                telemetry?.SetAttribute("input.kind", "repl");
+                return Complete(await Repl(options, telemetry, configuration, input), telemetry);
+            }
             if (options.Command == "doctor") return Complete(Doctor(), telemetry);
             string file = options.File ?? throw new ArgumentException("A source or artifact filename is required; use --help for commands.");
             if (options.Command == "fmt") return Complete(Format(file, options), telemetry);
             bool hirInput = HirCommands.IsArtifact(file);
             bool binary = hirInput || IsArtifact(file);
-            string? source = binary ? null : await ReadSource(file, input);
+            telemetry?.SetAttribute("input.kind", binary ? InputKind(file) : "source");
+            string? source = binary ? null : await ReadProgramSource(file, input, telemetry);
             if (source is not null) snapshot = new(file, source);
-            long compileStart = Stopwatch.GetTimestamp();
-            HirModule? semanticInput = hirInput ? HirArtifact.Read(file) : null;
+            HirModule? semanticInput = hirInput ? ReadHir(file, telemetry) : null;
             if (semanticInput is not null)
             {
                 HirSourceId origin = semanticInput.Node(semanticInput.Functions[semanticInput.Entry.Value].Body).Source.Source;
@@ -82,31 +91,29 @@ internal static class Program
             {
                 if (binary && !hirInput)
                     throw new ArgumentException("Typed HIR cannot be reconstructed from lowered bytecode. Compile the original .msync source with '--emit hir'.");
-                HirModule semantic = semanticInput ?? SourceCompiler.Analyze(source!, file);
-                if (options.Output is { } output) HirCommands.Write(semantic, output);
+                HirModule semantic = semanticInput ?? Analyze(source!, file, telemetry);
+                if (options.Output is { } output) WriteHir(semantic, output, telemetry);
                 else HirCommands.Print(semantic, color);
-                telemetry?.Observe(new("compile", "ok", Source: file, DurationNanoseconds: (long)(Stopwatch.GetElapsedTime(compileStart).TotalMilliseconds * 1_000_000)));
                 return Complete(0, telemetry);
             }
             if (options.Command == "check")
             {
                 if (semanticInput is null)
                 {
-                    if (binary) _ = Artifact.Read(file, formBlocks: false);
-                    else _ = SourceCompiler.Analyze(source!, file);
+                    if (binary) _ = ReadBytecode(file, telemetry);
+                    else _ = Analyze(source!, file, telemetry);
                 }
-                telemetry?.Observe(new("compile", "ok", Source: file, DurationNanoseconds: (long)(Stopwatch.GetElapsedTime(compileStart).TotalMilliseconds * 1_000_000)));
                 Console.WriteLine($"{file}: valid");
                 return Complete(0, telemetry);
             }
-            Module module = semanticInput is not null ? HirCommands.Lower(semanticInput, options.Optimization)
-                : binary ? Artifact.Read(file, formBlocks: false)
-                : SourceCompiler.CompileInstructions(source!, file, options.Optimization);
-            telemetry?.Observe(new("compile", "ok", Source: file, DurationNanoseconds: (long)(Stopwatch.GetElapsedTime(compileStart).TotalMilliseconds * 1_000_000)));
+            Module module = semanticInput is not null || !binary
+                ? Compile(source, file, semanticInput, options.Optimization, telemetry)
+                : ReadBytecode(file, telemetry);
+            telemetry?.SetAttribute("optimization.level", module.OptimizationLevel.ToString(CultureInfo.InvariantCulture));
             if (options.Command is "compile" or "emit-ir")
             {
                 if (options.Output is null) PrintPlan(module, color);
-                else Write(module, options.Output);
+                else WriteBytecode(module, options.Output, telemetry);
                 return Complete(0, telemetry);
             }
             using CancellationTokenSource cancellation = new();
@@ -117,10 +124,10 @@ internal static class Program
                 if (options.Command == "bind-ir")
                 {
                     string? sourceFile = options.SourceFile is null ? null : Path.GetFullPath(options.SourceFile);
-                    Module bound = Binding.BindInstructions(module, new(Environment.CurrentDirectory, HostContext.HomeDirectory, sourceFile));
-                    Module prepared = ContextualBackend.PrepareInstructions(bound,
-                        RuntimeOptions(options, sourceFile, telemetry, color, snapshot), cancellation.Token);
-                    Write(prepared, options.Output ?? Path.ChangeExtension(file, ".mexe"));
+                    Module prepared = Prepare(module, sourceFile, RuntimeOptions(options, sourceFile,
+                        telemetry is null ? null : telemetry.Observe, color, snapshot),
+                        telemetry, cancellation.Token);
+                    WriteBytecode(prepared, options.Output ?? Path.ChangeExtension(file, ".mexe"), telemetry);
                     return Complete(0, telemetry);
                 }
                 if (options.Command is "plan" or "plan-ir")
@@ -129,19 +136,16 @@ internal static class Program
                     {
                         string? sourceFile = options.SourceFile is { } explicitSource ? Path.GetFullPath(explicitSource)
                             : binary || file == "-" ? null : Path.GetFullPath(file);
-                        module = ContextualBackend.PrepareInstructions(Binding.BindInstructions(module,
-                            new(Environment.CurrentDirectory, HostContext.HomeDirectory, sourceFile)),
-                            RuntimeOptions(options, sourceFile, telemetry, color, snapshot), cancellation.Token);
+                        module = Prepare(module, sourceFile, RuntimeOptions(options, sourceFile,
+                            telemetry is null ? null : telemetry.Observe, color, snapshot), telemetry, cancellation.Token);
                     }
                     PrintPlan(module, color);
                     return Complete(0, telemetry);
                 }
                 string? runSource = options.SourceFile is { } requestedSource ? Path.GetFullPath(requestedSource)
                     : binary || file == "-" ? null : Path.GetFullPath(file);
-                ExecutionOptions execution = RuntimeOptions(options, runSource, telemetry, color, snapshot, input);
-                Interpreter interpreter = ExecutionHost.Create(module, execution, cancellation.Token);
-                await interpreter.ExecuteAsync(cancellation.Token);
-                return Complete(interpreter.FailedTransfers == 0 ? 0 : 1, telemetry);
+                int result = await Execute(module, options, runSource, telemetry, color, snapshot, input, cancellation.Token);
+                return Complete(result, telemetry);
             }
             finally { Console.CancelKeyPress -= cancel; }
         }
@@ -161,18 +165,9 @@ internal static class Program
         return code;
     }
 
-    private static ExecutionOptions RuntimeOptions(CommandOptions options, string? sourceFile, TelemetrySession? telemetry,
-        string color, SourceSnapshot? snapshot = null, TextReader? input = null) =>
-        new(SourceFile: sourceFile, DryRun: options.DryRun, Jobs: options.Jobs, BufferSize: options.BufferSize,
-            MemoryLimit: options.MemoryLimit, SpoolLimit: options.SpoolLimit, Observe: telemetry is null ? null : telemetry.Observe)
-        {
-            Input = input,
-            ReportError = error => TerminalPresentation.Error(error, color, snapshot,
-                "Check the source, destination and permissions, then retry. Completed transfers are retained.")
-        };
-
     private static Task<int> Repl(CommandOptions options, TelemetrySession? telemetry, Configuration configuration, TextReader? input) =>
-        new ReplSession(RuntimeOptions(options, null, telemetry, configuration.Color, input: input), options.Optimization, configuration.Color).RunAsync();
+        new ReplSession(RuntimeOptions(options, null, telemetry is null ? null : telemetry.Observe, configuration.Color, input: input)
+        with { Profile = telemetry?.CreateProfile() }, options.Optimization, configuration.Color, telemetry).RunAsync();
 
     private static int Doctor()
     {

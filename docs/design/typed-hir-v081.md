@@ -447,6 +447,73 @@ existing `.mso`/`.mexe` format 4 and language-semantic version remain independen
 of product version 0.8.1. All required type/shape/capture/source tables travel
 with the HIR file; unsupported or open entry bodies cannot be silently dropped.
 
+## Compilation observability
+
+`CompilationTrace` observes work at the existing phase boundaries; it is not
+ambient compiler state and never enters HIR, bytecode, or reusable analysis
+caches. The source path distinguishes parse, bind, analyze, lower and optimize.
+Lowering an imported typed HIR starts at lower; a session with an already
+parsed submission does not report a second parse. A failed phase reports its
+status and rethrows the original exception. The original public compile APIs
+still take the unobserved route.
+
+The optimizer can additionally summarize each pass across functions and
+fixed-point rounds. An aggregate reports invocations, changed invocations for
+transforms, cumulative time and managed allocation, and the sum of input/output
+bytecode functions, instructions and local slots visited. It is **not** an
+elapsed span covering every interval from the first call through the last.
+Cache hits do not count as executions of the cached pass. Input/output
+cardinality is counted only when profiling. Changed counts describe code and
+layout changes, not semantic equivalence or proof validity. The outer optimize
+span is inclusive and also measures driver/bookkeeping work; do not add it to
+its pass measurements. Allocation deltas are measured on the compiler thread,
+not heap size or allocations of an exporter worker.
+
+The callback owns no SQLite dependency. The CLI can associate the same
+observations with its recording session without allowing an export backend to
+influence compilation. This follows the division in [LLVM's pass
+instrumentation](https://llvm.org/docs/doxygen/PassInstrumentation_8h_source.html)
+and [pass timing](https://llvm.org/doxygen/classllvm_1_1TimePassesHandler.html):
+instrument pipeline ownership without folding collection into the algorithms.
+GCC's [`-ftime-report`](https://gcc.gnu.org/onlinedocs/gcc/Developer-Options.html)
+likewise reports pass statistics independently of the generated program.
+
+A first phase-cost control used the 8,192-key Heap and Set and 1 KiB SHA
+sources from the [library matrix](../../tests/Performance/LibraryMatrix/README.md),
+managed Release on logical CPU 7, `025b1da` plus instrumentation, at O2.
+For each source, one unobserved warmup preceded three observed compiles.
+Median `analyze / optimize` elapsed was 827 / 2,914 ms for Heap,
+6,187 / 617 ms for Set, and 37 / 175 ms for SHA. These are compiler
+component measurements, not current Native AOT CLI timings or VM execution.
+On that Heap, the pre-existing cross-block memory pass allocated about
+550 MB and changed none of its 38 visited code bodies; effect analysis
+allocated 407 MB across three whole-module runs. Inlining and aggregate
+argument specialization each allocated about 272 MB without changing that
+fixture's instruction streams. The distribution suggests inspecting shared
+call-target/effect analysis before scheduling additional blanket transforms.
+It does not justify dropping these passes on other programs or prove that
+their analyses have no downstream use.
+
+An exact admission ablation then changed only the global cross-block memory
+client test to require both a local `MakeScope` site and a field operation.
+An input without `MakeScope` already returned unchanged. In an O2 managed
+Release replay of prelowered inputs, all serialized SHA-256 hashes matched
+between variants, including a positive Scope/read-only-helper control. Pass
+visits fell from 38 to 12 on Heap and from 16 to 4 on SHA, but both still
+built two module-wide memory summaries and cumulative allocations were
+unchanged. The positive control kept its rewriting invocation and built one
+summary instead of two. The reverse process pair did not reproduce the
+initial pair's large timing changes; use this evidence for exact admission,
+not a throughput claim or a substitute for sharing the expensive analysis.
+
+Receipts: `.temp/phasecompiler-profile.csv` (phase, elapsed ns, allocation,
+visits, changes and instruction cardinality) and
+`.temp/phasecompiler-isolated-probe.log` (O0/O2/O3 byte-identical artifacts,
+source/HIR/session results and failed-stage attribution).
+Gate samples are in `.temp/phasecompiler-gate/{A,B,B2,A2}.csv`: CPU 7,
+tiered compilation disabled, one warmup and three samples per fixture/fork,
+with workload order reversed for the second pair.
+
 ## Engineering basis
 
 Rust's [HIR](https://rustc-dev-guide.rust-lang.org/hir.html) motivates explicit
