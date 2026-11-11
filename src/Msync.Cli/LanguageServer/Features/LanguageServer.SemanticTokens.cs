@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
@@ -7,83 +8,130 @@ namespace Msync.Cli;
 
 internal sealed partial class LanguageServer
 {
-    private static JsonObject SemanticTokens(EditorDocument document)
+    private static bool SupportsSemanticTokenDelta(JsonElement capabilities) =>
+        capabilities.ValueKind == JsonValueKind.Object
+        && capabilities.TryGetProperty("textDocument", out var text) && text.ValueKind == JsonValueKind.Object
+        && text.TryGetProperty("semanticTokens", out var tokens) && tokens.ValueKind == JsonValueKind.Object
+        && tokens.TryGetProperty("requests", out var requests) && requests.ValueKind == JsonValueKind.Object
+        && requests.TryGetProperty("full", out var full) && full.ValueKind == JsonValueKind.Object
+        && full.TryGetProperty("delta", out var delta) && delta.ValueKind == JsonValueKind.True;
+
+    private static string TokenResultId(EditorDocument document) => document.Generation.ToString(CultureInfo.InvariantCulture);
+
+    private JsonObject SemanticTokens(EditorDocument document, string? previousResultId = null)
     {
-        if (document.SemanticTokenData is { } cached)
-            return new JsonObject { ["data"] = JsonArray.Create(cached) };
+        if (!semanticDeltaSupported || document.Generation == 0)
+            return new JsonObject { ["data"] = JsonArray.Create(document.SemanticTokenData
+                ?? FullTokenData(document, EncodeSemanticTokens(document))) };
+        string resultId = TokenResultId(document);
+        if (document.SemanticTokenValues is not null && previousResultId == resultId)
+            return new() { ["resultId"] = resultId, ["edits"] = new JsonArray() };
+        int[] values = document.SemanticTokenValues ??= EncodeSemanticTokens(document);
+        if (document.PreviousSemanticTokens is { } previous && previous.ResultId == previousResultId
+            && TokenDelta(previous.Values, values) is { } edits)
+            return new() { ["resultId"] = resultId, ["edits"] = edits };
+        return new() { ["resultId"] = resultId, ["data"] = JsonArray.Create(FullTokenData(document, values)) };
+    }
+
+    private static JsonElement FullTokenData(EditorDocument document, int[] values) =>
+        document.SemanticTokenData ??= JsonSerializer.SerializeToElement(values, LanguageServerJson.Default.Int32Array);
+
+    private static JsonArray? TokenDelta(ReadOnlySpan<int> previous, ReadOnlySpan<int> current)
+    {
+        int start = previous.CommonPrefixLength(current);
+        var oldTail = previous[start..];
+        var newTail = current[start..];
+        int unchanged = 0;
+        int limit = Math.Min(oldTail.Length, newTail.Length);
+        while (unchanged < limit && oldTail[^(unchanged + 1)] == newTail[^(unchanged + 1)]) unchanged++;
+        int removed = oldTail.Length - unchanged;
+        int inserted = newTail.Length - unchanged;
+        if (removed == 0 && inserted == 0) return [];
+        // A delta edit has extra JSON fields. Send a full result when it
+        // would avoid very little data, especially for short documents.
+        if (current.Length - inserted < 16) return null;
+        var edit = new JsonObject { ["start"] = start, ["deleteCount"] = removed };
+        if (inserted != 0)
+            edit["data"] = JsonArray.Create(JsonSerializer.SerializeToElement(newTail[..inserted].ToArray(),
+                LanguageServerJson.Default.Int32Array));
+        return new(edit);
+    }
+
+    private static int[] EncodeSemanticTokens(EditorDocument document)
+    {
         SourceText source = document.Source;
         string text = source.Text;
-        var inferred = (document.Analysis?.TokenRoles() ?? [])
-            .GroupBy(item => item.Span.Start).ToDictionary(group => group.Key, group => group.MinBy(item => item.Span.Length));
+        Dictionary<int, EditorTokenRole> inferred = [];
+        foreach (var role in document.Analysis?.TokenRoles() ?? [])
+            if (!inferred.TryGetValue(role.Span.Start, out var previous) || role.Span.Length < previous.Span.Length)
+                inferred[role.Span.Start] = role;
         List<int> data = [];
         int previousLine = 0, previousColumn = 0;
         var patterns = document.Analysis?.RegexSpans ?? [];
         int patternIndex = 0, patternEnd = -1;
         var numberSpans = document.Analysis?.NumberSpans ?? Msync.Compiler.Syntax.Parser.NumberSpans(text);
-        List<(int Index, int Length, bool Number)> lexical = [];
         int numberIndex = 0;
         foreach (ValueMatch match in LexicalTokens().EnumerateMatches(text))
         {
             while (numberIndex < numberSpans.Count && numberSpans[numberIndex].End <= match.Index)
             {
                 var number = numberSpans[numberIndex++];
-                lexical.Add((number.Start, number.Length, true));
+                AddLexical(number.Start, number.Length, true);
             }
             if (numberIndex == numberSpans.Count || numberSpans[numberIndex].Start >= match.Index + match.Length)
-                lexical.Add((match.Index, match.Length, false));
+                AddLexical(match.Index, match.Length, false);
         }
         while (numberIndex < numberSpans.Count)
         {
             var number = numberSpans[numberIndex++];
-            lexical.Add((number.Start, number.Length, true));
-        }
-        foreach (var match in lexical)
-        {
-            while (patternIndex < patterns.Count && patterns[patternIndex].Start <= match.Index)
-            {
-                var pattern = patterns[patternIndex++];
-                AddToken(pattern.Start, pattern.Length, 11);
-                patternEnd = pattern.End;
-            }
-            if (match.Index < patternEnd) continue;
-            ReadOnlySpan<char> token = text.AsSpan(match.Index, match.Length);
-            bool comment = token[0] == '#' || token.StartsWith("//", StringComparison.Ordinal);
-            bool quoted = token[0] == '"';
-            bool keyword = !comment && !quoted && IsKeyword(token);
-            int separator = !comment && !quoted ? token.IndexOf("://", StringComparison.Ordinal) : -1;
-            if (separator >= 0)
-            {
-                AddToken(match.Index, separator, 6);
-                AddToken(match.Index + separator, 3, 8);
-                AddToken(match.Index + separator + 3, match.Length - separator - 3, 7);
-                continue;
-            }
-            int type = comment ? 5 : quoted ? 4 : "?:-=!/$|@+*%<>".AsSpan().Contains(token[0]) ? 8 :
-                keyword ? char.IsUpper(token[0]) ? 3 : 0 :
-                match.Index > 0 && text[match.Index - 1] == '$' ? 9 : 2;
-            if (!comment && !quoted)
-            {
-                if (token.SequenceEqual("?") || ControlFlow(token)) type = 10;
-                else if (match.Number) type = 12;
-            }
-            if (!keyword)
-            {
-                if ((inferred.TryGetValue(match.Index, out var semantic)
-                    || match.Index > 0 && text[match.Index - 1] == '$'
-                        && inferred.TryGetValue(match.Index - 1, out semantic))
-                    && semantic.Span.End == match.Index + match.Length)
-                    type = semantic.Role switch { "function" => 1, "type" => 3, _ => 2 };
-            }
-            AddToken(match.Index, match.Length, type);
+            AddLexical(number.Start, number.Length, true);
         }
         while (patternIndex < patterns.Count)
         {
             var pattern = patterns[patternIndex++];
             AddToken(pattern.Start, pattern.Length, 11);
         }
-        JsonElement encoded = JsonSerializer.SerializeToElement(data.ToArray(), LanguageServerJson.Default.Int32Array);
-        document.SemanticTokenData = encoded;
-        return new JsonObject { ["data"] = JsonArray.Create(encoded) };
+        return data.ToArray();
+
+        void AddLexical(int index, int length, bool number)
+        {
+            while (patternIndex < patterns.Count && patterns[patternIndex].Start <= index)
+            {
+                var pattern = patterns[patternIndex++];
+                AddToken(pattern.Start, pattern.Length, 11);
+                patternEnd = pattern.End;
+            }
+            if (index < patternEnd) return;
+            ReadOnlySpan<char> token = text.AsSpan(index, length);
+            bool comment = token[0] == '#' || token.StartsWith("//", StringComparison.Ordinal);
+            bool quoted = token[0] == '"';
+            bool keyword = !comment && !quoted && IsKeyword(token);
+            int separator = !comment && !quoted ? token.IndexOf("://", StringComparison.Ordinal) : -1;
+            if (separator >= 0)
+            {
+                AddToken(index, separator, 6);
+                AddToken(index + separator, 3, 8);
+                AddToken(index + separator + 3, length - separator - 3, 7);
+                return;
+            }
+            int type = comment ? 5 : quoted ? 4 : "?:-=!/$|@+*%<>".AsSpan().Contains(token[0]) ? 8 :
+                keyword ? char.IsUpper(token[0]) ? 3 : 0 :
+                index > 0 && text[index - 1] == '$' ? 9 : 2;
+            if (!comment && !quoted)
+            {
+                if (token.SequenceEqual("?") || ControlFlow(token)) type = 10;
+                else if (number) type = 12;
+            }
+            if (!keyword)
+            {
+                if ((inferred.TryGetValue(index, out var semantic)
+                    || index > 0 && text[index - 1] == '$'
+                        && inferred.TryGetValue(index - 1, out semantic))
+                    && semantic.Span.End == index + length)
+                    type = semantic.Role switch { "function" => 1, "type" => 3, _ => 2 };
+            }
+            AddToken(index, length, type);
+        }
 
         void AddToken(int offset, int length, int type)
         {

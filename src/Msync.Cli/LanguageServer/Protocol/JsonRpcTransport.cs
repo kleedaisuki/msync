@@ -29,12 +29,13 @@ internal sealed class JsonRpcTransport
         return JsonDocument.Parse(bytes);
     }
 
-    internal void Write(JsonNode value)
+    internal int Write(JsonNode value)
     {
         ArrayBufferWriter<byte> buffer = new();
         using (Utf8JsonWriter writer = new(buffer)) value.WriteTo(writer);
         output.Write(Encoding.ASCII.GetBytes($"Content-Length: {buffer.WrittenCount}\r\n\r\n"));
         output.Write(buffer.WrittenSpan);
         output.Flush();
+        return buffer.WrittenCount;
     }
 }

@@ -30,6 +30,13 @@ async function hover(document) {
     assert.match(text, /Number/);
 }
 
+async function waitForTokens(database, suffix = '') {
+    const python = process.env.MSYNC_TEST_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+    await bounded(`semantic tokens ${suffix || 'full'} in SQLite`, execute(python, [
+        path.join(__dirname, 'verify-telemetry.py'), database, '--wait-for', `textDocument/semanticTokens/full${suffix}`,
+    ]));
+}
+
 async function run() {
     const runRoot = process.env.MSYNC_TEST_ROOT;
     const workspace = process.env.MSYNC_TEST_WORKSPACE;
@@ -38,7 +45,8 @@ async function run() {
     const database = path.join(runRoot, 'editor telemetry.sqlite');
     const ignored = path.join(runRoot, 'workspace telemetry.sqlite');
     const source = path.join(workspace, 'editor-telemetry.msync');
-    await fs.writeFile(source, 'let unique_user_source_must_not_be_in_diagnostics = 7;\nunique_user_source_must_not_be_in_diagnostics\n');
+    await fs.writeFile(source, 'let unique_user_source_must_not_be_in_diagnostics = 7;\nunique_user_source_must_not_be_in_diagnostics;\n'
+        + Array.from({ length: 1000 }, (_, index) => `let item_${index} = ${index};\n`).join(''));
     const document = await vscode.workspace.openTextDocument(vscode.Uri.file(source));
     await vscode.window.showTextDocument(document, { preview: false });
     const extension = vscode.extensions.getExtension('msync.msync-language');
@@ -56,6 +64,12 @@ async function run() {
     await configuration.update('enabled', true, target);
     await bounded('telemetry-enabled server restart', vscode.commands.executeCommand('msync.restartLanguageServer'));
     await hover(document);
+    await waitForTokens(database);
+    const edit = new vscode.WorkspaceEdit();
+    const number = document.lineAt(0).text.lastIndexOf('7');
+    edit.replace(document.uri, new vscode.Range(0, number, 0, number + 1), '77');
+    assert.ok(await vscode.workspace.applyEdit(edit));
+    await waitForTokens(database, '/delta');
     const completion = await bounded('production completion', vscode.commands.executeCommand(
         'vscode.executeCompletionItemProvider', document.uri, new vscode.Position(1, 3)));
     assert.ok(completion.items.length > 0);

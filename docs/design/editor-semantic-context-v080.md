@@ -748,3 +748,61 @@ CLI (framing, explicit consent, errors, and payload admission) and the VS Code
 `MSYNC_TEST_TELEMETRY_ONLY=1` extension-host suite (real edit/hover/completion,
 artifact and library queries, local SQLite, workspace setting isolation, and
 return to disabled without changing existing data).
+
+## Revision-owned semantic token deltas
+
+Coloring distinguishes semantic projection cost from moving its result. A
+client that advertises `textDocument.semanticTokens.requests.full.delta` can
+reuse one previously returned integer token stream for an open document.
+A result ID is the server's document generation, not the client version:
+close/reopen never aliases an earlier result, even when client version 1
+returns. Rapid edits carry forward the last materialized token snapshot,
+not a chain of discarded analysis generations. Requests still wait for
+the selected generation's analysis or are canceled/superseded through the
+existing pending-insight path.
+
+The server compares the relative integer encoding, not the source text or
+absolute token positions. It keeps the common prefix and suffix and sends
+one contiguous replacement (or no edits if identical). The
+[LSP semantic token contract](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.18/specification/#textDocument_semanticTokens)
+allows edits in that integer stream;
+[VS Code's provider API](https://code.visualstudio.com/api/language-extensions/semantic-highlight-guide)
+uses the preceding result for the full-document edit request. Missing or
+unrecognized IDs and changes that would save too little return the complete
+token stream. This linear comparison deliberately does not compute a
+general [shortest edit script](https://neil.fraser.name/writing/diff/myers.pdf):
+an isolated typing edit needs one replacement, and scattered changes can
+fall back to full data rather than make the request pay for an elaborate
+diff. Full-only clients retain their existing capability and
+cached response shape. Token kinds, UTF-16 ranges, and multiline handling
+are unchanged. One previous compact array and the current array are enough;
+an older encoded JSON document and historical analysis are not retained
+for a delta.
+
+Within one encoding, merge lexical matches and parsed Number spans into
+the emitted stream without first retaining a second token list. Select the
+narrowest semantic role at each start in one pass, retaining first-wins
+behavior for equal ranges. This is not incremental token computation:
+an uncached revision still builds the complete current projection.
+
+The opt-in SQLite trace records the exact JSON body byte count at reply,
+alongside queue and dispatch-to-reply intervals. The latter is a server
+wall interval (and may include waiting for a revision); it is neither
+client round-trip time nor exclusive computation. The checked LSP
+benchmark applies every actual delta to the previous full stream and
+compares exact integers, including no-change replies, skipped versions,
+unknown IDs, and reopen. A real VS Code host confirms that the built-in semantic highlighter
+negotiates and sends a delta after a range edit; the extension need not
+maintain a second cache or implement a private request.
+
+```sh
+python3 tests/Msync.EndToEnd/lsp_semantic_delta.py \
+  --baseline /absolute/path/to/stock/msync --candidate /absolute/path/to/new/msync \
+  --work .temp/semantic-delta-compare --cpu 11 --pairs 4 --edits 6
+```
+
+Use the same executable on both sides to isolate negotiation and reply
+format: the full arm advertises no delta capability, and the delta arm
+does. The timed arms have telemetry off. Separate SQLite runs check that
+the recorded body byte count equals the actual Content-Length, without
+folding instrumented timings into the primary comparison.

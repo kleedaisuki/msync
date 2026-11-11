@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sqlite3
-import sys
+import time
+from contextlib import closing
 from pathlib import Path
 
 
@@ -46,8 +48,27 @@ def verify(database: Path) -> dict[str, object]:
             "textDocument/completion",
             "msync/stdlibSource",
             "msync/artifact",
+            "textDocument/semanticTokens/full",
+            "textDocument/semanticTokens/full/delta",
         ):
             assert server.get(method, 0) > 0, server
+        wire: dict[str, int] = dict(
+            connection.execute(
+                """
+            SELECT a.value, min(m.value_int)
+            FROM spans r JOIN attributes a ON r.id = a.record_id
+            JOIN metrics m ON r.id = m.record_id
+            JOIN attributes d ON r.id = d.record_id AND d.key = 'document.uri'
+            WHERE r.name = 'lsp.request' AND r.status = 'ok' AND a.key = 'lsp.method'
+              AND a.value LIKE 'textDocument/semanticTokens/%' AND m.key = 'lsp.response_bytes'
+              AND d.value LIKE '%/editor-telemetry.msync'
+            GROUP BY a.value
+            """
+            )
+        )
+        full = wire["textDocument/semanticTokens/full"]
+        delta = wire["textDocument/semanticTokens/full/delta"]
+        assert full > 1000 and 0 < delta < full, wire
         assert connection.execute(
             """
             SELECT count(*) FROM spans r JOIN metrics m ON m.record_id = r.id
@@ -84,11 +105,37 @@ def verify(database: Path) -> dict[str, object]:
         "sessions": len(sessions),
         "editor_client_ns": client,
         "language_server_ns": server,
+        "semantic_tokens_response_bytes": wire,
     }
 
 
 def main() -> None:
-    database: Path = Path(sys.argv[1]).resolve()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("database", type=Path)
+    parser.add_argument("--wait-for")
+    args = parser.parse_args()
+    database: Path = args.database.resolve()
+    if args.wait_for is not None:
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if database.exists():
+                with closing(
+                    sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)
+                ) as connection:
+                    found = connection.execute(
+                        """
+                        SELECT 1 FROM spans r JOIN attributes a ON r.id = a.record_id
+                        WHERE r.name = 'lsp.request' AND r.status = 'ok'
+                          AND a.key = 'lsp.method' AND a.value = ? LIMIT 1
+                        """,
+                        (args.wait_for,),
+                    ).fetchone()
+                    if found:
+                        return
+            time.sleep(0.05)
+        raise TimeoutError(
+            f"Expected a successful {args.wait_for} request in {database}"
+        )
     print(json.dumps(verify(database), ensure_ascii=False))
 
 

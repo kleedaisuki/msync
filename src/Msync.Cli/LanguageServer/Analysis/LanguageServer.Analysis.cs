@@ -113,7 +113,7 @@ internal sealed partial class LanguageServer
                 BeginArtifact(id, parameters);
                 return false;
             }
-            if (id is not null && (method is "textDocument/hover" or "textDocument/semanticTokens/full" or "textDocument/completion"
+            if (id is not null && (method is "textDocument/hover" or "textDocument/semanticTokens/full" or "textDocument/semanticTokens/full/delta" or "textDocument/completion"
                 or "textDocument/documentSymbol" or "textDocument/definition")
                 && parameters.TryGetProperty("textDocument", out var descriptor)
                 && documents.TryGetValue(descriptor.GetProperty("uri").GetString()!, out var document)
@@ -143,8 +143,8 @@ internal sealed partial class LanguageServer
 
     private void Reply(JsonObject message, string? disposition = null)
     {
-        transport.Write(message);
-        observation?.Reply(message, disposition);
+        int bytes = transport.Write(message);
+        observation?.Reply(message, disposition, bytes);
     }
 
     private void Notify(string method, JsonElement parameters, string? parent)
@@ -187,7 +187,10 @@ internal sealed partial class LanguageServer
         EditorDocument current = new(source, version, ++generation)
         {
             AnalysisSession = method == "textDocument/didChange" && previous?.AnalysisSession is { } session
-                ? session : new(uri)
+                ? session : new(uri),
+            PreviousSemanticTokens = semanticDeltaSupported && method == "textDocument/didChange" && previous is not null
+                ? previous.SemanticTokenValues is { } values ? new(TokenResultId(previous), values) : previous.PreviousSemanticTokens
+                : null,
         };
         documents[uri] = current;
         lock (analysisGate)

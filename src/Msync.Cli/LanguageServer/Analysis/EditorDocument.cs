@@ -7,6 +7,10 @@ internal sealed record EditorDocument(SourceText Source, int Version, long Gener
 {
     public EditorAnalysis? Analysis { get; set; }
     public EditorAnalysisSession? AnalysisSession { get; init; }
+    public SemanticTokenSnapshot? PreviousSemanticTokens { get; init; }
+    public int[]? SemanticTokenValues { get; set; }
     public JsonElement? SemanticTokenData { get; set; }
     public EditorDocument(string text, int version, long generation) : this(new SourceText(text), version, generation) { }
 }
+
+internal sealed record SemanticTokenSnapshot(string ResultId, int[] Values);

@@ -34,12 +34,13 @@ internal sealed class LanguageServerObservation(TelemetrySession session)
         return span;
     }
 
-    internal void Reply(JsonObject message, string? disposition)
+    internal void Reply(JsonObject message, string? disposition, int bytes)
     {
         long replied = Stopwatch.GetTimestamp();
         if (message.ContainsKey("method") || message["id"] is not { } id ||
             !requests.Remove(id.ToJsonString(), out var pending)) return;
         using var span = pending.Span;
+        span.SetMetric("lsp.response_bytes", bytes);
         span.SetMetric("lsp.dispatch_to_reply_ns", Duration(pending.Dispatched, replied));
         span.SetMetric("lsp.receive_to_reply_ns", Duration(pending.Received, replied));
         if (disposition is not null) span.SetAttribute("lsp.disposition", disposition);

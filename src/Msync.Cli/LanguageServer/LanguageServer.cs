@@ -10,6 +10,7 @@ internal sealed partial class LanguageServer(Func<string, string> format, Langua
     private readonly Dictionary<string, EditorDocument> documents = new(StringComparer.Ordinal);
     private readonly JsonRpcTransport transport = new();
     private bool semanticRefreshSupported;
+    private bool semanticDeltaSupported;
     private bool semanticRefreshPending;
     private bool semanticRefreshDirty;
     private bool hierarchicalDocumentSymbols;
@@ -32,10 +33,13 @@ internal sealed partial class LanguageServer(Func<string, string> format, Langua
                 && capabilities.TryGetProperty("workspace", out var workspace)
                 && workspace.TryGetProperty("semanticTokens", out var tokens)
                 && tokens.TryGetProperty("refreshSupport", out var refresh) && refresh.ValueKind == JsonValueKind.True;
+            semanticDeltaSupported = SupportsSemanticTokenDelta(capabilities);
             JsonNode response = JsonNode.Parse("""
             {"capabilities":{"positionEncoding":"utf-16","textDocumentSync":{"openClose":true,"change":2},"documentFormattingProvider":true,"codeActionProvider":true,"completionProvider":{"resolveProvider":true,"triggerCharacters":[":","$","/","\\","@"]},"hoverProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["keyword","function","variable","type","string","comment","protocol","endpoint","operator","namespace","controlKeyword","regexp","number"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"msync","version":""}}
             """)!;
             response["serverInfo"]!["version"] = ProductVersion.Current;
+            if (semanticDeltaSupported)
+                response["capabilities"]!["semanticTokensProvider"]!["full"] = new JsonObject { ["delta"] = true };
             return response;
         }
         if (method == "shutdown") return null;
@@ -55,6 +59,8 @@ internal sealed partial class LanguageServer(Func<string, string> format, Langua
         }
         if (method == "textDocument/completion") return Completions(document, p, lazyDocumentation: completionResolveDocumentation);
         if (method == "textDocument/semanticTokens/full") return SemanticTokens(document);
+        if (method == "textDocument/semanticTokens/full/delta")
+            return SemanticTokens(document, p.GetProperty("previousResultId").GetString());
         if (method == "textDocument/documentSymbol") return Symbols(documentUri, document);
         if (method == "textDocument/definition") return Definition(document, p);
         if (method == "textDocument/hover") return Hover(document, p);

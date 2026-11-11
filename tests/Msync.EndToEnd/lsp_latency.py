@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import IO, Any, cast
 
@@ -25,9 +26,11 @@ class Client:
         *,
         cwd: Path | None = None,
         environment: dict[str, str] | None = None,
+        server_arguments: Sequence[str] = (),
+        observe_message: Callable[[dict[str, Any], int], None] | None = None,
     ) -> None:
         self.process = subprocess.Popen(
-            [str(binary), "--language-server"],
+            [str(binary), "--language-server", *server_arguments],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -40,6 +43,7 @@ class Client:
         self.responses: queue.Queue[dict[str, Any] | Exception] = queue.Queue()
         self.notifications: list[dict[str, Any]] = []
         self.next_id = 0
+        self.observe_message = observe_message
         self.reader = threading.Thread(target=self._read_loop, daemon=True)
         self.reader.start()
 
@@ -59,7 +63,10 @@ class Client:
                 assert length >= 0
                 body = self.output.read(length)
                 assert len(body) == length
-                self.responses.put(cast(dict[str, Any], json.loads(body)))
+                message = cast(dict[str, Any], json.loads(body))
+                if self.observe_message is not None:
+                    self.observe_message(message, length)
+                self.responses.put(message)
         except (OSError, ValueError, AssertionError) as error:
             self.responses.put(error)
 
