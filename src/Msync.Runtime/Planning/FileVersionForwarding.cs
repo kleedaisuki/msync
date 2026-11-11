@@ -10,8 +10,11 @@ internal static class FileVersionForwarding
         var allWrites = new PlanResourceIndex();
         for (int index = 0; index < graph.Nodes.Count; index++)
             foreach (var write in graph.Nodes[index].Writes) allWrites.Add(write, index);
-        var current = new PlanResourceIndex();
-        Dictionary<int, TransferGraph.Node> producers = [];
+        Dictionary<PlanResource, (int Index, TransferGraph.Node Node)> current = new(ResourceIdentity.Instance);
+        // A forwarding producer is an exact one-file version. Only a subtree
+        // overwrite needs the hierarchical index to retire covered producers.
+        PlanResourceIndex? subtrees = graph.Nodes.Any(node => node.Writes.Any(write => write.Subtree)) ? new() : null;
+        HashSet<int>? covered = null;
         List<TransferGraph.Node>? changed = null;
         int originalIndex = 0;
         foreach (var original in graph.Nodes)
@@ -20,9 +23,8 @@ internal static class FileVersionForwarding
             if (node.Kind == PlannedTransferKind.CopyFile && node.Source is PathValue input)
             {
                 PlanResource read = filesystem.Resource(input);
-                int candidate = current.Overlapping(read).Where(index => producers[index].Writes.Count == 1
-                    && ResourceIdentity.Instance.Equals(producers[index].Writes[0], read)).DefaultIfEmpty(-1).Max();
-                if (candidate >= 0 && TryForward(producers[candidate], node, allWrites, filesystem, out var forwarded))
+                if (current.TryGetValue(read, out var candidate)
+                    && TryForward(candidate.Node, node, allWrites, filesystem, out var forwarded))
                 {
                     node = forwarded!;
                     changed ??= graph.Nodes.Take(originalIndex).ToList();
@@ -32,16 +34,24 @@ internal static class FileVersionForwarding
             int identity = originalIndex++;
             foreach (var write in node.Writes)
             {
-                foreach (int previous in current.Overlapping(write))
+                if (write.Subtree)
                 {
-                    PlanResource definition = producers[previous].Writes[0];
-                    if (write.Subtree && TransferGraph.Contains(write, definition)
-                        || ResourceIdentity.Instance.Equals(write, definition)) current.Remove(definition, previous);
+                    var overlap = covered ??= [];
+                    subtrees!.CollectOverlapping(write, overlap);
+                    foreach (int previous in overlap)
+                    {
+                        PlanResource definition = graph.Nodes[previous].Writes[0];
+                        if (!TransferGraph.Contains(write, definition)) continue;
+                        current.Remove(definition);
+                        subtrees.Remove(definition, previous);
+                    }
+                    overlap.Clear();
                 }
+                if (current.Remove(write, out var replaced)) subtrees?.Remove(write, replaced.Index);
             }
             if (node.Kind != PlannedTransferKind.CopyFile || node.Writes.Count != 1) continue;
-            producers.Add(identity, node);
-            current.Add(node.Writes[0], identity);
+            current.Add(node.Writes[0], (identity, node));
+            subtrees?.Add(node.Writes[0], identity);
         }
         if (changed is null) return graph;
         var output = new TransferGraph();

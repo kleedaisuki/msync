@@ -94,3 +94,42 @@ change, including span-based index traversal and parent/canonical-path caching,
 not attribution to one isolated hunk. Raw observations are
 `.temp/backend-acceptance/common5-preparation-1024.json`. No second trace or
 three-size rerun was performed.
+
+## Instantiated footprint index and graph construction
+
+The graph consumes already selected, concrete footprints. Keep one inline
+index entry at a single-definition path and allocate a set only when multiple
+entries actually share that path; leaf paths do not allocate child maps.
+Graph construction unions overlaps directly into a scratch set, and a
+file-only frontier never materializes a namespace-change query. The remaining
+namespace queries are existential, with the same reaching definitions as the
+full projection. Copy forwarding uses exact identity to find a one-file
+producer; it needs the hierarchical projection only to retire producers under
+a subtree overwrite. This is a change in representation and the cost of asking
+questions, not permission to remove any RAW, WAR, WAW, namespace, or observed
+result dependencies. As in [MemorySSA's clobber walkers](https://llvm.org/docs/MemorySSA.html),
+the query type determines how much information to collect; the planner does
+not instantiate compiler memory effects as filesystem alias proofs.
+
+An isolated managed replay of 1,024 independent local files compares base
+`5f25145` with only these three Runtime/Planning changes. The same compiler,
+Core and optimizer assemblies compiled and bound source outside the timer.
+Each of four alternating AB/BA process pairs used five warmups and nine samples
+per process (.NET 10.0.14, TieredCompilation=0, CPU 11). Both variants used
+the same fixture, produced 1,024 nodes in one batch, and their serialized
+`.mexe` bytes matched for each workload. No transfers occurred while timing.
+
+| Actual source shape | Allocation per preparation | Pooled median elapsed |
+| --- | ---: | ---: |
+| 1,024 direct copies | 15,294,760 → 12,172,520 B (-20.4%) | 71.3 → 69.4 ms |
+| 1,024 calls to a known copy helper | 16,314,256 → 13,691,728 B (-16.1%) | 90.3 → 70.8 ms |
+
+Per-process medians varied substantially with concurrent host work, so neither
+row establishes CLI throughput or tail improvement. The allocation reduction
+and byte-identical graphs were repeatable. Raw observations, exact assemblies,
+patch identity, and the source of the replay are under
+`artifacts/benchmarks/library-matrix-v086/deep-plan-footprints/`. Reused
+focused journeys covered version-liveness/320 topological executions, actual
+helper calls through all three source/object/executable routes, read/result
+observers, mixed failure, forwarding with/without source clobber, and future
+directory-link aliases.

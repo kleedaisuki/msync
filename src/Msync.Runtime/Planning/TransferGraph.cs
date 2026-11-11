@@ -9,22 +9,27 @@ internal sealed class TransferGraph
         SourceSpan? Span, bool CompleteWrite, bool Observed, int Instruction,
         TransferDestinationMode Mode = TransferDestinationMode.Exact);
 
-    private sealed record Definition(int Node, PlanResource Resource);
+    private readonly record struct Definition(int Node, PlanResource Resource);
     private readonly List<Node> nodes = [];
-    private readonly List<HashSet<int>> uses = [];
+    private readonly List<int[]> uses = [];
     private readonly List<Definition> definitions = [];
     private readonly Dictionary<PlanResource, int> latest = new(ResourceIdentity.Instance);
     private readonly HashSet<int> surviving = [];
     private readonly PlanResourceIndex writes = new();
+    private HashSet<int>? scratch;
+    private int namespaceDefinitions;
+    private Func<int, bool>? isNamespaceDefinition;
 
     internal int Count => nodes.Count;
     internal IReadOnlyList<Node> Nodes => nodes;
     internal bool HasWrites(PlanResource resource) => writes.AnyOverlap(resource);
     internal IReadOnlyList<Node> Overlapping(PlanResource resource) => writes.Overlapping(resource)
         .Select(index => definitions[index].Node).Distinct().Order().Select(index => nodes[index]).ToArray();
-    internal bool NamespaceMayChange(PlanResource resource) => Overlapping(resource).Any(node =>
-        node.Kind is PlannedTransferKind.CopyDirectory or PlannedTransferKind.CopyLink or PlannedTransferKind.GenericCopy
-            or PlannedTransferKind.EnsureDirectory);
+    internal bool NamespaceMayChange(PlanResource resource) => namespaceDefinitions != 0
+        && writes.AnyOverlap(resource, isNamespaceDefinition ??= definition => ChangesNamespace(nodes[definitions[definition].Node]));
+
+    private static bool ChangesNamespace(Node node) => node.Kind is PlannedTransferKind.CopyDirectory
+        or PlannedTransferKind.CopyLink or PlannedTransferKind.GenericCopy or PlannedTransferKind.EnsureDirectory;
 
     internal string? ProducedKind(PlanResource resource)
     {
@@ -42,29 +47,41 @@ internal sealed class TransferGraph
     internal int Add(Node node)
     {
         int index = nodes.Count;
-        HashSet<int> reaching = [];
-        foreach (var read in node.Reads)
-            foreach (int predecessor in writes.Overlapping(read)) reaching.Add(definitions[predecessor].Node);
+        int[] reaching = [];
+        if (node.Reads.Count != 0 && surviving.Count != 0)
+        {
+            var overlap = scratch ??= [];
+            foreach (var read in node.Reads) writes.CollectOverlapping(read, overlap);
+            if (overlap.Count != 0) reaching = overlap.Select(prior => definitions[prior].Node).Distinct().ToArray();
+            overlap.Clear();
+        }
         nodes.Add(node);
         uses.Add(reaching);
+        bool namespaceChange = ChangesNamespace(node);
         foreach (var write in node.Writes)
         {
-            if (node.CompleteWrite)
+            if (node.CompleteWrite && surviving.Count != 0)
             {
-                foreach (int prior in writes.Overlapping(write))
+                var overlap = scratch ??= [];
+                writes.CollectOverlapping(write, overlap);
+                foreach (int prior in overlap)
                 {
-                    PlanResource previous = definitions[prior].Resource;
+                    Definition definition = definitions[prior];
+                    PlanResource previous = definition.Resource;
                     bool covered = write.Subtree ? Contains(write, previous)
                         : !previous.Subtree && ResourceIdentity.Instance.Equals(write, previous);
                     if (!covered) continue;
                     surviving.Remove(prior);
+                    if (ChangesNamespace(nodes[definition.Node])) namespaceDefinitions--;
                     writes.Remove(previous, prior);
                     if (latest.GetValueOrDefault(previous, -1) == prior) latest.Remove(previous);
                 }
+                overlap.Clear();
             }
             int identity = definitions.Count;
             definitions.Add(new(index, write));
             surviving.Add(identity);
+            if (namespaceChange) namespaceDefinitions++;
             writes.Add(write, identity);
             latest[write] = identity;
         }
@@ -89,19 +106,22 @@ internal sealed class TransferGraph
         Dictionary<PlanResource, List<int>> orderedReaders = new(ResourceIdentity.Instance);
         List<PlannedTransfer> transfers = [];
         List<int> results = [];
+        HashSet<int> predecessors = [];
         foreach (int old in live.Order())
         {
             Node node = nodes[old];
-            HashSet<int> predecessors = [];
             foreach (var write in node.Writes)
             {
-                predecessors.UnionWith(writers.Overlapping(write));
-                predecessors.UnionWith(readers.Overlapping(write));
+                writers.CollectOverlapping(write, predecessors);
+                readers.CollectOverlapping(write, predecessors);
             }
-            foreach (var read in node.Reads) predecessors.UnionWith(writers.Overlapping(read));
+            foreach (var read in node.Reads) writers.CollectOverlapping(read, predecessors);
             int id = transfers.Count;
+            int[] incoming = predecessors.ToArray();
+            Array.Sort(incoming);
+            predecessors.Clear();
             transfers.Add(new(id, node.Source, node.Destination, node.Kind, node.Reads, node.Writes,
-                predecessors.Order().ToArray(), node.Span, node.Mode));
+                incoming, node.Span, node.Mode));
             foreach (var write in node.Writes)
             {
                 if (orderedWriters.TryGetValue(write, out int previous)) writers.Remove(write, previous);
