@@ -17,7 +17,7 @@ on:
         type: string
         default: ''
       editor_suites:
-        description: Comma-separated source,artifact,hir editor suites (empty runs all three)
+        description: Comma-separated source,artifact,hir,artifact-ui editor suites (empty keeps the standard selection)
         type: string
         default: ''
 
@@ -37,6 +37,7 @@ jobs:
       editor_source: ${{ steps.version.outputs.editor_source }}
       editor_artifact: ${{ steps.version.outputs.editor_artifact }}
       editor_hir: ${{ steps.version.outputs.editor_hir }}
+      editor_artifact_ui: ${{ steps.version.outputs.editor_artifact_ui }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: version
@@ -59,7 +60,8 @@ jobs:
           if unknown_phases:
               raise ValueError(f'Unknown Native phases: {sorted(unknown_phases)}')
           suites: tuple[str, ...] = tuple(part.strip() for part in os.environ['EDITOR_SUITES'].split(',') if part.strip()) or ('source', 'artifact', 'hir')
-          unknown_suites: set[str] = set(suites) - {'source', 'artifact', 'hir'}
+          known_suites: tuple[str, ...] = ('source', 'artifact', 'hir', 'artifact-ui')
+          unknown_suites: set[str] = set(suites) - set(known_suites)
           if unknown_suites:
               raise ValueError(f'Unknown editor suites: {sorted(unknown_suites)}')
           spec = importlib.util.spec_from_file_location('package_build', 'packaging/build.py')
@@ -70,8 +72,8 @@ jobs:
           publish = os.environ['GITHUB_REF'] == 'refs/heads/main' and os.environ['GITHUB_EVENT_NAME'] != 'pull_request' and os.environ['PUBLISH_REQUESTED'] == 'true'
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f'version={version}\npublish={str(publish).lower()}\n')
-              for suite in ('source', 'artifact', 'hir'):
-                  output.write(f'editor_{suite}={str(suite in suites).lower()}\n')
+              for suite in known_suites:
+                  output.write(f"editor_{suite.replace('-', '_')}={str(suite in suites).lower()}\n")
 
   native:
     needs: version
@@ -233,6 +235,16 @@ jobs:
           import subprocess
 
           subprocess.run(['xvfb-run', '-a', 'npm', 'run', 'test:integration'], check=True, timeout=360)
+      - name: Exercise the stage-aware artifact inspector
+        if: needs.version.outputs.editor_artifact_ui == 'true'
+        env:
+          MSYNC_TEST_ARTIFACT_UI_ONLY: '1'
+        working-directory: editors/vscode
+        shell: python
+        run: |
+          import subprocess
+
+          subprocess.run(['xvfb-run', '-a', 'npm', 'run', 'test:integration'], check=True, timeout=360)
       - name: Package VSIX
         working-directory: editors/vscode
         run: |
@@ -277,6 +289,7 @@ jobs:
             .temp/vscode-host-*/run.json
             .temp/vscode-host-*/result.json
             .temp/vscode-host-*/host.log
+            .temp/vscode-host-*/*.png
 
   publish:
     needs: [version, native, editor]

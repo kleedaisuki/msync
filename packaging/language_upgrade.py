@@ -43,6 +43,13 @@ JOURNEYS: tuple[tuple[str, Path], ...] = (
     ("command-policies", END_TO_END / "commands_policy_journey.py"),
     ("trees", END_TO_END / "ordered_structures_journey.py"),
     ("type-traits", END_TO_END / "type_traits_journey.py"),
+    ("stdlib-reflection", END_TO_END / "stdlib_reflection_journey.py"),
+    ("stdlib-iterators", END_TO_END / "stdlib_iterators_journey.py"),
+    ("stdlib-format", END_TO_END / "stdlib_format_journey.py"),
+    ("stdlib-stdio", END_TO_END / "stdlib_stdio_journey.py"),
+    ("stdlib-console", END_TO_END / "stdlib_console_workflow_journey.py"),
+    ("scope-self", END_TO_END / "scope_self_tokens_journey.py"),
+    ("hir-editor", END_TO_END / "hir_editor_journey.py"),
     ("terminal-library", END_TO_END / "terminal_library_journey.py"),
     ("shell-repl", END_TO_END / "repl_shell_journey.py"),
     ("session-age", END_TO_END / "repl_state_journey.py"),
@@ -136,10 +143,17 @@ def main() -> int:
                 "--output",
                 str(output / "affine-scans.json"),
             ]
-        elif name == "object-locality":
-            extra = ["--output", str(output / "object-locality.json")]
-        elif name == "loop-continuations":
-            extra = ["--output", str(output / "loop-continuations.json")]
+        elif name in {
+            "object-locality",
+            "loop-continuations",
+            "stdlib-reflection",
+            "stdlib-format",
+            "scope-self",
+            "hir-editor",
+        }:
+            extra = ["--output", str(output / f"{name}.json")]
+        elif name == "stdlib-stdio":
+            extra = ["--tty"]
         elif name == "session-age":
             extra = [
                 "--case",
