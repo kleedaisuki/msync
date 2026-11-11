@@ -83,3 +83,35 @@ primitive operations.
 
 Raw receipts from this run are in
 `artifacts/benchmarks/library-matrix-v086/{result.json,and.json,staged-control.log}`.
+
+## Follow-up controls
+
+The table above is the original measurement, not a claim of steady-state
+CoreCLR performance. On the unchanged DLL, ten warmup batches left
+`PriorityQueue.MoveDownDefaultComparer` and `SortedSet.FindNode` at instrumented
+Tier 0 even when the outer loop was already optimized. Twenty to one hundred
+batches gave roughly 1.2–1.3 ms for the heap and 2.9–3.3 ms for the tree, versus
+8–9 ms under the shorter warmup. Disassembly after longer warmup shows
+optimized Tier 1 versions. The driver now defaults to 100 C# warmup batches;
+use `--csharp-warmups 10` to reproduce the historical protocol. Per-runtime
+warmup should be justified by tier or convergence evidence rather than made
+nominally equal across runtimes.
+
+The generated key order interacts with the default hash-table layout. The
+tested libstdc++ growth policy settles on 10,273 buckets, of which only 2,710
+are occupied by the 8,192 keys. The tested Java HashMap bucket mapping uses
+8,192 distinct buckets out of 16,384 and maps every adjacent odd miss to an
+empty bucket. In a phase probe, pre-sizing libstdc++ to 16,411 buckets brings
+the original C++ hash workload from about 1.35 to 0.86 ms and keeping the
+same reserved node layout but specializing the bucket modulus gives about
+0.64 ms. These probes isolate important costs in the tested container, not a
+language-level ordering. Tree destruction is timed for C++; Java and C# drop
+references and pay reclamation on their collectors' schedule.
+
+The [VM continuation ablation](../../../docs/design/contextual-io-backend.md#compute-only-continuation-admission-086-investigation)
+explains why the msync timings remain large after initial binding: execution
+still repeatedly enters the contextual I/O planner for ordinary call paths.
+An 8,192-key bound tree run triggers 985,902 preparations. Disabling that
+admission in a diagnostic-only image reduces one matched pair from 26.03 to
+5.30 seconds; the remaining cost is real VM and data-structure work, not
+source compilation. The original matrix is unchanged as historical data.

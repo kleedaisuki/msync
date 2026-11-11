@@ -19,6 +19,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 LANGUAGES = ("C++", "C#", "Java", "Python", "msync")
 CASES = ("tree", "heap", "hash", "sha256")
+C_SHARP_WARMUPS = 100
 SIZE = 8192
 SHA_BYTES = 1024
 WORK = ROOT / ".temp/library-matrix"
@@ -110,7 +111,12 @@ def command(language: str) -> list[str | Path]:
 
 
 def measure(
-    language: str, case: str, expected: str, *, verify_only: bool = False
+    language: str,
+    case: str,
+    expected: str,
+    *,
+    verify_only: bool = False,
+    c_sharp_warmups: int = C_SHARP_WARMUPS,
 ) -> list[float]:
     sha = case.startswith("sha")
     if verify_only:
@@ -120,7 +126,8 @@ def measure(
     elif language == "Python":
         warmup, samples, batch = 3, 11, 2 if case == "tree" else 8
     else:
-        warmup, samples, batch = 10, 11, 512 if sha else 16
+        warmup = c_sharp_warmups if language == "C#" else 10
+        samples, batch = 11, 512 if sha else 16
     workload = "msync" if language == "msync" else "sha256" if sha else case
     extra: list[Path] = []
     if language == "msync":
@@ -185,6 +192,7 @@ def main() -> None:
     parser.add_argument("--cpp", default="/usr/bin/g++")
     parser.add_argument("--cpu", type=int, default=min(os.sched_getaffinity(0)))
     parser.add_argument("--reuse-build", action="store_true")
+    parser.add_argument("--csharp-warmups", type=int, default=C_SHARP_WARMUPS)
     parser.add_argument(
         "--compare-and",
         action="store_true",
@@ -192,6 +200,8 @@ def main() -> None:
     )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if args.csharp_warmups < 0:
+        parser.error("--csharp-warmups must be non-negative")
     msync: Path = args.msync.resolve()
     cpp: str = args.cpp
     WORK.mkdir(parents=True, exist_ok=True)
@@ -244,7 +254,9 @@ def main() -> None:
     for case in CASES:
         for order in (LANGUAGES, tuple(reversed(LANGUAGES))):
             for language in order:
-                samples = measure(language, case, expected[case])
+                samples = measure(
+                    language, case, expected[case], c_sharp_warmups=args.csharp_warmups
+                )
                 results[case][language].append(samples)
                 print(
                     f"{case:7} {language:6} {statistics.median(samples):12.6f} ms",
@@ -275,6 +287,7 @@ def main() -> None:
         "artifacts_sha256": {case: digest(WORK / f"{case}.mso") for case in CASES},
         "keys": SIZE,
         "sha_bytes": SHA_BYTES,
+        "csharp_warmup_batches": args.csharp_warmups,
         "expected": expected,
         "samples_ms_per_workload": results,
         "medians_ms": {
