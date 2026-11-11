@@ -735,3 +735,45 @@ and 2,097,152 → 524,288 VM boundary Number boxes, with identical stdout.
 The final focused loop suite passed 423 contracts. Receipts and databases:
 `.temp/goal-profile/integrated-checks.log` and
 `.temp/goal-profile/integrated-scalar/`.
+
+## VM follow-up: ready values and physical instruction representation
+
+The [four-workload comparison runner](../../tests/Performance/LibraryMatrix/README.md#isolate-the-compiler-and-vm-in-matched-runs)
+keeps the compiler, timing probe and SQLite observer independently selectable.
+Use one bound artifact to isolate the VM, or one VM to isolate compiler output.
+For whole CLI latency, include a separate telemetry-off process interval;
+never substitute the profiled execute span for that measurement.
+
+A focused ready/deferred change returns an immediate value through a completed
+ValueTask and passes a pending completion through directly. Unary/binary
+mapping creates continuation state only after selecting the deferred case.
+The VM still awaits when the instruction actually requires a result. Six
+AB/BA Native probe pairs on logical CPU 10, same compiler and checked bound
+artifact per case, gave these elapsed paired medians (candidate minus control):
+Set −32.95 ms, Heap −0.08 ms, Hash −2.08 ms, SHA-256 −40.77 ms. Heap and
+Hash were mixed; do not claim a uniform speedup. The contract controls include
+the exact runtime profile and 147 returned Process checks. This is separate
+from the [direct native stack lane](managed-runtime-optimization-v080.md#direct-native-stack-operations-for-owned-indexed-storage).
+
+A non-production interpreter prototype separates opcode and integer operands
+into a dense 12-byte word array and loads the original Instruction only for
+cold text, diagnostics and handlers that still need it. This is the same
+separation of logical instructions from hot interpreter state found in
+[CPython's interpreter](https://github.com/python/cpython/blob/main/InternalDocs/interpreter.md)
+and [HotSpot's template interpreter](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/interpreter/templateInterpreter.cpp),
+not a JVM or Python wire format and not a JIT. It tests fetch/reference
+bookkeeping, not dispatch elimination. Words were built lazily by function
+per interpreter, so preparation is included in the probe.
+
+The same frozen-artifact four-case control used six pairs on CPU 10.
+Paired medians were Set −27.48 ms (3/6 faster), Heap −118.86 ms (5/6),
+Hash −11.45 ms (4/6), SHA-256 −64.98 ms (3/6); the concurrent build host
+had large reversals, including order-one-second samples. This is a
+discriminator worth revisiting in a quieter window, not adoption evidence.
+The scratch overlay assumes reader-produced arrays; a real implementation
+must keep publicly supplied instruction lists on their current path and
+must prove the lifetime of any immutable execution-owned projection. Do not
+replace public bytecode, preserve raw PC/source identity, and do not cache
+across a changed REPL image. Receipts:
+`.temp/vm-next/{ready-fixed,packed-fixed}/result.json`; the packed source
+overlay is under `.temp/vm-next/packed-source/`.
