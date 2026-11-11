@@ -8,26 +8,39 @@ public sealed record ContextualPreparation(Module Module, int? ContinueAt,
 
 public static partial class ContextualBackend
 {
-    private sealed record Applicability(bool Required, IReadOnlySet<int> LoopHeaders);
+    private sealed record Applicability(bool Direct, bool Calls, IReadOnlySet<int>? LoopHeaders);
     private static readonly ConditionalWeakTable<FunctionCode, Applicability> applicability = new();
 
-    public static bool NeedsPreparation(FunctionCode function) => Applicable(function).Required;
+    public static bool NeedsPreparation(FunctionCode function)
+    {
+        var features = Applicable(function);
+        return features.Direct || features.Calls;
+    }
 
     private static Applicability Applicable(FunctionCode function) => applicability.GetValue(function, static code =>
     {
-        HashSet<int> headers = [];
-        bool required = false;
+        HashSet<int>? headers = null;
+        bool direct = false, calls = false;
         for (int index = 0; index < code.Instructions.Count; index++)
         {
             Instruction instruction = code.Instructions[index];
-            required |= instruction.Op is OpCode.Transfer or OpCode.LocalTransfer or OpCode.SelectPath
-                or OpCode.Call
+            calls |= instruction.Op == OpCode.Call && instruction.B >= 0;
+            direct |= instruction.Op is OpCode.Transfer or OpCode.LocalTransfer or OpCode.SelectPath
                 || instruction.Op == OpCode.NativeCall && IsMetadata(instruction.Text);
             if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse && instruction.A <= index)
-                headers.Add(instruction.A);
+                (headers ??= []).Add(instruction.A);
         }
-        return new(required, headers);
+        return new(direct, calls, headers);
     });
+
+    private static bool HasEntryOpportunity(Module module, out CopyReachability? copies)
+    {
+        copies = null;
+        var function = module.Functions[module.EntryPoint];
+        var features = Applicable(function);
+        return features.Direct || features.Calls
+            && (copies = new(module.Functions)).MayEmitCopy(function.Instructions, 0, function.Instructions.Count, out _);
+    }
 
     public static Module Prepare(Module module, ExecutionOptions? options = null,
         CancellationToken cancellationToken = default)
@@ -39,18 +52,29 @@ public static partial class ContextualBackend
     }
 
     public static Module PrepareInstructions(Module module, ExecutionOptions? options = null,
-        CancellationToken cancellationToken = default) =>
-        module.ExecutionPlans is not null ? module : PrepareContinuation(module, module.EntryPoint, 0, options: options,
-            cancellationToken: cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        if (module.ExecutionPlans is not null) return module;
+        if (module.Context is null) throw new MsyncException("Contextual planning requires a bound execution context.");
+        if (!HasEntryOpportunity(module, out var copies)) return module with { ExecutionPlans = [] };
+        cancellationToken.ThrowIfCancellationRequested();
+        var resources = new ContextualResources(cancellationToken);
+        try { return PrepareEntry(module, options, resources, cancellationToken, copies); }
+        finally { resources.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+    }
 
     internal static Module PrepareInstructions(Module module, ExecutionOptions? options, ContextualResources resources,
         CancellationToken cancellationToken = default)
     {
         if (module.ExecutionPlans is not null) return module;
-        return NeedsPreparation(module.Functions[module.EntryPoint])
-            ? new Preparation(module, module.EntryPoint, 0, null, null, options, resources, cancellationToken).Run().Module
+        return HasEntryOpportunity(module, out var copies)
+            ? PrepareEntry(module, options, resources, cancellationToken, copies)
             : module with { ExecutionPlans = [] };
     }
+
+    private static Module PrepareEntry(Module module, ExecutionOptions? options, ContextualResources resources,
+        CancellationToken token, CopyReachability? copies) =>
+        new Preparation(module, module.EntryPoint, 0, null, null, options, resources, token, copies).Run().Module;
 
     public static Module PrepareContinuation(Module module, int function, int start,
         IReadOnlyList<Value>? locals = null, IReadOnlyList<Value>? stack = null,
@@ -86,7 +110,7 @@ public static partial class ContextualBackend
         private readonly RuntimeContext context;
         private readonly PlanFileSystem filesystem;
         private readonly CancellationToken cancellationToken;
-        private readonly IReadOnlySet<int> loopHeaders;
+        private readonly IReadOnlySet<int>? loopHeaders;
         private readonly IReadOnlyList<Instruction> code;
         private readonly PreparationTable<Value> constants;
         private readonly PreparationTable<ExecutionPlan> plans;
@@ -107,11 +131,12 @@ public static partial class ContextualBackend
 
         internal Preparation(Module module, int function, int start, IReadOnlyList<Value>? locals,
             IReadOnlyList<Value>? stack, ExecutionOptions? options, ContextualResources resources,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken, CopyReachability? copyReachability = null)
         {
             this.module = module;
             this.function = function;
             this.start = start;
+            this.copyReachability = copyReachability;
             context = new(options, module.Context);
             this.cancellationToken = cancellationToken;
             loopHeaders = Applicable(module.Functions[function]).LoopHeaders;
@@ -133,7 +158,7 @@ public static partial class ContextualBackend
             while (pc < code.Count && visited.Add(pc))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (loopHeaders.Contains(pc)) { Stop(); break; }
+                if (loopHeaders?.Contains(pc) == true) { Stop(); break; }
                 if (!Step()) break;
                 pc++;
             }

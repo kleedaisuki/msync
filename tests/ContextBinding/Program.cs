@@ -34,6 +34,34 @@ try
         Stage: ArtifactStage.Executable, Context: context));
     Check(ReferenceEquals(ExecutionLowering.Lower(scalar), scalar), "Ordinary scalar code allocated a new execution image");
 
+    Module number = Optimizer.OptimizeInstructions(new([new NumberValue(4)],
+        [new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Return)], TypeRef.Number)]));
+    Module boundNumber = Binding.BindInstructions(number, context);
+    Check(ReferenceEquals(boundNumber.Functions, number.Functions), "Relocation repeated context-free optimization");
+    Check(await Interpreter.ExecuteAsync(RoundTrip(boundNumber)) is NumberValue { Data: 4 },
+        "Reused portable optimization changed the bound result");
+
+    Module spelling = Optimizer.OptimizeInstructions(new([new StringValue("./here")],
+        [new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Convert, Text: "Path"),
+            new(OpCode.Return)], TypeRef.Path)]));
+    Module boundSpelling = Binding.BindInstructions(spelling, context);
+    Check(spelling.Functions[0].Instructions.Any(instruction => instruction.Op == OpCode.Convert)
+        && boundSpelling.Functions[0].Instructions.All(instruction => instruction.Op != OpCode.Convert),
+        "String-to-Path conversion missed the newly available context");
+    Check(await Interpreter.ExecuteAsync(RoundTrip(boundSpelling)) is PathValue { Raw: "./here" } boundPath
+        && boundPath.WorkingDirectory == root, "The folded Path lost its binding origin");
+
+    Module calls = new([new FunctionValue(1), new NumberValue(73)],
+        [new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Call, B: 2), new(OpCode.Return)], TypeRef.Number),
+         new("scalar", 0, 0, [new(OpCode.Constant, 1), new(OpCode.Return)], TypeRef.Number)],
+         Stage: ArtifactStage.Executable, Context: context);
+    Module preparedCalls = ContextualBackend.PrepareInstructions(calls);
+    Check(ReferenceEquals(preparedCalls.Functions, calls.Functions)
+        && ReferenceEquals(preparedCalls.Constants, calls.Constants),
+        "An entry with only closed scalar calls did contextual evaluation");
+    Check(await Interpreter.ExecuteAsync(RoundTrip(preparedCalls)) is NumberValue { Data: 73 },
+        "The selected scalar call did not execute normally");
+
     Module Loop(bool copies, bool suffix)
     {
         Instruction[] tail = suffix

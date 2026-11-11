@@ -362,3 +362,38 @@ mixed (514 to 533 ms); a separate 12-pair follow-up measures 537 to 503 ms,
 with a median paired difference of -33.8 ms and 10/12 faster pairs. Report
 both SHA measurements, not a stable throughput or tail guarantee.
 Receipts are under `artifacts/benchmarks/library-matrix-v086/object-execution/`.
+
+## Do not replay portable optimization during binding
+
+Binding is relocation, context-dependent folding, and executable trace
+placement. The old path reran the entire machine-independent pipeline after
+relocation even when there were no new inputs to that pipeline. A code/constant
+feature test now retains the optimized portable functions in that case.
+Path constants (including captured/nested ones), context-aware native
+folding, path conversion/join/qualification and builtins replaced by known
+values remain positive inputs to contextual folding. Relocation, local
+transfer selection and trace placement do not depend on this optimization
+gate. No proof bit is written to the artifact and the VM consumes neither
+the feature test nor the portable optimizer.
+
+For the frozen 8,192-key Heap `.mso`, the old second pass emitted the same
+9,138 instructions and all per-function instruction comparisons were equal.
+In the managed Release binding component (SDK 10.0.403, TieredCompilation=0,
+CPU 5, input loaded outside timing, three warmups and twelve measured
+bindings), mean bind cost was 1,775.2 ms and 1,107,287,146 B versus 0.475 ms and
+70,672 B after reuse. The frozen Set, Hash and SHA artifacts likewise had
+identical instruction sequences before/after bind in each implementation.
+These are binding costs, not VM execution measurements. The positive context
+control still folds a string into a Path with the bound working directory.
+See `artifacts/benchmarks/library-matrix-v086/binding-reuse/` for exact input
+identities, probe source and observations. This separation follows the
+dependency distinction of [LLVM's analysis invalidation](https://llvm.org/docs/NewPassManager.html):
+preserve facts for unchanged inputs rather than rebuild them at a phase boundary.
+
+Contextual preparation is a separate optimization. It does not replay
+ordinary execution to learn what it did. A direct metadata/selector site or
+a call graph that may emit copies can expose planned work; a closed scalar
+entry graph now enters the VM without constructing or evaluating a
+preparation frame. The reachability test models the actual copy evaluator,
+not source purity. Runtime-dependent inputs still leave residual instructions,
+and a selected contextual copy still executes only in the VM.

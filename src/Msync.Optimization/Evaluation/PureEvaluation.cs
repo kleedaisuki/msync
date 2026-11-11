@@ -2,6 +2,8 @@ namespace Msync.Optimization;
 
 internal static class PureEvaluation
 {
+    internal static bool IsContextNative(string? name) => name is "path.identity" or "path.join" or "path.qualify";
+
     internal static PathValue? Qualify(ConnectionValue connection, PathValue path, BindingContext? context)
     {
         if (connection.Kind is not (ConnectionKind.Local or ConnectionKind.Ssh or ConnectionKind.Wsl)) return null;
@@ -59,7 +61,7 @@ internal static class PureEvaluation
                 _ => null
             };
         }
-        if (module.Stage != ArtifactStage.Executable || module.Context is not { } context) return null;
+        if (module.Stage != ArtifactStage.Executable || module.Context is not { } context || !IsContextNative(name)) return null;
         PathValue? Path(Value value) => value switch
         {
             PathValue path => path,

@@ -53,14 +53,7 @@ public static class ExecutionLowering
                 case OpCode.Dup: stack.Add(stack.Count == 0 ? null : stack[^1]); break;
                 case OpCode.LoadBuiltin:
                     {
-                        ConnectionValue? value = instruction.Text?.TrimStart('$') switch
-                        {
-                            "local" => new(ConnectionKind.Local),
-                            "pwd" => new(ConnectionKind.Local, "pwd"),
-                            "file" => new(ConnectionKind.Local, "file"),
-                            "wsl" => new(ConnectionKind.Wsl),
-                            _ => null
-                        };
+                        ConnectionValue? value = Builtin(instruction.Text);
                         if (value is not null) Replace(pc, new(OpCode.Constant, interner.Intern(value), Span: instruction.Span));
                         stack.Add(value); break;
                     }
@@ -114,5 +107,13 @@ public static class ExecutionLowering
         return function with { Instructions = compact };
     }
     private static bool NeedsLowering(FunctionCode function) => function.Instructions.Any(instruction => instruction.Op is OpCode.LoadBuiltin or OpCode.Transfer or OpCode.Nop);
+    internal static ConnectionValue? Builtin(string? spelling) => spelling?.TrimStart('$') switch
+    {
+        "local" => new(ConnectionKind.Local),
+        "pwd" => new(ConnectionKind.Local, "pwd"),
+        "file" => new(ConnectionKind.Local, "file"),
+        "wsl" => new(ConnectionKind.Wsl),
+        _ => null
+    };
     private static bool IsLocal(Value? value) => value is StringValue || value is PathValue { Connection: null or { Kind: ConnectionKind.Local } };
 }
