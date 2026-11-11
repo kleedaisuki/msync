@@ -44,7 +44,11 @@ try
     Module spelling = Optimizer.OptimizeInstructions(new([new StringValue("./here")],
         [new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Convert, Text: "Path"),
             new(OpCode.Return)], TypeRef.Path)]));
+    spelling = spelling with { Functions = [spelling.Functions[0],
+        new("unrelated", 0, 0, [new(OpCode.True), new(OpCode.Return)], TypeRef.Bool)] };
     Module boundSpelling = Binding.BindInstructions(spelling, context);
+    Check(ReferenceEquals(boundSpelling.Functions[1], spelling.Functions[1]),
+        "Contextual folding touched an unrelated portable function");
     Check(spelling.Functions[0].Instructions.Any(instruction => instruction.Op == OpCode.Convert)
         && boundSpelling.Functions[0].Instructions.All(instruction => instruction.Op != OpCode.Convert),
         "String-to-Path conversion missed the newly available context");

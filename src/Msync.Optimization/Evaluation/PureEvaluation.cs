@@ -61,6 +61,11 @@ internal static class PureEvaluation
                 _ => null
             };
         }
+        return ContextualNative(name, arguments, module);
+    }
+
+    internal static Value? ContextualNative(string? name, IReadOnlyList<Value> arguments, Module module)
+    {
         if (module.Stage != ArtifactStage.Executable || module.Context is not { } context || !IsContextNative(name)) return null;
         PathValue? Path(Value value) => value switch
         {

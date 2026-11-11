@@ -11,17 +11,26 @@ public static class ExecutionLowering
     internal static Module Rewrite(Module module)
     {
         if (module.Context is null) throw new MsyncException("Executable lowering requires a bound context");
-        if (!module.Functions.Any(NeedsLowering)) return module;
-        var constants = module.Constants.ToList();
-        var interner = new ConstantInterner(constants);
-        var functions = module.Functions.Select(function => LowerFunction(function, constants, module.Context, interner)).ToArray();
-        if (functions.Select((function, index) => ReferenceEquals(function, module.Functions[index])).All(same => same))
-            return module;
-        return module with { Constants = constants, Functions = functions, Blocks = null };
+        List<Value>? constants = null;
+        ConstantInterner? interner = null;
+        FunctionCode[]? functions = null;
+        for (int index = 0; index < module.Functions.Count; index++)
+        {
+            var function = module.Functions[index];
+            if (!NeedsLowering(function)) continue;
+            constants ??= module.Constants.ToList();
+            interner ??= new(constants);
+            var lowered = LowerFunction(function, constants, module, interner,
+                fold: module.OptimizationLevel > 0 && (!module.PreserveLocals || index != module.EntryPoint));
+            if (!ReferenceEquals(lowered, function))
+                (functions ??= module.Functions.ToArray())[index] = lowered;
+        }
+        return functions is null ? module : module with { Constants = constants!, Functions = functions, Blocks = null };
     }
-    private static FunctionCode LowerFunction(FunctionCode function, List<Value> constants, BindingContext context, ConstantInterner interner)
+    private static FunctionCode LowerFunction(FunctionCode function, List<Value> constants, Module module,
+        ConstantInterner interner, bool fold)
     {
-        if (!NeedsLowering(function)) return function;
+        BindingContext context = module.Context!;
         var instructions = function.Instructions;
         Instruction[]? rewritten = null;
         var hasNops = false;
@@ -31,6 +40,19 @@ public static class ExecutionLowering
             rewritten[index] = instruction;
         }
         var targets = instructions.SelectMany(i => i.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue ? [i.A] : i.Op == OpCode.IteratorNext ? new[] { i.B } : []).ToHashSet();
+        void Fold(int index, int operands, Value? result)
+        {
+            if (!fold || result is null || index < operands || targets.Contains(index)) return;
+            int start = index - operands;
+            for (int pc = start; pc < index; pc++)
+            {
+                if (pc != start && targets.Contains(pc)) return;
+                if ((rewritten is null ? instructions[pc] : rewritten[pc]).Op != OpCode.Constant) return;
+            }
+            for (int pc = start; pc < index; pc++) Replace(pc, new(OpCode.Nop));
+            Replace(index, new(OpCode.Constant, interner.Intern(result), Span: instructions[index].Span));
+            hasNops = true;
+        }
         var stack = new List<Value?>();
         var locals = new Value?[function.LocalCount];
         Value? Pop() { if (stack.Count == 0) return null; var result = stack[^1]; stack.RemoveAt(stack.Count - 1); return result; }
@@ -60,27 +82,43 @@ public static class ExecutionLowering
                 case OpCode.Convert:
                     {
                         var value = Pop();
-                        stack.Add(instruction.Text switch
+                        var converted = instruction.Text switch
                         {
                             "Path" when value is StringValue text => new PathValue(text.Data, context.WorkingDirectory, HomeDirectory: context.HomeDirectory),
                             "Path" when value is PathValue => value,
                             "String" when value is PathValue path => new StringValue(path.NativeText),
                             "String" when value is StringValue => value,
                             _ => null
-                        });
+                        };
+                        Fold(pc, 1, converted);
+                        stack.Add(converted);
                         break;
                     }
                 case OpCode.PathJoin:
                     {
                         var right = Pop(); var left = Pop();
                         var path = left is PathValue p ? p : left is StringValue s ? new PathValue(s.Data, context.WorkingDirectory, HomeDirectory: context.HomeDirectory) : null;
-                        stack.Add(path is null || right is not (PathValue or StringValue) ? null : PathSemantics.JoinValue(path, right)); break;
+                        var joined = path is null || right is not (PathValue or StringValue) ? null : PathSemantics.JoinValue(path, right);
+                        Fold(pc, 2, joined);
+                        stack.Add(joined); break;
                     }
                 case OpCode.Qualify:
                     {
                         var item = Pop(); var connection = Pop() as ConnectionValue;
                         var path = item is PathValue p ? p : item is StringValue s ? new PathValue(s.Data, context.WorkingDirectory, HomeDirectory: context.HomeDirectory) : null;
-                        stack.Add(connection is null || path is null ? null : PureEvaluation.Qualify(connection, path, context)); break;
+                        var qualified = connection is null || path is null ? null : PureEvaluation.Qualify(connection, path, context);
+                        Fold(pc, 2, qualified);
+                        stack.Add(qualified); break;
+                    }
+                case OpCode.NativeCall when PureEvaluation.IsContextNative(instruction.Text):
+                    {
+                        Value? right = instruction.A == 2 ? Pop() : null;
+                        Value? left = Pop();
+                        Value? result = left is null ? null : instruction.A == 1
+                            ? PureEvaluation.ContextualNative(instruction.Text, [left], module)
+                            : right is null ? null : PureEvaluation.ContextualNative(instruction.Text, [left, right], module);
+                        Fold(pc, instruction.A, result);
+                        stack.Add(result); break;
                     }
                 case OpCode.Transfer:
                 case OpCode.LocalTransfer:
@@ -106,7 +144,9 @@ public static class ExecutionLowering
         }).ToArray();
         return function with { Instructions = compact };
     }
-    private static bool NeedsLowering(FunctionCode function) => function.Instructions.Any(instruction => instruction.Op is OpCode.LoadBuiltin or OpCode.Transfer or OpCode.Nop);
+    private static bool NeedsLowering(FunctionCode function) => function.Instructions.Any(instruction =>
+        instruction.Op is OpCode.LoadBuiltin or OpCode.Transfer or OpCode.Nop or OpCode.Convert or OpCode.Qualify or OpCode.PathJoin
+        || instruction.Op == OpCode.NativeCall && PureEvaluation.IsContextNative(instruction.Text));
     internal static ConnectionValue? Builtin(string? spelling) => spelling?.TrimStart('$') switch
     {
         "local" => new(ConnectionKind.Local),

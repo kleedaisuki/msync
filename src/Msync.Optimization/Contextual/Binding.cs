@@ -12,12 +12,7 @@ public static class Binding
     {
         if (module.Stage == ArtifactStage.Executable) return module;
         var bound = Relocate(module, context);
-        var lowered = ExecutionLowering.Rewrite(bound);
-        if (module.OptimizationLevel is > 0 and <= 3 && !BindingFacts.ExposesContext(module))
-            return ExecutableLayout.Arrange(lowered);
-        var optimized = Optimizer.OptimizeInstructions(lowered, module.OptimizationLevel);
-        // Folding may have exposed transfers with fixed endpoints.
-        return ExecutableLayout.Arrange(ExecutionLowering.Rewrite(optimized));
+        return ExecutableLayout.Arrange(ExecutionLowering.Rewrite(bound));
     }
 
     public static Module Relocate(Module module, BindingContext context)
