@@ -278,7 +278,10 @@ public sealed partial class Interpreter
                 name = parent;
             }
         }
-        return dependencies;
+        // As with the resource projection, classify completion after all
+        // selected entries have been resolved, not at the first matching name.
+        dependencies?.RemoveWhere(static task => task.IsCompleted);
+        return dependencies is { Count: > 0 } ? dependencies : null;
     }
 
 }
