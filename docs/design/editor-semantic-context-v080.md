@@ -56,6 +56,46 @@ The first baseline arm can overlap the last four seconds of an existing skill
 journey; the reverse order is the clean descriptive control. These are not
 Native AOT tail estimates or CI thresholds.
 
+### Reuse the specialization, not the invocation
+
+A completed specialization already separates a formal result and write summary
+from the locations and values of a particular invocation. An unchanged lexical
+prefix retains these entries in the same HIR arena; the REPL does likewise
+across accepted submissions. A general document rebuild cannot move the current
+entries verbatim: their template, type, function, location and source IDs belong
+to the owning arena. Keeping every arena would retain the caller facts and
+obsolete source along with the useful code.
+
+The next reusable unit across general body edits is a relocatable specialization
+or a smaller editor-only summary. Its validity depends on the bound declaration
+and transitive semantic inputs it read: resolved captures and callees, concept
+and native contracts, canonical argument and capture shapes, and alias/effect
+requirements. Unchanged spelling or the fixed storage type alone is not proof.
+For example, changing an unrelated literal need not rebuild a typed Set method;
+changing a captured function to a different compatible callable can change the
+method's result or effects. Rebase source locations and project the summary onto
+this invocation's alias groups, storage and flow facts. Do not retain live cells,
+the previous branch's null proof, or an endpoint listing. A hit must be cheaper
+than rebuilding: proof via shared dependency identities is preferable to walking
+the same complete capture graph merely to look up a cached copy.
+
+Treat invalidation and eviction separately. A changed dependency makes an entry
+ineligible immediately; an unchanged but rarely used entry may still be evicted
+for memory. Start with a document-owned hot working set rather than an unbounded
+revision history or a disk cache. Retain a specialization when expected reuse
+times the avoided inference cost beats dependency checks, relocation and memory
+pressure; inexpensive one-off bodies can be recomputed. Measure cold analysis,
+consecutive unrelated edits, edits to actual dependencies and a repeated
+Number/String toggle separately. Record cache hit and verification costs, P95/P99
+on sufficiently many checked edits, and retained memory after edits and close.
+Use the seeded Set/List controls as well as independent generic declarations.
+
+[Rust's red-green query algorithm](https://rustc-dev-guide.rust-lang.org/queries/incremental-compilation-in-detail.html)
+gives the relevant dependency and early-cutoff model, but stable fingerprinting
+also has a cost. [Adapton](https://matthewhammer.org/adapton/) distinguishes
+demanded computations from their observers; that separation motivates retaining
+formal inference without retaining hover/diagnostic source projections.
+
 ## Typed HIR migration contract (0.8.1)
 
 The Typed HIR migration separates editor analysis from executable lowering.
