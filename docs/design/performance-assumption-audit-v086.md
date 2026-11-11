@@ -397,3 +397,37 @@ entry graph now enters the VM without constructing or evaluating a
 preparation frame. The reachability test models the actual copy evaluator,
 not source purity. Runtime-dependent inputs still leave residual instructions,
 and a selected contextual copy still executes only in the VM.
+
+### Integrated Native results
+
+The complete Linux x86-64 Native candidate (production changes through
+`15b6b7f`) was compared with the frozen `5f25145` host. Fresh-process
+`bind-ir` pairs used CPU 5, alternating AB/BA order after one untimed pair.
+They include startup, load, bind and write. Both sides emitted the same
+bytes for each frozen input, and the resulting images passed their actual
+numeric result/digest checks.
+
+| Input | Median `bind-ir`, before → after | Faster pairs |
+| --- | ---: | ---: |
+| 8,192-key Heap | 1,025.3 → 36.5 ms | 4/4 |
+| 8,192-key Set | 56.9 → 22.6 ms | 4/4 |
+| Hand-written SHA-256 | 37.2 → 15.8 ms | 4/4 |
+
+A separate execution-only control loaded each unchanged input before the
+timer (CPU 6, six AB/BA pairs, verified result on every run). Median
+milliseconds were 2,064.8 → 1,975.6 for Set (5/6 faster), 890.7 → 846.0 for
+Heap (6/6) and 497.3 → 474.6 for SHA-256 (6/6). These are combined-candidate
+observations, not attribution of the result to locality alone or estimates
+of P95/P99. See the distinct
+[Scope layout](object-spatial-layout.md#page-level-descriptors-for-homogeneous-numeric-rows),
+[call-frame](managed-runtime-optimization-v080.md#follow-up-source-call-frames-and-numeric-local-storage),
+[plan construction](../../tests/Performance/ContextualIo/README.md#instantiated-footprint-index-and-graph-construction)
+and [live scheduler](performance-scheduler.md) controls for attribution.
+
+The integrated Native CLI passed object identity/locality and contextual I/O
+routes, the 21 process-gated cohort cases, redirected stdio and REPL, and
+source-free artifact disassembly. A real VS Code 1.144.0 extension host
+passed the artifact suite against that exact CLI. The final Windows x64
+managed target built cleanly; the candidate has not run on a Windows host.
+Exact binary hashes, samples and journey receipts are under
+`artifacts/benchmarks/library-matrix-v086/deep-integrated/`.
