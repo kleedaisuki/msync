@@ -2,11 +2,19 @@ namespace Msync.Optimization;
 
 internal static class LocalSlotCompaction
 {
-    internal static Module Compact(Module module) => module with
+    internal static Module Compact(Module module)
     {
-        Functions = module.Functions.Select((function, index) => module.PreserveLocals && index == module.EntryPoint
-            ? function : Optimize(function)).ToArray()
-    };
+        FunctionCode[]? changed = null;
+        for (int index = 0; index < module.Functions.Count; index++)
+        {
+            if (module.PreserveLocals && index == module.EntryPoint) continue;
+            var original = module.Functions[index];
+            var compacted = Optimize(original);
+            if (ReferenceEquals(original, compacted)) continue;
+            (changed ??= module.Functions.ToArray())[index] = compacted;
+        }
+        return changed is null ? module : module with { Functions = changed };
+    }
 
     internal static FunctionCode Optimize(FunctionCode function)
     {

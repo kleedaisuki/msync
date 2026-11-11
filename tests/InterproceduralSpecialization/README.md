@@ -43,3 +43,59 @@ optimization. The integrated residual assertions also require removal of the
 unescaped original callable body and its unselected branch constant. A local
 `SpecializeClosure` changes only the consumed callee value, retaining actual
 capture locations and leaving escaping bindings' callable identity unchanged.
+
+## CFG callable discovery and inlining
+
+Run the focused solver, rewrite, and binary-route tests independently:
+
+```sh
+dotnet run -c Release --project tests/InterproceduralSpecialization -- --call-target-facts
+```
+
+The CFG solver meets an exact source callable identity and capture count on
+each incoming edge. Distinct closure objects with that same code identity can
+share a target proof; inlining extracts the actual selected capture locations.
+Differing target IDs, raw capture aliases, and open session calls are not made
+direct. Iterator exhaustion and yield have separate stack transfers. Loop
+backedges can invalidate an initially exact target before a result is exposed.
+
+The optimizer owns a `CallTargetGraph` per module revision. Effect and memory
+summaries, aggregate specialization and inlining reuse discovery when they
+read the same revision. Inlining checks cheap policy gates before computing
+eligibility, at most once per callee in a wave. SCC membership uses one
+shared iterative graph algorithm; it is not inferred from backedges on an
+active DFS path. The closed-module capture bound establishes which frame
+slots cannot hold extra imported captures; open or compound constant roots
+fall back to explicit initialization. Argument normalization preserves
+`CopyArguments`' dereference semantics for raw Cells. A producer proof for
+straight-line results can remove normalization; a declared Number type alone
+cannot.
+
+The lattice and worklist follow the separation in
+[LLVM CalledValuePropagation](https://llvm.org/docs/doxygen/CalledValuePropagation_8cpp_source.html).
+The version-scoped result likewise separates discovery, effects and policy
+decisions rather than treating a call hint as proof, as in
+[GCC IPA summary propagation](https://gcc.gnu.org/onlinedocs/gccint/Regular-IPA-passes.html).
+This pass does not import LLVM/GCC IR, merge callable identities, or infer a
+closed capture graph for every function-valued Scope member.
+
+### Profiled scalar call loop
+
+`cfg-call-loop.msync` selects the same lambda code with one of two different
+capture Cells at runtime. It checks both binary64 recurrences through source,
+portable and bound execution. The old O2 bytecode retained a call inside the
+loop; the changed O2 bytecode has none. For 262,144 iterations with EOF after
+the count, the same Native AOT runner's opt-in SQLite profiles report source
+frames **262,146 → 1** (including entry), dispatched bytecodes
+**4,980,775 → 5,242,922**, and operand-stack Number boxes **524,288 → 524,288**.
+Capture projection remains inside the loop; the cost reduction comes from
+replacing the frame boundary, not from executing fewer opcode dispatches.
+
+Separately, eight fresh-process AB/BA pairs per selected capture, with telemetry
+off and result bits checked, used the same stock Native AOT runner for the two
+pre-bound artifacts. EOF selected capture: median 445 → 399 ms, 5/8 pairs
+faster. Second input selected capture: 342 → 286 ms, 7/8 faster. These are
+descriptive timings on a shared Linux host. An earlier inline-only variant
+with repeated raw-argument normalization and an extra closure temporary
+showed a mixed time result despite removing all calls. Exact raw observations
+are under `.temp/ipa-cfg-isolated/`.

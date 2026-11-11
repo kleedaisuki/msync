@@ -1,0 +1,17 @@
+fn kernel(n: Number, flip: Bool) {
+    fn make(k: Number) { fn(value: Number) { value * k + 0.125 } };
+    let selected = if flip { make(1.0000000001) } else { make(1.0000000002) };
+    let i = 0;
+    let x = 0;
+    loop {
+        if i >= n { break; };
+        x = selected(x);
+        i = i + 1;
+    };
+    x
+};
+let line? = $std::io::read_line();
+let mode? = $std::io::read_line();
+let result = if line? { 0 } else { kernel(line as Number, mode is null) };
+$std::io::println(result as String);
+result

@@ -5,4 +5,5 @@
     <ProjectReference Include="../../src/Msync.Runtime/Msync.Runtime.csproj" />
   </ItemGroup>
   <ItemGroup><ProjectReference Include="../../src/Msync.Optimization/Msync.Optimization.csproj" /></ItemGroup>
+  <ItemGroup><EmbeddedResource Include="cfg-call-loop.msync" LogicalName="cfg-call-loop.msync" /></ItemGroup>
 </Project>

@@ -2,30 +2,36 @@ namespace Msync.Optimization;
 
 internal static class FunctionInlining
 {
-    private sealed record Shape(int? Function = null, IReadOnlyDictionary<string, Shape?>? Members = null, int? Captures = null);
+    internal static Module Inline(Module module, int level) => InlineWithCalls(module, level, new(module));
 
-    internal static Module Inline(Module module, int level)
+    internal static Module InlineWithCalls(Module module, int level, CallTargetGraph calls)
     {
         var functions = module.Functions.ToArray();
-        var targets = functions.Select(f => Targets(f, module.Constants, requireKnownCallee: true, layouts: functions)).ToArray();
-        var recursive = Recursive(targets);
+        var targets = calls.Targets;
+        var recursive = calls.Recursive;
         var uses = new int[functions.Length];
         foreach (var target in targets.SelectMany(t => t.Values)) uses[target]++;
+        var eligible = new bool?[functions.Length];
         var next = new FunctionCode[functions.Length];
+        bool changed = false;
         for (var index = 0; index < functions.Length; index++)
+        {
             next[index] = module.PreserveLocals && index == module.EntryPoint ? functions[index]
-                : InlineFunction(functions[index], targets[index], functions, recursive, uses, level);
+                : InlineFunction(functions[index], targets[index], calls.RawArguments(index), functions, recursive, uses, eligible, level);
+            changed |= !ReferenceEquals(next[index], functions[index]);
+        }
         // The module driver folds and removes dead values between expansion
         // waves, rather than materializing an exponential transient call tree.
-        return module with { Functions = next };
+        return changed ? module with { Functions = next } : module;
     }
 
     private static FunctionCode InlineFunction(FunctionCode function, Dictionary<int, int> targets,
-        FunctionCode[] functions, bool[] recursive, int[] uses, int level)
+        IReadOnlySet<int>? rawArguments, FunctionCode[] functions, bool[] recursive, int[] uses, bool?[] eligible, int level)
     {
+        int budget = level == 1 ? 32 : level == 2 ? 128 : 512;
         var inline = targets.Where(pair => !recursive[pair.Value]
-            && CanInline(functions[pair.Value])
-            && (uses[pair.Value] == 1 || functions[pair.Value].Instructions.Count <= (level == 1 ? 32 : level == 2 ? 128 : 512)))
+            && (uses[pair.Value] == 1 || functions[pair.Value].Instructions.Count <= budget)
+            && (eligible[pair.Value] ??= CanInline(functions[pair.Value])))
             .ToDictionary();
         if (inline.Count == 0) return function;
         var code = new List<Instruction>();
@@ -44,19 +50,23 @@ internal static class FunctionInlining
             }
             var callee = functions[target];
             var offset = locals; locals += callee.LocalCount;
+            bool normalize = rawArguments?.Contains(pc) == true;
             for (var argument = instruction.A - 1; argument >= 0; argument--)
-                code.Add(new(OpCode.InitializeLocal, offset + callee.CaptureCount + argument, Span: instruction.Span));
-            if (callee.CaptureCount == 0) code.Add(new(OpCode.Pop, Span: instruction.Span));
-            else
             {
-                var closure = locals++;
-                code.Add(new(OpCode.InitializeLocal, closure, Span: instruction.Span));
-                for (var capture = 0; capture < callee.CaptureCount; capture++)
-                {
-                    code.Add(new(OpCode.LoadLocal, closure, Span: instruction.Span));
-                    code.Add(new(OpCode.GetCapture, capture, Span: instruction.Span));
-                    code.Add(new(OpCode.InitializeLocal, offset + capture, Span: instruction.Span));
-                }
+                int slot = offset + callee.CaptureCount + argument;
+                code.Add(new(OpCode.InitializeLocal, slot, Span: instruction.Span));
+                // CopyArguments dereferences raw Cell operands on entry. A
+                // cloned parameter still owns a private location.
+                if (!normalize) continue;
+                code.Add(new(OpCode.LoadLocal, slot, Span: instruction.Span));
+                code.Add(new(OpCode.InitializeLocal, slot, Span: instruction.Span));
+            }
+            if (callee.CaptureCount == 0) code.Add(new(OpCode.Pop, Span: instruction.Span));
+            else for (var capture = 0; capture < callee.CaptureCount; capture++)
+            {
+                if (capture + 1 < callee.CaptureCount) code.Add(new(OpCode.Dup, Span: instruction.Span));
+                code.Add(new(OpCode.GetCapture, capture, Span: instruction.Span));
+                code.Add(new(OpCode.InitializeLocal, offset + capture, Span: instruction.Span));
             }
             var start = code.Count;
             foreach (var body in callee.Instructions)
@@ -118,111 +128,7 @@ internal static class FunctionInlining
         return true;
     }
 
-    internal static bool[] Recursive(Dictionary<int, int>[] targets)
-    {
-        var color = new byte[targets.Length];
-        var recursive = new bool[targets.Length];
-        var path = new List<int>();
-        void Visit(int index)
-        {
-            if (color[index] == 2) return;
-            if (color[index] == 1)
-            {
-                for (var position = path.LastIndexOf(index); position < path.Count; position++) recursive[path[position]] = true;
-                return;
-            }
-            color[index] = 1; path.Add(index);
-            foreach (var target in targets[index].Values.Distinct()) Visit(target);
-            path.RemoveAt(path.Count - 1); color[index] = 2;
-        }
-        for (var index = 0; index < color.Length; index++) Visit(index);
-        return recursive;
-    }
-
     internal static Dictionary<int, int> Targets(FunctionCode function, IReadOnlyList<Value> constants, bool requireKnownCallee = false,
         IReadOnlyList<FunctionCode>? layouts = null, ISet<int>? knownClosures = null)
-    {
-        var targets = new Dictionary<int, int>();
-        if (!function.Instructions.Any(instruction => instruction.Op == OpCode.Call)) return targets;
-        var incoming = new HashSet<int>();
-        foreach (var instruction in function.Instructions)
-        {
-            if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse) incoming.Add(instruction.A);
-            if (instruction.Op == OpCode.IteratorNext) incoming.Add(instruction.B);
-        }
-        var locals = new Shape?[function.LocalCount];
-        var aliases = function.Instructions.Any(instruction => instruction.Op == OpCode.StoreLocal)
-            && (function.CaptureCount > 0 || function.Instructions.Any(instruction => instruction.Op is OpCode.LoadCell or OpCode.LoadStorage or OpCode.GetCapture))
-            ? PredicateOptimization.CaptureAliases(function) : [];
-        var stack = new List<Shape?>();
-        Shape? Pop() { if (stack.Count == 0) return null; var item = stack[^1]; stack.RemoveAt(stack.Count - 1); return item; }
-        Shape?[] PopMany(int count) { var result = new Shape?[count]; for (var i = count - 1; i >= 0; i--) result[i] = Pop(); return result; }
-        for (var pc = 0; pc < function.Instructions.Count; pc++)
-        {
-            if (incoming.Contains(pc)) { stack.Clear(); Array.Clear(locals); }
-            var instruction = function.Instructions[pc];
-            switch (instruction.Op)
-            {
-                case OpCode.Nop: break;
-                case OpCode.GetSingleton: stack.Add(null); break;
-                case OpCode.SetSingleton: Pop(); stack.Add(null); break;
-                case OpCode.Constant: stack.Add(constants[instruction.A] is FunctionValue { NativeName: null } f ? new(f.Function, Captures: f.Captures?.Count ?? 0) : null); break;
-                case OpCode.Null: case OpCode.True: case OpCode.False: case OpCode.LoadBuiltin: stack.Add(null); break;
-                case OpCode.LoadLocal: stack.Add(locals[instruction.A]); break;
-                case OpCode.LoadCell: case OpCode.LoadStorage: stack.Add(null); break;
-                case OpCode.StoreLocal:
-                    var assigned = Pop();
-                    // A raw capture can put the same location in several slots.
-                    // Invalidate future loads, not already evaluated callees on
-                    // the operand stack: argument effects cannot replace them.
-                    if (Array.BinarySearch(aliases, instruction.A) >= 0)
-                        foreach (var alias in aliases) locals[alias] = null;
-                    locals[instruction.A] = assigned; break;
-                case OpCode.InitializeLocal: locals[instruction.A] = Pop(); break;
-                case OpCode.Pop: Pop(); break;
-                case OpCode.Dup: var item = Pop(); stack.Add(item); stack.Add(item); break;
-                case OpCode.MakeClosure: PopMany(instruction.B); stack.Add(new(instruction.A, Captures: instruction.B)); break;
-                case OpCode.SpecializeClosure:
-                    var specialized = Pop();
-                    stack.Add(instruction.A < 0 ? null : instruction.Text is null && (specialized?.Function is not null || !requireKnownCallee)
-                        ? new(instruction.A, Captures: specialized?.Captures) : instruction.Text is not null && specialized?.Function is { } original
-                            && FunctionDispatch.Parse(instruction.Text).TryGetValue(original, out var mapped) ? new(mapped, Captures: specialized.Captures) : null); break;
-                case OpCode.MakeScope:
-                    var values = PopMany(instruction.A); var names = instruction.Text?.Split('\0', StringSplitOptions.RemoveEmptyEntries) ?? [];
-                    stack.Add(new(Members: names.Select((name, i) => KeyValuePair.Create(name, values[i])).ToDictionary())); break;
-                case OpCode.GetMember:
-                    var scope = Pop(); stack.Add(scope?.Members is { } members && members.TryGetValue(instruction.Text!, out var member) ? member : null); break;
-                case OpCode.Call:
-                    PopMany(instruction.A); var closure = Pop(); var target = instruction.B < 0 ? null : instruction.B > 0 && (!requireKnownCallee || closure?.Function is not null)
-                        ? instruction.B - 1 : instruction.Text is null ? closure?.Function : null;
-                    if (instruction.B >= 0 && instruction.Text is not null && closure?.Function is { } identity
-                        && FunctionDispatch.Parse(instruction.Text).TryGetValue(identity, out var dispatched)) target = dispatched;
-                    if (target is { } known && (layouts is null || closure?.Captures is not { } count || count <= layouts[known].LocalCount))
-                    {
-                        targets[pc] = known;
-                        if (closure?.Function is not null && closure.Captures is not null) knownClosures?.Add(pc);
-                    }
-                    stack.Add(null); Array.Clear(locals); break;
-                case OpCode.NativeCall: PopMany(instruction.A); stack.Add(null); Array.Clear(locals); break;
-                case OpCode.ProcessCall: PopMany(instruction.A + 1); stack.Add(null); Array.Clear(locals); break;
-                case OpCode.MakeRange: case OpCode.MakeLazyRange: PopMany(instruction.A); stack.Add(null); break;
-                case OpCode.Not:
-                case OpCode.IsNull:
-                case OpCode.Negate:
-                case OpCode.Convert:
-                case OpCode.SelectPath:
-                case OpCode.GetIterator:
-                case OpCode.GetCapture:
-                case OpCode.DeferRange: Pop(); stack.Add(null); break;
-                case OpCode.RegexMatch: PopMany(instruction.Text is null ? 2 : 1); stack.Add(null); break;
-                case OpCode.Barrier: break;
-                case OpCode.Acquire: if (instruction.A != 0) Pop(); break;
-                case OpCode.IteratorNext: stack.Add(null); break;
-                case OpCode.JumpIfFalse: case OpCode.JumpIfTrue: Pop(); stack.Clear(); Array.Clear(locals); break;
-                case OpCode.Jump: case OpCode.Return: stack.Clear(); Array.Clear(locals); break;
-                default: PopMany(2); stack.Add(null); if (instruction.Op == OpCode.SetMember) Array.Clear(locals); break;
-            }
-        }
-        return targets;
-    }
+        => CallTargets.Analyze(function, constants, requireKnownCallee, layouts, knownClosures).Targets;
 }

@@ -2,11 +2,14 @@ namespace Msync.Optimization;
 
 internal static class MemoryEffects
 {
-    internal static IReadOnlyList<FunctionMemoryEffects> Analyze(Module module)
+    internal static IReadOnlyList<FunctionMemoryEffects> Analyze(Module module) => AnalyzeWithCalls(module, new(module));
+
+    internal static IReadOnlyList<FunctionMemoryEffects> AnalyzeWithCalls(Module module, CallTargetGraph calls)
     {
         var summaries = Enumerable.Repeat(FunctionMemoryEffects.Empty, module.Functions.Count).ToArray();
-        var targets = module.Functions.Select(function => PotentialTargets(module, function)).ToArray();
-        var components = Components(targets);
+        var exact = calls.Targets;
+        var targets = module.Functions.Select((function, index) => PotentialTargets(module, function, exact[index])).ToArray();
+        var components = CallTargetGraph.Components(targets);
         var callers = module.Functions.Select(_ => new HashSet<int>()).ToArray();
         var work = new Queue<int>(Enumerable.Range(0, summaries.Length));
         var queued = Enumerable.Repeat(true, summaries.Length).ToArray();
@@ -23,9 +26,9 @@ internal static class MemoryEffects
         return summaries;
     }
 
-    private static Dictionary<int, int> PotentialTargets(Module module, FunctionCode function)
+    private static Dictionary<int, int> PotentialTargets(Module module, FunctionCode function, Dictionary<int, int> exact)
     {
-        var targets = FunctionInlining.Targets(function, module.Constants, true, module.Functions).Values.ToHashSet();
+        var targets = exact.Values.ToHashSet();
         void ValueTargets(Value value)
         {
             if (value is not FunctionValue { NativeName: null } closure) return;
@@ -84,42 +87,6 @@ internal static class MemoryEffects
         if (left.Count == 1) return EqualityComparer<T>.Default.Equals(left[0], right[0]);
         var values = new HashSet<T>(right);
         return left.All(values.Contains);
-    }
-
-    private static int[] Components(Dictionary<int, int>[] targets)
-    {
-        var edges = targets.Select(target => target.Values.Distinct().ToArray()).ToArray();
-        var reverse = targets.Select(_ => new List<int>()).ToArray();
-        for (int vertex = 0; vertex < edges.Length; vertex++) foreach (int target in edges[vertex]) reverse[target].Add(vertex);
-        var seen = new bool[targets.Length];
-        var order = new List<int>(targets.Length);
-        var stack = new Stack<(int Vertex, int Next)>();
-        for (int root = 0; root < edges.Length; root++)
-        {
-            if (seen[root]) continue;
-            seen[root] = true; stack.Push((root, 0));
-            while (stack.TryPop(out var frame))
-            {
-                if (frame.Next == edges[frame.Vertex].Length) { order.Add(frame.Vertex); continue; }
-                stack.Push((frame.Vertex, frame.Next + 1));
-                int next = edges[frame.Vertex][frame.Next];
-                if (seen[next]) continue;
-                seen[next] = true; stack.Push((next, 0));
-            }
-        }
-        var result = new int[targets.Length]; Array.Fill(result, -1);
-        var pending = new Stack<int>(); int component = 0;
-        for (int position = order.Count - 1; position >= 0; position--)
-        {
-            int root = order[position];
-            if (result[root] != -1) continue;
-            result[root] = component; pending.Push(root);
-            while (pending.TryPop(out int vertex))
-                foreach (int predecessor in reverse[vertex])
-                    if (result[predecessor] == -1) { result[predecessor] = component; pending.Push(predecessor); }
-            component++;
-        }
-        return result;
     }
 
     private readonly record struct Cell(int Slot, bool External);

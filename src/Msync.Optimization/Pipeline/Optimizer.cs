@@ -42,9 +42,7 @@ public static class Optimizer
             var constants = current.Constants.ToList();
             var constantInterner = new ConstantInterner(constants);
             var context = current with { Constants = constants };
-            var prepared = context with
-            {
-                Functions = current.Functions.Select((function, index) =>
+            var prepared = WithFunctions(context, current.Functions.Select((function, index) =>
             {
                 if (current.PreserveLocals && index == current.EntryPoint) return function;
                 if (FunctionAnalysis.LiteralBody(function)) return function;
@@ -52,62 +50,66 @@ public static class Optimizer
                 var features = FunctionAnalysis.Features(function);
                 var start = profile?.Start() ?? default;
                 var predicated = (features & FunctionFeatures.Predicates) != 0 ? PredicateOptimization.OptimizeWithPool(context, function, constants, constantInterner) : function;
-                if ((features & FunctionFeatures.Predicates) != 0) profile?.Add(OptimizationProfile.Pass.Predicates, start, function, predicated);
+                if (profile is not null && (features & FunctionFeatures.Predicates) != 0)
+                    profile.Add(OptimizationProfile.Pass.Predicates, start, function, predicated);
                 // Compress proved scan CFGs before per-block memory analyses.
                 start = profile?.Start() ?? default;
                 var scheduled = (features & FunctionFeatures.Iteration) != 0
                     ? AffineLoopOptimization.Optimize(context, predicated, level) : predicated;
-                if ((features & FunctionFeatures.Iteration) != 0) profile?.Add(OptimizationProfile.Pass.Affine, start, predicated, scheduled);
+                if (profile is not null && (features & FunctionFeatures.Iteration) != 0)
+                    profile.Add(OptimizationProfile.Pass.Affine, start, predicated, scheduled);
                 start = profile?.Start() ?? default;
                 var memory = level >= 2 && (features & (FunctionFeatures.Scope | FunctionFeatures.Fields))
                     == (FunctionFeatures.Scope | FunctionFeatures.Fields)
                     ? CrossBlockMemoryOptimization.Optimize(context, scheduled, constants) : scheduled;
-                if (level >= 2 && (features & (FunctionFeatures.Scope | FunctionFeatures.Fields)) == (FunctionFeatures.Scope | FunctionFeatures.Fields))
-                    profile?.Add(OptimizationProfile.Pass.Memory, start, scheduled, memory);
+                if (profile is not null && level >= 2
+                    && (features & (FunctionFeatures.Scope | FunctionFeatures.Fields)) == (FunctionFeatures.Scope | FunctionFeatures.Fields))
+                    profile.Add(OptimizationProfile.Pass.Memory, start, scheduled, memory);
                 start = profile?.Start() ?? default;
                 var scalar = (features & FunctionFeatures.Scope) != 0 ? ScopeScalarization.Optimize(memory) : memory;
-                if ((features & FunctionFeatures.Scope) != 0) profile?.Add(OptimizationProfile.Pass.ScopeScalarization, start, memory, scalar);
+                if (profile is not null && (features & FunctionFeatures.Scope) != 0)
+                    profile.Add(OptimizationProfile.Pass.ScopeScalarization, start, memory, scalar);
                 start = profile?.Start() ?? default;
                 var tail = (features & FunctionFeatures.Call) != 0 ? TailCallOptimization.Optimize(context, scalar, index) : scalar;
-                if ((features & FunctionFeatures.Call) != 0) profile?.Add(OptimizationProfile.Pass.TailCalls, start, scalar, tail);
+                if (profile is not null && (features & FunctionFeatures.Call) != 0)
+                    profile.Add(OptimizationProfile.Pass.TailCalls, start, scalar, tail);
                 start = profile?.Start() ?? default;
                 bool reschedule = (features & FunctionFeatures.Iteration) != 0 && !ReferenceEquals(scheduled, Unchanged(scheduled, tail));
                 var affine = reschedule ? AffineLoopOptimization.Optimize(context, tail, level) : tail;
                 if (reschedule) profile?.Add(OptimizationProfile.Pass.Affine, start, tail, affine);
                 start = profile?.Start() ?? default;
                 var result = (features & FunctionFeatures.Iteration) != 0 ? LoopOptimization.Optimize(context, affine, constants, level) : affine;
-                if ((features & FunctionFeatures.Iteration) != 0) profile?.Add(OptimizationProfile.Pass.Iteration, start, affine, result);
+                if (profile is not null && (features & FunctionFeatures.Iteration) != 0)
+                    profile.Add(OptimizationProfile.Pass.Iteration, start, affine, result);
                 result = Unchanged(function, result);
                 preparation[index].Add(function, result);
                 return result;
-            }).ToArray()
-            };
+            }).ToArray());
+            Module? analyzed = null;
+            CallTargetGraph? callGraph = null;
             if (level >= 2 && !prepared.PreserveLocals)
             {
-                var clients = prepared.Functions.Select(function => NeedsMemoryAnalysis(function, constants)).ToArray();
+                var clients = prepared.Functions.Select(NeedsMemoryAnalysis).ToArray();
                 if (clients.Contains(true))
                 {
                     var memoryContext = prepared;
                     var start = profile?.Start() ?? default;
-                    var memoryEffects = MemoryEffects.Analyze(memoryContext);
+                    var memoryEffects = MemoryEffects.AnalyzeWithCalls(memoryContext, Calls(memoryContext));
                     profile?.AddAnalysis(OptimizationProfile.Pass.MemoryEffects, start, memoryContext);
-                    prepared = prepared with
-                    {
-                        Functions = prepared.Functions.Select((function, index) =>
+                    prepared = WithFunctions(memoryContext, memoryContext.Functions.Select((function, index) =>
                         {
                             if (!clients[index]) return function;
                             var startedMemory = profile?.Start() ?? default;
                             var result = CrossBlockMemoryOptimization.Optimize(memoryContext, function, constants, memoryEffects);
                             profile?.Add(OptimizationProfile.Pass.Memory, startedMemory, function, result);
                             return result;
-                        }).ToArray()
-                    };
+                        }).ToArray());
                 }
             }
-            var effects = MeasureEffects(prepared, profile);
+            var effects = MeasureEffects(prepared, Calls(prepared), profile);
             var functions = prepared.Functions.Select((function, index) => prepared.PreserveLocals && index == prepared.EntryPoint
                 || FunctionAnalysis.LiteralBody(function) ? function : Evaluate(Graph(function, index))).ToArray();
-            var reduced = CompactLocals(prepared with { Constants = constants, Functions = functions }, profile);
+            var reduced = CompactLocals(WithFunctions(prepared, functions), profile);
             for (var index = 0; index < reduced.Functions.Count; index++)
                 graphs[index][reduced.Functions[index]] =
                     (OptimizationDependencies.Capture(reduced.Functions[index], reduced, effects), reduced.Functions[index]);
@@ -119,23 +121,20 @@ public static class Optimizer
                 profile?.Add(OptimizationProfile.Pass.Interprocedural, start, reduced, specialized);
                 var direct = specialized;
                 start = profile?.Start() ?? default;
-                specialized = AggregateArgumentSpecialization.Optimize(direct, level);
+                specialized = AggregateArgumentSpecialization.OptimizeWithCalls(direct, level, Calls(direct));
                 profile?.Add(OptimizationProfile.Pass.AggregateArguments, start, direct, specialized);
             }
             var inlineStart = profile?.Start() ?? default;
-            var inlined = FunctionInlining.Inline(specialized, level);
+            var inlined = FunctionInlining.InlineWithCalls(specialized, level, Calls(specialized));
             profile?.Add(OptimizationProfile.Pass.Inlining, inlineStart, specialized, inlined);
             if (inlined.Functions.Count == current.Functions.Count
                 && inlined.Functions.Select((function, index) => function.Instructions.SequenceEqual(current.Functions[index].Instructions)).All(equal => equal))
             {
-                var numbered = inlined with
-                {
-                    Functions = inlined.Functions.Select((function, index) => inlined.PreserveLocals && index == inlined.EntryPoint
-                    ? function : Number(function)).ToArray()
-                };
+                var numbered = WithFunctions(inlined, inlined.Functions.Select((function, index) =>
+                    inlined.PreserveLocals && index == inlined.EntryPoint ? function : Number(function)).ToArray());
                 var numberedConstants = numbered.Constants.ToList();
                 var numberedInterner = new ConstantInterner(numberedConstants);
-                var numberedEffects = MeasureEffects(numbered, profile);
+                var numberedEffects = MeasureEffects(numbered, Calls(numbered), profile);
                 var cleaned = numbered with { Functions = numbered.Functions.Select(Clean).ToArray(), Constants = numberedConstants };
                 return Compact(cleaned, profile);
 
@@ -153,19 +152,25 @@ public static class Optimizer
                 {
                     if (FunctionAnalysis.LiteralBody(function)) return function;
                     var features = FunctionAnalysis.Features(function);
+                    bool branching = level >= 2 && (features & FunctionFeatures.Branch) != 0;
+                    bool indexedReads = level >= 2 && (features & FunctionFeatures.IndexedReads) != 0;
+                    bool scalarLoops = level >= 2 && (features & FunctionFeatures.Backedge) != 0;
+                    var analysis = branching && (indexedReads || scalarLoops) ? new FunctionAnalysisContext() : null;
                     var start = profile?.Start() ?? default;
                     var normalized = (features & FunctionFeatures.Directional) != 0 ? DirectionalNormalization.Optimize(inlined, function) : function;
-                    if ((features & FunctionFeatures.Directional) != 0) profile?.Add(OptimizationProfile.Pass.Directional, start, function, normalized);
+                    if (profile is not null && (features & FunctionFeatures.Directional) != 0)
+                        profile.Add(OptimizationProfile.Pass.Directional, start, function, normalized);
                     start = profile?.Start() ?? default;
-                    var available = level >= 2 && (features & FunctionFeatures.Branch) != 0 ? GlobalRedundancy.OptimizeWithPool(inlined, normalized, constants, constantInterner) : normalized;
-                    if (level >= 2 && (features & FunctionFeatures.Branch) != 0) profile?.Add(OptimizationProfile.Pass.GlobalRedundancy, start, normalized, available);
+                    var available = branching
+                        ? GlobalRedundancy.OptimizeWithPool(inlined, normalized, constants, constantInterner, analysis) : normalized;
+                    if (profile is not null && branching)
+                        profile.Add(OptimizationProfile.Pass.GlobalRedundancy, start, normalized, available);
                     start = profile?.Start() ?? default;
-                    var indexed = level >= 2 && (features & FunctionFeatures.IndexedReads) != 0
-                        ? IndexedMemoryOptimization.Optimize(available, constants) : available;
-                    if (level >= 2 && (features & FunctionFeatures.IndexedReads) != 0) profile?.Add(OptimizationProfile.Pass.IndexedMemory, start, available, indexed);
+                    var indexed = indexedReads ? IndexedMemoryOptimization.OptimizeWithAnalysis(available, constants, analysis) : available;
+                    if (profile is not null && indexedReads)
+                        profile.Add(OptimizationProfile.Pass.IndexedMemory, start, available, indexed);
                     start = profile?.Start() ?? default;
-                    bool scalarLoops = level >= 2 && (features & FunctionFeatures.Backedge) != 0;
-                    var looped = scalarLoops ? NaturalLoopOptimization.Optimize(indexed, constants, constantInterner, level) : indexed;
+                    var looped = scalarLoops ? NaturalLoopOptimization.Optimize(indexed, constants, constantInterner, level, analysis) : indexed;
                     if (scalarLoops) profile?.Add(OptimizationProfile.Pass.NaturalLoops, start, indexed, looped);
                     start = profile?.Start() ?? default;
                     var result = ValueNumbering.Eliminate(looped, constants);
@@ -174,6 +179,13 @@ public static class Optimizer
                 }
             }
             current = inlined;
+
+            CallTargetGraph Calls(Module version)
+            {
+                if (ReferenceEquals(version, analyzed)) return callGraph!;
+                analyzed = version;
+                return callGraph = new(version);
+            }
 
             FunctionCode Graph(FunctionCode function, int index)
             {
@@ -215,28 +227,35 @@ public static class Optimizer
         return result;
     }
 
-    private static IReadOnlyList<InstructionEffect> MeasureEffects(Module module, OptimizationProfile? profile)
+    private static IReadOnlyList<InstructionEffect> MeasureEffects(Module module, CallTargetGraph calls, OptimizationProfile? profile)
     {
         var start = profile?.Start() ?? default;
-        var result = EffectAnalysis.FunctionEffects(module);
+        var result = EffectAnalysis.FunctionEffects(module, calls);
         profile?.AddAnalysis(OptimizationProfile.Pass.Effects, start, module);
         return result;
     }
 
+    private static Module WithFunctions(Module module, FunctionCode[] functions)
+    {
+        for (int index = 0; index < functions.Length; index++)
+            if (!ReferenceEquals(functions[index], module.Functions[index]))
+                return module with { Functions = functions };
+        return module;
+    }
+
     private static FunctionCode Unchanged(FunctionCode previous, FunctionCode next) => next.LocalCount == previous.LocalCount
         && next.Instructions.SequenceEqual(previous.Instructions) ? previous : next;
-    private static bool NeedsMemoryAnalysis(FunctionCode function, IReadOnlyList<Value> constants)
+    private static bool NeedsMemoryAnalysis(FunctionCode function)
     {
-        bool fields = false;
-        bool scope = function.CaptureCount > 0 || function.ParameterCount > 0 &&
-            (function.ParameterTypes is null || function.ParameterTypes.Any(type => (type.Kind & TypeKind.Scope) != 0));
+        // This pass promotes allocation sites, not borrowed Scope parameters.
+        // Do not buy module-wide mod/ref summaries for clients it cannot rewrite.
+        bool fields = false, allocation = false;
         foreach (var instruction in function.Instructions)
         {
             fields |= instruction.Op is OpCode.GetMember or OpCode.SetMember;
-            scope |= instruction.Op is OpCode.MakeScope or OpCode.SetMember
-                || instruction.Op == OpCode.GetMember && instruction.A > 0
-                || instruction.Op == OpCode.Constant && constants[instruction.A] is ScopeValue;
+            allocation |= instruction.Op == OpCode.MakeScope;
+            if (fields && allocation) return true;
         }
-        return fields && scope;
+        return false;
     }
 }

@@ -2,11 +2,13 @@ namespace Msync.Optimization;
 
 public static class EffectAnalysis
 {
-    public static IReadOnlyList<InstructionEffect> FunctionEffects(Module module)
+    public static IReadOnlyList<InstructionEffect> FunctionEffects(Module module) => FunctionEffects(module, new(module));
+
+    internal static IReadOnlyList<InstructionEffect> FunctionEffects(Module module, CallTargetGraph calls)
     {
         var summaries = new InstructionEffect[module.Functions.Count];
-        var targets = module.Functions.Select(function => FunctionInlining.Targets(function, module.Constants, requireKnownCallee: true, layouts: module.Functions)).ToArray();
-        var recursive = FunctionInlining.Recursive(targets);
+        var targets = calls.Targets;
+        var recursive = calls.Recursive;
         var callers = new List<int>[summaries.Length];
         for (var i = 0; i < callers.Length; i++) callers[i] = [];
         for (var index = 0; index < summaries.Length; index++)

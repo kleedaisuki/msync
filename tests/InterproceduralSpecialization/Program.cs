@@ -12,6 +12,11 @@ var root = Path.Combine(Environment.CurrentDirectory, ".temp", "ipa-specializati
 Directory.CreateDirectory(root);
 try
 {
+    if (args.Contains("--call-target-facts", StringComparer.Ordinal))
+    {
+        Console.WriteLine($"CFG call targets: {await CallTargetChecks.RunAsync(root)} contracts passed.");
+        return;
+    }
     await ControlAndArgumentEffects();
     await UnusedArgumentFailure();
     await Captures();
@@ -25,6 +30,7 @@ try
     await SignedZero();
     await CloneBudget();
     await Product();
+    assertions += await CallTargetChecks.RunAsync(root);
     Console.WriteLine($"Interprocedural specialization: {assertions} contracts passed.");
 }
 finally { Directory.Delete(root, recursive: true); }

@@ -11,21 +11,23 @@ internal static class AggregateArgumentSpecialization
     private sealed record Rewrite(int Target, Plan Plan);
     private static readonly Fact Unknown = new(TypeRef.Any);
 
-    internal static Module Optimize(Module module, int level)
+    internal static Module Optimize(Module module, int level) => OptimizeWithCalls(module, level, new(module));
+
+    internal static Module OptimizeWithCalls(Module module, int level, CallTargetGraph calls)
     {
         if (level < 2 || module.PreserveLocals) return module;
         var plans = new Dictionary<int, Plan>();
         for (int index = 0; index < module.Functions.Count; index++)
             if (Describe(module.Functions[index]) is { } plan) plans.Add(index, plan);
         if (plans.Count == 0) return module;
-        var targets = module.Functions.Select(function => EffectAnalysisSafe(function)
-            ? FunctionInlining.Targets(function, module.Constants, true, module.Functions) : new Dictionary<int, int>()).ToArray();
-        var recursive = FunctionInlining.Recursive(targets);
+        var targets = module.Functions.Select((function, index) => EffectAnalysisSafe(function)
+            ? calls.Targets[index] : new Dictionary<int, int>()).ToArray();
+        var recursive = calls.Recursive;
         var called = targets.SelectMany(mapping => mapping.Values).ToHashSet();
         foreach (int target in plans.Keys.ToArray())
             if (!called.Contains(target) || recursive[target]) plans.Remove(target);
         if (plans.Count == 0) return module;
-        var effects = MemoryEffects.Analyze(module);
+        var effects = MemoryEffects.AnalyzeWithCalls(module, calls);
         foreach (var target in plans.Keys.ToArray())
             if (effects[target].UnknownWrites || effects[target].Writes.Count != 0) plans.Remove(target);
         if (plans.Count == 0) return module;
