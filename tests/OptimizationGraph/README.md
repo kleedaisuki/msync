@@ -40,6 +40,12 @@ unused evaluation. Local copies check both a branch that can be removed
 without changing transfer disposition and a joined demand that must be
 retained to preserve the awaited Transfer/Pop boundary and published bytes.
 
+Run `--storage-promotion` to check conditional Cell activation observed
+through a later raw local load. Rebinding through that alias must update
+only the promoted arm, and ordinary stores do not reset its identity.
+Discarded raw loads and a subsequent `InitializeLocal` do not keep a dead
+activation.
+
 Run `--directional` to exhaustively compare Before/After transfer placement for
 all event sequences of lengths 2–7. Each moved transfer must remain inside its
 original legal marker interval. An independent dynamic program computes the

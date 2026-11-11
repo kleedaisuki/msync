@@ -3,6 +3,9 @@ namespace Msync.Optimization;
 /// <summary>Reaching definitions and backwards demand over the executable stack CFG.</summary>
 internal static class GraphOptimization
 {
+    private const int Unpromoted = -1;
+    private static readonly DefinitionSet FreshStorage = new(Unpromoted);
+
     internal static FunctionCode Optimize(Module module, FunctionCode function, List<Value> constants, IReadOnlyList<InstructionEffect>? summaries = null, ConstantInterner? interner = null)
     {
         interner ??= new(constants);
@@ -33,9 +36,10 @@ internal static class GraphOptimization
         internal int LiveOutputs;
     }
 
-    private sealed record State(List<DefinitionSet> Stack, DefinitionSet[] Locals)
+    private sealed record State(List<DefinitionSet> Stack, DefinitionSet[] Locals, DefinitionSet[] Promotions)
     {
-        internal State Copy() => new([.. Stack], (DefinitionSet[])Locals.Clone());
+        internal State Copy() => new([.. Stack], (DefinitionSet[])Locals.Clone(),
+            Promotions.Length == 0 ? [] : (DefinitionSet[])Promotions.Clone());
     }
 
     private sealed class Graph(Module module, FunctionCode function, List<Value> constants,
@@ -58,6 +62,8 @@ internal static class GraphOptimization
         private readonly HashSet<int> escapedScopes = [];
         private readonly Dictionary<int, List<int>> equivalent = [];
         private readonly int[] representatives = Enumerable.Range(0, function.Instructions.Count * 2).ToArray();
+        private Dictionary<int, int>? promotionSlots;
+        private Dictionary<int, DefinitionSet>? promotionInputs;
         private List<int>? transfers;
         private bool removedSameSuccessor;
 
@@ -82,6 +88,11 @@ internal static class GraphOptimization
                 var node = nodes[pc];
                 node.LiveOutputs |= 1 << (token % 2);
                 Keep(pc);
+                // A raw load can observe earlier cell activation even when its
+                // activation's own stack result was discarded.
+                if (promotionInputs is { } storage && storage.TryGetValue(pc, out var activations))
+                    foreach (var promotion in activations)
+                        if (promotion != Unpromoted) Keep(promotion);
                 if (node.Instruction.Op is OpCode.LoadLocal or OpCode.LoadCell or OpCode.LoadStorage && mutableSlots.Contains(node.Instruction.A)
                     && observedCells.Add(CellRoot(node.Instruction.A)))
                 {
@@ -105,6 +116,7 @@ internal static class GraphOptimization
             for (var slot = 0; slot < function.ParameterCount + function.CaptureCount; slot++) locals[slot] = new(-slot - 1);
             var starts = new bool[nodes.Length + 1];
             starts[0] = starts[^1] = true;
+            HashSet<int>? seenPromotions = null;
             for (var index = 0; index < nodes.Length; index++)
             {
                 var instruction = nodes[index].Instruction;
@@ -114,8 +126,16 @@ internal static class GraphOptimization
                 else if (instruction.Op == OpCode.Return) starts[index + 1] = true;
                 else if (simplifySameSuccessor && instruction.Op is OpCode.Transfer or OpCode.LocalTransfer)
                     (transfers ??= []).Add(index);
+                else if (instruction.Op == OpCode.LoadStorage && mutableSlots.Contains(instruction.A)
+                    || instruction.Op == OpCode.LoadCell && !(seenPromotions ??= []).Add(instruction.A))
+                {
+                    var slots = promotionSlots ??= [];
+                    slots.TryAdd(instruction.A, slots.Count);
+                }
             }
-            states[0] = new([], locals);
+            DefinitionSet[] initialPromotions = promotionSlots is { } promotions ? new DefinitionSet[promotions.Count] : [];
+            Array.Fill(initialPromotions, FreshStorage);
+            states[0] = new([], locals, initialPromotions);
             Enqueue(0);
             while (pending.TryDequeue(out var start))
             {
@@ -141,12 +161,26 @@ internal static class GraphOptimization
                     {
                         case OpCode.Nop: break;
                         case OpCode.Constant: case OpCode.Null: case OpCode.True: case OpCode.False: case OpCode.LoadBuiltin: case OpCode.GetSingleton: Push(); break;
-                        case OpCode.LoadLocal:
                         case OpCode.LoadCell:
                         case OpCode.LoadStorage:
+                            if (promotionSlots is { } slots && slots.TryGetValue(instruction.A, out var storage))
+                            {
+                                var preceding = state.Promotions[storage];
+                                if (preceding.Count > 1 || !preceding.Contains(Unpromoted))
+                                {
+                                    var observed = promotionInputs ??= [];
+                                    observed[pc] = observed.GetValueOrDefault(pc).Union(preceding);
+                                }
+                                if (instruction.Op == OpCode.LoadCell) state.Promotions[storage] = Promote(preceding, pc);
+                            }
+                            goto case OpCode.LoadLocal;
+                        case OpCode.LoadLocal:
                             operands.Add(state.Locals[instruction.A]); Push(); break;
-                        case OpCode.StoreLocal:
                         case OpCode.InitializeLocal:
+                            if (promotionSlots is { } tracked && tracked.TryGetValue(instruction.A, out var reset))
+                                state.Promotions[reset] = FreshStorage;
+                            goto case OpCode.StoreLocal;
+                        case OpCode.StoreLocal:
                             Consume(1); node.TargetDefinitions = node.TargetDefinitions.Union(state.Locals[instruction.A]); state.Locals[instruction.A] = new(pc * 2); break;
                         case OpCode.Dup: Consume(1); Push(); Push(1); break;
                         case OpCode.Pop: Consume(1); break;
@@ -189,6 +223,17 @@ internal static class GraphOptimization
             }
         }
 
+        private static DefinitionSet Promote(DefinitionSet incoming, int pc)
+        {
+            if (!incoming.Contains(Unpromoted)) return incoming;
+            // LoadCell reuses an existing cell. Only paths that can still hold
+            // plain storage acquire a new activation definition here.
+            DefinitionSet result = new(pc);
+            foreach (var preceding in incoming)
+                if (preceding != Unpromoted) result = result.Union(new(preceding));
+            return result;
+        }
+
         private void Enqueue(int pc)
         {
             if (queued[pc]) return;
@@ -212,13 +257,21 @@ internal static class GraphOptimization
                 changed |= merged.Count != previous.Stack[index].Count;
                 previous.Stack[index] = merged;
             }
-            for (var index = 0; index < incoming.Locals.Length; index++)
-            {
-                var merged = previous.Locals[index].Union(incoming.Locals[index]);
-                changed |= merged.Count != previous.Locals[index].Count;
-                previous.Locals[index] = merged;
-            }
+            changed |= MergeDefinitions(previous.Locals, incoming.Locals);
+            if (incoming.Promotions.Length != 0) changed |= MergeDefinitions(previous.Promotions, incoming.Promotions);
             if (changed) Enqueue(pc);
+        }
+
+        private static bool MergeDefinitions(DefinitionSet[] previous, DefinitionSet[] incoming)
+        {
+            bool changed = false;
+            for (var index = 0; index < incoming.Length; index++)
+            {
+                var merged = previous[index].Union(incoming[index]);
+                changed |= merged.Count != previous[index].Count;
+                previous[index] = merged;
+            }
+            return changed;
         }
 
         private Value? Resolve(DefinitionSet tokens)

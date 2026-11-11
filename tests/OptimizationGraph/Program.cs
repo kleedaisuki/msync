@@ -15,6 +15,7 @@ Directory.CreateDirectory(root);
 try
 {
     if (args.Contains("--singletons", StringComparer.Ordinal)) assertions += await SingletonChecks.Run(root);
+    else if (args.Contains("--storage-promotion", StringComparer.Ordinal)) assertions += await StoragePromotionChecks.Run(root);
     else if (args.Contains("--same-successor", StringComparer.Ordinal)) assertions += await SameSuccessorChecks.Run(root);
     else if (args.Contains("--directional", StringComparer.Ordinal)) { assertions += DirectionalChecks.Run(); await DirectionalTransfers(); }
     else if (args.Contains("--mutable", StringComparer.Ordinal)) await MutableChecks();
@@ -23,6 +24,7 @@ try
         await SemanticChecks();
         await ValueNumberingChecks();
         assertions += await SameSuccessorChecks.Run(root);
+        assertions += await StoragePromotionChecks.Run(root);
         if (!args.Contains("--semantic", StringComparer.Ordinal)) await EliminationChecks();
     }
     Console.WriteLine($"Optimization graph: {assertions} contracts passed.");
