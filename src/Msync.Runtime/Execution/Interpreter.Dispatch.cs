@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using Msync.Core;
 
@@ -11,21 +12,23 @@ public sealed partial class Interpreter
         value is StringValue or PathValue { Connection: null or { Kind: ConnectionKind.Local } };
 
     private ValueTask<Value> RunOwnedCodeAsync(int functionIndex, Value[] locals, int startInstruction,
-        CancellationToken cancellationToken, RuntimeFrameTrace? trace)
+        CancellationToken cancellationToken, RuntimeFrameTrace? trace, int borrowedAt)
     {
         Module image = module;
         if (profile is { } recorder)
-            return RunOwnedCodeAsync(image, functionIndex, locals, startInstruction, cancellationToken, recorder.Enter(image, functionIndex, trace));
+            return RunOwnedCodeAsync(image, functionIndex, locals, startInstruction, cancellationToken, recorder.Enter(image, functionIndex, trace, borrowedAt >= 0), borrowedAt);
         if (trace is not null)
-            return RunOwnedCodeAsync(image, functionIndex, locals, startInstruction, cancellationToken, new RuntimeProfile.Frame(null, null, trace));
-        return RunOwnedCodeAsync(image, functionIndex, locals, startInstruction, cancellationToken, new RuntimeProfile.DisabledFrame());
+            return RunOwnedCodeAsync(image, functionIndex, locals, startInstruction, cancellationToken, new RuntimeProfile.Frame(null, null, trace), borrowedAt);
+        return RunOwnedCodeAsync(image, functionIndex, locals, startInstruction, cancellationToken, new RuntimeProfile.DisabledFrame(), borrowedAt);
     }
 
     // The disabled AOT specialization has no per-opcode profiling branch.
     private async ValueTask<Value> RunOwnedCodeAsync<TFrame>(Module image, int functionIndex, Value[] locals,
-        int startInstruction, CancellationToken cancellationToken, TFrame frame) where TFrame : struct, RuntimeProfile.IFrame
+        int startInstruction, CancellationToken cancellationToken, TFrame frame, int borrowedAt) where TFrame : struct, RuntimeProfile.IFrame
     {
-        var code = image.Functions[functionIndex].Instructions;
+        var body = image.Functions[functionIndex];
+        var code = body.Instructions;
+        int localBase = Math.Max(0, borrowedAt);
         var array = code as Instruction[];
         int arrayLength = array?.Length ?? 0;
         OperandStack<TFrame> stack = new(frame);
@@ -44,11 +47,17 @@ public sealed partial class Interpreter
                     case OpCode.Null: stack.Add(Value.Null); break;
                     case OpCode.True: stack.Add(Value.True); break;
                     case OpCode.False: stack.Add(Value.False); break;
-                    case OpCode.LoadLocal: stack.Add(ReadLocal(locals, instruction.A)); break;
-                    case OpCode.StoreLocal: WriteLocal(locals, instruction.A, stack.Pop()); break;
-                    case OpCode.InitializeLocal: locals[instruction.A] = stack.Pop(); break;
-                    case OpCode.LoadCell: stack.Add(CaptureLocal(locals, instruction.A)); break;
-                    case OpCode.LoadStorage: stack.Add(locals[instruction.A]); break;
+                    case OpCode.LoadLocal: stack.Add(ReadLocal(locals, localBase + instruction.A)); break;
+                    case OpCode.StoreLocal:
+                        DetachLocals(ref locals, ref borrowedAt, ref localBase, body.LocalCount, ref frame);
+                        WriteLocal(locals, instruction.A, stack.Pop()); break;
+                    case OpCode.InitializeLocal:
+                        DetachLocals(ref locals, ref borrowedAt, ref localBase, body.LocalCount, ref frame);
+                        locals[instruction.A] = stack.Pop(); break;
+                    case OpCode.LoadCell:
+                        DetachLocals(ref locals, ref borrowedAt, ref localBase, body.LocalCount, ref frame);
+                        stack.Add(CaptureLocal(locals, instruction.A)); break;
+                    case OpCode.LoadStorage: stack.Add(locals[localBase + instruction.A]); break;
                     case OpCode.GetCapture:
                         {
                             var captures = ((FunctionValue)stack.Pop()).Captures;
@@ -228,7 +237,7 @@ public sealed partial class Interpreter
                         }
                     case OpCode.IteratorNext:
                         {
-                            var iterator = ((IteratorValue)locals[instruction.A]).Iterator;
+                            var iterator = ((IteratorValue)locals[localBase + instruction.A]).Iterator;
                             if (await frame.Observe(iterator.MoveNextAsync(), pc, instruction, "iterator_next")) stack.Add(iterator.Current);
                             else
                             {
@@ -275,6 +284,19 @@ public sealed partial class Interpreter
             }
         }
         return stack.Count == 0 ? Value.Null : stack.Pop();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void DetachLocals<TFrame>(ref Value[] locals, ref int borrowedAt, ref int localBase,
+        int count, ref TFrame frame) where TFrame : struct, RuntimeProfile.IFrame
+    {
+        if (borrowedAt < 0) return;
+        // Copy references, not cells' payloads: writes through an existing
+        // captured location must still affect the shared location.
+        locals = locals.AsSpan(localBase, count).ToArray();
+        borrowedAt = -1;
+        localBase = 0;
+        frame.Detach();
     }
 
     private int SourceCallTarget(FunctionValue function, Instruction instruction)

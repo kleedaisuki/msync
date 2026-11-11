@@ -95,6 +95,19 @@ internal struct OperandStack<TFrame>(TFrame frame) where TFrame : struct, Runtim
         return new(items, start, count);
     }
 
+    public ArraySegment<Value?> BorrowArguments(int count, Value? capture)
+    {
+        int start = Count - count;
+        if (capture is not null) items[start - 1] = capture;
+        for (int index = start; index < Count; index++)
+        {
+            Value? value = items[index];
+            if (value is CellValue cell) value = cell.Data;
+            items[index] = value ?? BoxNumber(index);
+        }
+        return new(items, start, count);
+    }
+
     public void CompleteCall(int arguments, Value result)
     {
         Count -= arguments;

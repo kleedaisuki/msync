@@ -36,6 +36,8 @@ internal static class RuntimeProfileChecks
                 "Incorrect entry function metrics");
             Require(increment.Metrics["calls"] == 3 && increment.Metrics["instructions"] == 12 && increment.Metrics["number_boxes"] == 3,
                 "Incorrect callee metrics");
+            Require(increment.Metrics["borrowed_frames"] == 3 && increment.Metrics["detached_frames"] == 0
+                && main.Metrics["borrowed_frames"] == 0, "Read-only source calls did not use borrowed frames");
             Require(samples.Single(sample => Match(sample, "vm.native", "native.name", "math.pow"))
                 .Metrics["fast_calls"] == 1, "Direct numeric math fast path was not counted");
             Require(samples.Single(sample => Match(sample, "vm.opcode", "opcode", "Less"))
@@ -72,6 +74,7 @@ internal static class RuntimeProfileChecks
         Require(repeated.Attributes["image.id"] == image && repeated.Metrics["calls"] == 1,
             "Live image identity or per-drain counts changed across executions");
         await CheckTimelineAsync();
+        await BorrowedFrameChecks.RunAsync();
         Console.WriteLine("Runtime profiling checks passed.");
     }
 

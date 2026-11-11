@@ -349,3 +349,81 @@ raw-cell and lazy fallback, and diagnosed failures. The before/after native
 hashes begin `bf99379a5108` / `4d561e807ecf`; raw pairs, SQLite databases
 and the reproducer are under `.temp/native-stack-lane/`. Hash and SHA timings
 varied on the shared host; do not interpret seven pairs as a tail estimate.
+
+## Borrowed source-call activations
+
+The [CPython frame design](https://github.com/python/cpython/blob/main/InternalDocs/frames.md)
+uses contiguous stack storage for the ordinary activation and materializes
+longer-lived frame state at a separate boundary. [HotSpot's template
+interpreter](https://github.com/openjdk/jdk/blob/master/src/hotspot/cpu/x86/templateInterpreterGenerator_x86.cpp)
+similarly realizes the JVM's logical frame layout with addresses inside an
+interpreter stack. Neither implies that msync should put async work or escaped
+capture state on a native stack. The transferable idea is to separate the
+language's private slots from physical storage: allocating a new managed array
+for every source call is not part of the language contract.
+
+Exact SQLite profiles of four frozen bound O2 artifacts showed a useful shape.
+Set's 478,589 comparator activations use only two parameters; the 309,586
+node-access activations and several other read-only helpers add one capture.
+Heap has 191,943 comparator calls and a 24,575-call read-only helper; SHA has
+130,560 small single-capture Buffer helpers. Hash's hot slot search instead
+needs three fresh writable locals beyond its parameters/captures. The new
+internal ABI borrows the suspended caller's argument slice only for standalone
+source calls that need no additional locals and have at most one captured
+value. The consumed callee operand holds that one capture; ordinary arguments
+are normalized and materialized once, as before. No name, instruction pattern,
+or cached conclusion about a closure's contents admits this route.
+
+The callee owns logical slots but not the physical argument slice. At its
+first slot mutation or capture promotion, it detaches into a private array,
+retaining any existing Cell reference. The original caller argument slice
+stays live through work-owner join and returned-Process classification;
+writes to newly private parameter slots cannot alter those roots. Capturing a
+private slot yields a stable Cell before the slice can be released. The
+caller cannot pop or grow its operand stack until nested execution and its
+cleanup complete, even when the callee suspends. Session roots still use
+private physical slots. Large frames, extra captures and REPL execution keep
+their original paths. No work-owner elimination, frame pool, new artifact
+format, or second bytecode interpreter is required.
+
+In the SQLite `vm.function` aggregate, `borrowed_frames` counts actual
+admissions and `detached_frames` counts first detachment. Detailed frame spans
+also expose `frame.storage` at entry. The disabled profile has no counter work;
+detachment's structural branch is charged to local mutation, not every opcode.
+The Linux Native AOT CLI on the four checked images records borrowed/detached
+counts of 940,146/1 (Set), 241,098/1 (Heap), 1/1 (Hash), and 153,680/0 (SHA).
+Each trace completed and produced the exact expected result or digest.
+
+A Native AOT VM-only comparison executed identical frozen Set/Heap/Hash/SHA
+artifacts and verified each result. Both variants had the same inline indexed
+native operations. Six alternating before/after pairs on CPU 8 recorded
+execution wall time; child user+system CPU includes launch/exit and is a
+separate measure. Allocation is process-wide cumulative managed bytes in the
+execution interval, not RSS.
+
+| Workload | Managed bytes, prior → borrowed | Paired wall delta | Paired process CPU delta |
+| --- | ---: | ---: | ---: |
+| Set | 124,141,328 → 82,843,096 | −19.2 ms | +8.9 ms |
+| Heap | 36,085,392 → 26,441,512 | −56.7 ms | −40.1 ms |
+| Hash | 8,758,992 → 8,758,992 | −4.9 ms | −9.7 ms |
+| SHA | 48,566,120 → 41,163,368 | −1.5 ms | −15.7 ms |
+
+These controls support the allocation claim and a plausible Heap latency
+benefit, not an independent all-four speedup. Hash has no substantial
+borrowable call volume; its observed fluctuation is a useful control.
+A previous COW-only comparison on the older native-call ABI was mixed.
+Standalone small-array pools reduced allocation too, but were not a robust
+latency win; adding reusable operand arrays made the cost/noise worse.
+Combining locals and the operand stack in one allocation did not help: the
+extra base-index work on every operand and growth for deeper stacks made it a
+poor fit for this dispatcher. A broad synchronous owner-wrapper split
+regressed the Set control with unchanged allocation. Keep those variants out
+of production.
+
+The focused profile/format-5 checks exercise live captured writes, a returned
+Cell, source slots below the call, nested raw-Cell argument normalization,
+session fallback, cancellation and failure on actual asynchronous input.
+The ReturnedProcesses journeys separately check process publication,
+reassigned arguments and caller/session ownership. Disposable raw sample
+rows and exact scratch source for the alternative designs are in
+`.temp/frame-lane/`.

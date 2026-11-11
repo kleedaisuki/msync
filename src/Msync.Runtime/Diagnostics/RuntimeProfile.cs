@@ -13,11 +13,12 @@ public sealed class RuntimeProfile(bool instructionSites = false)
     private readonly ConditionalWeakTable<Module, ImageIdentity> identities = new();
     private int nextImage;
 
-    internal Frame Enter(Module image, int functionId, RuntimeFrameTrace? trace)
+    internal Frame Enter(Module image, int functionId, RuntimeFrameTrace? trace, bool borrowed)
     {
         ImageCounts counts = Image(image);
         FunctionCounts function = counts.GetFunction(functionId);
         Interlocked.Increment(ref function.Calls);
+        if (borrowed) Interlocked.Increment(ref function.Borrowed);
         return new(this, function, trace);
     }
 
@@ -76,7 +77,9 @@ public sealed class RuntimeProfile(bool instructionSites = false)
         {
             ["calls"] = (ulong)function.Calls,
             ["instructions"] = total,
-            ["number_boxes"] = (ulong)function.Boxes
+            ["number_boxes"] = (ulong)function.Boxes,
+            ["borrowed_frames"] = (ulong)function.Borrowed,
+            ["detached_frames"] = (ulong)function.Detached
         }));
         if (function.Sites is { } sites)
             for (int pc = 0; pc < sites.Length; pc++)
@@ -163,6 +166,8 @@ public sealed class RuntimeProfile(bool instructionSites = false)
         public readonly ConcurrentDictionary<CallTarget, CallCount>? Targets = sites is null ? null : new();
         public long Calls;
         public long Boxes;
+        public long Borrowed;
+        public long Detached;
     }
 
     internal struct SiteCounts
@@ -190,6 +195,7 @@ public sealed class RuntimeProfile(bool instructionSites = false)
         void Visit(int pc, OpCode op);
         void Call(int pc, Module image, int target);
         void Box();
+        void Detach();
         double Power(double left, double right, Module image, Instruction instruction);
         RuntimeTimelineScope? BeginInlineNative(Module image, Instruction instruction);
         ValueTask<T> Observe<T>(ValueTask<T> pending, int pc, Instruction instruction, string reason);
@@ -205,6 +211,8 @@ public sealed class RuntimeProfile(bool instructionSites = false)
         public void Call(int pc, Module image, int target) { }
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Box() { }
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void Detach() { }
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public double Power(double left, double right, Module image, Instruction instruction) => NativeRegistry.Power(left, right);
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -225,6 +233,11 @@ public sealed class RuntimeProfile(bool instructionSites = false)
         public readonly void Box()
         {
             if (counters is not null) Interlocked.Increment(ref counters.Boxes);
+        }
+
+        public readonly void Detach()
+        {
+            if (counters is not null) Interlocked.Increment(ref counters.Detached);
         }
 
         public readonly double Power(double left, double right, Module image, Instruction instruction)

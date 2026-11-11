@@ -108,6 +108,17 @@ public sealed partial class Interpreter
     {
         var function = module.Functions[functionIndex];
         var captures = callee.Captures ?? [];
+        int captured = captures.Count;
+        // The caller cannot pop this slice until the callee's work has joined.
+        // A single capture fits in the now-dead callee operand; the argument
+        // slice still describes the caller's original, once-normalized roots.
+        if (sessionImage is null && captured <= 1 && captured == function.CaptureCount
+            && count == function.ParameterCount && function.LocalCount == count + captured)
+        {
+            var borrowed = operands.BorrowArguments(count, captured == 0 ? null : captures[0]);
+            return RunCodeAsync(functionIndex, (Value[])borrowed.Array!, 0, cancellationToken, captures,
+                callerArguments: borrowed, borrowedAt: borrowed.Offset - captured);
+        }
         var locals = InitializeFrame(function, captures);
         var arguments = operands.CopyArguments(count, locals, function.CaptureCount);
         return RunCodeAsync(functionIndex, locals, 0, cancellationToken, captures, callerArguments: arguments);
@@ -129,20 +140,22 @@ public sealed partial class Interpreter
     }
     private ValueTask<Value> RunCodeAsync(int functionIndex, Value[] locals, int startInstruction,
         CancellationToken cancellationToken, IReadOnlyList<Value>? captures = null, IReadOnlyList<Value>? arguments = null,
-        ArraySegment<Value?> callerArguments = default) =>
+        ArraySegment<Value?> callerArguments = default, int borrowedAt = -1) =>
         context.Timeline is { } timeline
-            ? RunObservedCodeAsync(timeline, functionIndex, locals, startInstruction, cancellationToken, captures, arguments, callerArguments)
-            : RunCodeCoreAsync(functionIndex, locals, startInstruction, cancellationToken, captures, arguments, callerArguments);
+            ? RunObservedCodeAsync(timeline, functionIndex, locals, startInstruction, cancellationToken, captures, arguments, callerArguments, borrowedAt)
+            : RunCodeCoreAsync(functionIndex, locals, startInstruction, cancellationToken, captures, arguments, callerArguments, borrowedAt);
 
     private async ValueTask<Value> RunObservedCodeAsync(RuntimeTimeline timeline, int functionIndex, Value[] locals,
         int startInstruction, CancellationToken cancellationToken, IReadOnlyList<Value>? captures,
-        IReadOnlyList<Value>? arguments, ArraySegment<Value?> callerArguments)
+        IReadOnlyList<Value>? arguments, ArraySegment<Value?> callerArguments, int borrowedAt)
     {
-        using var span = BeginFrame(timeline, functionIndex, startInstruction, locals.Length);
+        int localCount = borrowedAt < 0 ? locals.Length : module.Functions[functionIndex].LocalCount;
+        using var span = BeginFrame(timeline, functionIndex, startInstruction, localCount);
+        span.SetAttribute("frame.storage", borrowedAt < 0 ? "private" : "caller_slice");
         RuntimeFrameTrace trace = new(timeline);
         try
         {
-            Value value = await RunCodeCoreAsync(functionIndex, locals, startInstruction, cancellationToken, captures, arguments, callerArguments, trace);
+            Value value = await RunCodeCoreAsync(functionIndex, locals, startInstruction, cancellationToken, captures, arguments, callerArguments, borrowedAt, trace);
             span.SetAttribute("frame.exit", "return");
             return value;
         }
@@ -172,7 +185,7 @@ public sealed partial class Interpreter
 
     private async ValueTask<Value> RunCodeCoreAsync(int functionIndex, Value[] locals, int startInstruction,
         CancellationToken cancellationToken, IReadOnlyList<Value>? captures, IReadOnlyList<Value>? arguments,
-        ArraySegment<Value?> callerArguments, RuntimeFrameTrace? trace = null)
+        ArraySegment<Value?> callerArguments, int borrowedAt, RuntimeFrameTrace? trace = null)
     {
         var active = sessionImage?.ActiveInterpreter;
         var outer = active is not null && !ReferenceEquals(active, this) ? active : null;
@@ -185,7 +198,7 @@ public sealed partial class Interpreter
         Value? result = null;
         try
         {
-            result = await RunOwnedCodeAsync(functionIndex, locals, startInstruction, cancellationToken, trace);
+            result = await RunOwnedCodeAsync(functionIndex, locals, startInstruction, cancellationToken, trace, borrowedAt);
             return result;
         }
         finally
