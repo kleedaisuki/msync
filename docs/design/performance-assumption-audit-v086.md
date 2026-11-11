@@ -702,8 +702,15 @@ are not a substitute for elapsed or CPU time.
 
 The first bound indexed-loop run was a useful negative control: a static
 diamond rewrite worked, but the actual loop stayed at 393,216 native gets.
-The loop-specific reaching-value issue was investigated separately rather
-than claiming a win from fewer static sites. Compiler-pass traces likewise
+After correcting the loop's reaching-value proof, a same-VM Native AOT
+comparison recorded 393,216 → 262,144 gets and 29.92 → 23.09 MB allocated,
+even though cheap VM bytecodes increased from 6.03 to 6.62 million. Six of
+eight off-mode pairs were faster (paired median −20.04 ms). That result is
+why the objective is expensive work eliminated, not simply fewer opcodes.
+The [indexed control](../../tests/IndexedMemoryOptimization/README.md)
+retains the failure, alias, mixed raw storage and effectful call controls.
+
+Compiler-pass traces likewise
 showed that the exact cross-block memory admission fix reduced no-op visits
 from 38 to 12 on Heap and 16 to 4 on SHA, but left module-wide memory effect
 analysis counts unchanged on both. Its matched serialized bytes were
@@ -712,4 +719,5 @@ check.
 
 The execution receipts and SQLite databases are under
 `.temp/goal-profile/compiler-{scalar,set,index}/`. The compiler admission
-AB/BA probes are under `.temp/phasecompiler-gate/`.
+AB/BA probes are under `.temp/phasecompiler-gate/`, and the corrected
+indexed comparison is `.temp/indexed-join/paired-profile/`.

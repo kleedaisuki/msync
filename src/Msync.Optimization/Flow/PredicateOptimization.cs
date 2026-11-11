@@ -97,8 +97,7 @@ internal static class PredicateOptimization
                     var instruction = code[pc];
                     var identity = pc + 1;
                     Fact Pop() { var value = state.Stack[^1]; state.Stack.RemoveAt(state.Stack.Count - 1); return value; }
-                    Fact[] PopMany(int count)
-                    { var values = new Fact[count]; for (var index = count - 1; index >= 0; index--) values[index] = Pop(); return values; }
+                    void Discard(int count) => state.Stack.RemoveRange(state.Stack.Count - count, count);
                     void Push(Fact value) { state.Stack.Add(value); results[pc] = value; }
                     Fact Unknown(TypeRef type) => new(type, identity);
                     void Invalidate()
@@ -145,37 +144,40 @@ internal static class PredicateOptimization
                             Assume(state, condition, instruction.Op == OpCode.JumpIfFalse);
                             Merge(pc + 1, state); goto EndBlock;
                         case OpCode.Return: goto EndBlock;
-                        case OpCode.MakeClosure: PopMany(instruction.B); Push(Unknown(TypeRef.Function)); break;
+                        case OpCode.MakeClosure: Discard(instruction.B); Push(Unknown(TypeRef.Function)); break;
                         case OpCode.SpecializeClosure: Pop(); Push(Unknown(TypeRef.Function)); break;
                         case OpCode.GetCapture: Pop(); Push(Unknown(TypeRef.Any)); break;
-                        case OpCode.Call: PopMany(instruction.A + 1); Invalidate(); Push(Unknown(instruction.B > 0 ? module.Functions[instruction.B - 1].ReturnType : TypeRef.Any)); break;
-                        case OpCode.ProcessCall: PopMany(instruction.A + 1); Push(Unknown(TypeRef.Process)); break;
+                        case OpCode.Call: Discard(instruction.A + 1); Invalidate(); Push(Unknown(instruction.B > 0 ? module.Functions[instruction.B - 1].ReturnType : TypeRef.Any)); break;
+                        case OpCode.ProcessCall: Discard(instruction.A + 1); Push(Unknown(TypeRef.Process)); break;
                         case OpCode.NativeCall:
-                            var arguments = PopMany(instruction.A);
+                            var arguments = ConstantArguments(state.Stack, instruction.A);
+                            Discard(instruction.A);
                             if ((InstructionEffects.NativeEffects(instruction.Text) & InstructionEffect.Invoke) != 0) Invalidate();
-                            var result = arguments.All(argument => argument.Constant is not null)
-                                ? PureEvaluation.Native(instruction.Text, arguments.Select(argument => argument.Constant!).ToArray(), module) : null;
+                            var result = arguments is null ? null : PureEvaluation.Native(instruction.Text, arguments, module);
                             Push(new(NativeSignatures.TryGet(instruction.Text!, out var native) ? native.Result : TypeRef.Any, identity, result)); break;
                         case OpCode.GetSingleton: Push(Unknown(new(TypeKind.Scope | TypeKind.Null))); break;
                         case OpCode.SetSingleton: Pop(); Push(Unknown(TypeRef.Scope)); break;
                         case OpCode.LoadBuiltin:
                             Push(Unknown(instruction.Text?.TrimStart('$') is "std" ? TypeRef.Scope : TypeRef.Connection)); break;
                         case OpCode.MakeRange:
-                            var items = PopMany(instruction.A);
-                            Push(Unknown(new(TypeKind.Range, items.Select(item => item.Type).Aggregate(new TypeRef(TypeKind.Never), TypeRef.Union)))); break;
-                        case OpCode.MakeLazyRange: PopMany(instruction.A); Push(Unknown(new(TypeKind.Range))); break;
+                            var element = new TypeRef(TypeKind.Never);
+                            for (int index = state.Stack.Count - instruction.A; index < state.Stack.Count; index++)
+                                element = TypeRef.Union(element, state.Stack[index].Type);
+                            Discard(instruction.A);
+                            Push(Unknown(new(TypeKind.Range, element))); break;
+                        case OpCode.MakeLazyRange: Discard(instruction.A); Push(Unknown(new(TypeKind.Range))); break;
                         case OpCode.DeferRange: Pop(); Push(Unknown(new(TypeKind.Range))); break;
-                        case OpCode.MakeScope: PopMany(instruction.A); Push(Unknown(TypeRef.Scope)); break;
+                        case OpCode.MakeScope: Discard(instruction.A); Push(Unknown(TypeRef.Scope)); break;
                         case OpCode.GetMember: Pop(); Push(Unknown(TypeRef.Any)); break;
                         case OpCode.GetIterator: Pop(); Push(Unknown(new(TypeKind.Range))); break;
                         case OpCode.IteratorNext:
-                            Invalidate(); Merge(instruction.B, state); Push(Unknown(TypeRef.Any)); Merge(pc + 1, state); goto EndBlock;
+                            Invalidate(); Merge(instruction.B, state, borrowed: true); Push(Unknown(TypeRef.Any)); Merge(pc + 1, state); goto EndBlock;
                         case OpCode.Transfer:
                         case OpCode.LocalTransfer:
-                            var operands = PopMany(2);
-                            if ((operands[0].Type.Kind & TypeKind.Range) != 0) Invalidate();
+                            Pop();
+                            if ((Pop().Type.Kind & TypeKind.Range) != 0) Invalidate();
                             Push(Unknown(TypeRef.Bool)); break;
-                        case OpCode.SetMember: PopMany(2); Invalidate(); Push(new(TypeRef.Null, identity, Value.Null)); break;
+                        case OpCode.SetMember: Discard(2); Invalidate(); Push(new(TypeRef.Null, identity, Value.Null)); break;
                         case OpCode.Barrier: break;
                         case OpCode.Acquire:
                             var acquired = instruction.A != 0 ? Pop() : (Fact?)null;
@@ -201,8 +203,8 @@ internal static class PredicateOptimization
                             Push(new(instruction.Text == "Path" ? TypeRef.Path : TypeRef.String, identity,
                                 instruction.Text == "Path" && converted.Constant is PathValue || instruction.Text == "String" && converted.Constant is StringValue ? converted.Constant : null)); break;
                         case OpCode.SelectPath: Pop(); Push(Unknown(new(TypeKind.Range, TypeRef.Path))); break;
-                        case OpCode.PathJoin: case OpCode.Qualify: PopMany(2); Push(Unknown(TypeRef.Path)); break;
-                        case OpCode.RegexMatch: PopMany(instruction.Text is null ? 2 : 1); Push(Unknown(TypeRef.Bool)); break;
+                        case OpCode.PathJoin: case OpCode.Qualify: Discard(2); Push(Unknown(TypeRef.Path)); break;
+                        case OpCode.RegexMatch: Discard(instruction.Text is null ? 2 : 1); Push(Unknown(TypeRef.Bool)); break;
                         default:
                             var right = Pop(); var left = Pop();
                             Push(Binary(instruction.Op, left, right, identity)); break;
@@ -256,9 +258,16 @@ internal static class PredicateOptimization
             for (var slot = 0; slot < state.Stack.Count; slot++) state.Stack[slot] = Refine(state.Stack[slot]);
         }
 
-        private void Merge(int target, State incoming)
+        private void Merge(int target, State incoming, bool borrowed = false)
         {
-            if (states[target] is not { } previous) { states[target] = incoming.Copy(); Enqueue(target); return; }
+            if (states[target] is not { } previous)
+            {
+                // Block replay always copies its input. Only an iterator's
+                // exhausted edge still shares scratch with the yielding edge.
+                states[target] = borrowed ? incoming.Copy() : incoming;
+                Enqueue(target);
+                return;
+            }
             var changed = false;
             Fact Join(Fact left, Fact right, int slot, bool stack = false)
             {
@@ -283,6 +292,17 @@ internal static class PredicateOptimization
         }
 
         private void Enqueue(int target) { if (!queued[target]) { work.Enqueue(target); queued[target] = true; } }
+        private static Value[]? ConstantArguments(List<Fact> stack, int count)
+        {
+            int first = stack.Count - count;
+            for (int index = first; index < stack.Count; index++)
+                if (stack[index].Constant is null) return null;
+            if (count == 0) return [];
+            var arguments = new Value[count];
+            for (int index = 0; index < count; index++) arguments[index] = stack[first + index].Constant!;
+            return arguments;
+        }
+
         private Instruction Literal(Value value, SourceSpan? span)
         {
             if (value is NullValue) return new(OpCode.Null, Span: span);
@@ -393,57 +413,76 @@ internal static class PredicateOptimization
     {
         var code = function.Instructions;
         var aliases = Enumerable.Range(0, function.CaptureCount + function.ParameterCount).ToHashSet();
-        var states = new bool[]?[code.Count + 1];
-        var queued = new bool[code.Count + 1];
-        var work = new Queue<int>(); states[0] = []; work.Enqueue(0); queued[0] = true;
-        void Merge(int target, List<bool> stack)
+        if (code.Count == 0) return aliases.Order().ToArray();
+        var graph = new ControlFlowGraph(function);
+        var states = new bool[]?[graph.Blocks.Count];
+        var queued = new bool[graph.Blocks.Count];
+        var work = new Queue<int>();
+        states[0] = [];
+        queued[0] = true;
+        work.Enqueue(0);
+        while (work.TryDequeue(out int block))
         {
+            queued[block] = false;
+            Visit(block, states[block]!.ToList());
+        }
+        return aliases.Order().ToArray();
+
+        void Merge(int pc, List<bool> stack)
+        {
+            int target = graph.BlockAt(pc);
+            if (target < 0) return;
             var changed = false;
             if (states[target] is not { } previous) { states[target] = stack.ToArray(); changed = true; }
             else for (var index = 0; index < previous.Length; index++)
                 if (stack[index] && !previous[index]) { previous[index] = true; changed = true; }
             if (changed && !queued[target]) { work.Enqueue(target); queued[target] = true; }
         }
-        while (work.TryDequeue(out var pc))
+
+        void Visit(int block, List<bool> stack)
         {
-            queued[pc] = false; if (pc == code.Count) continue;
-            var instruction = code[pc]; var stack = states[pc]!.ToList();
             bool Pop() { var value = stack[^1]; stack.RemoveAt(stack.Count - 1); return value; }
-            void Consume(int count) { for (var index = 0; index < count; index++) Pop(); }
-            switch (instruction.Op)
+            void Consume(int count) => stack.RemoveRange(stack.Count - count, count);
+            var range = graph.Blocks[block];
+            // One mutable scratch stack per block, with snapshots only at
+            // edges. Literal operands must not create a quadratic copy chain.
+            for (int pc = range.Start; pc < range.End; pc++)
             {
-                case OpCode.Nop: case OpCode.Barrier: break;
-                case OpCode.LoadCell: case OpCode.LoadStorage: aliases.Add(instruction.A); stack.Add(true); break;
-                case OpCode.GetCapture: Pop(); stack.Add(true); break;
-                case OpCode.SetSingleton: Pop(); stack.Add(false); break;
-                case OpCode.GetSingleton: case OpCode.LoadLocal: case OpCode.LoadBuiltin: case OpCode.Constant: case OpCode.Null: case OpCode.True: case OpCode.False: stack.Add(false); break;
-                case OpCode.StoreLocal: case OpCode.InitializeLocal: if (Pop()) aliases.Add(instruction.A); break;
-                case OpCode.Pop: Pop(); break;
-                case OpCode.Dup: var duplicate = Pop(); stack.Add(duplicate); stack.Add(duplicate); break;
-                case OpCode.Jump: Merge(instruction.A, stack); continue;
-                case OpCode.JumpIfFalse: case OpCode.JumpIfTrue: Pop(); Merge(instruction.A, stack); break;
-                case OpCode.Return: continue;
-                case OpCode.IteratorNext: Merge(instruction.B, stack); stack.Add(true); break;
-                case OpCode.MakeClosure: Consume(instruction.B); stack.Add(false); break;
-                case OpCode.MakeScope: case OpCode.MakeRange: case OpCode.MakeLazyRange: Consume(instruction.A); stack.Add(false); break;
-                case OpCode.Call: Consume(instruction.A + 1); stack.Add(true); break;
-                case OpCode.ProcessCall: Consume(instruction.A + 1); stack.Add(false); break;
-                case OpCode.NativeCall: Consume(instruction.A); stack.Add(instruction.Text?.StartsWith("ranges.", StringComparison.Ordinal) == true); break;
-                case OpCode.Acquire: if (instruction.A != 0) { var acquired = Pop(); stack.Add(acquired); } break;
-                case OpCode.GetMember:
-                case OpCode.SpecializeClosure:
-                case OpCode.Not:
-                case OpCode.IsNull:
-                case OpCode.Negate:
-                case OpCode.Convert:
-                case OpCode.SelectPath:
-                case OpCode.GetIterator:
-                case OpCode.DeferRange: Pop(); stack.Add(false); break;
-                case OpCode.RegexMatch: Consume(instruction.Text is null ? 2 : 1); stack.Add(false); break;
-                default: Consume(2); stack.Add(false); break;
+                var instruction = code[pc];
+                switch (instruction.Op)
+                {
+                    case OpCode.Nop: case OpCode.Barrier: break;
+                    case OpCode.LoadCell: case OpCode.LoadStorage: aliases.Add(instruction.A); stack.Add(true); break;
+                    case OpCode.GetCapture: Pop(); stack.Add(true); break;
+                    case OpCode.SetSingleton: Pop(); stack.Add(false); break;
+                    case OpCode.GetSingleton: case OpCode.LoadLocal: case OpCode.LoadBuiltin: case OpCode.Constant: case OpCode.Null: case OpCode.True: case OpCode.False: stack.Add(false); break;
+                    case OpCode.StoreLocal: case OpCode.InitializeLocal: if (Pop()) aliases.Add(instruction.A); break;
+                    case OpCode.Pop: Pop(); break;
+                    case OpCode.Dup: stack.Add(stack[^1]); break;
+                    case OpCode.Jump: Merge(instruction.A, stack); return;
+                    case OpCode.JumpIfFalse: case OpCode.JumpIfTrue: Pop(); Merge(instruction.A, stack); break;
+                    case OpCode.Return: return;
+                    case OpCode.IteratorNext: Merge(instruction.B, stack); stack.Add(true); break;
+                    case OpCode.MakeClosure: Consume(instruction.B); stack.Add(false); break;
+                    case OpCode.MakeScope: case OpCode.MakeRange: case OpCode.MakeLazyRange: Consume(instruction.A); stack.Add(false); break;
+                    case OpCode.Call: Consume(instruction.A + 1); stack.Add(true); break;
+                    case OpCode.ProcessCall: Consume(instruction.A + 1); stack.Add(false); break;
+                    case OpCode.NativeCall: Consume(instruction.A); stack.Add(instruction.Text?.StartsWith("ranges.", StringComparison.Ordinal) == true); break;
+                    case OpCode.Acquire: break;
+                    case OpCode.GetMember:
+                    case OpCode.SpecializeClosure:
+                    case OpCode.Not:
+                    case OpCode.IsNull:
+                    case OpCode.Negate:
+                    case OpCode.Convert:
+                    case OpCode.SelectPath:
+                    case OpCode.GetIterator:
+                    case OpCode.DeferRange: Pop(); stack.Add(false); break;
+                    case OpCode.RegexMatch: Consume(instruction.Text is null ? 2 : 1); stack.Add(false); break;
+                    default: Consume(2); stack.Add(false); break;
+                }
             }
-            Merge(pc + 1, stack);
+            Merge(range.End, stack);
         }
-        return aliases.Order().ToArray();
     }
 }

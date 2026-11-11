@@ -506,6 +506,55 @@ summary instead of two. The reverse process pair did not reproduce the
 initial pair's large timing changes; use this evidence for exact admission,
 not a throughput claim or a substitute for sharing the expensive analysis.
 
+Same-version call-target sharing was tested with both builds using the same
+CFG-based discovery and optimizer algorithms. The control constructed a new
+graph on every driver request; the candidate reused the current exact module
+version's graph. A private counter recorded actual lazy graph analyses, not
+object construction. The two O0 artifacts were loaded before timing and
+every O2 result was compared byte-for-byte. Managed Release, logical CPU 7,
+tiering off, ABBA process order with reversed fixture order in the second
+pair; one warmup per mode, then alternating a phase-only timer with detailed
+pass collection (five Heap and 25 short samples per mode and fork).
+
+| Optimizer-only control | No reuse → reuse, ms | No reuse → reuse, allocated bytes | Graph analyses |
+| --- | ---: | ---: | ---: |
+| Heap, phase-only timer | 722.122 → 569.318 | 331.628 → 327.014 MB | 9 → 3 |
+| Heap, detailed passes | 694.252 → 570.253 | 331.634 → 327.022 MB | 9 → 3 |
+| Short stdin conditional, phase-only timer | 0.256 → 0.411 | 81,712 → 79,088 | 5 → 3 |
+| Short stdin conditional, detailed passes | 0.275 → 0.426 | 85,344 → 82,720 | 5 → 3 |
+
+The short elapsed comparison reverses sign between the two pairs. In Heap,
+effect-analysis, aggregate-arguments and inlining account for the observed
+allocation change; large timings also shift in unaffected passes at the same
+allocation. Do not attribute the full pooled elapsed change to sharing.
+The probe records approximately 277.6 MB in Heap's predicate pass in either
+variant. A first isolated change transferring owned predicate states and
+discarding unused operand arrays removed only 1.34 MB there. An allocation
+probe found 270.70 MB in the raw-location alias analysis: it cloned
+67.12 million bools into work stacks and the same number back into per-PC
+snapshots. For N literal operands in a straight-line block, stack depths
+grow through 1, ..., N; copying at each instruction is quadratic even
+though no join occurs. The largest allocation was 135.31 MB in one
+8,967-instruction entry-body analysis.
+
+Changing raw alias analysis to one mutable operand stack per block and
+snapshots at CFG edges removes that copying while retaining element-wise
+OR joins. A separate ABBA control used the same prelowered inputs and
+protocol as above, with `e1a24e0` as baseline and only
+`PredicateOptimization.cs` replaced. All optimized bytes matched.
+
+| Optimizer-only control | Baseline → candidate, ms | Baseline → candidate, allocation |
+| --- | ---: | ---: |
+| Heap, predicate pass | 237.859 → 11.392 | 277.612 → 5.758 MB |
+| Heap, phase-only optimizer | 472.890 → 263.976 | 326.581 → 54.732 MB |
+| Heap, detailed optimizer | 479.488 → 259.501 | 326.586 → 54.738 MB |
+| Short, predicate pass | 0.03335 → 0.03545 | 15,336 → 13,152 B |
+
+The Heap result repeats in both process orders. Short basic optimizer time
+is flat (0.245 ms); detailed optimizer time moves 0.251 → 0.279 ms pooled
+with mixed fork timings. These are managed component observations, not
+SQLite sink overhead or Native AOT CLI latency.
+
 Receipts: `.temp/phasecompiler-profile.csv` (phase, elapsed ns, allocation,
 visits, changes and instruction cardinality) and
 `.temp/phasecompiler-isolated-probe.log` (O0/O2/O3 byte-identical artifacts,
@@ -513,6 +562,11 @@ source/HIR/session results and failed-stage attribution).
 Gate samples are in `.temp/phasecompiler-gate/{A,B,B2,A2}.csv`: CPU 7,
 tiered compilation disabled, one warmup and three samples per fixture/fork,
 with workload order reversed for the second pair.
+The same-version reuse probe, snapshot manifest, byte-identical outputs
+and raw per-pass samples are in `.temp/phasecompiler-callreuse/`.
+Raw alias attribution and its follow-up are in
+`.temp/phasecompiler-predicate/attribution.log` and
+`.temp/phasecompiler-predicate-block/`.
 
 ## Engineering basis
 
