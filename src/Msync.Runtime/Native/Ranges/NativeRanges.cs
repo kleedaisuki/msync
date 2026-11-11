@@ -15,18 +15,29 @@ public static partial class NativeRegistry
         RangeValue source = args[0] as RangeValue ?? throw new MsyncException($"ranges.{name} expects Range");
         if (name is "identity" or "all") return source;
         if (name is "filter" or "transform" or "take_while" or "drop_while")
-            return Adapt(source, name == "transform" ? TypeRef.Any : source.ItemType,
-                (range, cancellation) => CallbackRange(range, name, args[1], invoke, cancellation), token);
+            return AdaptCallback(source, name, args, invoke, token);
         if (name is "take" or "drop" or "stride" or "step")
         {
             long count = Ordinal(args[1], name, name is "stride" or "step");
             if (name == "take" && count == 0) return new RangeValue(Array.Empty<Value>(), source.ItemType);
-            return Adapt(source, source.ItemType, (range, cancellation) => CountedRange(range, name, count, cancellation), token);
+            return AdaptCounted(source, name, count, token);
         }
         if (name is "reverse" or "unique")
-            return Adapt(source, source.ItemType, (range, cancellation) => OrderedRange(range, name, cancellation), token);
+            return AdaptOrdered(source, name, token);
         return await ConsumeRangeAsync(source, name, args, invoke, token);
     }
+
+    // Keep adaptor closures out of terminal consumers such as front and at.
+    private static RangeValue AdaptCallback(RangeValue source, string name, IReadOnlyList<Value> args,
+        Func<Value, IReadOnlyList<Value>, CancellationToken, ValueTask<Value>> invoke, CancellationToken token) =>
+        Adapt(source, name == "transform" ? TypeRef.Any : source.ItemType,
+            (range, cancellation) => CallbackRange(range, name, args[1], invoke, cancellation), token);
+
+    private static RangeValue AdaptCounted(RangeValue source, string name, long count, CancellationToken token) =>
+        Adapt(source, source.ItemType, (range, cancellation) => CountedRange(range, name, count, cancellation), token);
+
+    private static RangeValue AdaptOrdered(RangeValue source, string name, CancellationToken token) =>
+        Adapt(source, source.ItemType, (range, cancellation) => OrderedRange(range, name, cancellation), token);
 
     private static RangeValue Adapt(RangeValue source, TypeRef itemType,
         Func<RangeValue, CancellationToken, IAsyncEnumerable<Value>> operation, CancellationToken token)

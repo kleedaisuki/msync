@@ -32,6 +32,7 @@ string root = Path.Combine(Environment.CurrentDirectory, ".temp", "stdlib-ranges
 Directory.CreateDirectory(root);
 try
 {
+    bool adaptors = args.Contains("--adaptors");
     if (args.Contains("--nullable"))
     {
         foreach ((string name, string source, string expected) in new[]
@@ -99,6 +100,10 @@ try
         ("index-missing", "$std::ranges::index_of([4, 5, 6], 7)", "null"),
         ("sort", "$std::ranges::sort([4, 2, 3, 1])", "[1,2,3,4]"),
         ("sort-with", "$std::ranges::sort_with([1, 3, 2], fn(left, right) { left > right })", "[3,2,1]"),
+        ("filter", "$std::ranges::filter([1, 2, 3], fn(value) { value > 1 })", "[2,3]"),
+        ("transform", "$std::ranges::transform([1, 2, 3], fn(value) { value + 1 })", "[2,3,4]"),
+        ("take", "$std::ranges::take([1, 2, 3], 2)", "[1,2]"),
+        ("reverse", "$std::ranges::reverse([1, 2, 3])", "[3,2,1]"),
         ("scan", "$std::ranges::scan([1, 2, 3], 0, fn(accumulator, value) { accumulator + value })", "[1,3,6]"),
         ("scan-repeat", "let values = $std::ranges::scan([1, 2, 3], 0, fn(accumulator, value) { accumulator + value }); [$std::ranges::last(values), $std::ranges::last(values)]", "[6,6]"),
         ("generate", "$std::ranges::generate(3, fn(index) { index * 2 })", "[0,2,4]"),
@@ -118,6 +123,8 @@ try
         ("live-cell", "let object = scope { name: \"before\" }; let values = $std::ranges::materialize([object]); $std::ranges::size(values); object::name = \"after\"; $std::ranges::first(values)::name", "after")
     })
     {
+        if (adaptors && name is not ("sort" or "sort-with" or "sort-scope" or "filter" or "transform" or "take" or "reverse" or "at"))
+            continue;
         foreach (int level in new[] { 0, 2, 3 })
         {
             Module portable = Compiler.Compile(source, name, level);
@@ -152,6 +159,11 @@ try
                 "Composed Range transfer changed actual file bytes");
             Check(!File.Exists(Path.Combine(output, "b")), "Filtered Range unexpectedly transferred an unselected file");
         }
+    }
+    if (adaptors)
+    {
+        Console.WriteLine($"PASS: {assertions} Range adaptor, lookup and filtered transfer contracts");
+        return;
     }
 
     ValueTask<Value> NoInvoke(Value value, IReadOnlyList<Value> arguments, CancellationToken token) =>

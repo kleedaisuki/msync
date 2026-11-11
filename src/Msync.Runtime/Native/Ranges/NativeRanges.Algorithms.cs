@@ -46,13 +46,16 @@ public static partial class NativeRegistry
             "enumerate_from" => new RangeValue(Indexed(source, FiniteNumber(args[1], name), token), TypeRef.Scope),
             "chunk" => new RangeValue(Partitioned(source, Ordinal(args[1], name, true), false, token), new(TypeKind.Range, source.ItemType)),
             "slide" => new RangeValue(Partitioned(source, Ordinal(args[1], name, true), true, token), new(TypeKind.Range, source.ItemType)),
-            "sort" => Adapt(source, source.ItemType, (values, cancellation) => Sorted(values, null, invoke, cancellation), token),
-            "sort_with" => Adapt(source, source.ItemType, (values, cancellation) => Sorted(values, args[1], invoke, cancellation), token),
+            "sort" or "sort_with" => AdaptSort(source, name == "sort_with" ? args : null, invoke, token),
             "scan" => new RangeValue(Scanned(source, args[1], args[2], invoke, token), TypeRef.Any),
             _ => throw new MsyncException($"Unknown range native '{name}'")
         };
         return new(result);
     }
+
+    private static RangeValue AdaptSort(RangeValue source, IReadOnlyList<Value>? args,
+        Func<Value, IReadOnlyList<Value>, CancellationToken, ValueTask<Value>> invoke, CancellationToken token) =>
+        Adapt(source, source.ItemType, (values, cancellation) => Sorted(values, args?[1], invoke, cancellation), token);
 
     private static RangeValue Range(Value value, string operation) => value as RangeValue
         ?? throw new MsyncException($"ranges.{operation} expects Range, received {value.Type}");
