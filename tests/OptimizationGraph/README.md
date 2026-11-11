@@ -32,6 +32,14 @@ escaped field storage, legacy empty-stack returns and the distinct signs of
 IEEE-754 zero are compared with explicit level-0 execution and independent
 expected results.
 
+Run `--same-successor` for the ready-Bool branch simplification. Both
+conditional opcodes and a joined operand exercise the bytecode round trips.
+Input consumption, the selected producer error, an invalid condition error,
+and a faulting deferred Bool distinguish an unused branch direction from an
+unused evaluation. Local copies check both a branch that can be removed
+without changing transfer disposition and a joined demand that must be
+retained to preserve the awaited Transfer/Pop boundary and published bytes.
+
 Run `--directional` to exhaustively compare Before/After transfer placement for
 all event sequences of lengths 2–7. Each moved transfer must remain inside its
 original legal marker interval. An independent dynamic program computes the

@@ -38,7 +38,8 @@ internal static class GraphOptimization
         internal State Copy() => new([.. Stack], (DefinitionSet[])Locals.Clone());
     }
 
-    private sealed class Graph(Module module, FunctionCode function, List<Value> constants, IReadOnlyList<InstructionEffect>? summaries, ConstantInterner interner)
+    private sealed class Graph(Module module, FunctionCode function, List<Value> constants,
+        IReadOnlyList<InstructionEffect>? summaries, ConstantInterner interner, bool simplifySameSuccessor = true)
     {
         private readonly Node[] nodes = function.Instructions.Select((instruction, index) => new Node(instruction, index)).ToArray();
         private readonly State?[] states = new State?[function.Instructions.Count + 1];
@@ -57,6 +58,8 @@ internal static class GraphOptimization
         private readonly HashSet<int> escapedScopes = [];
         private readonly Dictionary<int, List<int>> equivalent = [];
         private readonly int[] representatives = Enumerable.Range(0, function.Instructions.Count * 2).ToArray();
+        private List<int>? transfers;
+        private bool removedSameSuccessor;
 
         internal FunctionCode Rewrite()
         {
@@ -109,6 +112,8 @@ internal static class GraphOptimization
                     starts[instruction.A] = starts[index + 1] = true;
                 else if (instruction.Op == OpCode.IteratorNext) starts[instruction.B] = starts[index + 1] = true;
                 else if (instruction.Op == OpCode.Return) starts[index + 1] = true;
+                else if (simplifySameSuccessor && instruction.Op is OpCode.Transfer or OpCode.LocalTransfer)
+                    (transfers ??= []).Add(index);
             }
             states[0] = new([], locals);
             Enqueue(0);
@@ -507,7 +512,15 @@ internal static class GraphOptimization
         private bool IsRoot(Node node)
         {
             if (node.Root || node.Instruction.Op == OpCode.StoreLocal && externalCells.Contains(node.Instruction.A)) return true;
-            if (node.Instruction.Op == OpCode.Jump && node.Instruction.A == node.Index + 1) return false;
+            if (node.Instruction.A == node.Index + 1)
+            {
+                if (node.Instruction.Op == OpCode.Jump) return false;
+                if (simplifySameSuccessor && node.Instruction.Op is OpCode.JumpIfTrue or OpCode.JumpIfFalse && HasImmediateCondition(node))
+                {
+                    removedSameSuccessor = true;
+                    return false;
+                }
+            }
             if (node.Constant is not null && HasOutput(node.Instruction)) return false;
             return node.Instruction.Op switch
             {
@@ -526,6 +539,20 @@ internal static class GraphOptimization
                 OpCode.LoadBuiltin => node.Instruction.Text?.TrimStart('$') is not ("std" or "local" or "pwd" or "file" or "env" or "path" or "wsl"),
                 _ => true
             };
+        }
+
+        private bool HasImmediateCondition(Node node)
+        {
+            var conditions = node.Inputs[0];
+            if (conditions.Count == 0) return false;
+            foreach (var token in conditions)
+            {
+                if (token < 0) return false;
+                var producer = nodes[token / 2];
+                if (producer.Constant is not BoolValue && producer.Instruction.Op is not (OpCode.IsNull or OpCode.IsType or OpCode.RegexMatch))
+                    return false;
+            }
+            return true;
         }
 
         private bool CompatiblePathOperands(Node node) => Resolve(node.Inputs[0]) is PathValue or StringValue
@@ -605,6 +632,8 @@ internal static class GraphOptimization
                 }
             }
             positions[^1] = emitted.Count;
+            if (removedSameSuccessor && transfers is { } transferSites && ChangedTransferDisposition(transferSites, emitted, positions))
+                return new Graph(module, function, constants, summaries, interner, simplifySameSuccessor: false).Rewrite();
             for (var index = 0; index < emitted.Count; index++)
             {
                 var instruction = emitted[index];
@@ -616,6 +645,22 @@ internal static class GraphOptimization
                 };
             }
             return function with { Instructions = emitted, LocalCount = temporary < 0 ? function.LocalCount : temporary + 1 };
+        }
+
+        private bool ChangedTransferDisposition(List<int> transferSites, List<Instruction> emitted, int[] positions)
+        {
+            // The VM interprets an adjacent Pop as permission to admit a scalar
+            // transfer without awaiting its result. Check the emitted boundary,
+            // including transfers whose result was below the removed condition.
+            foreach (int site in transferSites)
+            {
+                if (!nodes[site].Kept) continue;
+                var next = site + 1;
+                var emittedNext = positions[site] + 1;
+                bool discarded = next < nodes.Length && nodes[next].Instruction.Op == OpCode.Pop;
+                if (discarded != (emittedNext < emitted.Count && emitted[emittedNext].Op == OpCode.Pop)) return true;
+            }
+            return false;
         }
 
         private Instruction Literal(Value value, SourceSpan? span)
