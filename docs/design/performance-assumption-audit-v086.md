@@ -721,3 +721,17 @@ The execution receipts and SQLite databases are under
 `.temp/goal-profile/compiler-{scalar,set,index}/`. The compiler admission
 AB/BA probes are under `.temp/phasecompiler-gate/`, and the corrected
 indexed comparison is `.temp/indexed-join/paired-profile/`.
+
+The final integration exposed an interaction that the isolated loop tests
+could not: inlining normalized a cast argument by loading and
+reinitializing the same slot, which obscured the loop-bound proof. The
+repair follows dominating private value definitions through normalization;
+the same shape fed by raw storage remains ineligible. The exact Native AOT
+build from `42700ce` ran the old and current O2 artifacts on the **same** VM.
+The 1,048,576-update case took 690.42 → 324.48 ms with recording off
+(7/7 faster paired observations, paired median −368.61 ms on CPU 10).
+Separate SQLite runs recovered exactly 15,728,667 → 7,602,215 dispatches
+and 2,097,152 → 524,288 VM boundary Number boxes, with identical stdout.
+The final focused loop suite passed 423 contracts. Receipts and databases:
+`.temp/goal-profile/integrated-checks.log` and
+`.temp/goal-profile/integrated-scalar/`.
