@@ -21,7 +21,9 @@ internal sealed partial class SemanticAnalyzer
         {
             int index = signature.Parameters.Count - 1;
             var item = Item(inputs[0]);
-            IReadOnlyList<SemanticValue> callbackArguments = name == "ranges.sort_with" ? [item, item]
+            bool merge = signature.ResultRule is NativeResultRule.RangeMerge or NativeResultRule.RangeMergeLeft;
+            if (merge) item = Join(item, Item(inputs[1]));
+            IReadOnlyList<SemanticValue> callbackArguments = name == "ranges.sort_with" || merge ? [item, item]
                 : signature.ResultRule == NativeResultRule.RangeScan ? [inputs[1], item] : [item];
             if (signature.ResultRule == NativeResultRule.RangeScan)
             {
@@ -40,7 +42,7 @@ internal sealed partial class SemanticAnalyzer
                 callbackArguments = [domain, item];
             }
             (callback, inputs[index], callbackEffects) = NativeCallback(inputs[index], callbackArguments, source, context);
-            if (name is "ranges.filter" or "ranges.take_while" or "ranges.drop_while" or "ranges.any" or "ranges.any_of"
+            if (merge || name is "ranges.filter" or "ranges.take_while" or "ranges.drop_while" or "ranges.any" or "ranges.any_of"
                 or "ranges.all_of" or "ranges.none" or "ranges.none_of" or "ranges.find_if" or "ranges.sort_with")
                 Require(callback, hir.Type(TypeRef.Bool), source, context: context);
         }
@@ -227,24 +229,41 @@ internal sealed partial class SemanticAnalyzer
             NativeResultRule.RangeItem => Item(arguments[0]) with { Node = HirNodeId.None, Location = null },
             NativeResultRule.Transform => RangeValue(callbackResult ?? ValueForType(hir.Type(TypeRef.Any))),
             NativeResultRule.CastTarget => NativeCastResult(arguments, source, context),
-            NativeResultRule.RangeConcat => RangeValue(Join(Item(arguments[0]), Item(arguments[1]))),
+            NativeResultRule.RangeConcat or NativeResultRule.RangeMerge => RangeValue(Join(Item(arguments[0]), Item(arguments[1]))),
+            NativeResultRule.RangeMergeLeft => FirstNativeArgument(signature, arguments[0]),
             NativeResultRule.RangeFlatten => Flatten(arguments[0], source),
             NativeResultRule.RangeZip => RangeValue(Record(("first", Item(arguments[0])), ("second", Item(arguments[1])))),
             NativeResultRule.RangeEnumerate => RangeValue(Record(("index", ValueForType(hir.Type(TypeRef.Number))), ("value", Item(arguments[0])))),
             NativeResultRule.RangeNested => RangeValue(arguments[0] with { Node = HirNodeId.None, Location = null }),
             NativeResultRule.RangeScan => RangeValue(callbackResult is null ? arguments[1] : Join(arguments[1], callbackResult)),
             NativeResultRule.RangeRepeat => RangeValue(arguments[0] with { Node = HirNodeId.None, Location = null }),
+            NativeResultRule.RangeOfType => arguments[0].DenotedType is { } element
+                ? RangeValue(ValueForType(element))
+                : throw Error(source, "A typed empty Range requires a statically inferred element Type.", "E0220"),
             _ => throw Error(source, $"Unknown native result rule '{signature.ResultRule}'.")
         };
         if (signature.Name == "ranges.sort")
         {
             TypeRef item = Runtime(Item(arguments[0]));
-            if (item != TypeRef.Bool && item != TypeRef.Number && !new TypeRef(TypeKind.Path | TypeKind.String).Accepts(item))
+            if (!HasNaturalRangeOrder(item))
                 throw Error(source, $"Natural sorting requires Bool, Number or Path/String items, found {item}. Use sort_with for a custom order.", "E0221");
         }
+        if (signature.ResultRule is NativeResultRule.RangeMerge or NativeResultRule.RangeMergeLeft && arguments.Count == 2)
+            RequireNaturalRangeOrder(TypeRef.Union(Runtime(Item(arguments[0])), Runtime(Item(arguments[1]))), source);
+        if (signature.Name == "ranges.less")
+            RequireNaturalRangeOrder(TypeRef.Union(Runtime(arguments[0]), Runtime(arguments[1])), source);
         bool eager = (signature.Behavior.GetValueOrDefault() & NativeBehavior.EagerRange) != 0;
         return result with { EagerRange = eager || result.EagerRange };
     }
+
+    private void RequireNaturalRangeOrder(TypeRef item, HirSourceRange source)
+    {
+        if (!HasNaturalRangeOrder(item))
+            throw Error(source, $"Natural range ordering requires Bool, Number or Path/String items, found {item}. Supply a strict order with the _with variant.", "E0221");
+    }
+
+    private static bool HasNaturalRangeOrder(TypeRef type) =>
+        type == TypeRef.Bool || type == TypeRef.Number || new TypeRef(TypeKind.Path | TypeKind.String).Accepts(type);
 
     private static SemanticValue FirstNativeArgument(NativeSignature signature, SemanticValue value)
     {

@@ -6,7 +6,8 @@ public enum NativeBehavior : byte { None = 0, MayFail = 1, Enumerates = 2, Defer
 public enum NativeResultRule : byte
 {
     Fixed, FirstArgument, RangeOfArguments, RangeItem, Transform, CastTarget,
-    RangeConcat, RangeFlatten, RangeZip, RangeEnumerate, RangeNested, RangeScan, RangeRepeat
+    RangeConcat, RangeFlatten, RangeZip, RangeEnumerate, RangeNested, RangeScan, RangeRepeat,
+    RangeOfType, RangeMerge, RangeMergeLeft
 }
 public sealed record NativeSignature(string Name, IReadOnlyList<TypeRef> Parameters, TypeRef Result,
     NativeEffect Effect = NativeEffect.Pure, bool Variadic = false, NativeResultRule ResultRule = NativeResultRule.Fixed,

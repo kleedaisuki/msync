@@ -9,11 +9,16 @@ public static partial class NativeRegistry
     private static readonly ScopeLayout IndexedLayout = new(["index", "value"]);
 
     private static bool IsExtendedRangeOperation(string name) => name is "concat" or "flatten" or "zip"
-        or "enumerate_from" or "chunk" or "slide" or "materialize" or "sort" or "sort_with" or "scan" or "sequence" or "repeat" or "at";
+        or "enumerate_from" or "chunk" or "slide" or "materialize" or "sort" or "sort_with" or "scan" or "sequence"
+        or "repeat" or "at" or "empty_of" or "less" or "size"
+        or "merge" or "merge_with" or "set_union" or "set_union_with" or "set_intersection" or "set_intersection_with"
+        or "set_difference" or "set_difference_with" or "set_symmetric_difference" or "set_symmetric_difference_with";
 
     private static ValueTask<Value> ExtendedRangeOperationAsync(string name, IReadOnlyList<Value> args,
         Func<Value, IReadOnlyList<Value>, CancellationToken, ValueTask<Value>> invoke, CancellationToken token)
     {
+        if (name == "empty_of") return new(new RangeValue(Array.Empty<Value>(), ((TypeValue)args[0]).Data));
+        if (name == "less") return new(Bool(CompareRangeValues(args[0], args[1]) < 0));
         if (name == "repeat")
             return new(new RangeValue(Repeated(args[0], Ordinal(args[1], name, false), token), args[0].Type));
         if (name == "sequence")
@@ -25,6 +30,14 @@ public static partial class NativeRegistry
         RangeValue source = Range(args[0], name);
         if (name == "at") return ElementAt(source, Ordinal(args[1], name, false), token);
         if (name == "materialize") return Materialized(source, token);
+        if (name == "size") return CountRange(source, token);
+        if (SortedCombination(name) is { } combination)
+        {
+            var right = Range(args[1], name);
+            var element = combination is RangeCombination.Intersection or RangeCombination.Difference
+                ? source.ItemType : TypeRef.Union(source.ItemType, right.ItemType);
+            return new(new RangeValue(CombineSorted(source, right, combination, args.Count == 3 ? args[2] : null, invoke, token), element));
+        }
         Value result = name switch
         {
             "concat" => Concatenated(source, Range(args[1], name), token),
@@ -79,12 +92,93 @@ public static partial class NativeRegistry
     private static RangeValue Concatenated(RangeValue first, RangeValue second, CancellationToken token) =>
         new(ConcatenatedItems(first, second, token), TypeRef.Union(first.ItemType, second.ItemType));
 
+    private enum RangeCombination { Merge, Union, Intersection, Difference, SymmetricDifference }
+
+    private static RangeCombination? SortedCombination(string name) => name switch
+    {
+        "merge" or "merge_with" => RangeCombination.Merge,
+        "set_union" or "set_union_with" => RangeCombination.Union,
+        "set_intersection" or "set_intersection_with" => RangeCombination.Intersection,
+        "set_difference" or "set_difference_with" => RangeCombination.Difference,
+        "set_symmetric_difference" or "set_symmetric_difference_with" => RangeCombination.SymmetricDifference,
+        _ => null
+    };
+
+    private static async IAsyncEnumerable<Value> CombineSorted(RangeValue first, RangeValue second,
+        RangeCombination combination, Value? less,
+        Func<Value, IReadOnlyList<Value>, CancellationToken, ValueTask<Value>> invoke,
+        [EnumeratorCancellation] CancellationToken token)
+    {
+        await using var left = first.Items.GetAsyncEnumerator(token);
+        bool takeLeft = combination != RangeCombination.Intersection;
+        bool takeRight = combination is RangeCombination.Merge or RangeCombination.Union or RangeCombination.SymmetricDifference;
+        bool takeEqual = combination is RangeCombination.Union or RangeCombination.Intersection;
+        bool hasLeft = await left.MoveNextAsync();
+        if (!hasLeft && !takeRight) yield break;
+        await using var right = second.Items.GetAsyncEnumerator(token);
+        bool hasRight = await right.MoveNextAsync();
+        while (hasLeft && hasRight)
+        {
+            token.ThrowIfCancellationRequested();
+            var x = left.Current;
+            var y = right.Current;
+            if (await Less(y, x))
+            {
+                if (takeRight) yield return y;
+                hasRight = await right.MoveNextAsync();
+                continue;
+            }
+            if (combination == RangeCombination.Merge || await Less(x, y))
+            {
+                if (takeLeft) yield return x;
+                hasLeft = await left.MoveNextAsync();
+                continue;
+            }
+            if (takeEqual) yield return x;
+            hasLeft = await left.MoveNextAsync();
+            if (!hasLeft && !takeRight) yield break;
+            hasRight = await right.MoveNextAsync();
+        }
+        if (takeLeft)
+            while (hasLeft)
+            {
+                token.ThrowIfCancellationRequested();
+                yield return left.Current;
+                hasLeft = await left.MoveNextAsync();
+            }
+        if (takeRight)
+            while (hasRight)
+            {
+                token.ThrowIfCancellationRequested();
+                yield return right.Current;
+                hasRight = await right.MoveNextAsync();
+            }
+
+        async ValueTask<bool> Less(Value a, Value b) => less is null
+            ? CompareRangeValues(a, b) < 0 : Boolean(await invoke(less, [a, b], token));
+    }
+
     private static async ValueTask<Value> ElementAt(RangeValue source, long index, CancellationToken token)
     {
+        if (source.SnapshotValues is { } snapshot)
+        {
+            token.ThrowIfCancellationRequested();
+            return index < snapshot.Count ? snapshot[(int)index] : throw MissingIndex(index);
+        }
         long position = 0;
         await foreach (Value value in source.Items.WithCancellation(token))
             if (position++ == index) return value;
-        throw new MsyncException($"ranges.at has no item at index {index}");
+        throw MissingIndex(index);
+    }
+
+    private static MsyncException MissingIndex(long index) => new($"ranges.at has no item at index {index}");
+
+    private static async ValueTask<Value> CountRange(RangeValue range, CancellationToken token)
+    {
+        if (range.SnapshotValues is { } snapshot) return new NumberValue(snapshot.Count);
+        long count = 0;
+        await foreach (var _ in range.Items.WithCancellation(token)) count++;
+        return new NumberValue(count);
     }
 
     private static async IAsyncEnumerable<Value> ConcatenatedItems(RangeValue first, RangeValue second,
@@ -172,7 +266,7 @@ public static partial class NativeRegistry
         (NumberValue first, NumberValue second) => first.Data.CompareTo(second.Data),
         (BoolValue first, BoolValue second) => first.Data.CompareTo(second.Data),
         (StringValue or PathValue, StringValue or PathValue) => TextSemantics.CompareOrdinal(Text(left), Text(right)),
-        _ => throw new MsyncException($"ranges.sort cannot order {left.Type} and {right.Type}; use sort_with for a custom order")
+        _ => throw new MsyncException($"Natural range ordering cannot compare {left.Type} and {right.Type}; supply a strict comparator")
     };
 
     private static async ValueTask StableSort(List<Value> values, Value? less,

@@ -262,15 +262,16 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
         {
             NativeBehavior behavior = signature.Behavior.GetValueOrDefault();
             bool eager = (behavior & NativeBehavior.EagerRange) != 0;
-            bool dependentRange = signature.ResultRule == NativeResultRule.RangeEnumerate && arguments.Length >= 1
-                || signature.ResultRule is NativeResultRule.RangeZip or NativeResultRule.RangeConcat && arguments.Length >= 2;
-            if (dependentRange)
-                return Fact(HirNativeResultTypes.Project(signature.ResultRule,
-                    arguments[0].SemanticType ?? hir.Type(arguments[0].Type),
-                    signature.ResultRule is NativeResultRule.RangeZip or NativeResultRule.RangeConcat
-                        ? arguments[1].SemanticType ?? hir.Type(arguments[1].Type) : default,
-                    hir, types)) with
-                { Eager = eager };
+            if (arguments.Length != 0 && HirNativeResultTypes.IsStructuralRange(signature.ResultRule))
+            {
+                var first = arguments[0];
+                HirTypeId? denoted = first.Denotations is { Types.Length: 1 } known ? known.Types[0] : null;
+                var structural = HirNativeResultTypes.Project(signature.ResultRule,
+                    first.SemanticType ?? hir.Type(first.Type),
+                    arguments.Length > 1 ? arguments[1].SemanticType ?? hir.Type(arguments[1].Type) : null,
+                    denoted, hir, types);
+                if (structural is { } type) return Fact(type) with { Eager = eager };
+            }
             if (signature.ResultRule == NativeResultRule.FirstArgument && arguments.Length != 0)
                 return arguments[0] with
                 {

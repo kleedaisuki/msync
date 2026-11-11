@@ -21,6 +21,18 @@ public static partial class NativeSignatures
         Add("sort_with", NativeResultRule.FirstArgument, range, TypeRef.Function);
         Add("scan", NativeResultRule.RangeScan, range, TypeRef.Any, TypeRef.Function);
         Add("repeat", NativeResultRule.RangeRepeat, TypeRef.Any, TypeRef.Number);
+        result.Add("ranges.empty_of", new("ranges.empty_of", [TypeRef.Type], range,
+            ResultRule: NativeResultRule.RangeOfType, Behavior: NativeBehavior.EagerRange));
+        result.Add("ranges.size", new("ranges.size", [range], TypeRef.Number,
+            Behavior: NativeBehavior.Enumerates | NativeBehavior.MayFail));
+        result.Add("ranges.less", new("ranges.less", [TypeRef.Any, TypeRef.Any], TypeRef.Bool,
+            Behavior: NativeBehavior.MayFail));
+        foreach (string operation in new[] { "merge", "set_union", "set_intersection", "set_difference", "set_symmetric_difference" })
+        {
+            var rule = operation is "set_intersection" or "set_difference" ? NativeResultRule.RangeMergeLeft : NativeResultRule.RangeMerge;
+            Add(operation, rule, range, range);
+            Add(operation + "_with", rule, range, range, TypeRef.Function);
+        }
         result.Add("ranges.at", new("ranges.at", [range, TypeRef.Number], TypeRef.Any,
             ResultRule: NativeResultRule.RangeItem, Behavior: NativeBehavior.Enumerates | NativeBehavior.MayFail));
         result.Add("ranges.sequence", new("ranges.sequence", [TypeRef.Number, TypeRef.Number, TypeRef.Number], new(TypeKind.Range, TypeRef.Number),

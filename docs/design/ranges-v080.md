@@ -14,6 +14,73 @@ Null rules, reference-sharing Scope values and asynchronous source evaluation.
 This is not a claim that an arbitrary msync Range is a C++ sized, random-access
 or multipass range.
 
+## Typed construction and explicit cursors (0.8.6)
+
+`empty_of(Number)` produces an empty, eager `Range<Number>`. The compiler uses
+the existing statically denoted Type, including the row from
+`decltype(scope { name: "" })`, and the runtime constructs zero items with
+the same closed carrier. No exemplar, deferred generator, conversion of
+`Never` storage or language syntax extension is needed. This is the existing
+Type-witness model applied to the C++ [empty view](https://eel.is/c++draft/range.empty)
+contract.
+
+`Cursor::begin(range)` eagerly freezes membership once. `has_value(cursor)`
+distinguishes an item (including Null) from exhaustion; `value(cursor)`
+uses indexed access, with the same exhaustion error as `at`. `next` moves to
+the next item or the end and reports whether that position is readable.
+`previous` moves back if possible, including from the end. `seek` and
+`advance` accept positions in the closed interval from zero through the end
+and leave the cursor unchanged for out-of-range or non-integral requests.
+An ordinary Scope alias shares the position; `clone` creates an independent
+position sharing the same snapshot. Neither operation copies the objects
+in that snapshot. A live `for` loop remains the lightweight single-pass
+alternative when random access is unnecessary.
+
+`size` uses the stored snapshot length and `at` indexes snapshots directly;
+both consume general ranges as required. `Cursor::{lower_bound,upper_bound}` return
+absolute positions in the remainder of an already frozen sorted range,
+without moving the cursor. These searches take O(log n) indexed steps.
+The range-level `lower_bound`, `upper_bound`, `equal_range` and
+`binary_search` first snapshot their input; `equal_range` returns the
+half-open interval `{first,last}`, and a bound can equal the size.
+The `_with` variants use an explicit strict comparator. Both follow the
+[partitioned-input contract](https://eel.is/c++draft/alg.binary.search);
+the algorithms do not sort or validate sortedness implicitly.
+`is_sorted` and `is_sorted_with` are separate checks.
+
+`merge`, `set_union`, `set_intersection`, `set_difference` and
+`set_symmetric_difference` share a streaming two-input iterator. They require
+both inputs sorted by the selected order and use the C++
+[sorted multiset conventions](https://eel.is/c++draft/alg.set.operations):
+union uses maximum multiplicity, intersection minimum, difference truncated
+subtraction, and symmetric difference absolute subtraction. Merge retains
+all values and chooses the left source first for equivalent keys.
+Intersection/difference retain the left carrier; the other operations
+combine both carriers. The natural variants use the same ordering as
+`sort` (including the existing NaN placement), not a new meaning of language
+comparison. The `_with` variants accept a typed Bool comparator.
+
+Each consumption advances left before right and retains at most one current
+item from each. Constructing the result does not enumerate either source
+or invoke the comparison, and breaking early disposes both iterators.
+Comparisons and each source's effects occur in iterator order; the functions
+do not promise repeated evaluation is effect-free. Repeated enumeration of
+a replayable source starts with fresh iterator state.
+
+The full native result inference and lightweight flow/return projections share
+the same structural range rules for nested windows, typed empties and sorted
+combinations. A loop over `slide` retains the inner Range and its item type
+instead of introducing an unrelated nullable Any element.
+
+`tests/Msync.EndToEnd/stdlib_iterators_journey.py` checks the actual CLI
+through source and source-deleted HIR lowered to both bytecode execution routes.
+Its cases distinguish typed empty construction and policy selection, cursor
+cloning and Null items, stable ties and shared Scope elements, lazy early exit
+and repeat consumption, and typed B+ page splits and erasure. Negative cases
+reject a non-static witness or an invalid fixed-carrier insertion.
+
+## Range adaptors and terminal families
+
 | Capability | Result and evaluation |
 | --- | --- |
 | `concat(a, b)` | Lazy left-to-right concatenation; preserves original element references |
@@ -22,7 +89,7 @@ or multipass range.
 | `enumerate_from(values, start)` | Lazy fresh records `{ index: Number, value }`; `enumerate` starts at zero |
 | `chunk(values, count)` | Lazy nonoverlapping chunks, including the final partial chunk |
 | `slide(values, count)` | Lazy complete overlapping windows; no incomplete final window |
-| `materialize(values)` | First-demand snapshot of the sequence; later enumeration reuses it |
+| `materialize(values)` | Eager snapshot of the sequence; later enumeration reuses it |
 | `sort(values)` | Stable, buffered natural ordering on each enumeration |
 | `sort_with(values, less)` | Stable, buffered ordering with asynchronous `less(a, b) -> Bool` |
 | `scan(values, initial, operation)` | Lazy inclusive accumulation, with a fresh accumulator per enumeration |
@@ -79,8 +146,8 @@ VM invocation rather than blocking on an asynchronous callback.
 
 ## Terminal semantics and cost
 
-`size`/`distance` consume the Range; they do not claim constant-time C++
-`ranges::size` semantics. `count` counts matching elements and `count_if` counts
+`size`/`distance` consume a non-snapshot Range; only the snapshot case uses
+constant-time size. `count` counts matching elements and `count_if` counts
 predicate matches. `matches` handles Null through `is null`/`is not null` and
 delegates non-Null membership equality to the existing collection relation;
 it does not introduce Null truthiness or relational ordering.

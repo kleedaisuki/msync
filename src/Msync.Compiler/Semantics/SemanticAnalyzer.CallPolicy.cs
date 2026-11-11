@@ -510,13 +510,16 @@ internal sealed partial class SemanticAnalyzer
 
     private ReturnShape NativeShape(NativeSignature signature, IReadOnlyList<ReturnShape> arguments)
     {
-        bool dependentRange = signature.ResultRule == NativeResultRule.RangeEnumerate && arguments.Count >= 1
-            || signature.ResultRule is NativeResultRule.RangeZip or NativeResultRule.RangeConcat && arguments.Count >= 2;
-        HirTypeId? structural = dependentRange ? HirNativeResultTypes.Project(signature.ResultRule,
-            arguments[0].Fact.SemanticType ?? hir.Type(arguments[0].Fact.Type),
-            signature.ResultRule is NativeResultRule.RangeZip or NativeResultRule.RangeConcat
-                ? arguments[1].Fact.SemanticType ?? hir.Type(arguments[1].Fact.Type) : default,
-            hir, new HirFlowTypeAlgebra(hir)) : null;
+        HirTypeId? structural = null;
+        if (arguments.Count != 0 && HirNativeResultTypes.IsStructuralRange(signature.ResultRule))
+        {
+            var first = arguments[0];
+            structural = HirNativeResultTypes.Project(signature.ResultRule,
+                first.Fact.SemanticType ?? hir.Type(first.Fact.Type),
+                arguments.Count > 1 ? arguments[1].Fact.SemanticType ?? hir.Type(arguments[1].Fact.Type) : null,
+                first.Value?.DenotedType,
+                hir, new HirFlowTypeAlgebra(hir));
+        }
         FlowFact fact = structural is { } dependent ? Shape(dependent).Fact : signature.ResultRule switch
         {
             NativeResultRule.FirstArgument when arguments.Count != 0 => arguments[0].Fact,

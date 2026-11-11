@@ -6,19 +6,34 @@ scope SnapshotStorage {
     },
 };
 
+fn construction_range(initial: Range | Type) {
+    if decltype(initial) is Type {
+        $std::ranges::empty_of(initial)
+    } else {
+        initial
+    }
+};
+
+fn entry_seed(keys: Range, values: Range) {
+    $std::ranges::transform($std::ranges::zip(keys, values), fn(pair) {
+        scope { key?: pair::first, value?: pair::second }
+    })
+};
+
 scope List {
-    new: fn(initial: Range) {
-        List::with_storage(initial, SnapshotStorage)
+    new: fn(initial: Range | Type) {
+        List::with_storage(construction_range(initial), SnapshotStorage)
     },
-    with_storage: fn(initial: Range, storage: $std::concepts::RangeStorage) {
+    with_storage: fn(initial: Range | Type, storage: $std::concepts::RangeStorage) {
         scope {
-            items: $std::ranges::materialize(storage::snapshot(initial)),
+            items: $std::ranges::materialize(storage::snapshot(construction_range(initial))),
             storage: storage,
         }
     },
     empty: fn(prototype?) {
         List::new($std::ranges::take([prototype], 0))
     },
+    cursor: fn(self) { $std::ranges::Cursor::begin(self::items) },
     snapshot: fn(self) {
         $std::ranges::materialize(self::items)
     },
@@ -156,25 +171,26 @@ scope Equivalence {
 };
 
 scope EqualitySet {
-    new: fn(initial: Range) {
+    new: fn(initial: Range | Type) {
+        let source = construction_range(initial);
         EqualitySet::with_policy(
-            initial,
+            source,
             scope {
-                Self: decltype($std::ranges::front(initial)),
+                Self: decltype($std::ranges::front(source)),
                 equal: Equivalence::same,
             },
             SnapshotStorage
         )
     },
-    with_equality: fn(initial: Range, equality: $std::concepts::Equality) {
+    with_equality: fn(initial: Range | Type, equality: $std::concepts::Equality) {
         EqualitySet::with_policy(initial, equality, SnapshotStorage)
     },
     with_policy: fn(
-        initial: Range,
+        initial: Range | Type,
         equality: $std::concepts::Equality,
         storage: $std::concepts::RangeStorage
     ) {
-        let source = $std::ranges::materialize(initial);
+        let source = $std::ranges::materialize(construction_range(initial));
         let self = scope {
             items: $std::ranges::materialize($std::ranges::take(source, 0)),
             equality: equality,
@@ -188,6 +204,7 @@ scope EqualitySet {
     empty: fn(prototype?) {
         EqualitySet::new($std::ranges::take([prototype], 0))
     },
+    cursor: fn(self) { $std::ranges::Cursor::begin(self::items) },
     snapshot: fn(self) {
         $std::ranges::materialize(self::items)
     },
@@ -314,30 +331,42 @@ scope Map {
         storage: $std::concepts::RangeStorage
     ) {
         let source = $std::ranges::materialize(initial);
-        let self = scope {
-            keys: $std::ranges::materialize(
-                $std::ranges::transform(
-                    $std::ranges::take(source, 0),
-                    fn(entry) {
-                        entry::key
-                    }
-                )
-            ),
-            values: $std::ranges::materialize(
-                $std::ranges::transform(
-                    $std::ranges::take(source, 0),
-                    fn(entry) {
-                        entry::value
-                    }
-                )
-            ),
-            equality: equality,
-            storage: storage,
-        };
+        let empty = $std::ranges::take(source, 0);
+        let self = Map::from_seeds(
+            $std::ranges::transform(empty, fn(entry) { entry::key }),
+            $std::ranges::transform(empty, fn(entry) { entry::value }),
+            equality,
+            storage
+        );
         for entry in source {
             Map::insert(self, entry::key, entry::value);
         };
         self
+    },
+    from_seeds: fn(keys: Range, values: Range, equality: $std::concepts::Equality,
+        storage: $std::concepts::RangeStorage) {
+        scope {
+            keys: $std::ranges::materialize(keys),
+            values: $std::ranges::materialize(values),
+            equality: equality,
+            storage: storage,
+        }
+    },
+    of_types: fn(key: Type, value: Type) {
+        Map::from_seeds(
+            $std::ranges::empty_of(key),
+            $std::ranges::empty_of(value),
+            scope { Self: key, equal: Equivalence::same },
+            SnapshotStorage
+        )
+    },
+    of_types_with: fn(key: Type, value: Type, equality: $std::concepts::Equality) {
+        Map::from_seeds(
+            $std::ranges::empty_of(key),
+            $std::ranges::empty_of(value),
+            equality,
+            SnapshotStorage
+        )
     },
     empty: fn(key_prototype?, value_prototype?) {
         Map::new(
@@ -369,6 +398,7 @@ scope Map {
             )
         )
     },
+    cursor: fn(self) { $std::ranges::Cursor::begin(Map::entries(self)) },
     entries: fn(self) {
         $std::ranges::materialize(
             $std::ranges::transform(
@@ -486,7 +516,7 @@ scope Map {
 };
 
 scope Stack {
-    new: fn(initial: Range) {
+    new: fn(initial: Range | Type) {
         List::new(initial)
     },
     with_storage: fn(initial: Range, storage: $std::concepts::RangeStorage) {
@@ -495,6 +525,7 @@ scope Stack {
     empty: fn(prototype?) {
         List::empty(prototype)
     },
+    cursor: fn(self) { $std::ranges::Cursor::begin(self::items) },
     snapshot: fn(self) {
         List::snapshot(self)
     },
@@ -529,7 +560,7 @@ scope Stack {
 };
 
 scope Queue {
-    new: fn(initial: Range) {
+    new: fn(initial: Range | Type) {
         List::new(initial)
     },
     with_storage: fn(initial: Range, storage: $std::concepts::RangeStorage) {
@@ -538,6 +569,7 @@ scope Queue {
     empty: fn(prototype?) {
         List::empty(prototype)
     },
+    cursor: fn(self) { $std::ranges::Cursor::begin(self::items) },
     snapshot: fn(self) {
         List::snapshot(self)
     },
@@ -608,19 +640,44 @@ scope BTree {
         value_prototype?,
         order: $std::concepts::StrictOrder
     ) {
+        BTree::from_seeds(
+            $std::ranges::take([key_prototype], 0),
+            $std::ranges::take([value_prototype], 0),
+            order, key_prototype, value_prototype
+        )
+    },
+    of_types: fn(key: Type, value: Type) {
+        BTree::from_seeds(
+            $std::ranges::empty_of(key),
+            $std::ranges::empty_of(value),
+            scope { Self: key, sample?: null, less: NaturalOrder::less },
+            null, null
+        )
+    },
+    of_types_with: fn(key: Type, value: Type, order: $std::concepts::StrictOrder) {
+        BTree::from_seeds(
+            $std::ranges::empty_of(key), $std::ranges::empty_of(value), order, null, null
+        )
+    },
+    from_seeds: fn(keys: Range, values: Range, order: $std::concepts::StrictOrder,
+        key_prototype?, value_prototype?) {
+        let key_seed = $std::ranges::take(keys, 0);
+        let value_seed = $std::ranges::take(values, 0);
         let first = scope {
             leaf: true,
-            keys: $std::storage::Buffer::empty(key_prototype),
-            values: $std::storage::Buffer::empty(value_prototype),
-            children: $std::storage::Buffer::empty(0),
+            keys: $std::storage::Buffer::new(key_seed),
+            values: $std::storage::Buffer::new(value_seed),
+            children: $std::storage::Buffer::of_type(Number),
         };
         scope {
             nodes: $std::storage::Buffer::new([first]),
-            free: $std::storage::Buffer::empty(0),
+            free: $std::storage::Buffer::of_type(Number),
             root: 0,
             count: 0,
             degree: 8,
             order: order,
+            key_seed: key_seed,
+            value_seed: value_seed,
             key_prototype?: key_prototype,
             value_prototype?: value_prototype,
         }
@@ -636,9 +693,9 @@ scope BTree {
         };
         let node = scope {
             leaf: leaf,
-            keys: $std::storage::Buffer::empty(self::key_prototype),
-            values: $std::storage::Buffer::empty(self::value_prototype),
-            children: $std::storage::Buffer::empty(0),
+            keys: $std::storage::Buffer::new(self::key_seed),
+            values: $std::storage::Buffer::new(self::value_seed),
+            children: $std::storage::Buffer::of_type(Number),
         };
         let index = $std::storage::Buffer::size(self::nodes);
         $std::storage::Buffer::push(self::nodes, node);
@@ -1062,13 +1119,9 @@ scope BTree {
             );
         };
     },
+    cursor: fn(self) { $std::ranges::Cursor::begin(BTree::entries(self)) },
     entries: fn(self) {
-        let output = $std::storage::Buffer::empty(
-            scope {
-                key?: self::key_prototype,
-                value?: self::value_prototype,
-            }
-        );
+        let output = $std::storage::Buffer::new(entry_seed(self::key_seed, self::value_seed));
         BTree::visit(self, self::root, output);
         $std::storage::Buffer::snapshot(output)
     },
@@ -1109,12 +1162,7 @@ scope BTree {
         };
     },
     range: fn(self, low?, high?) {
-        let output = $std::storage::Buffer::empty(
-            scope {
-                key?: self::key_prototype,
-                value?: self::value_prototype,
-            }
-        );
+        let output = $std::storage::Buffer::new(entry_seed(self::key_seed, self::value_seed));
         if self::order::less(low, high) {
             BTree::visit_range(self, self::root, low, high, output);
         };
@@ -1188,7 +1236,7 @@ scope BTree {
             depth: -1,
             nodes: 0,
             seen: false,
-            previous?: self::key_prototype,
+            previous?: $std::ranges::first_or(self::key_seed, null),
         };
         BTree::validate_walk(self, self::root, true, 0, state);
         state::valid
@@ -1245,20 +1293,45 @@ scope BPlusTree {
         value_prototype?,
         order: $std::concepts::StrictOrder
     ) {
+        BPlusTree::from_seeds(
+            $std::ranges::take([key_prototype], 0),
+            $std::ranges::take([value_prototype], 0),
+            order, key_prototype, value_prototype
+        )
+    },
+    of_types: fn(key: Type, value: Type) {
+        BPlusTree::from_seeds(
+            $std::ranges::empty_of(key),
+            $std::ranges::empty_of(value),
+            scope { Self: key, sample?: null, less: NaturalOrder::less },
+            null, null
+        )
+    },
+    of_types_with: fn(key: Type, value: Type, order: $std::concepts::StrictOrder) {
+        BPlusTree::from_seeds(
+            $std::ranges::empty_of(key), $std::ranges::empty_of(value), order, null, null
+        )
+    },
+    from_seeds: fn(keys: Range, values: Range, order: $std::concepts::StrictOrder,
+        key_prototype?, value_prototype?) {
+        let key_seed = $std::ranges::take(keys, 0);
+        let value_seed = $std::ranges::take(values, 0);
         let first = scope {
             leaf: true,
-            keys: $std::storage::Buffer::empty(key_prototype),
-            values: $std::storage::Buffer::empty(value_prototype),
-            children: $std::storage::Buffer::empty(0),
+            keys: $std::storage::Buffer::new(key_seed),
+            values: $std::storage::Buffer::new(value_seed),
+            children: $std::storage::Buffer::of_type(Number),
             next: -1,
         };
         scope {
             nodes: $std::storage::Buffer::new([first]),
-            free: $std::storage::Buffer::empty(0),
+            free: $std::storage::Buffer::of_type(Number),
             root: 0,
             count: 0,
             degree: 8,
             order: order,
+            key_seed: key_seed,
+            value_seed: value_seed,
             key_prototype?: key_prototype,
             value_prototype?: value_prototype,
         }
@@ -1266,7 +1339,7 @@ scope BPlusTree {
     node: fn(self, index: Number) {
         $std::storage::Buffer::get(self::nodes, index)
     },
-    allocate: fn(self, leaf: Bool) {
+    allocate: fn(self, leaf: Bool) -> Number {
         if $std::storage::Buffer::size(self::free) > 0 {
             let index = $std::storage::Buffer::pop(self::free);
             BPlusTree::node(self, index)::leaf = leaf;
@@ -1274,9 +1347,9 @@ scope BPlusTree {
         };
         let node = scope {
             leaf: leaf,
-            keys: $std::storage::Buffer::empty(self::key_prototype),
-            values: $std::storage::Buffer::empty(self::value_prototype),
-            children: $std::storage::Buffer::empty(0),
+            keys: $std::storage::Buffer::new(self::key_seed),
+            values: $std::storage::Buffer::new(self::value_seed),
+            children: $std::storage::Buffer::of_type(Number),
             next: -1,
         };
         let index = $std::storage::Buffer::size(self::nodes);
@@ -1348,12 +1421,7 @@ scope BPlusTree {
         }
     },
     leaf: fn(self, key?) {
-        let path = $std::storage::Buffer::empty(
-            scope {
-                node: 0,
-                index: 0
-            }
-        );
+        let path = $std::storage::Buffer::of_type(decltype(scope { node: 0, index: 0 }));
         BPlusTree::descend(self, key, path)
     },
     get: fn(self, key?) {
@@ -1432,12 +1500,7 @@ scope BPlusTree {
         }
     },
     insert: fn(self, key?, value?) {
-        let path = $std::storage::Buffer::empty(
-            scope {
-                node: 0,
-                index: 0
-            }
-        );
+        let path = $std::storage::Buffer::of_type(decltype(scope { node: 0, index: 0 }));
         let current = BPlusTree::descend(self, key, path);
         let node = BPlusTree::node(self, current);
         let index = BPlusTree::lower(self, node, key);
@@ -1598,12 +1661,7 @@ scope BPlusTree {
         left_index
     },
     remove: fn(self, key?) {
-        let path = $std::storage::Buffer::empty(
-            scope {
-                node: 0,
-                index: 0
-            }
-        );
+        let path = $std::storage::Buffer::of_type(decltype(scope { node: 0, index: 0 }));
         let current = BPlusTree::descend(self, key, path);
         let leaf = BPlusTree::node(self, current);
         let index = BPlusTree::lower(self, leaf, key);
@@ -1735,23 +1793,14 @@ scope BPlusTree {
             start = 0;
         };
     },
+    cursor: fn(self) { $std::ranges::Cursor::begin(BPlusTree::entries(self)) },
     entries: fn(self) {
-        let output = $std::storage::Buffer::empty(
-            scope {
-                key?: self::key_prototype,
-                value?: self::value_prototype,
-            }
-        );
+        let output = $std::storage::Buffer::new(entry_seed(self::key_seed, self::value_seed));
         BPlusTree::collect(self, BPlusTree::first_leaf(self), 0, output);
         $std::storage::Buffer::snapshot(output)
     },
     range: fn(self, low?, high?) {
-        let output = $std::storage::Buffer::empty(
-            scope {
-                key?: self::key_prototype,
-                value?: self::value_prototype,
-            }
-        );
+        let output = $std::storage::Buffer::new(entry_seed(self::key_seed, self::value_seed));
         if self::order::less(low, high) {
             let page = BPlusTree::leaf(self, low);
             let start = BPlusTree::lower(
@@ -1870,7 +1919,7 @@ scope BPlusTree {
             depth: -1,
             nodes: 0,
             seen: false,
-            previous?: self::key_prototype,
+            previous?: $std::ranges::first_or(self::key_seed, null),
             previous_leaf: -1,
         };
         BPlusTree::validate_walk(self, self::root, true, 0, state);
@@ -1915,11 +1964,12 @@ scope BPlusTree {
 # Ordered Set with logarithmic point operations and an explicit comparison policy.
 # Comparator-equivalent keys are unique; snapshots retain membership, not deep copies.
 scope Set {
-    new: fn(initial: Range) {
+    new: fn(initial: Range | Type) {
+        let source = construction_range(initial);
         Set::with_policy(
-            initial,
+            source,
             scope {
-                Self: decltype($std::ranges::front(initial)),
+                Self: decltype($std::ranges::front(source)),
                 sample?: null,
                 less: NaturalOrder::less,
             }
@@ -1928,8 +1978,8 @@ scope Set {
     empty: fn(prototype?) {
         Set::new($std::ranges::take([prototype], 0))
     },
-    with_policy: fn(initial: Range, order: $std::concepts::StrictOrder) {
-        let source = $std::ranges::materialize(initial);
+    with_policy: fn(initial: Range | Type, order: $std::concepts::StrictOrder) {
+        let source = $std::ranges::materialize(construction_range(initial));
         # NIL keeps the carrier schema without a live key or recursive node type.
         let nil = scope {
             payload: $std::ranges::materialize($std::ranges::take(source, 0)),
@@ -1940,7 +1990,7 @@ scope Set {
         };
         let self = scope {
             nodes: $std::storage::Buffer::new([nil]),
-            free: $std::storage::Buffer::empty(0),
+            free: $std::storage::Buffer::of_type(Number),
             root: 0,
             count: 0,
             order: order,
@@ -2331,6 +2381,7 @@ scope Set {
         };
         added
     },
+    cursor: fn(self) { $std::ranges::Cursor::begin(Set::snapshot(self)) },
     snapshot: fn(self) {
         let output = $std::storage::Buffer::new(Set::node(self, 0)::payload);
         let index = self::root;
@@ -2379,11 +2430,12 @@ scope Set {
 # Array-backed binary heap. The selected strict order defines priority: less(a,
 # b) means a is removed before b. Equal-priority elements are not stable.
 scope Heap {
-    new: fn(initial: Range) {
+    new: fn(initial: Range | Type) {
+        let source = construction_range(initial);
         Heap::with_policy(
-            initial,
+            source,
             scope {
-                Self: decltype($std::ranges::front(initial)),
+                Self: decltype($std::ranges::front(source)),
                 sample?: null,
                 less: NaturalOrder::less,
             }
@@ -2392,9 +2444,9 @@ scope Heap {
     empty: fn(prototype?) {
         Heap::new($std::ranges::take([prototype], 0))
     },
-    with_policy: fn(initial: Range, order: $std::concepts::StrictOrder) {
+    with_policy: fn(initial: Range | Type, order: $std::concepts::StrictOrder) {
         let self = scope {
-            buffer: $std::storage::Buffer::new(initial),
+            buffer: $std::storage::Buffer::new(construction_range(initial)),
             order: order,
         };
         let index = $std::math::floor(Heap::size(self) / 2);
@@ -2470,6 +2522,7 @@ scope Heap {
             Heap::push(self, value);
         };
     },
+    cursor: fn(self) { $std::ranges::Cursor::begin(Heap::snapshot(self)) },
     snapshot: fn(self) {
         $std::storage::Buffer::snapshot(self::buffer)
     },

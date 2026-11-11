@@ -3,6 +3,9 @@ fn single(value?) { [value] };
 fn identity(values: Range) { values };
 fn all(values: Range) { values };
 native fn of(value) -> Range;
+native fn empty_of(element: Type) -> Range;
+native fn less(left?, right?) -> Bool;
+native fn size(values: Range) -> Number;
 native fn take(values: Range, count: Number) -> Range;
 native fn drop(values: Range, count: Number) -> Range;
 native fn stride(values: Range, count: Number) -> Range;
@@ -41,6 +44,80 @@ native fn scan(values: Range, initial?, operation: Function) -> Range;
 native fn sequence(start: Number, stop: Number, step: Number) -> Range<Number>;
 native fn repeat(value?, count: Number) -> Range;
 native fn at(values: Range, index: Number) -> Bool | String | Path | Range | Function | Scope | Process | Connection | Type | Number | Null;
+native fn merge(left: Range, right: Range) -> Range;
+native fn merge_with(left: Range, right: Range, compare: Function) -> Range;
+native fn set_union(left: Range, right: Range) -> Range;
+native fn set_union_with(left: Range, right: Range, compare: Function) -> Range;
+native fn set_intersection(left: Range, right: Range) -> Range;
+native fn set_intersection_with(left: Range, right: Range, compare: Function) -> Range;
+native fn set_difference(left: Range, right: Range) -> Range;
+native fn set_difference_with(left: Range, right: Range, compare: Function) -> Range;
+native fn set_symmetric_difference(left: Range, right: Range) -> Range;
+native fn set_symmetric_difference_with(left: Range, right: Range, compare: Function) -> Range;
+
+# A cursor owns a membership snapshot. Its position is independent of Null items.
+scope Cursor {
+    begin: fn(values: Range) {
+        let items = materialize(values);
+        scope { items: items, position: 0, limit: size(items) }
+    },
+    clone: fn(self) {
+        scope {
+            items: self::items,
+            position: self::position,
+            limit: self::limit,
+        }
+    },
+    has_value: fn(self) -> Bool { self::position < self::limit },
+    value: fn(self) { at(self::items, self::position) },
+    seek: fn(self, position: Number) -> Bool {
+        if position < 0 or position > self::limit
+            or position != $std::math::trunc(position) {
+            return false;
+        };
+        self::position = position;
+        true
+    },
+    advance: fn(self, offset: Number) -> Bool {
+        if offset != $std::math::trunc(offset) { return false; };
+        Cursor::seek(self, self::position + offset)
+    },
+    next: fn(self) -> Bool {
+        if not Cursor::has_value(self) { return false; };
+        self::position = self::position + 1;
+        Cursor::has_value(self)
+    },
+    previous: fn(self) -> Bool {
+        if self::position == 0 { return false; };
+        self::position = self::position - 1;
+        true
+    },
+    bound_with: fn(self, value?, compare: Function, upper: Bool) -> Number {
+        let low = self::position;
+        let high = self::limit;
+        loop {
+            if low >= high { break; };
+            let middle = $std::math::floor(low + (high - low) / 2);
+            let item? = at(self::items, middle);
+            let before = if upper { not compare(value, item) }
+                else { compare(item, value) };
+            if before { low = middle + 1; } else { high = middle; };
+        };
+        low
+    },
+    lower_bound_with: fn(self, value?, compare: Function) -> Number {
+        Cursor::bound_with(self, value, compare, false)
+    },
+    upper_bound_with: fn(self, value?, compare: Function) -> Number {
+        Cursor::bound_with(self, value, compare, true)
+    },
+    lower_bound: fn(self, value?) -> Number {
+        Cursor::lower_bound_with(self, value, less)
+    },
+    upper_bound: fn(self, value?) -> Number {
+        Cursor::upper_bound_with(self, value, less)
+    },
+};
 
 fn map(values: Range, operation: Function) { transform(values, operation) };
 fn reject(values: Range, predicate: Function) {
@@ -76,12 +153,7 @@ fn sort_by(values: Range, projection: Function) {
     transform(ordered, fn(item) { item::value })
 };
 
-# Terminals are ordinary typed programs, not one host entrypoint per algorithm.
-fn size(values: Range) {
-    let result = 0;
-    for value in values { result = result + 1; };
-    result
-};
+# Most terminals are ordinary typed programs; size has an indexed fast path.
 fn distance(values: Range) { size(values) };
 fn count_if(values: Range, predicate: Function) {
     size(filter(values, predicate))
@@ -223,3 +295,33 @@ fn adjacent_find_or(values: Range, fallback?, predicate: Function) {
     };
     fallback
 };
+
+fn lower_bound_with(values: Range, value?, compare: Function) {
+    Cursor::lower_bound_with(Cursor::begin(values), value, compare)
+};
+fn upper_bound_with(values: Range, value?, compare: Function) {
+    Cursor::upper_bound_with(Cursor::begin(values), value, compare)
+};
+fn lower_bound(values: Range, value?) { lower_bound_with(values, value, less) };
+fn upper_bound(values: Range, value?) { upper_bound_with(values, value, less) };
+fn equal_range_with(values: Range, value?, compare: Function) {
+    let cursor = Cursor::begin(values);
+    scope {
+        first: Cursor::lower_bound_with(cursor, value, compare),
+        last: Cursor::upper_bound_with(cursor, value, compare),
+    }
+};
+fn equal_range(values: Range, value?) { equal_range_with(values, value, less) };
+fn binary_search_with(values: Range, value?, compare: Function) -> Bool {
+    let cursor = Cursor::begin(values);
+    let index = Cursor::lower_bound_with(cursor, value, compare);
+    index < cursor::limit and not compare(value, at(cursor::items, index))
+};
+fn binary_search(values: Range, value?) { binary_search_with(values, value, less) };
+fn is_sorted_with(values: Range, compare: Function) -> Bool {
+    for pair in slide(values, 2) {
+        if compare(last(pair), first(pair)) { return false; };
+    };
+    true
+};
+fn is_sorted(values: Range) { is_sorted_with(values, less) };

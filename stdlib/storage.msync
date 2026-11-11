@@ -17,6 +17,9 @@ native fn buffer_snapshot(items: Range) -> Range;
 
 scope Buffer {
     new: buffer_new,
+    of_type: fn(element: Type) {
+        buffer_new($std::ranges::empty_of(element))
+    },
     empty: fn(prototype?) {
         buffer_new($std::ranges::take([prototype], 0))
     },

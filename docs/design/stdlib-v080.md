@@ -1,5 +1,31 @@
 # Typed, source-backed standard library in 0.8
 
+## Typed construction and traversal (0.8.6)
+
+`Set::new(Number)`, `Heap::new(Number)`, `List::new(Number)`,
+`EqualitySet::new(Number)`, `Stack::new(Number)` and `Queue::new(Number)`
+are typed empty constructors. Existing `new(range)` calls still retain seeded
+construction semantics, including ranges whose *elements* are Type values.
+The older `empty(prototype)` operations still use their actual exemplar.
+Use `Map::of_types(String, Number)`, `BTree::of_types(Number, String)` and
+`BPlusTree::of_types(Number, String)` for two carriers. Their `of_types_with`
+variants select an equality or ordering policy. They do not change the old
+two-exemplar tree constructors. Optional carriers are explicit, for example
+`Map::of_types(String, $std::meta::add_null(Number))`.
+
+`Buffer::of_type(Number)` directly allocates typed empty mutable storage.
+Tree child/free indexes and structural descent steps now use exact witnesses
+instead of nullable exemplar-derived storage. Typed constructors reuse the
+normal tree, heap and collection layouts and insertion paths; they do not
+implement a second empty-container mode or infer from the first real insert.
+
+Collection `cursor(self)` operations use the same `$std::ranges::Cursor`
+interface over frozen membership. A later insert or clear cannot move a
+cursor or invalidate its indexes; existing Scope element aliases remain
+live. The order is the family's snapshot/entry order, including heap array
+order for Heap (use `Heap::sorted` for priority order without draining).
+See [iterator and algorithm contracts](ranges-v080.md).
+
 ## Native families, records and policies
 
 The current canonical source API separates three things that the earlier
@@ -206,7 +232,7 @@ save(report, "completed");
 
 File and Command constructors capture specifications; they perform no IO or
 authentication until a selected operation does that work. Physical paths use
-`path @ connection`; `::` selects lexical family operations or data fields.
+`connection @ path`; `::` selects lexical family operations or data fields.
 
 Direct module selection instantiates only that module and its executable source
 dependencies. A function captures the internal module location, not a detached
