@@ -164,8 +164,12 @@ public static class Optimizer
                         ? IndexedMemoryOptimization.Optimize(available, constants) : available;
                     if (level >= 2 && (features & FunctionFeatures.IndexedReads) != 0) profile?.Add(OptimizationProfile.Pass.IndexedMemory, start, available, indexed);
                     start = profile?.Start() ?? default;
-                    var result = ValueNumbering.Eliminate(indexed, constants);
-                    profile?.Add(OptimizationProfile.Pass.ValueNumbering, start, indexed, result);
+                    bool scalarLoops = level >= 2 && (features & FunctionFeatures.Backedge) != 0;
+                    var looped = scalarLoops ? NaturalLoopOptimization.Optimize(indexed, constants, constantInterner, level) : indexed;
+                    if (scalarLoops) profile?.Add(OptimizationProfile.Pass.NaturalLoops, start, indexed, looped);
+                    start = profile?.Start() ?? default;
+                    var result = ValueNumbering.Eliminate(looped, constants);
+                    profile?.Add(OptimizationProfile.Pass.ValueNumbering, start, looped, result);
                     return result;
                 }
             }

@@ -86,6 +86,7 @@ try
     var noTrap = trap with { Functions = trap.Functions.Select(function => Rewrite(trap, function, trapConstants)).ToArray() };
     Require(await Outcome(noTrap) == "17", "Empty loop speculated a selected error");
     Require(noTrap.Functions.All(function => function.Instructions.All(instruction => instruction.Op != OpCode.GetMember)), "Known empty loop retained dead field read");
+    assertions += await NaturalLoops.VerifyAsync(root);
     Console.WriteLine($"Loop optimization: {assertions} contracts passed.");
     if (args.Contains("--performance", StringComparer.Ordinal)) await LoopPerformance.RunAsync();
 }

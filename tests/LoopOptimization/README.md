@@ -63,3 +63,57 @@ Expansion removes iterator machinery even before propagation. Subsequent graph
 passes fold this finite pure computation to its result. This experiment isolates
 managed interpreter dispatch/allocation; native startup and I/O throughput have
 their own end-to-end measurements.
+
+## Scalar natural loops
+
+The O2/O3 late portable pass consumes the shared control-flow graph. A
+dominating backedge, single latch and unique preheader establish the
+[natural loop](https://llvm.org/docs/LoopTerminology.html). Loop analysis
+records graph membership independent of bytecode layout; this first
+transform handles two-block loops with one ordered comparison and an
+exact positive integral induction recurrence. The private counter has
+one preheader seed and one backedge update. The scalar body may not
+observe the counter, call code, write the bound, or expose a carried
+slot. A mutable cell is not an invariant bound.
+
+The fast region uses the last counter of a four-iteration chunk to prove
+that all four iterations enter. A finite bound within the exact integer
+domain keeps the grouped counter update bit-exact. Fractional bounds are
+handled by the original comparison (there is no conversion to an
+integer trip count), and a failed guard uses the original loop. Known
+counts up to four are computed by applying the original comparison and
+induction update, and fully expanded. NaN or infinity can retain the
+original divergence. A private single-store recurrence stays on the
+operand stack between copies, so arithmetic runs in the same order
+without an intermediate box, store or reload. No format-5 opcode,
+contextual binding policy, or VM rewrite is needed. This follows the
+separation between [loop structure and iteration facts in GCC](https://gcc.gnu.org/onlinedocs/gccint/Loop-Analysis-and-Representation.html),
+not GCC's integer overflow assumptions.
+
+The source-driven differential tests check O2/O3 and both serialized
+artifact stages against O0, including fractional and near-precision-limit
+bounds, positive non-unit steps, negative zero, a captured location,
+small full expansion, and cancellation of a NaN-bound divergent loop.
+The literal iterator test also covers the current HIR iterator
+initialization and its explicit owned-iterator close on early return.
+
+[`recurrence.msync`](recurrence.msync) is the runtime-bound CLI fixture.
+Supply `1048576\n` on stdin; stdout is `131078.87218188652\n`. An
+independent Native AOT measurement compiled the same recurrence returning
+its result directly (without the final stdout write) at O2 with release
+HEAD and with only the shared CFG and scalar transform added, then
+preloaded both artifacts in the same unmodified runtime host. Nine
+forward/reverse rounds on Linux x86-64 CPU 10 checked the
+bit pattern `0x41000036fa3a7f36` on every sample:
+
+| Variant | Median execution | Median allocated bytes |
+| --- | ---: | ---: |
+| Release O2 | 696.12 ms | 50,334,072 |
+| Automatic scalar transformation | 335.48 ms | 12,585,336 |
+| Hand-written four-way nested recurrence | 349.00 ms | 12,585,336 |
+
+The ordinary and transformed hot paths use respectively 60 and 29
+bytecodes per four updates. This measures the bytecode transformation,
+not a change to native dispatch. The source and both artifact routes
+also printed the same checked value at N=101. Raw samples and
+disassemblies are in `.temp/natural-loop-check/`.

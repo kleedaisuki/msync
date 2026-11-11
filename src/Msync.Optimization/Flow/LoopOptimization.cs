@@ -34,7 +34,8 @@ internal static class LoopOptimization
             if (code[latch] is not { Op: OpCode.Jump } back || back.A >= latch) continue;
             var header = back.A;
             if (code[header] is not { Op: OpCode.IteratorNext } next || next.B != latch + 1 || header < 2) continue;
-            if (code[header - 1] is not { Op: OpCode.StoreLocal } store || store.A != next.A || code[header - 2].Op != OpCode.GetIterator) continue;
+            if (code[header - 1] is not { Op: OpCode.StoreLocal or OpCode.InitializeLocal } store
+                || store.A != next.A || code[header - 2].Op != OpCode.GetIterator) continue;
             // The lexical preheader is the sole ordinary fallthrough entry.
             incoming ??= Incoming(code);
             if (Enumerable.Range(header, latch - header + 1)
@@ -70,14 +71,23 @@ internal static class LoopOptimization
         var code = function.Instructions;
         var range = loop.Header - 3;
         if (range < 0 || code[range].Op != OpCode.MakeRange) return function;
+        HashSet<int>? closeSites = null;
         for (var pc = 0; pc < code.Count; pc++)
+        {
             if (pc != loop.Header - 1 && pc != loop.Header
                 && code[pc].Op is OpCode.LoadLocal or OpCode.LoadCell or OpCode.LoadStorage or OpCode.StoreLocal or OpCode.InitializeLocal or OpCode.IteratorNext
-                && code[pc].A == loop.Iterator) return function;
+                && code[pc].A == loop.Iterator)
+            {
+                if (pc <= loop.Header || pc + 2 >= loop.Latch || code[pc].Op != OpCode.LoadLocal
+                    || code[pc + 1] is not { Op: OpCode.NativeCall, A: 1, Text: "_core.iterator_close" }
+                    || code[pc + 2].Op != OpCode.Pop) return function;
+                (closeSites ??= []).Add(pc);
+            }
+        }
         var count = code[range].A;
         var begin = range;
         var bodyLength = loop.Latch - loop.Header - 1;
-        var expandedLength = (long)count * (bodyLength + 1) + count;
+        var expandedLength = (long)count * (bodyLength - 3 * (closeSites?.Count ?? 0) + 2);
         var originalLength = loop.Exit - begin;
         // Expansion spends code space only in proportion to eliminated dynamic
         // iterator/control dispatches. Large literal tables keep their loop.
@@ -88,6 +98,8 @@ internal static class LoopOptimization
             {
                 if ((pc < begin || pc >= loop.Exit) && target > begin && target < loop.Exit) return function;
                 if (pc >= loop.Header + 1 && pc < loop.Latch && (target < loop.Header || target > loop.Exit)) return function;
+                if (target != pc + 1 && closeSites is not null
+                    && (closeSites.Contains(target - 1) || closeSites.Contains(target - 2))) return function;
             }
         }
         var output = new List<Instruction>();
@@ -106,7 +118,17 @@ internal static class LoopOptimization
             output.Add(new(OpCode.LoadStorage, firstSlot + item, Span: code[loop.Header].Span));
             for (var pc = loop.Header + 1; pc < loop.Latch; pc++)
             {
-                positions[pc - loop.Header - 1] = output.Count;
+                int offset = pc - loop.Header - 1;
+                positions[offset] = output.Count;
+                // Expanding an owned eager range removes the iterator, including
+                // the compiler's explicit close on early exit.
+                if (closeSites?.Contains(pc) == true)
+                {
+                    positions[offset + 1] = output.Count;
+                    positions[offset + 2] = output.Count;
+                    pc += 2;
+                    continue;
+                }
                 if (IsBranch(code[pc])) branches.Add(output.Count);
                 output.Add(code[pc]);
             }

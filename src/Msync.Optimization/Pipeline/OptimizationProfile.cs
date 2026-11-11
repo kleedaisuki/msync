@@ -8,7 +8,7 @@ internal sealed class OptimizationProfile(CompilationTrace trace)
     {
         Linear, Predicates, Affine, Memory, ScopeScalarization, TailCalls, Iteration,
         MemoryEffects, Effects, Graph, Evaluation, Locals, Interprocedural, AggregateArguments,
-        Inlining, Directional, GlobalRedundancy, IndexedMemory, ValueNumbering, Compact,
+        Inlining, Directional, GlobalRedundancy, IndexedMemory, NaturalLoops, ValueNumbering, Compact,
         Count
     }
 
@@ -30,7 +30,7 @@ internal sealed class OptimizationProfile(CompilationTrace trace)
         "linear-effects", "predicates", "affine-loop", "cross-block-memory", "scope-scalarization",
         "tail-calls", "iterator-loop", "memory-effects", "effect-analysis", "graph",
         "compile-time-evaluation", "local-slots", "interprocedural", "aggregate-arguments",
-        "inlining", "directional", "global-redundancy", "indexed-memory", "value-numbering",
+        "inlining", "directional", "global-redundancy", "indexed-memory", "natural-loops", "value-numbering",
         "compact"
     ];
 
