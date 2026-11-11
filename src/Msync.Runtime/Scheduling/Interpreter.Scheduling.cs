@@ -92,16 +92,19 @@ public sealed partial class Interpreter
             if (resolved[index] is DeferredValue deferred) resolved[index] = await deferred.Completion;
         return resolved;
     }
-    private async ValueTask<Task<bool>> ScheduleTransferAsync(Value source, Value destination, SourceSpan? span, bool local, CancellationToken cancellationToken, bool discarded = false)
+    private async ValueTask<Task<bool>> ScheduleTransferAsync(Value source, Value destination, SourceSpan? span, bool local,
+        CancellationToken cancellationToken, bool discarded = false, TransferFootprint? footprint = null)
     {
         // Resolve dependencies before starting I/O; the VM never runs mutable scalar bytecode in workers.
         var target = destination is DeferredValue ? null : context.AsPath(destination);
         RuntimeContext origin = context.CaptureDirectory();
-        var reads = source is PathValue path ? new[] { Key(path) }
-            : source is DeferredValue && (source.Type.Kind & TypeKind.Path) != 0 ? [new ResourceKey(PathEndpoint(source) ?? "*", "")] : [];
-        var writes = new[] { target is null ? new ResourceKey((destination.Type.Kind & TypeKind.Path) != 0 ? PathEndpoint(destination) ?? "*" : "local", "") : Key(target) };
+        var reads = footprint?.Reads ?? (source is PathValue path ? new[] { Key(path) }
+            : source is DeferredValue && (source.Type.Kind & TypeKind.Path) != 0 ? [new ResourceKey(PathEndpoint(source) ?? "*", "")] : []);
+        var writes = footprint?.Writes ?? [target is null ? new ResourceKey((destination.Type.Kind & TypeKind.Path) != 0
+            ? PathEndpoint(destination) ?? "*" : "local", "") : Key(target)];
         var dependencies = resources.Dependencies(reads, writes);
         List<Task>? namespaceDependencies = null;
+        if (footprint is null)
         foreach (var dependency in dependencies)
         {
             if (!namespaceProducers.TryGetValue(dependency, out var produced)) continue;
@@ -138,9 +141,17 @@ public sealed partial class Interpreter
             if (processDependencies.TryGetValue(dependency, out var related)) processes = processes.Concat(related).Distinct().ToArray();
         var work = new PendingWork(completion, processes, discarded);
         if (processes.Count != 0) processDependencies.Add(completion, processes);
-        work.Registration = resources.Add(completion, reads.Length == 0 ? null : reads[0], writes[0]);
-        if (source is PathValue || source is DeferredValue && (source.Type.Kind & TypeKind.Path) != 0)
-            namespaceProducers.Add(completion, [writes[0]]);
+        if (footprint is null)
+            work.Registration = resources.Add(completion, reads.Length == 0 ? null : reads[0], writes[0]);
+        else
+        {
+            List<ResourceIndex.Registration> registrations = new(reads.Length + writes.Length);
+            foreach (var read in reads) registrations.Add(resources.AddRead(completion, read));
+            foreach (var write in writes) registrations.Add(resources.Add(completion, null, write));
+            work.Registrations = registrations;
+        }
+        if (source is PathValue or RangeValue || source is DeferredValue && (source.Type.Kind & TypeKind.Path) != 0)
+            namespaceProducers.Add(completion, writes);
         pending.Add(work);
         (currentOwner.Tasks ??= []).Add(work);
         return completion;

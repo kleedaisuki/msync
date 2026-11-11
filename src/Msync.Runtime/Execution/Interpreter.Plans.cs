@@ -36,14 +36,16 @@ public sealed partial class Interpreter
         }
 
         var inputs = new HashSet<Task>[batches.Count];
+        bool hasPriorWork = pending.Count != 0;
         for (int batch = 0; batch < batches.Count; batch++)
         {
             var dependencies = inputs[batch] = [ordering];
             foreach (int node in batches[batch])
             {
                 var transfer = plan.Transfers[node];
-                dependencies.UnionWith(resources.Dependencies(transfer.Reads.Select(Key).ToArray(),
-                    transfer.Writes.Select(Key).ToArray()));
+                if (hasPriorWork)
+                    dependencies.UnionWith(resources.Dependencies(transfer.Reads.Select(Key).ToArray(),
+                        transfer.Writes.Select(Key).ToArray()));
                 foreach (int predecessor in transfer.Predecessors)
                     dependencies.Add(completed[nodeBatches[predecessor]]);
             }

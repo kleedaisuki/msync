@@ -147,10 +147,11 @@ public sealed partial class Interpreter
                             bool discarded = pc + 1 < code.Count && code[pc + 1].Op == OpCode.Pop
                                 && source is PathValue or StringValue or DeferredValue
                                 && destination is PathValue or StringValue or DeferredValue;
-                            if (!discarded && source is not (PathValue or StringValue or DeferredValue)) await DrainAsync();
                             bool local = instruction.Op == OpCode.LocalTransfer
                                 || LocalTransferOperand(source) && LocalTransferOperand(destination);
-                            var completion = await ScheduleTransferAsync(source, destination, instruction.Span, local, cancellationToken, discarded);
+                            var completion = source is RangeValue range
+                                ? await ScheduleCohortAsync(range, destination, instruction.Span, local, cancellationToken)
+                                : await ScheduleTransferAsync(source, destination, instruction.Span, local, cancellationToken, discarded);
                             if (discarded) pc++;
                             else stack.Add(await completion ? Value.True : Value.False);
                             break;

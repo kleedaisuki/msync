@@ -164,6 +164,10 @@ public static partial class TransferEngine
         return container && source is PathValue item ? Path.Combine(path, Basename(item)) : path;
     }
 
+    internal static string? LocalCohortTarget(PathValue destination, RuntimeContext context) =>
+        Remote(destination) is null && !IsReplacement(destination)
+            ? destination.LocalPath(context.WorkingDirectory, context.HomeDirectory) : null;
+
     private static string Basename(PathValue path) => PathSemantics.FileName(path);
     private static bool EndsInSeparator(PathValue path) => path.Raw.EndsWith('/') || PathSemantics.UsesWindowsPaths(path) && path.Raw.EndsWith('\\');
     private static bool IsReplacement(PathValue path) => path.Raw.EndsWith("/.", StringComparison.Ordinal) || PathSemantics.UsesWindowsPaths(path) && path.Raw.EndsWith("\\.", StringComparison.Ordinal);
