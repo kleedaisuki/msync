@@ -192,6 +192,12 @@ of logical regions from physical instances in
 [Legion](https://legion.stanford.edu/pdfs/sc2012.pdf), without importing their
 resource model or treating path spellings as an alias proof.
 
+A source-linked managed Release component replay of these exact empty
+frontier queries gives 2.28 ms / 1.50 MB for 1,024 independent files,
+2.27 ms / 1.48 MB for the selection and 2.59 ms / 1.75 MB for the
+directory plan (elapsed / allocated). These are costs of the existing
+query phase alone, not measured savings in Native AOT or whole CLI latency.
+
 ## VM: exploit the representation that actually owns the elements
 
 The stock Set represents keys as singleton Ranges. In the exact checked
@@ -220,9 +226,9 @@ representation, not a proof of msync Range ownership.
 
 ## Suggested sequence
 
-1. Fix the observed scheduler wait-all dependency for certified finite
-   cohorts, retaining dependent and namespace controls; independently remove
-   proven empty prepared-frontier queries.
+1. Remove proven empty prepared-frontier queries first. Then fix the observed
+   scheduler wait-all dependency for certified finite cohorts, retaining
+   dependent and namespace controls.
 2. Add the owned snapshot front path. Its proof is local and its measured
    call rate makes it a better first VM change than global profiling machinery.
 3. Implement the Heap availability proof (or a typed library fast path first)
