@@ -220,8 +220,10 @@ $std::data::Result::fold($std::data::Result::ok("ok"), fn(value: String) { value
             help_result.stderr,
         )
         if topic == "library concepts":
-            assert "compile-time structural" in help_result.stdout.lower()
-            assert "Call\nthese operations" not in help_result.stdout
+            help_text = " ".join(help_result.stdout.split())
+            assert "compile-time requirements, not runtime values" in help_text
+            assert "`concept Product`" in help_text
+            assert "msync skill library concepts _source" in help_text
     return {"persistent_repl_qualified_contract": True, "progressive_skill_pages": True}
 
 

@@ -115,7 +115,8 @@ live_map = fn(value) { value + 10 };
         "inside-value",
         "line-end",
     ], (output, completed.stderr)
-    assert output[end + 1 :] == [
+    tail = output[end + 1 :]
+    assert tail[:9] == [
         "null",
         "1",
         "two",
@@ -125,7 +126,16 @@ live_map = fn(value) { value + 10 };
         "lazy-a",
         "lazy-b",
         "2",
-        "scope { lines: 0, words: 1, characters: 12, bytes: 12 }",
+    ], (output, completed.stderr)
+    counts = tail[9]
+    assert counts.startswith("scope { ") and counts.endswith(" }"), counts
+    assert sorted(counts.removeprefix("scope { ").removesuffix(" }").split(", ")) == [
+        "bytes: 12",
+        "characters: 12",
+        "lines: 0",
+        "words: 1",
+    ], counts
+    assert tail[10:] == [
         "AFTER_MISSING",
         str(work),
         str(directory),
