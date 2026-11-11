@@ -88,7 +88,12 @@ public static partial class TransferEngine
         if (items.Count == 0) return;
         string target = TargetPath(destination, items[0], context, container: false);
         (PathValue Path, string Source)[] sources = items.Cast<PathValue>().Select(path => (path, path.LocalPath(context.WorkingDirectory, context.HomeDirectory))).ToArray();
-        if (!sources.Any(source => TransferOverlap.Related(source.Source, target)))
+        IReadOnlyList<TransferOverlap.Node>?[]? retained = null;
+        for (int index = 0; index < sources.Length; index++)
+            if (TransferOverlap.Related(sources[index].Source, target))
+                (retained ??= new IReadOnlyList<TransferOverlap.Node>?[sources.Length])[index] =
+                    TransferOverlap.CaptureTree(sources[index].Source, cancellationToken);
+        if (retained is null)
         {
             cancellationToken.ThrowIfCancellationRequested();
             TransferFiles.RemoveNode(target);
@@ -97,8 +102,6 @@ public static partial class TransferEngine
                 await TransferFiles.CopyNodeAsync(source.Source, Path.Combine(target, Basename(source.Path)), cancellationToken, context.BufferSize);
             return;
         }
-        var retained = await Task.Run(() => sources.Select(source =>
-            (Name: Basename(source.Path), Nodes: TransferOverlap.CaptureTree(source.Source, cancellationToken))).ToArray(), cancellationToken);
         string parent = Path.GetDirectoryName(target) ?? ".";
         Directory.CreateDirectory(parent);
         string stage = Path.Combine(parent, $".msync-{Guid.NewGuid():N}");
@@ -107,15 +110,26 @@ public static partial class TransferEngine
         {
             await Task.Run(() =>
             {
-                foreach (var source in retained) TransferOverlap.Materialize(source.Nodes, Path.Combine(stage, source.Name), cancellationToken, context.BufferSize);
+                for (int index = 0; index < retained.Length; index++)
+                    if (retained[index] is { } nodes)
+                        TransferOverlap.Materialize(nodes, Path.Combine(stage, Basename(sources[index].Path)),
+                            cancellationToken, context.BufferSize);
             }, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             TransferFiles.RemoveNode(target);
-            await TransferFiles.CopyNodeAsync(stage, target, cancellationToken, context.BufferSize);
+            Directory.CreateDirectory(target);
+            for (int index = 0; index < sources.Length; index++)
+            {
+                string name = Basename(sources[index].Path);
+                string source = retained[index] is null ? sources[index].Source : Path.Combine(stage, name);
+                await TransferFiles.CopyNodeAsync(source, Path.Combine(target, name), cancellationToken, context.BufferSize);
+            }
         }
         finally
         {
-            foreach (var source in retained) TransferOverlap.MakeSnapshotWritable(source.Nodes, Path.Combine(stage, source.Name));
+            for (int index = 0; index < retained.Length; index++)
+                if (retained[index] is { } nodes)
+                    TransferOverlap.MakeSnapshotWritable(nodes, Path.Combine(stage, Basename(sources[index].Path)));
             Directory.Delete(stage, recursive: true);
         }
     }

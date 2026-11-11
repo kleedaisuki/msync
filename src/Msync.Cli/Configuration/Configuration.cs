@@ -39,7 +39,7 @@ internal sealed class Configuration
 
     public void Validate()
     {
-        foreach (string key in new[] { "execution.jobs", "execution.max_streams", "execution.buffer_size", "execution.memory_limit" })
+        foreach (string key in new[] { "execution.jobs", "execution.buffer_size", "execution.memory_limit" })
             if (Unsigned(key) == 0) throw Error(key, "must be positive");
         if (Unsigned("execution.jobs") > int.MaxValue) throw Error("execution.jobs", "exceeds the platform's task-count representation");
         if (Unsigned("execution.buffer_size") > int.MaxValue) throw Error("execution.buffer_size", "exceeds the platform's buffer representation");
@@ -48,8 +48,6 @@ internal sealed class Configuration
         RequireChoice("ui.color", "auto", "always", "never");
         RequireChoice("language.syntax", "0.8", "0.8.0");
         if (settings["telemetry.enabled"].Value is not bool) throw Error("telemetry.enabled", "must be a Boolean");
-        _ = Unsigned("progress.delay_ms");
-        _ = Unsigned("progress.interval_ms");
     }
 
     public void Dump(TextWriter writer)

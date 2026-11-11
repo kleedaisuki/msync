@@ -164,9 +164,9 @@ public static partial class TransferEngine
         return container && source is PathValue item ? Path.Combine(path, Basename(item)) : path;
     }
 
-    internal static string? LocalCohortTarget(PathValue destination, RuntimeContext context) =>
-        Remote(destination) is null && !IsReplacement(destination)
-            ? destination.LocalPath(context.WorkingDirectory, context.HomeDirectory) : null;
+    internal static (string Root, bool Replace)? LocalCohortTarget(PathValue destination, RuntimeContext context) =>
+        Remote(destination) is null ? (TargetPath(destination, Value.Null, context, container: false),
+            IsReplacement(destination)) : null;
 
     private static string Basename(PathValue path) => PathSemantics.FileName(path);
     private static bool EndsInSeparator(PathValue path) => path.Raw.EndsWith('/') || PathSemantics.UsesWindowsPaths(path) && path.Raw.EndsWith('\\');

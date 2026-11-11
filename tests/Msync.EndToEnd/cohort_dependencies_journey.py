@@ -13,8 +13,10 @@ ROOT: Path = Path(__file__).resolve().parents[2]
 CASES: tuple[str, ...] = (
     "scalar",
     "cohort",
+    "cohort-replace",
     "scalar-dependent",
     "cohort-dependent",
+    "cohort-replace-dependent",
     "native-shared-reader",
     "native-source-dependent",
     "native-destination-dependent",
@@ -54,11 +56,17 @@ child::stdout -> ./held.txt;
     elif kind == "cohort":
         source += "let members = $std::ranges::materialize([./input.txt]);\nmembers -> ./output/;\n"
         output = work / "output/input.txt"
+    elif kind == "cohort-replace":
+        source += "let members = $std::ranges::materialize([./input.txt]);\nmembers -> ./output/.;\n"
+        output = work / "output/input.txt"
     elif kind == "scalar-dependent":
         source += "./held.txt -> ./output.txt;\n"
         output = work / "output.txt"
     elif kind == "cohort-dependent":
         source += "let members = $std::ranges::materialize([./held.txt]);\nmembers -> ./output/;\n"
+        output = work / "output/held.txt"
+    elif kind == "cohort-replace-dependent":
+        source += "let members = $std::ranges::materialize([./held.txt]);\nmembers -> ./output/.;\n"
         output = work / "output/held.txt"
     elif kind == "native-shared-reader":
         source += "./input.txt -> ./held.txt;\n$std::fs::copy_file(./input.txt, ./output.txt);\n"
@@ -105,6 +113,7 @@ child::stdout -> ./held.txt;
     reads_held: bool = kind in (
         "scalar-dependent",
         "cohort-dependent",
+        "cohort-replace-dependent",
         "native-source-dependent",
     )
     assert output.read_bytes() == (b"held" if reads_held else b"independent"), work
