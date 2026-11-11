@@ -22,12 +22,51 @@ internal sealed record SessionCallRequirement(int Slot, SessionCallableSource So
 internal sealed class SemanticSessionDispatch
 {
     internal List<SessionCallRequirement> Calls { get; } = [];
+    private ImmutableDictionary<HirLocationId, ImmutableArray<int>> roots = ImmutableDictionary<HirLocationId, ImmutableArray<int>>.Empty;
+    private ImmutableDictionary<string, ImmutableArray<int>> members = ImmutableDictionary<string, ImmutableArray<int>>.Empty;
+    private ImmutableHashSet<int> refresh = ImmutableHashSet<int>.Empty;
+
+    internal void Add(SessionCallRequirement requirement)
+    {
+        Calls.Add(requirement);
+        refresh = refresh.Add(requirement.Slot);
+        var source = requirement.Source;
+        roots = roots.SetItem(source.Root, roots.GetValueOrDefault(source.Root, []).Add(requirement.Slot));
+        if (!source.Fields.IsDefaultOrEmpty)
+        {
+            string name = source.Fields[^1];
+            members = members.SetItem(name, members.GetValueOrDefault(name, []).Add(requirement.Slot));
+        }
+    }
+
+    internal ImmutableArray<int> ForRoot(HirLocationId root) => roots.GetValueOrDefault(root, []);
+    internal ImmutableArray<int> ForMember(string name) => members.GetValueOrDefault(name, []);
+    internal IEnumerable<int> RefreshSlots => refresh;
+    internal void RequireRefresh(int slot) => refresh = refresh.Add(slot);
+    internal void CertifyDirectRoot(int slot) => refresh = refresh.Remove(slot);
 
     internal SemanticSessionDispatch Fork()
     {
-        SemanticSessionDispatch result = new();
+        SemanticSessionDispatch result = new() { roots = roots, members = members, refresh = refresh };
         result.Calls.AddRange(Calls);
         return result;
+    }
+
+    internal void Reconcile() => refresh = [.. Enumerable.Range(0, Calls.Count)];
+
+    internal void ObserveRoot(HirLocationId location, SemanticValue before, SemanticValue after)
+    {
+        var slots = ForRoot(location);
+        if (slots.IsDefaultOrEmpty || SameCallable(before, after)) return;
+        refresh = refresh.Union(slots);
+
+        static bool SameCallable(SemanticValue before, SemanticValue after) =>
+            before.Type == after.Type
+            && !before.Callables.IsDefaultOrEmpty && !after.Callables.IsDefaultOrEmpty
+            && before.Callables is [{ Template: { } a, Captures.IsDefaultOrEmpty: true } first]
+            && after.Callables is [{ Template: { } b, Captures.IsDefaultOrEmpty: true } second]
+            && a == b
+            && (first.RuntimeIdentity ?? HirCallableId.From(a)) == (second.RuntimeIdentity ?? HirCallableId.From(b));
     }
 
     internal ImmutableArray<HirSessionDispatch> Tables => [.. Calls.Select(call =>
@@ -74,7 +113,7 @@ internal sealed partial class SemanticAnalyzer
         if (address.Fields.IsDefaultOrEmpty && Stable(address.Root)) return -1;
 
         int slot = sessionDispatch.Calls.Count;
-        sessionDispatch.Calls.Add(CreateCallRequirement(slot, address, arguments, result, source, context));
+        sessionDispatch.Add(CreateCallRequirement(slot, address, arguments, result, source, context));
         if (callee.Location is { } location) EstablishSessionContract(StorageOwner(location, context), slot, context);
         RefreshSessionCall(slot, context, callee);
         return slot;
@@ -125,11 +164,14 @@ internal sealed partial class SemanticAnalyzer
 
     private void RefreshSessionCalls(SemanticContext context)
     {
-        if (sessionDispatch is null || !context.Publish || refreshingSessionCalls) return;
+        if (sessionDispatch is null || sessionDispatch.Calls.Count == 0 || !context.Publish || refreshingSessionCalls) return;
         refreshingSessionCalls = true;
         try
         {
-            for (int slot = 0; slot < sessionDispatch.Calls.Count; slot++) RefreshSessionCall(slot, context);
+            SortedSet<int> selected = new(sessionDispatch.RefreshSlots);
+            foreach (var (location, _) in context.Values.LocalEntries)
+                selected.UnionWith(sessionDispatch.ForRoot(StorageOwner(location, context)));
+            foreach (int slot in selected) RefreshSessionCall(slot, context);
         }
         finally { refreshingSessionCalls = false; }
     }
@@ -139,19 +181,17 @@ internal sealed partial class SemanticAnalyzer
     {
         if (sessionDispatch is null || refreshingSessionCalls) return;
         var owner = StorageOwner(location, context);
-        HashSet<int> checkedSlots = [];
-        foreach (int slot in context.CallableContracts.GetValueOrDefault(owner, []))
+        var established = context.CallableContracts.GetValueOrDefault(owner, []);
+        foreach (int slot in established)
         {
             var requirement = sessionDispatch.Calls[slot];
             var (targets, _) = CheckSessionTarget(requirement, value, source, context, publish: context.Publish);
             if (context.Publish) MergeSessionTargets(slot, targets);
-            checkedSlots.Add(slot);
         }
-        for (int slot = 0; slot < sessionDispatch.Calls.Count; slot++)
+        foreach (int slot in sessionDispatch.ForRoot(owner))
         {
-            if (checkedSlots.Contains(slot)) continue;
+            if (established.Contains(slot)) continue;
             var requirement = sessionDispatch.Calls[slot];
-            if (requirement.Source.Root != owner) continue;
             var target = NestedSessionValue(value, requirement.Source.Fields, context);
             if (target is not null)
             {
@@ -178,10 +218,10 @@ internal sealed partial class SemanticAnalyzer
     {
         if (sessionDispatch is null || refreshingSessionCalls) return;
         if (scope.Locations.TryGetValue(field, out var location)) CheckSessionAssignment(location, value, source, context);
-        foreach (var requirement in sessionDispatch.Calls)
+        foreach (int slot in sessionDispatch.ForMember(field))
         {
+            var requirement = sessionDispatch.Calls[slot];
             var path = requirement.Source.Fields;
-            if (path.IsDefaultOrEmpty || path[^1] != field) continue;
             var parent = NestedSessionValue(StorageValue(requirement.Source.Root, context), path.RemoveAt(path.Length - 1), context);
             if (parent?.Scope is not { } receiver || !ScopeAliases(receiver).Intersect(ScopeAliases(scope)).Any()) continue;
             var (targets, _) = CheckSessionTarget(requirement, value, source, context, publish: context.Publish);
@@ -266,14 +306,42 @@ internal sealed partial class SemanticAnalyzer
     {
         var requirement = sessionDispatch!.Calls[slot];
         SemanticValue? callee = initial ?? SessionCallable(requirement.Source, context);
-        if (callee is null) return;
+        if (callee is null) { sessionDispatch.RequireRefresh(slot); return; }
         var (targets, _) = CheckSessionTarget(requirement, callee, requirement.Origin, context, publish: true);
         MergeSessionTargets(slot, targets);
+        if (IsClosedLiteralRoot(requirement, callee, context)) sessionDispatch.CertifyDirectRoot(slot);
+        else sessionDispatch.RequireRefresh(slot);
+    }
+
+    // A closed literal thunk only consults its direct root and immutable template.
+    private bool IsClosedLiteralRoot(SessionCallRequirement requirement, SemanticValue callee, SemanticContext context)
+    {
+        var root = requirement.Source.Root;
+        if (!requirement.Source.Fields.IsDefaultOrEmpty || !requirement.Arguments.IsDefaultOrEmpty
+            || StorageOwner(root, context) != root || StandardCell(root, context) is not null
+            || callee.FutureCallableDomain is not null || callee.Callables.IsDefaultOrEmpty
+            || callee.Callables is not [{ Template: { } id, Captures.IsDefaultOrEmpty: true }]) return false;
+        var template = hir.Templates[id.Value];
+        return template.ResultAnnotation is null && !template.Body.IsNone && LiteralTree(template.Body);
+
+        bool LiteralTree(HirNodeId id)
+        {
+            var node = program.Node(id);
+            if (node.Kind is HirKind.Literal or HirKind.TypeValue) return true;
+            if (node.Kind is not (HirKind.Block or HirKind.Return or HirKind.Range)) return false;
+            foreach (var child in program.Children(id))
+                if (!LiteralTree(child)) return false;
+            return true;
+        }
     }
 
     private void MergeSessionTargets(int slot, ImmutableArray<HirDispatchTarget> targets)
     {
         var requirement = sessionDispatch!.Calls[slot];
+        bool changed = false;
+        foreach (var target in targets)
+            if (!requirement.Targets.Contains(target)) { changed = true; break; }
+        if (!changed) return;
         var combined = requirement.Targets.ToDictionary(target => target.Identity, target => target.Target);
         foreach (var target in targets) combined[target.Identity] = target.Target;
         sessionDispatch.Calls[slot] = requirement with

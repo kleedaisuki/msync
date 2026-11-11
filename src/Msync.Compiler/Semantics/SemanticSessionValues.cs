@@ -7,7 +7,7 @@ namespace Msync.Compiler.Semantics;
 // A projection borrows runtime values only for the duration of acceptance. Its
 // result contains semantic facts, never live Processes, ranges or credentials.
 internal sealed class SemanticSessionValues(BoundProgram program, HirLoweringLayout layout,
-    SemanticContext facts, SemanticSessionSites sites)
+    SemanticContext facts, SemanticSessionSites sites, SemanticSessionDispatch? dispatch = null)
 {
     private readonly Dictionary<Value, SemanticValue> observed = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<CellValue, HashSet<HirLocationId>> cells = new(ReferenceEqualityComparer.Instance);
@@ -21,13 +21,20 @@ internal sealed class SemanticSessionValues(BoundProgram program, HirLoweringLay
                 || resolve(slot) is not { } actual) continue;
             SemanticValue hint = facts.Values.GetValueOrDefault(location)
                 ?? new(program.Hir.Locations[location.Value].StorageType, HirNodeId.None);
-            facts.Values[location] = Read(hint, actual);
+            var value = Read(hint, actual);
+            dispatch?.ObserveRoot(location, hint, value);
+            facts.Values[location] = value;
         }
         // A recursive capture can be visited before its value has been projected.
         // Resolve shared cells after every reachable value has its final descriptor.
         foreach (var (cell, locations) in cells)
             if (observed.TryGetValue(cell.Data, out var value))
-                foreach (var location in locations) facts.Values[location] = value;
+                foreach (var location in locations)
+                {
+                    if (dispatch is not null && facts.Values.TryGetValue(location, out var previous))
+                        dispatch.ObserveRoot(location, previous, value);
+                    facts.Values[location] = value;
+                }
         facts.NextRegion = Math.Max(facts.NextRegion, nextRegion);
     }
 

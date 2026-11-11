@@ -237,3 +237,46 @@ representation, not a proof of msync Range ownership.
 4. Leave general layout lower in priority until dynamic edge counts show
    that recovering those static candidates pays for the additional PC mapping
    and proofs. Keep the existing successful trace pass and the VM boundary.
+
+## First integration
+
+The selected paths now carry their proof to the consumer rather than adding
+an interpreter guess:
+
+- An array-backed Range and a private list published by materialize associate
+  the snapshot with the actual producer identity. Front/first reuse it, and
+  selected local cohort admission can use it without re-enumerating a lazy
+  producer. Cloning a Range with a different Items producer does not keep
+  this witness.
+- Prepared plan admission tests the prior frontier once. A demanded local
+  snapshot cohort with overlapping history computes its selected member
+  reads and target entry/referent writes. After relevant namespace
+  publications it refreshes their projections. It keeps the original cohort
+  copy operation and error semantics. An existing member directory can
+  merge through descendant links not covered by the footprint, and remote,
+  replacement or lazy cohorts with prior work retain the existing path.
+- The Heap library asks the semantic producer for a narrow leaf-callable
+  certificate. The compiler proves the selected and admitted future
+  alternatives have no captures and only operate on scalar parameters.
+  The proof is erased before runtime. The two-child path uses the selected
+  value when certified; effectful policies re-read, and the one-child path
+  still performs its first selected read. This is a library pilot, not a
+  general bytecode PRE pass.
+- REPL obligations have immutable reverse indexes by root and member name.
+  Certified direct no-argument literal thunks are invalidated by semantic
+  root writes or changed runtime feedback; reconciliation dirties the full
+  frontier. All other obligations retain refresh. Updating the target table
+  does not mutate the collection being enumerated for member assignment.
+
+On the selected gated CLI journey, disjoint cohorts now publish before the
+held process in all three source/object/executable routes; the three actually
+dependent cohorts still wait. Final bytes match. On the checked 8,192-key
+Native AOT workloads, the same runner compares Heap bytecode at approximately
+1,051 to 930 ms (pooled medians of four observations); the same bound Set on
+the baseline and final runners measures approximately 2,338 to 2,235 ms
+(two observations per runner). The managed 64-slot REPL control measures
+1.246 to 0.784 ms and 783,524 to 449,852 bytes per checked submission
+(medians, 112 observations per version). These are selected distributions
+and not whole-product latency estimates.
+
+Receipts: `artifacts/benchmarks/library-matrix-v086/decision-integration/`.

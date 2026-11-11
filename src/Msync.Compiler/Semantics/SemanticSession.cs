@@ -108,6 +108,7 @@ internal sealed class SemanticSession(string sourceName, int optimization)
         accepted = submission.Program;
         dispatches = submission.Dispatches;
         accepted.Exports = exports;
+        dispatches.Reconcile();
         acceptedLayout = submission.Layout;
         acceptedSites = new(accepted, acceptedLayout);
         facts = submission.Facts.QueryFork();
@@ -118,7 +119,7 @@ internal sealed class SemanticSession(string sourceName, int optimization)
     }
 
     private void Refresh(HirLoweringLayout layout, Func<int, Value?> resolve) =>
-        new SemanticSessionValues(accepted!, layout, facts!, acceptedSites!).Refresh(accepted!.Exports.Values, resolve);
+        new SemanticSessionValues(accepted!, layout, facts!, acceptedSites!, dispatches).Refresh(accepted!.Exports.Values, resolve);
 
     private SourceBinder Binder(bool observations = false, bool editorMode = false) => accepted is null
         ? new(workspace, observations: observations, editorMode: editorMode, isSession: true)
