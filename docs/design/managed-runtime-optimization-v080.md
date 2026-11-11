@@ -211,3 +211,51 @@ determine whether unresolved resolution and adjusted-call allocations remain
 important after the new static memory optimizer. That result decides whether
 quickening/fusion has useful headroom, or whether startup/compiler/IO work is
 still the better use of engineering effort.
+
+## Follow-up: source-call frames and numeric local storage
+
+Portable and executable bytecode calls now place evaluated source arguments
+straight into the callee's private local slots. The suspended caller retains
+its operand slice until the callee's work-owner cleanup is complete. The
+callee's parameters can be rebound without losing the original argument
+identities: a Process placed into an incoming Scope must move to the caller
+even if the parameter subsequently refers to a different Scope. Conversely,
+putting a Process only into that different private Scope must still join it.
+A captured Cell argument is read once during admission; later writes to the
+Cell do not change which argument was originally passed. The retained slice
+is consumed only for the owned-Process escape case and is never exposed to a
+native operation, callback, or deferred range. Code selection and mutable
+closure captures are not cached together.
+
+[Lua's call frame construction](https://www.lua.org/source/5.4/ldo.c.html)
+uses arguments already present in its value stack. Here, distinct private
+locals and suspended caller storage preserve msync's asynchronous ownership
+contract; the optimization removes the intermediate argument array, not the
+callee's storage. The bytecode and planning boundary are unchanged.
+
+The managed allocation control executes one verified O0 entry with 256 real
+source calls under both assemblies. Alternating ABBA allocated bytes per
+entry were 53,272, 45,080, 45,080, and 53,272; the zero-call control was
+2,000 versus 1,976 bytes. This separates the roughly 32 bytes removed per
+call from the entry baseline.
+
+Preliminary Linux x86-64 Native AOT trials compared the same checksummed Set
+and Heap artifacts and the same SHA-256 artifact/digest on CPU 6. Six
+alternating pairs per case, with artifacts loaded before the measured
+execution, gave paired median deltas of -57 ms (Set), -42 ms (Heap), and
++24 ms (SHA). These elapsed results were noisy; the allocation result is
+the reason to retain the direct call path, not a guaranteed speedup on
+every workload.
+
+A separate private-frame numeric-local prototype retained raw doubles across
+local stores with one lazily allocated sidecar per frame. On the same six
+pairs per case against the argument-only variant, median paired deltas were
++60 ms (Set), -70 ms (Heap), and +22 ms (SHA). Do not deploy that general
+sidecar: its array and extra load/store decisions did not amortize across
+these workloads. A future raw-local representation should select dense
+numeric slots from compilation or otherwise avoid charging reference-heavy
+frames for a sparse numeric layout. The compiler's existing strict binary64
+semantics and stable Cell captures remain the contract.
+
+Raw comparison files, hashes, and focused Process-ownership results:
+`artifacts/benchmarks/library-matrix-v086/vm-call-frames/`.
