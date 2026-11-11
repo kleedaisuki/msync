@@ -326,3 +326,7 @@ semantics, Scope shape compatibility for hinted fields, lexical cell ownership,
 or waits on selected in-flight I/O. The remaining collection cost includes
 generic calls, field/value materialization and the current singleton Range key
 representation, independently identified in the earlier source overlays.
+
+The [cross-layer assumption audit](performance-assumption-audit-v086.md)
+records follow-up hypotheses, distributions and proof obligations without
+changing runtime or language contracts.
