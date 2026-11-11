@@ -28,7 +28,7 @@ deferred enumeration, and possible divergence are observable here.
 | --- | --- | --- |
 | Typed source lowering | Binding identities, fixed storage types, generic callable identities, lexical shapes | Monomorphization, conversion insertion, lowering sugar; reject invalid programs before DCE |
 | Relocatable `.mso` | Typed bytecode, CFG, def-use, effects; no selected machine context | All applicable context-independent transformations below |
-| Executable `.mexe` | Frozen cwd/HOME/source context and endpoint grammar | Contextual partial evaluation and native operation selection, then the same graph optimizer again |
+| Executable `.mexe` | Frozen cwd/HOME/source context and endpoint grammar | Relocation, contextual folding and executable layout; no replay of the portable optimizer |
 | Selected runtime work | Actual paths, selected endpoints, pending processes, dependencies | Resource DAG, directional barriers, independent I/O overlap; never freeze filesystem observations as reusable facts |
 | Native AOT backend | Host ISA, ABI, registers, CPU costs | Native instruction selection, register allocation and machine instruction scheduling for the C# implementation |
 
@@ -102,8 +102,8 @@ O1/O2/O3:
   FormBlocks
 ```
 
-Binding now performs `lower → optimize → lower`, with one optimizer invocation
-at the selected level, not two. Exact literal bodies avoid rediscovering the graph after a
+The audited baseline performed `lower → optimize → lower` during binding;
+current binding no longer replays portable optimization. Exact literal bodies avoid rediscovering the graph after a
 previous pass has reduced a body to a literal return. This shortcut applies to
 literal value bodies, not to a guessed no-work lifecycle bypass.
 
@@ -146,7 +146,7 @@ that reaching constants or value-number keys have identical representations.
 
 | Family | Actual msync boundary and status |
 | --- | --- |
-| Contextual partial evaluation | `Binding.Bind` attaches context and performs lower → optimize → lower once. It freezes context, not live filesystem observations; executable execution does not repeat binding or optimization |
+| Contextual partial evaluation | Binding relocates and folds context-dependent operands without replaying portable optimization. Selected filesystem observations are not reusable validity proofs; the VM does not rerun binding or planning |
 | Operation selection | `ExecutionLowering` replaces proven local Transfer with LocalTransfer and materializes builtin endpoint values. Endpoint grammar belongs to the selected endpoint, not the host alone |
 | Resource dependence scheduling | `Interpreter.Scheduling` uses endpoint/path hierarchy and read/write dependencies. This is machine/context-dependent I/O scheduling, not GCC RTL scheduling; runtime owner is validating actual bytes and process/barrier lifetimes |
 | Directional acquire/release | `Barrier`/`Acquire` and invocation-owned pending work are observable scheduling constraints. No DCE, CSE or loop motion may silently turn them into no-ops or global unrelated drains |
@@ -218,8 +218,9 @@ The new indexed containers supply a concrete workload for another optimization
 selection, rather than a reason to copy the remaining GCC option list. Upstream
 references were checked against GCC **16.2** and LLVM **23.1.5**; the latter is
 advertised by the [LLVM project](https://llvm.org/). The implemented additions
-are machine-independent and run before `.mso` publication. Context binding can
-apply the same optimizer after lowering; none caches filesystem or remote proofs.
+are machine-independent and run before `.mso` publication. Current contextual
+binding consumes the result without replaying the optimizer; none caches
+filesystem or remote proofs.
 
 | Selected mechanism | Actual implementation and semantic boundary |
 | --- | --- |
@@ -261,6 +262,215 @@ LLVM's [tagged DSE implementation](https://github.com/llvm/llvm-project/blob/llv
 SIMD, CPU register allocation, fast-math and broad loop cloning remain unsuitable
 for the established workload, not silently missing promised features.
 
+## General-computation middle-end architecture (2026-11-11)
+
+The [current VM diagnosis](performance-assumption-audit-v086.md#current-vm-cost-fewer-interpreter-actions-before-a-different-dispatcher)
+locates two different opportunities: remove work from the user program and
+reduce the implementation cost of the remaining bytecodes. The former belongs
+to the compiler. Do not make the latter pay for optimizer-only facts, or
+mistake an interpreter implementation speedup for a good middle-end rewrite.
+
+The [GCC 16.2 pipeline][pipeline] and the [LLVM 23.1.5 default pipelines][llvm-pipeline]
+are both ordered around reusable analyses and cleanup after transformations:
+early simplification exposes IPA and loops; IPA and loop transforms create
+further scalar opportunities. [LLVM's analysis manager][llvm-npm] gives cached
+results an IR-unit owner and makes preservation explicit. Adopt the ownership,
+not the whole pass-manager/plugin surface. Current msync already has a
+dependency-local graph cache (`OptimizationDependencies`), but graph DCE,
+predicate propagation, indexed availability and call-target discovery each
+decode overlapping facts. A shared structure must remove that work, not run a
+second implementation alongside every unchanged pass.
+
+### One geometry, several fact owners
+
+| Scope | Reusable facts | Invalidated by |
+| --- | --- | --- |
+| Function body | Block/edge identity, reachability, reverse postorder, dominators, stack shape at edges | Changed block boundaries or terminators; start with immutable body identity |
+| Value flow | Reaching definitions for private slots and stack columns, edge-specific phi inputs, exact constants, immediate values, callable/receiver alternatives | Changed definitions or contributing feasible edges; capture/alias effects invalidate cells, not unrelated private slots |
+| Logical memory | May-clobber dependencies for cells, field locations, indexed contents and lengths; callee parameter/capture-relative effects | Overlapping writes or unknown aliases, relevant callee summaries, explicit enumeration/callback effects |
+| Profitability | Loop/call/edge counts, residual dynamic work, code growth, compile cost | New artifact/site identity, changed workload or instrumentation mode; never an input to legality |
+
+`ControlFlowGraph` consumes the existing Core `BlockBuilder` projection, maps
+PCs to dense block IDs and retains edge roles independently of unique neighbor
+lists. Two edges can have the same destination: `IteratorNext` success pushes
+the item and exhaustion does not. An explicit virtual exit and unreachable
+predecessors remain distinguishable. Typed edges, reverse postorder and
+dominators are independently lazy; global redundancy's adjacency-only work
+does not allocate the other analyses. [Cooper–Harvey–Kennedy][dominators]
+reverse-postorder intersection computes immediate dominators; tree intervals
+make dominance queries constant time. The late optimizer's
+`FunctionAnalysisContext` can share this geometry between global redundancy,
+indexed memory and natural loop clients. It retains only the current
+instruction stream's geometry, not a cache of historical body versions.
+Metadata-only copies can reuse the graph; a new instruction stream replaces
+it. The linked-source oracle under `.temp/middleend-research/graph-test/`
+checks 1,500 generated CFGs against reachability after deleting each
+candidate dominator, plus duplicate iterator-edge, empty and owner controls.
+New consumers should migrate rather than copy this geometry.
+
+An isolated managed Release component compared the old global-redundancy
+partition and per-client builds with the shared owner, keeping the same
+transformations on both sides. It loaded the same seven O0 objects before
+timing, ran seven alternating pairs on CPU 11 with tiering off, and compared
+each output artifact's SHA-256. All optimized artifacts were byte-identical.
+Geometry builds fell from **15→14** (Hash), **82→79** (Heap), **7→5**
+(scalar) and **2→1** (indexed diamond). Short, SHA and Set stayed at 1, 20
+and 267 respectively; repeated function-body rewrites can still require
+new graphs. Median cumulative allocation was near-neutral or slightly lower
+on each sample group (e.g. −11,648 B on Set's ~28.2 MB and −5,496 B on
+Heap's ~330.8 MB). Elapsed observations on the shared host were mixed; this
+is duplicate-analysis evidence, not a compile-latency speedup.
+Receipts: `.temp/middleend-research/compile/compare-edges-lazy.csv` and
+`compile/snapshot/`.
+
+Represent private values by definition identity and attach joins to actual CFG
+edges. Represent aliased stores by location identity and memory definition, not
+as reassignment of a private virtual value. Do not put distinct semantic
+identities in the same lattice merely because they have the same type. Begin
+with sparse demand for facts (use sites, candidate loops and candidates for
+clobber queries); do not allocate a full value or memory SSA state for every
+instruction. Keep stack bytecode as the portable, inspectable output. Analysis
+objects are owned by the optimizer for the precise body and dependency facts,
+never encoded as imported authority in format 5. A rewrite emits an immutable
+body and reuses old identities only if the relevant facts are still valid.
+
+### First algorithm slices and proof boundaries
+
+**Loops.** Current `LoopOptimization` only recognizes a lexical
+`IteratorNext/GetIterator/StoreLocal` shape. Even a constant seven-iteration
+scalar recurrence retains an O2 backedge in the Native CLI control. A
+dominator-based census of the previously checked, freshly bound library matrix
+has the following static coverage; duplicate specializations are counted and
+hotness is not inferred.
+
+| Frozen O2 artifact | Natural-loop headers | Non-iterator headers | Non-iterator, one entry/latch/exit |
+| --- | ---: | ---: | ---: |
+| Set | 8 | 5 | 2 |
+| Heap | 6 | 4 | 1 |
+| Hash | 4 | 2 | 2 |
+| SHA-256 | 5 | 5 | 5 |
+| Stdin scalar recurrence | 1 | 1 | 1 |
+
+See the typed census/reproduction in `.temp/middleend-research/` and the
+seven-iteration source/disassembly in `.temp/midend-loop-research/`.
+[LLVM Loop Simplify/LCSSA][llvm-loops] isolates loop entry, latch, exits and
+loop-defined values live beyond an exit. [GCC scalar evolution][gcc-scev]
+represents recurrences relative to a loop and [iteration analysis][gcc-niter]
+returns the assumptions and zero-iteration condition with its answer. For
+msync, recognize a natural loop by a reachable dominance backedge; a numerically
+smaller PC or SCC alone is not a canonical loop. Rotation preserves one
+pre-entry test (including zero iterations) and the exact selected comparison.
+Unroll with preserved guards when that has a measured benefit, or group guards
+with an exact counted proof and the original residual loop. For `+0,+1`,
+`n <= 2^53` plus `i + (k - 1) < n` certifies the next k tests and exact
+updates, including fractional bounds. An ordered comparison rejects NaN
+and positive infinity; the residual retains original comparison semantics
+and any rounding-induced nontermination. Do not replace `!(i >= n)` by
+`i < n` on an unconstrained Number. Preserve each arithmetic reduction's
+order and check selected early exits, aliased captures, and zero-trip effects.
+Separate constant finite evaluation from dynamic unrolling in measurements.
+
+**Memory.** Start with edge-translated *full* redundancy, not speculative
+loads. For each feasible incoming edge of a join, translate the selected
+receiver and index to that edge and require a successful read witness for
+the same unchanged resource. Reuse a joined private local when its edge
+values are exactly those reads; otherwise materialize one result phi with
+copies on the selected edges, preserving source effects, first failure,
+and raw reference identity. In the dynamic stdin diamond at
+`.temp/memory-edge-audit/selected.msync`, O2 retains three reads; the
+`before` local already carries the right per-edge witness for the third.
+Current Heap has a source-level pilot for this effect; measure a pre-pilot
+source control and the unmodified library separately. A second candidate,
+BTree child selection after a possible split, needs a different witness
+on the split edge. Never assume different value numbers cannot alias.
+
+[GCC's virtual operands and alias oracle][gcc-alias] and [LLVM MemorySSA][llvm-memory]
+both separate an ordered memory graph from location-specific alias queries.
+Model stable definition IDs at program points and incoming-edge memory phis;
+do not assign new versions on every fixed-point visit or eagerly create
+variables for every object × index. Walk past proven-disjoint clobbers only
+for the selected query. Keep length/shape separate from contents, and local
+memory from external scheduling. [GCC FRE/PRE][gcc-pre] and [LLVM GVN][llvm-gvn]
+motivate per-edge translation; insertion of a potentially failing load is a
+separate PRE decision. [LLVM DSE][llvm-dse] also requires must-execute and
+exception checks; msync Buffer writes add index failure and target-dependent
+conversion, and must not be deleted just because their final value is dead.
+
+**Calls and predicates.** Share selected call-target and capture facts across
+inlining, constant arguments, effects and memory analysis. The current
+`FunctionInlining.Targets` loses facts at branches/calls, while
+`InterproceduralSpecialization.Calls` makes a second approximation.
+A positive Call.B is not proof of a source-valued receiver: native/process
+alternatives and open session dispatch have different execution contracts.
+Use the HIR callable domain or reconstructed proven value flow, and keep
+capture cells and invocation ownership intact. Use true strongly connected
+components (the current inliner DFS only marks some backedge paths) before
+widening recursion-sensitive eligibility. Separate legal sites from cost,
+and charge argument/capture transport, body growth and cleanup. See [GCC
+IPA summaries][gcc-ipa] and [LLVM InlineCost][llvm-inline].
+
+In the exact checked Set artifact, `NaturalOrder::less` accounts for
+478,589 and `Set::node` for 309,586 of 1,008,026 observed direct source calls;
+Heap's numeric comparator accounts for 191,943 of 273,867. This is a measured
+target ordering, not authority to bypass a callback. Also independently
+remove a same-successor branch when its condition is known to be an already
+available Bool; the Set comparator has two `LoadLocal; IsNull; JumpIfFalse`
+triples of this shape (about 2.87 million dynamically executed instructions).
+Preserve effectful producer evaluation and don't remove a deferred wait or
+condition error. Counts and exact image identities are in
+`.temp/ipa-inline-research/`.
+
+### Convergence, budgets and self-profiling
+
+Use one initial feature scan and demand expensive analysis only for actual
+clients. A local CFG fact survives a callee-only change; a call-dependent fact
+survives only if its body/selected summary dependencies match. A finite
+value lattice needs canonical definition/edge IDs, and an allocation or
+loop versioning transform needs a bounded, monotonic code-growth budget:
+stable results should not clone their own copies in the next outer round.
+Compute prerequisite facts once per body, use reverse-dependency worklists
+for changed IPA summaries, and run affected simplification after mutation.
+Retain current literal and linear fast paths; profile no-hit and sparse
+branches before broadening analysis to all functions.
+
+For a proposed transform, record compile analysis time/allocation and static
+growth separately from dynamic opcode, call and native operation counts.
+Estimate gain from the removed dynamic units minus added work, with separate
+weights for frame, memory and branch operations; an isolated opcode count is
+not a hardware-cycle prediction. Tag counters by exact image identity,
+phase, function ID and PC or edge. Never join PCs across rewritten images
+as if they were the same instruction. Use phase correlation for work
+accounting and stable source/semantic origins only for cross-image attribution.
+Classify input distributions by actual branch/iteration counts, not by static
+candidate counts or invented population weights. Profiles select profitable
+legal rewrites; they cannot establish a proof.
+
+Use source, relocatable and bound routes with checked outputs/error order,
+and a genuinely unoptimized control. For paired Native AOT performance,
+separate same-image runtime ablations from different-image compiler
+transformations. Alternate before/after after warmup; retain sizes, artifact
+identities and samples. Time ordinary runs with telemetry off to estimate
+user cost; use the opt-in SQLite instruction mode to account for changed
+work, and report instrumentation overhead independently. Include a
+no-opportunity short script, a runtime-sized arithmetic loop, the selected
+indexed read diamond/alias controls, and the checked library matrix;
+none alone certifies mixed transfer scheduling. These tests discriminate
+shape, compile cost and execution benefit instead of treating pass count as
+progress.
+
+[llvm-pipeline]: https://github.com/llvm/llvm-project/blob/llvmorg-23.1.5/llvm/lib/Passes/PassBuilderPipelines.cpp
+[llvm-npm]: https://llvm.org/docs/NewPassManager.html
+[llvm-loops]: https://llvm.org/docs/LoopTerminology.html
+[dominators]: https://www.cs.tufts.edu/~nr/cs257/archive/keith-cooper/dom06.pdf
+[gcc-scev]: https://gcc.gnu.org/onlinedocs/gccint/Scalar-evolutions.html
+[gcc-niter]: https://gcc.gnu.org/onlinedocs/gccint/Number-of-iterations.html
+[gcc-alias]: https://gcc.gnu.org/onlinedocs/gccint/Alias-analysis.html
+[llvm-memory]: https://llvm.org/docs/MemorySSA.html
+[gcc-pre]: https://github.com/gcc-mirror/gcc/blob/releases/gcc-16.2.0/gcc/tree-ssa-pre.cc#L52-L109
+[llvm-gvn]: https://github.com/llvm/llvm-project/blob/llvmorg-23.1.5/llvm/lib/Transforms/Scalar/GVN.cpp#L1735-L1790
+[llvm-dse]: https://github.com/llvm/llvm-project/blob/llvmorg-23.1.5/llvm/lib/Transforms/Scalar/DeadStoreElimination.cpp#L8-L25
+[gcc-ipa]: https://gcc.gnu.org/onlinedocs/gccint/IPA.html
+[llvm-inline]: https://github.com/llvm/llvm-project/blob/llvmorg-23.1.5/llvm/lib/Analysis/InlineCost.cpp
 [releases]: https://gcc.gnu.org/releases.html
 [options]: https://gcc.gnu.org/onlinedocs/gcc-16.2.0/gcc/Optimize-Options.html
 [pipeline]: https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-16.2.0/gcc/passes.def

@@ -15,8 +15,6 @@ internal static class GlobalRedundancy
     {
         internal readonly int Start = start;
         internal readonly int End = end;
-        internal readonly List<int> Predecessors = [];
-        internal readonly List<int> Successors = [];
         internal readonly List<Occurrence> Expressions = [];
         internal State? Input;
         internal State? Output;
@@ -26,10 +24,16 @@ internal static class GlobalRedundancy
     internal static FunctionCode Optimize(Module module, FunctionCode function, List<Value> constants) =>
         OptimizeWithPool(module, function, constants, new(constants));
 
-    internal static FunctionCode OptimizeWithPool(Module module, FunctionCode function, List<Value> constants, ConstantInterner interner) =>
-        new Analysis(module, function, constants, interner).Optimize();
+    internal static FunctionCode OptimizeWithPool(Module module, FunctionCode function, List<Value> constants,
+        ConstantInterner interner, FunctionAnalysisContext? context = null)
+    {
+        if (function.Instructions.Count == 0) return function;
+        var graph = context?.ControlFlow(function) ?? new ControlFlowGraph(function);
+        return graph.Blocks.Count == 1 ? function : new Analysis(module, function, constants, interner, graph).Optimize();
+    }
 
-    private sealed class Analysis(Module module, FunctionCode function, List<Value> constants, ConstantInterner interner)
+    private sealed class Analysis(Module module, FunctionCode function, List<Value> constants, ConstantInterner interner,
+        ControlFlowGraph graph)
     {
         private readonly IReadOnlyList<Instruction> code = function.Instructions;
         private readonly Dictionary<(int Kind, int Position, int Slot), int> identities = [];
@@ -37,15 +41,12 @@ internal static class GlobalRedundancy
         private readonly Dictionary<Expression, int> expressionIdentities = [];
         private readonly HashSet<int> aliases = Enumerable.Range(0, function.CaptureCount).Concat(function.Instructions
             .Where(instruction => instruction.Op is OpCode.LoadCell or OpCode.LoadStorage).Select(instruction => instruction.A)).ToHashSet();
-        private Block[] blocks = [];
-        private int[] blockAt = [];
+        private readonly Block[] blocks = graph.Blocks.Select(block => new Block(block.Start, block.End)).ToArray();
         private int nextIdentity = 1;
 
         internal FunctionCode Optimize()
         {
-            if (code.Count == 0) return function;
-            BuildBlocks();
-            if (blocks.Length == 1) return function;
+            MarkLoops();
             Discover();
             foreach (var block in blocks.Where(block => block.Input is not null)) Transfer(block, collect: true);
             var available = Availability();
@@ -83,7 +84,7 @@ internal static class GlobalRedundancy
                         replacements.Add(occurrence.Position, Slot(occurrence.Expression));
                         continue;
                     }
-                    var predecessors = block.Predecessors.Where(predecessor => blocks[predecessor].Output is not null).ToArray();
+                    var predecessors = graph.Predecessors(index).Where(predecessor => blocks[predecessor].Output is not null).ToArray();
                     if (predecessors.Length < 2 || predecessors.Any(predecessor => blocks[predecessor].Loop)
                         || !predecessors.Any(predecessor => available.Output[predecessor].Contains(occurrence.Expression)))
                     { prefix.Add(occurrence.Expression); continue; }
@@ -123,40 +124,6 @@ internal static class GlobalRedundancy
             return new(identity, value.Type, value);
         }
 
-        private void BuildBlocks()
-        {
-            var starts = new SortedSet<int> { 0, code.Count };
-            for (var pc = 0; pc < code.Count; pc++)
-            {
-                var instruction = code[pc];
-                if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse) starts.Add(instruction.A);
-                if (instruction.Op == OpCode.IteratorNext) starts.Add(instruction.B);
-                if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.IteratorNext or OpCode.Return) starts.Add(pc + 1);
-            }
-            var positions = starts.ToArray();
-            blocks = positions.Zip(positions.Skip(1), (start, end) => new Block(start, end)).ToArray();
-            blockAt = new int[code.Count + 1];
-            for (var block = 0; block < blocks.Length; block++)
-                for (var pc = blocks[block].Start; pc < blocks[block].End; pc++) blockAt[pc] = block;
-            blockAt[^1] = blocks.Length;
-            for (var block = 0; block < blocks.Length; block++)
-            {
-                var instruction = code[blocks[block].End - 1];
-                if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse) Connect(block, instruction.A);
-                if (instruction.Op == OpCode.IteratorNext) Connect(block, instruction.B);
-                if (instruction.Op is not (OpCode.Jump or OpCode.Return)) Connect(block, blocks[block].End);
-            }
-            MarkLoops();
-        }
-
-        private void Connect(int source, int position)
-        {
-            if (position == code.Count) return;
-            var target = blockAt[position];
-            if (blocks[source].Successors.Contains(target)) return;
-            blocks[source].Successors.Add(target); blocks[target].Predecessors.Add(source);
-        }
-
         private void MarkLoops()
         {
             var indices = Enumerable.Repeat(-1, blocks.Length).ToArray();
@@ -166,7 +133,7 @@ internal static class GlobalRedundancy
             void Visit(int index)
             {
                 indices[index] = lows[index] = next++; active[index] = true; stack.Push(index);
-                foreach (var successor in blocks[index].Successors)
+                foreach (var successor in graph.Successors(index))
                 {
                     if (indices[successor] < 0) { Visit(successor); lows[index] = Math.Min(lows[index], lows[successor]); }
                     else if (active[successor]) lows[index] = Math.Min(lows[index], indices[successor]);
@@ -174,7 +141,7 @@ internal static class GlobalRedundancy
                 if (lows[index] != indices[index]) return;
                 var component = new List<int>(); int member;
                 do { member = stack.Pop(); active[member] = false; component.Add(member); } while (member != index);
-                if (component.Count > 1 || blocks[index].Successors.Contains(index)) foreach (var block in component) blocks[block].Loop = true;
+                if (component.Count > 1 || graph.Successors(index).Contains(index)) foreach (var block in component) blocks[block].Loop = true;
             }
             for (var index = 0; index < blocks.Length; index++) if (indices[index] < 0) Visit(index);
         }
@@ -254,7 +221,7 @@ internal static class GlobalRedundancy
             }
             void Next(int position, State output)
             {
-                if (position < code.Count) outgoing.Add((blockAt[position], output.Copy()));
+                if (position < code.Count) outgoing.Add((graph.BlockAt(position), output.Copy()));
             }
             for (var pc = block.Start; pc < block.End; pc++)
             {
@@ -344,14 +311,14 @@ internal static class GlobalRedundancy
             {
                 queued[index] = false; var block = blocks[index];
                 if (block.Input is null || block.Loop) continue;
-                var predecessors = block.Predecessors.Where(predecessor => blocks[predecessor].Output is not null).ToArray();
+                var predecessors = graph.Predecessors(index).Where(predecessor => blocks[predecessor].Output is not null).ToArray();
                 var incoming = predecessors.Length == 0 ? [] : new HashSet<Expression>(output[predecessors[0]]);
                 foreach (var predecessor in predecessors.Skip(1)) incoming.IntersectWith(output[predecessor]);
                 var outgoing = new HashSet<Expression>(incoming); outgoing.UnionWith(block.Expressions.Select(expression => expression.Expression));
                 input[index] = incoming;
                 if (outgoing.SetEquals(output[index])) continue;
                 output[index] = outgoing;
-                foreach (var successor in block.Successors) if (!queued[successor]) { queued[successor] = true; work.Enqueue(successor); }
+                foreach (var successor in graph.Successors(index)) if (!queued[successor]) { queued[successor] = true; work.Enqueue(successor); }
             }
             return (input, output);
         }
@@ -402,10 +369,10 @@ internal static class GlobalRedundancy
             for (var pc = 0; pc < code.Count; pc++)
             {
                 positions[pc] = output.Count;
-                var instruction = code[pc]; var block = blockAt[pc];
+                var instruction = code[pc]; var block = graph.BlockAt(pc);
                 if (instruction.Op == OpCode.Jump)
                 {
-                    var edge = new Edge(block, instruction.A < code.Count ? blockAt[instruction.A] : blocks.Length);
+                    var edge = new Edge(block, graph.BlockAt(instruction.A));
                     if (insertions.ContainsKey(edge)) Insert(edge);
                 }
                 if (replacements.TryGetValue(pc, out var slot))
@@ -418,7 +385,7 @@ internal static class GlobalRedundancy
                     if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.IteratorNext)
                     {
                         var target = instruction.Op == OpCode.IteratorNext ? instruction.B : instruction.A;
-                        var edge = new Edge(block, target < code.Count ? blockAt[target] : blocks.Length);
+                        var edge = new Edge(block, graph.BlockAt(target));
                         fixups.Add((output.Count, instruction.Op == OpCode.IteratorNext, target,
                             instruction.Op != OpCode.Jump && insertions.ContainsKey(edge) ? edge : null));
                     }
@@ -431,7 +398,7 @@ internal static class GlobalRedundancy
                 }
                 if (pc == blocks[block].End - 1 && instruction.Op is not (OpCode.Jump or OpCode.Return) && pc + 1 < code.Count)
                 {
-                    var edge = new Edge(block, blockAt[pc + 1]);
+                    var edge = new Edge(block, graph.BlockAt(pc + 1));
                     if (insertions.ContainsKey(edge)) Insert(edge);
                 }
             }
