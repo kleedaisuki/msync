@@ -45,7 +45,7 @@ internal sealed record SemanticVisibility(SourceSpan Owner, bool IncludesEnd,
 
 internal readonly record struct SemanticReceiver(SourceSpan Span,
     SemanticValueId Value, EditorReceiverKind Kind = EditorReceiverKind.Member,
-    bool Concrete = true);
+    bool Concrete = true, string? ProjectedModule = null);
 
 internal readonly record struct SemanticPathOwner(SourceSpan Span,
     SemanticConnectionView? Endpoint, bool Concrete = true, int QualificationWidth = 0);

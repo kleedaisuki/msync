@@ -34,6 +34,62 @@ def labels(client: Client, uri: str, source: str, offset: int) -> set[str]:
     return {str(item["label"]) for item in result}
 
 
+def standard_projection(client: Client, uri: str) -> dict[str, bool]:
+    source = "let selected = $std::containers::Set;"
+    notify(client, uri, 10, source)
+    assert diagnostics(client, uri, 10)["diagnostics"] == []
+    offset = source.index("Set")
+    choices: list[dict[str, Any]] = request_at(
+        client, "textDocument/completion", uri, source, offset
+    )
+    sibling = next(item for item in choices if item["label"] == "List")
+    assert sibling["kind"] == 7 and sibling["detail"] == "scope List", sibling
+    resolved, _ = client.request("completionItem/resolve", sibling)
+    assert resolved["documentation"]["value"], resolved
+    assert apply_edit(source, sibling["textEdit"]) == source.replace("Set", "List")
+    definitions: dict[str, Any] | list[dict[str, Any]] = request_at(
+        client, "textDocument/definition", uri, source, offset
+    )
+    target = definitions[0] if isinstance(definitions, list) else definitions
+    assert target["uri"].startswith("msync-stdlib:"), target
+    content, _ = client.request("msync/stdlibSource", {"uri": target["uri"]})
+    assert "scope Set {" in content
+
+    native = "$std::ranges::single(1);"
+    notify(client, uri, 11, native)
+    assert diagnostics(client, uri, 11)["diagnostics"] == []
+    choices = request_at(
+        client, "textDocument/completion", uri, native, native.index("single")
+    )
+    omitted = next(item for item in choices if item["label"] == "empty_of")
+    assert omitted["kind"] == 3 and "element: Type" in omitted["detail"], omitted
+    resolved, _ = client.request("completionItem/resolve", omitted)
+    assert "ranges.empty_of" in resolved["documentation"]["value"], resolved
+
+    for version, draft in (
+        (12, "$std::containers::"),
+        (13, "$std::containers::Lis;"),
+        (14, "let collections = $std::containers; collections::"),
+    ):
+        notify(client, uri, version, draft)
+        problems = diagnostics(client, uri, version)["diagnostics"]
+        if version == 13:
+            assert problems and "Lis" in problems[0]["message"], problems
+        assert {"List", "Set"} <= labels(client, uri, draft, len(draft.rstrip(";")))
+
+    shadow = (
+        "let std = scope { containers: scope { Only: true } }; $std::containers::Only;"
+    )
+    notify(client, uri, 15, shadow)
+    assert diagnostics(client, uri, 15)["diagnostics"] == []
+    assert labels(client, uri, shadow, shadow.rindex("Only")) == {"Only"}
+    return {
+        "projected_standard_scope_completion_and_definition": True,
+        "projected_standard_native_documentation": True,
+        "incomplete_escaped_and_shadowed_standard_receivers": True,
+    }
+
+
 def protocol(binary: Path, directory: Path) -> dict[str, object]:
     uri = (directory / "语义 generations.msync").as_uri()
     marker = directory / "analysis-must-not-write.txt"
@@ -169,6 +225,7 @@ read(candidate);
         assert "$std::concepts::Product)" in completed, completed
         assert "$$" not in completed, completed
 
+        projected = standard_projection(client, uri)
         client.send("textDocument/didClose", {"textDocument": {"uri": uri}})
         assert diagnostics(client, uri, None)["diagnostics"] == []
         reopened = "let reopened = false;\nreopened"
@@ -189,6 +246,7 @@ read(candidate);
             "qualified_type_edit": True,
             "close_reopen_identity": True,
             "analysis_did_not_execute": True,
+            **projected,
         }
     finally:
         client.close()

@@ -9,6 +9,7 @@ internal static class SemanticStandardCatalog
     private static readonly Lazy<IReadOnlyList<SemanticMember>> builtins = new(CreateBuiltins);
     private static readonly Lazy<IReadOnlyList<SemanticMember>> concepts = new(CreateConcepts);
     private static readonly ConcurrentDictionary<string, NativePresentation> native = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, IReadOnlyList<SemanticMember>> modules = new(StringComparer.Ordinal);
 
     public static IReadOnlyList<SemanticMember> Builtins => builtins.Value;
     public static IReadOnlyList<SemanticMember> Concepts => concepts.Value;
@@ -47,6 +48,11 @@ internal static class SemanticStandardCatalog
         NativeDeclaration? declaration = module.Document.Statements.OfType<NativeDeclaration>()
             .FirstOrDefault(item => item.Name == name[(separator + 1)..]);
         if (declaration is null) return null;
+        return DescribeNative(name, module, declaration);
+    }
+
+    private static NativePresentation DescribeNative(string name, StandardSource module, NativeDeclaration declaration)
+    {
         NativeSignature signature = NativeSignatures.Get(name);
         string result = module.Source[declaration.ReturnType.Span.Start..declaration.ReturnType.Span.End];
         string formatted = $"fn {declaration.Name}({string.Join(", ", declaration.Parameters.Select((parameter, index) =>
@@ -55,6 +61,56 @@ internal static class SemanticStandardCatalog
         var found = new NativePresentation(formatted, $"Native standard-library function `{name}`."
             + (documentation.Length == 0 ? "" : "\n\n" + documentation));
         return native.GetOrAdd(name, found);
+    }
+
+    // Closed-document inference can omit unused exports. The missing completion
+    // labels come from the embedded declarations, not a second semantic run.
+    internal static IReadOnlyList<SemanticMember> ModuleMembers(string module) =>
+        modules.GetOrAdd(module, CreateModuleMembers);
+
+    private static IReadOnlyList<SemanticMember> CreateModuleMembers(string module)
+    {
+        StandardSource library = StandardSourceCatalog.Read()[module];
+        Dictionary<string, SemanticMember> members = new(StringComparer.Ordinal);
+        foreach (Statement statement in library.Document.Statements)
+            if (Member(statement) is { } member) members[member.Name] = member;
+        return members.Values.ToArray();
+
+        SemanticMember? Member(Statement statement)
+        {
+            switch (statement)
+            {
+                case NativeDeclaration declaration:
+                    NativePresentation presentation = DescribeNative(module + "." + declaration.Name, library, declaration);
+                    return new(declaration.Name, "Function", presentation.Signature, presentation.Description, SemanticRole: "function");
+                case FunctionDeclaration function:
+                    string parameters = string.Join(", ", function.Function.Parameters.Select(parameter =>
+                        parameter.Name + (parameter.Nullable ? "?" : "") + ": " + Type(parameter.Type, "inferred at call")));
+                    string result = Type(function.Function.ReturnType, "inferred at call");
+                    return new(function.Name, "Function", $"fn {function.Name}({parameters}) -> {result}",
+                        Help(statement, "function"), SemanticRole: "function");
+                case ScopeDeclaration scope:
+                    return new(scope.Name, "Scope", $"scope {scope.Name}", Help(statement, "scope"), SemanticRole: "type");
+                case LetStatement { Pattern: NamePattern name } binding:
+                    string type = Type(binding.Type, binding.Value switch
+                    {
+                        NumberExpr => "Number", StringExpr => "String", BoolExpr => "Bool", PathExpr => "Path",
+                        NullExpr => "Null", _ => "inferred from initializer"
+                    });
+                    return new(name.Name, type, $"{name.Name}: {type}", Help(statement, "binding"));
+                default:
+                    return null;
+            }
+        }
+
+        string Type(TypeSyntax? type, string fallback) => type is null ? fallback
+            : library.Source[type.Span.Start..type.Span.End];
+
+        string Help(Statement statement, string kind)
+        {
+            string documentation = Documentation(library.Source, statement.Span.Start);
+            return documentation.Length == 0 ? $"Standard-library {kind} in `$std::{module}`." : documentation;
+        }
     }
 
     private static IReadOnlyList<SemanticMember> CreateConcepts()

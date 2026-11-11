@@ -39,6 +39,11 @@ if (args.Contains("--aggregates", StringComparer.Ordinal))
     await AggregateChecks.RunAsync();
     return;
 }
+if (args.Contains("--standard-demand", StringComparer.Ordinal))
+{
+    StandardDemandChecks.Run();
+    return;
+}
 
 int checks = 0;
 void Check(bool condition, string message)

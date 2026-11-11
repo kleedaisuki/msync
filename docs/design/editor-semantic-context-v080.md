@@ -56,6 +56,33 @@ The first baseline arm can overlap the last four seconds of an existing skill
 journey; the reverse order is the clean descriptive control. These are not
 Native AOT tail estimates or CI thresholds.
 
+### Demand library semantics without hiding declarations
+
+Full editor binding of each imported module made an unrelated library export
+part of a collection specialization's captured graph. Adding Range algorithms
+and collection families raised the seeded Set's managed inference allocation
+from 326 MB to 424 MB, even though the script never called those exports.
+Restoring only the Set constructor did not remove the regression. Swapping the
+Range and container export surfaces restored the old work profile; sampled
+stacks located the extra work in capture enrichment and formal key schemas,
+not in editor rendering. Reusing the existing closed-source dependency plan
+reduced the same candidate inference to 137 MB for Set and from 12.61 MB to
+4.57 MB for List. The exact pre-fix Native images, dependency ablations, and
+checked LSP edit samples are under
+`artifacts/candidates/ergonomics-086/e7fef4e/editor-performance/`.
+
+An editor revision now binds a direct standard export and its source
+dependencies, just as closed compilation does. A namespace used as a value,
+an incomplete receiver, or an unresolved export still binds the full module
+for real access and recovery suggestions. Session bindings stay complete for
+future submissions. A direct projected receiver gets omitted completion labels
+from the same immutable embedded declaration catalog; selected typed members,
+aliases, diagnostics and definition targets remain owned by actual binding.
+The declaration catalog adds only metadata at a completion request, never
+caller facts, a second inference, or an executable Scope. The focused
+`--standard-demand` and real `hir_editor_journey.py` checks verify both the
+smaller analysis and full-surface completion, lazy docs and navigation.
+
 ### Reuse the specialization, not the invocation
 
 A completed specialization already separates a formal result and write summary

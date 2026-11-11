@@ -45,7 +45,8 @@ internal sealed record BoundTemplate(HirTemplateId Id, string Name,
     ImmutableArray<HirLocationId> Parameters, ImmutableArray<HirLocationId> Captures,
     HirTypeId? ResultAnnotation, HirNodeId Body, HirSourceRange Source);
 internal sealed record BoundModule(string Name, HirSourceId Source, HirNodeId Body,
-    ImmutableDictionary<string, HirLocationId> Exports, ImmutableDictionary<string, int> Concepts);
+    ImmutableDictionary<string, HirLocationId> Exports, ImmutableDictionary<string, int> Concepts,
+    bool Projected = false);
 
 internal sealed class BoundProgram(HirBuilder hir)
 {

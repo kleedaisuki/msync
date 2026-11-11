@@ -147,7 +147,7 @@ internal sealed partial class SemanticObservationBuilder
             var children = program.Children(selection.Node);
             if (children.Length == 0) continue;
             SemanticValue receiver = BoundExpression(children[0]);
-            receivers.Add(new(Span(selection.ReceiverSpan), Value(receiver, generic), Concrete: false));
+            receivers.Add(MemberReceiver(selection, Value(receiver, generic), concrete: false));
             if (selection.Name is null || receiver.Scope is not { } shape
                 || !shape.Fields.TryGetValue(selection.Name, out var member)) continue;
             Observe(selection.MemberSpan, member, generic, selection.Name, concrete: false);
@@ -216,13 +216,22 @@ internal sealed partial class SemanticObservationBuilder
     private void RecordMember(BoundMemberUse use, SemanticValue value, SemanticContext context)
     {
         if (Receiver(use.Node, context) is not { } receiver) return;
-        receivers.Add(new(Span(use.ReceiverSpan), receiver));
+        receivers.Add(MemberReceiver(use, receiver));
         if (use.Name is null) return;
         Observe(use.MemberSpan, value, context, use.Name);
         SemanticValueView description = values[receiver.Value];
         if (!description.Members.IsDefault)
             foreach (var field in description.Members.Where(item => item.Name == use.Name && !item.Definitions.IsDefaultOrEmpty))
                 references.Add(new(Span(use.MemberSpan), field.Definitions));
+    }
+
+    private SemanticReceiver MemberReceiver(BoundMemberUse use, SemanticValueId receiver, bool concrete = true)
+    {
+        string? module = null;
+        if (standardUses.TryGetValue(program.Children(use.Node)[0], out var origins)
+            && program.StandardModules[origins[0].Module].Projected)
+            module = origins[0].Module;
+        return new(Span(use.ReceiverSpan), receiver, Concrete: concrete, ProjectedModule: module);
     }
 
     private void RecordStandard(BoundStandardUse use, SemanticValueId value, bool concrete)

@@ -73,8 +73,8 @@ internal sealed partial class SourceBinder
         }
         sourceText = text;
         sourceName = name;
-        if (!program.IsSession && !editorMode && text.Contains('$'))
-            standardDemand = new(document, StandardLibraries.Value);
+        if (!program.IsSession && text.Contains('$'))
+            standardDemand = new(document, StandardLibraries.Value, cancellationToken);
         source = new(hir.Sources.Count);
         hir.Sources.Add(new(name, text));
         if (!incremental)
@@ -112,8 +112,9 @@ internal sealed partial class SourceBinder
         annotationScope = null;
         try
         {
-            var statements = name == "concepts" ? library.Document.Statements
-                : standardDemand?.Declarations(name, library.Document) ?? library.Document.Statements;
+            var declarations = library.Document.Statements;
+            var statements = name == "concepts" ? declarations
+                : standardDemand?.Declarations(name, library.Document) ?? declarations;
             var initializers = statements.Select(Statement).ToArray();
             var fields = scope.Values.Values.ToImmutableArray();
             int layout = hir.ScopeLayouts.Count;
@@ -124,7 +125,8 @@ internal sealed partial class SourceBinder
             hir.AddScope(new(layout, fields));
             var body = Node(HirKind.Scope, hir.Type(new HirType(TypeRef.Scope, Shape: layout)),
                 library.Document.Span, initializers, construction);
-            BoundModule module = new(name, source, body, scope.Values, scope.Concepts);
+            BoundModule module = new(name, source, body, scope.Values, scope.Concepts,
+                Projected: initializers.Length < declarations.Count);
             program.StandardModules.Add(name, module);
             return module;
         }

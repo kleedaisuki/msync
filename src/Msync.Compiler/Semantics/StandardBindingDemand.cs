@@ -8,11 +8,18 @@ internal sealed class StandardBindingDemand
 {
     private readonly IReadOnlyDictionary<string, StandardSource> libraries;
     private readonly Dictionary<string, HashSet<Statement>> selected = new(StringComparer.Ordinal);
+    private readonly CancellationToken cancellationToken;
 
-    public StandardBindingDemand(Document document, IReadOnlyDictionary<string, StandardSource> libraries)
+    public StandardBindingDemand(Document document, IReadOnlyDictionary<string, StandardSource> libraries,
+        CancellationToken cancellationToken = default)
     {
         this.libraries = libraries;
-        foreach (var statement in document.Statements) References(statement);
+        this.cancellationToken = cancellationToken;
+        foreach (var statement in document.Statements)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            References(statement);
+        }
     }
 
     public IEnumerable<Statement> Declarations(string module, Document document) =>
@@ -44,18 +51,19 @@ internal sealed class StandardBindingDemand
             for (int index = 0; index < declarations.Count; index++)
                 if (!Deferred(declarations[index])) Include(index);
         }
-        if (export is null)
-        {
-            for (int index = 0; index < declarations.Count; index++) Include(index);
-            return;
-        }
-        for (int index = declarations.Count - 1; index >= 0; index--)
-            if (Name(declarations[index]) == export) { Include(index); return; }
+        if (export is not null)
+            for (int index = declarations.Count - 1; index >= 0; index--)
+                if (Name(declarations[index]) == export) { Include(index); return; }
+
+        // An escaped namespace needs its full value. A missing export needs the
+        // same names for useful diagnostics, including while the user types it.
+        for (int index = 0; index < declarations.Count; index++) Include(index);
 
         void Include(int index)
         {
             var declaration = declarations[index];
             if (!included.Add(declaration)) return;
+            cancellationToken.ThrowIfCancellationRequested();
             var names = Names(declaration).ToHashSet(StringComparer.Ordinal);
             if (declaration is FunctionDeclaration or ScopeDeclaration) names.Remove(Name(declaration)!);
             for (int prior = index - 1; prior >= 0; prior--)

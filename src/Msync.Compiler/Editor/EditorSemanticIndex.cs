@@ -83,6 +83,12 @@ internal sealed class EditorSemanticIndex(SemanticObservationView view,
         SemanticConnectionView? endpoint = paths.Length == 0 ? null : paths[0].Endpoint;
         if (paths.Any(item => item.Endpoint != endpoint)) endpoint = null;
         SemanticMember? receiver = receivers.Length == 0 ? null : presenter.Describe("", receivers.Select(item => item.Value));
+        if (receiver is not null && ProjectedModule(receivers) is { } module)
+            receiver = receiver with
+            {
+                Members = (receiver.Members ?? []).Concat(SemanticStandardCatalog.ModuleMembers(module))
+                    .DistinctBy(member => member.Name, StringComparer.Ordinal).ToArray()
+            };
         var owner = SemanticValuePresenter.Connection(endpoint);
         if (paths.Length != 0 && receivers.Length != 0 && receivers[0].Kind == EditorReceiverKind.PathJoin)
         {
@@ -114,8 +120,14 @@ internal sealed class EditorSemanticIndex(SemanticObservationView view,
         if (receivers.Length == 0)
             return ResolveBindings(ContextsAt(offset).Select(item => item.Bindings).ToArray(), name, presenter);
         var receiver = presenter.Describe("", receivers.Select(item => item.Value));
-        return receiver.Members?.FirstOrDefault(item => item.Name == name);
+        return receiver.Members?.FirstOrDefault(item => item.Name == name)
+            ?? (ProjectedModule(receivers) is { } module
+                ? SemanticStandardCatalog.ModuleMembers(module).FirstOrDefault(item => item.Name == name) : null);
     }
+
+    private static string? ProjectedModule(SemanticReceiver[] receivers) =>
+        receivers[0].ProjectedModule is { } module && receivers.All(item => item.ProjectedModule == module)
+            ? module : null;
 
     public IReadOnlyList<EditorLocation> DefinitionsAt(int offset)
     {
