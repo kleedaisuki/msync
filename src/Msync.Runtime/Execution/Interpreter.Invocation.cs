@@ -4,23 +4,19 @@ namespace Msync.Runtime;
 
 public sealed partial class Interpreter
 {
-    private async ValueTask<Value> InvokeAsync(Value callee, IReadOnlyList<Value> arguments, CancellationToken cancellationToken)
+    private ValueTask<Value> InvokeAsync(Value callee, IReadOnlyList<Value> arguments, CancellationToken cancellationToken) =>
+        InvokeValueAsync(ReadValue(callee), ValueArguments(arguments), cancellationToken);
+
+    private ValueTask<Value> InvokeValueAsync(Value callee, IReadOnlyList<Value> arguments,
+        CancellationToken cancellationToken, int? target = null, int scheduling = 0, SourceSpan? origin = null) => callee switch
     {
-        callee = ReadValue(callee);
-        arguments = ValueArguments(arguments);
-        switch (callee)
-        {
-            case FunctionValue { NativeName: not null } native:
-                return await InvokeNativeAsync(native.NativeName, arguments, cancellationToken);
-            case FunctionValue function:
-                return await RunFunctionAsync(function.Function, function.Captures ?? [], arguments, cancellationToken);
-            case PathValue executable:
-                return await RunProcessAsync(executable, arguments, cancellationToken);
-            case StringValue executable:
-                return await RunProcessAsync(context.AsPath(executable), arguments, cancellationToken);
-            default: throw new MsyncException($"{callee.Type} is not callable");
-        }
-    }
+        FunctionValue { NativeName: { } name } => InvokeNativeAsync(name, arguments, cancellationToken),
+        FunctionValue function => RunFunctionAsync(target ?? function.Function, function.Captures ?? [], arguments, cancellationToken),
+        PathValue executable => RunProcessAsync(executable, arguments, cancellationToken, scheduling, origin),
+        StringValue executable => RunProcessAsync(context.AsPath(executable), arguments, cancellationToken, scheduling, origin),
+        _ => throw new MsyncException($"{callee.Type} is not callable")
+    };
+
     private FunctionValue Specialize(FunctionValue function, Instruction instruction)
     {
         if (function.NativeName is not null) return function;
@@ -108,27 +104,28 @@ public sealed partial class Interpreter
             if (name == "process.spawn") return await SpawnProcessAsync(arguments, cancellationToken);
             if (name is "process.stdout" or "process.stderr" or "process.success" or "process.exit_code" && arguments[0] is ProcessValue process)
                 return ProcessMember(process, name[8..]);
-            if (arguments.Any(value => value is DeferredValue)
-                && (InstructionEffects.NativeEffects(name) & (InstructionEffect.Read | InstructionEffect.Write | InstructionEffect.Invoke)) == 0
-                && NativeSignatures.TryGet(name, out var signature)
+            var operation = NativeRegistry.GetOperation(name);
+            int deferred = FirstDeferredArgument(arguments);
+            if (deferred >= 0
+                && (operation.Effects & (InstructionEffect.Read | InstructionEffect.Write | InstructionEffect.Invoke)) == 0
                 && !arguments.Any(value => (value.Type.Kind & (TypeKind.Range | TypeKind.Function)) != 0))
             {
                 var inputs = arguments;
                 RuntimeContext origin = context.CaptureDirectory();
-                async Task<Value> Complete() => await NativeRegistry.InvokeAsync(name, await ResolveArgumentsAsync(inputs), origin, NativeCallback, cancellationToken);
+                async Task<Value> Complete() => await NativeRegistry.InvokeAsync(operation, await ResolveDeferredArgumentsAsync(inputs, deferred), origin, NativeCallback, cancellationToken);
+                var signature = operation.Signature;
                 TypeRef resultType = signature.ResultRule == NativeResultRule.CastTarget && inputs[1] is TypeValue target
                     ? target.Data : signature.Result;
                 string? endpoint = resultType.WithoutNull == TypeRef.Path
                     ? inputs[0].Type == TypeRef.String ? "local" : PathEndpoint(inputs[0]) : null;
                 return new DeferredValue(Complete(), resultType, inputs.SelectMany(Processes).Distinct().ToArray(), endpoint);
             }
-            arguments = await ResolveArgumentsAsync(arguments);
-            await AwaitNativeDependenciesAsync(name, arguments, cancellationToken);
-            using var selectedSession = !NativeEvaluation.DefersFileRead(name)
-                && NativeSignatures.TryGet(name, out var operation) && operation.Effect != NativeEffect.Pure
-                    ? EnterPathSession(arguments, cancellationToken) : null;
+            if (deferred >= 0) arguments = await ResolveDeferredArgumentsAsync(arguments, deferred);
+            if (operation.UsesDependencies)
+                await AwaitNativeDependenciesAsync(operation.Signature, arguments, cancellationToken);
+            using var selectedSession = operation.OpensPathSession ? EnterPathSession(arguments, cancellationToken) : null;
             if (name == "text.format_fields") return await TextFormatting.FormatAsync("format_fields", arguments, ResolveAsync);
-            return await NativeRegistry.InvokeAsync(name, arguments, name == "cast" ? context.CaptureDirectory() : context, NativeCallback, cancellationToken);
+            return await NativeRegistry.InvokeAsync(operation, arguments, name == "cast" ? context.CaptureDirectory() : context, NativeCallback, cancellationToken);
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {

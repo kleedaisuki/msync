@@ -7,14 +7,18 @@ public static partial class Artifact
     private static readonly byte[] Magic = "MSYNCBC\0"u8.ToArray();
     public const ushort FormatVersion = 5;
     public const string LanguageVersion = "0.8.0";
-    public static Module Read(string path)
+    public static Module Read(string path) => Read(path, formBlocks: true);
+
+    public static Module Read(string path, bool formBlocks)
     {
         using var stream = File.OpenRead(path);
-        try { return Read(stream); }
+        try { return Read(stream, formBlocks); }
         catch (Exception e) when (e is EndOfStreamException or IOException or ArgumentException)
         { throw new MsyncException($"Cannot read bytecode artifact '{path}': {e.Message}", inner: e); }
     }
-    public static Module Read(Stream stream)
+    public static Module Read(Stream stream) => Read(stream, formBlocks: true);
+
+    public static Module Read(Stream stream, bool formBlocks)
     {
         using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true);
         if (!reader.ReadBytes(Magic.Length).AsSpan().SequenceEqual(Magic)) throw new MsyncException("Not an msync binary bytecode artifact");
@@ -50,7 +54,7 @@ public static partial class Artifact
         var module = new Module(constants, functions, entry, stage, context, optimization, Semantics: semantics)
         { ExecutionPlans = plans.Length == 0 ? null : plans };
         Validate(module);
-        return BlockBuilder.Form(module);
+        return formBlocks ? BlockBuilder.Form(module) : module;
     }
     public static void Write(Module module, string path)
     {

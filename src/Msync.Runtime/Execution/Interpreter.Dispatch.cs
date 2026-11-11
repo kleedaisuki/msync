@@ -7,36 +7,17 @@ public sealed partial class Interpreter
 {
     private sealed record IteratorValue(IAsyncEnumerator<Value> Iterator) : Value { public override TypeRef Type => TypeRef.Any; }
 
-    private async ValueTask<Value> RunOwnedCodeAsync(int functionIndex, Value[] locals, int startInstruction, CancellationToken cancellationToken)
-    {
-        Module image = module;
-        var function = image.Functions[functionIndex];
-        var indexed = blocks[functionIndex];
-        OperandStack stack = new();
-        Dictionary<int, PlanSubmission>? submissions = null;
-        int pc = startInstruction;
-        while (pc < function.Instructions.Count)
-        {
-            var outcome = await RunBlockAsync(image, function, locals, stack, submissions, pc, indexed[pc], cancellationToken);
-            if (outcome.Returned) return outcome.Value!;
-            if (outcome.Submission is { } submitted)
-                (submissions ??= [])[outcome.SubmittedPlan] = submitted;
-            pc = outcome.Next;
-        }
-        return stack.Count == 0 ? Value.Null : stack[^1];
-    }
-
-    private readonly record struct BlockOutcome(int Next, Value? Value = null, bool Returned = false,
-        int SubmittedPlan = -1, PlanSubmission? Submission = null);
     private static bool LocalTransferOperand(Value value) =>
         value is StringValue or PathValue { Connection: null or { Kind: ConnectionKind.Local } };
-    private async ValueTask<BlockOutcome> RunBlockAsync(Module image, FunctionCode function, Value[] locals,
-        OperandStack stack, Dictionary<int, PlanSubmission>? submissions, int startInstruction,
-        BasicBlock block, CancellationToken cancellationToken)
+
+    private async ValueTask<Value> RunOwnedCodeAsync(int functionIndex, Value[] locals, int startInstruction,
+        CancellationToken cancellationToken)
     {
-        var code = function.Instructions;
-        var pc = startInstruction;
-        for (; pc < block.End; pc++)
+        Module image = module;
+        var code = image.Functions[functionIndex].Instructions;
+        OperandStack stack = new();
+        Dictionary<int, PlanSubmission>? submissions = null;
+        for (int pc = startInstruction; pc < code.Count; pc++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var instruction = code[pc];
@@ -103,13 +84,13 @@ public sealed partial class Interpreter
                                 var selected = (FunctionValue)callee;
                                 if (selected.NativeName is null) target = instruction.B - 1;
                             }
-                            stack.Add(await InvokeScheduledAsync(callee, arguments, instruction.B, instruction.Span, cancellationToken, target)); break;
+                            stack.Add(await InvokeValueAsync(callee, arguments, cancellationToken, target, instruction.B, instruction.Span)); break;
                         }
                     case OpCode.NativeCall:
                         if (instruction.Text == "math.pow" && instruction.A == 2
                             && stack.TryPopNumbers(out double baseNumber, out double exponent))
                             stack.AddNumber(NativeRegistry.Power(baseNumber, exponent));
-                        else stack.Add(await InvokeNativeAsync(instruction.Text!, stack.PopMany(instruction.A), cancellationToken));
+                        else stack.Add(await InvokeNativeAsync(instruction.Text!, ValueArguments(stack.PopMany(instruction.A)), cancellationToken));
                         break;
                     case OpCode.Barrier: await FenceAsync(instruction.A, instruction.B, instruction.Text); break;
                     case OpCode.Acquire:
@@ -117,7 +98,7 @@ public sealed partial class Interpreter
                         else stack.Add(await AcquireAsync(stack.Pop()));
                         break;
                     case OpCode.Return:
-                        return new(pc, stack.Count == 0 ? Value.Null : stack.Pop(), true);
+                        return stack.Count == 0 ? Value.Null : stack.Pop();
                     case OpCode.LoadBuiltin: stack.Add(Builtin(instruction.Text!)); break;
                     case OpCode.Convert:
                         {
@@ -176,8 +157,8 @@ public sealed partial class Interpreter
                         }
                     case OpCode.ExecutePlan:
                         for (int item = 0; item < instruction.B; item++) stack.Discard();
-                        return new(pc + 1, SubmittedPlan: instruction.A,
-                            Submission: SubmitPlan(image.ExecutionPlans![instruction.A], cancellationToken));
+                        (submissions ??= [])[instruction.A] = SubmitPlan(image.ExecutionPlans![instruction.A], cancellationToken);
+                        break;
                     case OpCode.PlanResult:
                         for (int item = 0; item < instruction.B; item++) stack.Discard();
                         stack.Add(await ReadPlanResultAsync(image.ExecutionPlans![instruction.A], submissions![instruction.A])
@@ -259,9 +240,7 @@ public sealed partial class Interpreter
                 };
                 throw new MsyncException(action, instruction.Span, error);
             }
-            if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.IteratorNext)
-                return new(pc + 1);
         }
-        return new(pc);
+        return stack.Count == 0 ? Value.Null : stack.Pop();
     }
 }

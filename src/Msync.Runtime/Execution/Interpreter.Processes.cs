@@ -6,21 +6,12 @@ namespace Msync.Runtime;
 
 public sealed partial class Interpreter
 {
-    private async ValueTask<Value> InvokeScheduledAsync(Value callee, IReadOnlyList<Value> arguments, int scheduling, SourceSpan? origin, CancellationToken cancellationToken, int? compiledTarget = null)
+    private async ValueTask<Value> RunProcessAsync(PathValue executable, IReadOnlyList<Value> arguments,
+        CancellationToken cancellationToken, int scheduling, SourceSpan? origin)
     {
-        callee = ReadValue(callee);
-        arguments = ValueArguments(arguments);
-        if (callee is PathValue or StringValue)
-        {
-            var process = await StartProcessAsync(context.AsPath(callee), await ResolveArgumentsAsync(arguments), cancellationToken, origin);
-            return (scheduling & 1) != 0 && (scheduling & 2) == 0 ? process : await AcquireAsync(process);
-        }
-        if (compiledTarget is { } target && callee is FunctionValue { NativeName: null } function)
-            return await RunFunctionAsync(target, function.Captures ?? [], arguments, cancellationToken);
-        return await InvokeAsync(callee, arguments, cancellationToken);
+        var process = await StartProcessAsync(executable, await ResolveArgumentsAsync(arguments), cancellationToken, origin);
+        return (scheduling & 1) != 0 && (scheduling & 2) == 0 ? process : await AcquireAsync(process);
     }
-    private async ValueTask<Value> RunProcessAsync(PathValue executable, IReadOnlyList<Value> arguments, CancellationToken cancellationToken)
-        => await AcquireAsync(await StartProcessAsync(executable, await ResolveArgumentsAsync(arguments), cancellationToken));
 
     private async ValueTask<ProcessValue> StartProcessAsync(PathValue executable, IReadOnlyList<Value> arguments, CancellationToken cancellationToken, SourceSpan? origin = null, bool pipeInput = false)
     {

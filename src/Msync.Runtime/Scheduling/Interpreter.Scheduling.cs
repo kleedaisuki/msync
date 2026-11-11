@@ -71,17 +71,26 @@ public sealed partial class Interpreter
         async Task<Value> Complete() => apply(await ResolveAsync(left), await ResolveAsync(right));
         return new DeferredValue(Complete(), type, Processes(left).Concat(Processes(right)).Distinct().ToArray(), pathEndpoint);
     }
-    private static async ValueTask<IReadOnlyList<Value>> ResolveArgumentsAsync(IReadOnlyList<Value> arguments)
+    private static int FirstDeferredArgument(IReadOnlyList<Value> arguments)
+    {
+        for (int index = 0; index < arguments.Count; index++)
+            if (arguments[index] is DeferredValue) return index;
+        return -1;
+    }
+
+    private static ValueTask<IReadOnlyList<Value>> ResolveArgumentsAsync(IReadOnlyList<Value> arguments)
     {
         arguments = ValueArguments(arguments);
-        Value[]? resolved = null;
-        for (var i = 0; i < arguments.Count; ++i)
-        {
-            if (arguments[i] is not DeferredValue) continue;
-            resolved ??= arguments.ToArray();
-            resolved[i] = await ResolveAsync(arguments[i]);
-        }
-        return resolved ?? arguments;
+        int first = FirstDeferredArgument(arguments);
+        return first < 0 ? ValueTask.FromResult(arguments) : ResolveDeferredArgumentsAsync(arguments, first);
+    }
+
+    private static async ValueTask<IReadOnlyList<Value>> ResolveDeferredArgumentsAsync(IReadOnlyList<Value> arguments, int first)
+    {
+        var resolved = arguments.ToArray();
+        for (int index = first; index < resolved.Length; index++)
+            if (resolved[index] is DeferredValue deferred) resolved[index] = await deferred.Completion;
+        return resolved;
     }
     private async ValueTask<Task<bool>> ScheduleTransferAsync(Value source, Value destination, SourceSpan? span, bool local, CancellationToken cancellationToken, bool discarded = false)
     {
@@ -145,14 +154,9 @@ public sealed partial class Interpreter
         return child.Path.Length > prefix.Length && child.Path.AsSpan().StartsWith(prefix, comparison)
             && (child.Path[prefix.Length] == '/' || windows && child.Path[prefix.Length] == '\\');
     }
-    private async ValueTask AwaitNativeDependenciesAsync(string name, IReadOnlyList<Value> arguments,
-        CancellationToken cancellationToken = default)
+    private async ValueTask AwaitNativeDependenciesAsync(NativeSignature signature, IReadOnlyList<Value> arguments,
+        CancellationToken cancellationToken)
     {
-        if (NativeEvaluation.DefersFileRead(name)) return;
-        if (!NativeSignatures.TryGet(name, out var signature)) { await JoinTransfersAsync(); return; }
-        if ((signature.Behavior.GetValueOrDefault() & NativeBehavior.LocalMemory) != 0) return;
-        var effects = InstructionEffects.NativeEffects(name);
-        if ((effects & (InstructionEffect.Read | InstructionEffect.Write)) == 0) return;
         await ordering;
         if (pending.Count == 0) return;
         List<PathValue>? operands = null;
@@ -171,7 +175,7 @@ public sealed partial class Interpreter
             nativeHazardWaits++;
             await Task.WhenAll(publications);
         }
-        bool follow = name is not ("fs.symlink_status" or "fs.is_symlink" or "fs.read_symlink"
+        bool follow = signature.Name is not ("fs.symlink_status" or "fs.is_symlink" or "fs.read_symlink"
             or "fs.remove" or "fs.remove_all" or "fs.rename");
         var paths = operands.SelectMany(path => filesystem.ObservationResources(path, follow)).Select(Key).ToArray();
         var dependencies = signature.Effect == NativeEffect.Write

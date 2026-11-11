@@ -7,7 +7,6 @@ public sealed partial class Interpreter
     private Module module;
     private readonly RuntimeContext context;
     private readonly ContextualResources planResources;
-    private BasicBlock[][] blocks;
     private readonly SemaphoreSlim slots;
     private readonly int transferConcurrency;
     private readonly HashSet<IAsyncDisposable> iterators;
@@ -31,7 +30,7 @@ public sealed partial class Interpreter
         namespaceProducers = previous?.namespaceProducers ?? [];
         iterators = previous?.iterators ?? [];
         context = new(options, module.Context);
-        try { (this.module, blocks) = ProjectImage(module); }
+        try { this.module = Binding.Relocate(module, ImageContext); }
         catch
         {
             if (previous is null && transferredResources is null) planResources.DisposeAsync().AsTask().GetAwaiter().GetResult();
@@ -75,7 +74,7 @@ public sealed partial class Interpreter
         var locals = new Value[function.LocalCount];
         Array.Fill(locals, Value.Null);
         for (var i = 0; i < captures.Count; i++) locals[i] = captures[i];
-        for (var i = 0; i < arguments.Count; i++) locals[function.CaptureCount + i] = ReadValue(arguments[i]);
+        for (var i = 0; i < arguments.Count; i++) locals[function.CaptureCount + i] = arguments[i];
         return RunCodeAsync(functionIndex, locals, 0, cancellationToken, captures, arguments);
     }
     private async ValueTask<Value> RunCodeAsync(int functionIndex, Value[] locals, int startInstruction,

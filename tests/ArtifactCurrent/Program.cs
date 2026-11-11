@@ -19,6 +19,11 @@ bytes.Position = 0;
 Module loaded = Artifact.Read(bytes);
 Require(loaded.Constants[0].Equals(constant.Constants[0]), "Roundtrip changed captured path projection");
 Require((await Interpreter.ExecuteAsync(loaded)) is PathValue { Raw: "./input", LocalSpelling: "native-input" }, "Current artifact did not execute");
+bytes.Position = 0;
+Module instructionsOnly = Artifact.Read(bytes, formBlocks: false);
+Require(instructionsOnly.Blocks is null, "Instruction-only decode formed unused execution blocks");
+Require((await Interpreter.ExecuteAsync(instructionsOnly)) is PathValue { Raw: "./input", LocalSpelling: "native-input" },
+    "Instruction-only artifact did not execute");
 foreach (ushort old in new ushort[] { 1, 2, 3, 4 })
 {
     using MemoryStream obsolete = new();
@@ -47,6 +52,9 @@ catch (MsyncException error)
 {
     Require(error.Message.Contains("execution semantics", StringComparison.Ordinal), "Invalid semantics failed in unrelated decoder logic");
 }
+using MemoryStream truncated = new(image[..^1]);
+try { Artifact.Read(truncated, formBlocks: false); throw new InvalidOperationException("Accepted truncated instruction-only artifact"); }
+catch (EndOfStreamException) { assertions++; }
 PlanResource firstResource = new("local", "/prepared/first.txt");
 PlanResource secondResource = new("local", "/prepared/second.txt");
 ExecutionPlan preparedPlan = new(0, 10, 42,

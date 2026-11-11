@@ -92,7 +92,7 @@ internal static class Program
             {
                 if (semanticInput is null)
                 {
-                    if (binary) _ = Artifact.Read(file);
+                    if (binary) _ = Artifact.Read(file, formBlocks: false);
                     else _ = SourceCompiler.Analyze(source!, file);
                 }
                 telemetry?.Observe(new("compile", "ok", Source: file, DurationNanoseconds: (long)(Stopwatch.GetElapsedTime(compileStart).TotalMilliseconds * 1_000_000)));
@@ -100,7 +100,9 @@ internal static class Program
                 return Complete(0, telemetry);
             }
             Module module = semanticInput is not null ? HirCommands.Lower(semanticInput, options.Optimization)
-                : binary ? Artifact.Read(file) : SourceCompiler.Compile(source!, file, options.Optimization);
+                : binary ? Artifact.Read(file, formBlocks: options.Command is "plan" or "plan-ir"
+                    || options.Command is ("compile" or "emit-ir") && options.Output is null)
+                : SourceCompiler.Compile(source!, file, options.Optimization);
             telemetry?.Observe(new("compile", "ok", Source: file, DurationNanoseconds: (long)(Stopwatch.GetElapsedTime(compileStart).TotalMilliseconds * 1_000_000)));
             if (options.Command is "compile" or "emit-ir")
             {

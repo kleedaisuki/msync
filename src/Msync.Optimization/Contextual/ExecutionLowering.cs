@@ -4,14 +4,20 @@ public static class ExecutionLowering
 {
     public static Module Lower(Module module)
     {
+        var lowered = Rewrite(module);
+        return lowered.Blocks is null ? BlockBuilder.Form(lowered) : lowered;
+    }
+
+    internal static Module Rewrite(Module module)
+    {
         if (module.Context is null) throw new MsyncException("Executable lowering requires a bound context");
-        if (!module.Functions.Any(NeedsLowering)) return module.Blocks is null ? BlockBuilder.Form(module) : module;
+        if (!module.Functions.Any(NeedsLowering)) return module;
         var constants = module.Constants.ToList();
         var interner = new ConstantInterner(constants);
         var functions = module.Functions.Select(function => LowerFunction(function, constants, module.Context, interner)).ToArray();
         if (functions.Select((function, index) => ReferenceEquals(function, module.Functions[index])).All(same => same))
-            return module.Blocks is null ? BlockBuilder.Form(module) : module;
-        return BlockBuilder.Form(module with { Constants = constants, Functions = functions });
+            return module;
+        return module with { Constants = constants, Functions = functions, Blocks = null };
     }
     private static FunctionCode LowerFunction(FunctionCode function, List<Value> constants, BindingContext context, ConstantInterner interner)
     {

@@ -20,14 +20,14 @@ public sealed partial class Interpreter
     {
         var resolved = await ResolveArgumentsAsync(arguments);
         Value[] paths = [origin.AsPath(resolved[0])];
-        await AwaitNativeDependenciesAsync("io.read_text", paths, token);
+        await AwaitNativeDependenciesAsync(NativeSignatures.Get("io.read_text"), paths, token);
         using var selectedSession = EnterPathSession(paths, token);
         var values = (RangeValue)await NativeRegistry.InvokeAsync(name, paths, origin, NativeCallback, token);
         await foreach (var value in values.Items.WithCancellation(token)) yield return value;
     }
     private async IAsyncEnumerable<Value> SelectAsync(PathValue directory, string pattern, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        await AwaitNativeDependenciesAsync("fs.directory_iterator", [directory], cancellationToken);
+        await AwaitNativeDependenciesAsync(NativeSignatures.Get("fs.directory_iterator"), [directory], cancellationToken);
         using var selectedSession = EnterPathSession([directory], cancellationToken);
         var values = await NativeRegistry.InvokeAsync("fs.directory_iterator", [directory], context, NativeCallback, cancellationToken) as RangeValue ?? throw new MsyncException("Directory iterator did not return a Range");
         var regex = new Regex(pattern, RegexOptions.CultureInvariant);

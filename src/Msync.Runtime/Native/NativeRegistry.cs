@@ -1,25 +1,48 @@
+using System.Collections.Concurrent;
 using Msync.Core;
 
 namespace Msync.Runtime;
 
 public static partial class NativeRegistry
 {
-    public static async ValueTask<Value> InvokeAsync(string name, IReadOnlyList<Value> arguments, RuntimeContext context,
-        Func<Value, IReadOnlyList<Value>, CancellationToken, ValueTask<Value>> invoke, CancellationToken cancellationToken = default)
+    internal sealed record Operation(NativeSignature Signature, string Group, string Member,
+        InstructionEffect Effects, bool UsesDependencies, bool OpensPathSession);
+
+    private static readonly ConcurrentDictionary<string, Operation> operations = new(StringComparer.Ordinal);
+
+    private static Operation Describe(NativeSignature signature)
+    {
+        string name = signature.Name;
+        int separator = name.IndexOf('.');
+        InstructionEffect effects = InstructionEffects.NativeEffects(name);
+        bool localMemory = (signature.Behavior.GetValueOrDefault() & NativeBehavior.LocalMemory) != 0;
+        bool external = !localMemory && !NativeEvaluation.DefersFileRead(name);
+        return new(signature, separator < 0 ? "" : name[..separator], name[(separator + 1)..], effects,
+            external && (effects & (InstructionEffect.Read | InstructionEffect.Write)) != 0,
+            external && signature.Effect != NativeEffect.Pure);
+    }
+
+    internal static Operation GetOperation(string name) => operations.GetOrAdd(name, static key =>
+        NativeSignatures.TryGet(key, out var signature) ? Describe(signature)
+            : throw new MsyncException($"Unknown native function '{key}'"));
+
+    public static ValueTask<Value> InvokeAsync(string name, IReadOnlyList<Value> arguments, RuntimeContext context,
+        Func<Value, IReadOnlyList<Value>, CancellationToken, ValueTask<Value>> invoke, CancellationToken cancellationToken = default) =>
+        InvokeAsync(GetOperation(name), arguments, context, invoke, cancellationToken);
+
+    internal static async ValueTask<Value> InvokeAsync(Operation native, IReadOnlyList<Value> arguments, RuntimeContext context,
+        Func<Value, IReadOnlyList<Value>, CancellationToken, ValueTask<Value>> invoke, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!NativeSignatures.TryGet(name, out NativeSignature? signature))
-            throw new MsyncException($"Unknown native function '{name}'");
+        NativeSignature signature = native.Signature;
         if (!signature.Variadic && arguments.Count != signature.Parameters.Count)
-            throw new MsyncException($"Native '{name}' expects {signature.Parameters.Count} arguments, received {arguments.Count}");
+            throw new MsyncException($"Native '{signature.Name}' expects {signature.Parameters.Count} arguments, received {arguments.Count}");
         if (context.DryRun && signature.Effect == NativeEffect.Write
             && (signature.Behavior.GetValueOrDefault() & NativeBehavior.LocalMemory) == 0)
             return signature.Result == TypeRef.Bool ? Value.True : Value.Null;
-        if (name == "cast") return CastOperation(arguments, context);
-        int separator = name.IndexOf('.');
-        string group = separator < 0 ? "" : name[..separator];
-        string operation = separator < 0 ? name : name[(separator + 1)..];
-        Value result = group switch
+        if (signature.Name == "cast") return CastOperation(arguments, context);
+        string operation = native.Member;
+        Value result = native.Group switch
         {
             "fs" => await FileSystemAsync(operation, arguments, context, cancellationToken, signature.Effect),
             "io" => await IOOperationAsync(operation, arguments, context, cancellationToken),
@@ -35,7 +58,7 @@ public static partial class NativeRegistry
             "text" => await TextBuilderOperations.InvokeAsync(operation, arguments, cancellationToken),
             "storage" => await IndexedStorageOperations.InvokeAsync(operation, arguments, context, cancellationToken),
             "shell" => ShellOperation(operation, arguments, context, cancellationToken),
-            _ => throw new MsyncException($"Native namespace '{group}' is not registered")
+            _ => throw new MsyncException($"Native namespace '{native.Group}' is not registered")
         };
         RetainRangeInputs(result, arguments, signature);
         return result;
