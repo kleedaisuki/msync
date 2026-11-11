@@ -46,8 +46,8 @@ public sealed partial class Interpreter
         }
         return values ?? arguments;
     }
-    private static async ValueTask<Value> ResolveAsync(Value value)
-        => value is DeferredValue deferred ? await deferred.Completion : value;
+    private static ValueTask<Value> ResolveAsync(Value value) =>
+        value is DeferredValue deferred ? new(deferred.Completion) : ValueTask.FromResult(value);
     private static async ValueTask<Value> ResolveResultAsync(Value value)
     {
         value = await ResolveAsync(value);
@@ -65,15 +65,20 @@ public sealed partial class Interpreter
     private static Value MapValue(Value value, TypeRef type, Func<Value, Value> apply, string? pathEndpoint = null)
     {
         if (value is not DeferredValue deferred) return apply(value);
-        async Task<Value> Complete() => apply(await deferred.Completion);
-        return new DeferredValue(Complete(), type, deferred.Processes, pathEndpoint);
+        return new DeferredValue(ApplyDeferredAsync(deferred.Completion, apply), type, deferred.Processes, pathEndpoint);
     }
     private static Value CombineValues(Value left, Value right, TypeRef type, Func<Value, Value, Value> apply, string? pathEndpoint = null)
     {
         if (left is not DeferredValue && right is not DeferredValue) return apply(left, right);
-        async Task<Value> Complete() => apply(await ResolveAsync(left), await ResolveAsync(right));
-        return new DeferredValue(Complete(), type, Processes(left).Concat(Processes(right)).Distinct().ToArray(), pathEndpoint);
+        return new DeferredValue(CombineDeferredAsync(left, right, apply), type,
+            Processes(left).Concat(Processes(right)).Distinct().ToArray(), pathEndpoint);
     }
+
+    private static async Task<Value> ApplyDeferredAsync(Task<Value> pending, Func<Value, Value> apply) =>
+        apply(await pending);
+
+    private static async Task<Value> CombineDeferredAsync(Value left, Value right, Func<Value, Value, Value> apply) =>
+        apply(await ResolveAsync(left), await ResolveAsync(right));
     private static int FirstDeferredArgument(IReadOnlyList<Value> arguments)
     {
         for (int index = 0; index < arguments.Count; index++)
