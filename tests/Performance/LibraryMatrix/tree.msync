@@ -1,0 +1,16 @@
+let Set = $std::containers::Set;
+let result = Set::new(Number);
+let indices = $std::ranges::iota(0, SIZE);
+let key = 0;
+let score = 0;
+for _ in indices {
+    key = (key + 40503) % 65536;
+    if Set::insert(result, 2 * key) { score = score + 1; };
+};
+key = 0;
+for _ in indices {
+    key = (key + 40503) % 65536;
+    if Set::contains(result, 2 * key) { score = score + 3; };
+    if not Set::contains(result, 2 * key + 1) { score = score + 5; };
+};
+score

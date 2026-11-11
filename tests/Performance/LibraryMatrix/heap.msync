@@ -1,0 +1,14 @@
+let Heap = $std::containers::Heap;
+let queue = Heap::new(Number);
+let key = 0;
+for _ in $std::ranges::iota(0, SIZE) {
+    key = (key + 40503) % 65536;
+    Heap::push(queue, 2 * key);
+};
+let score = 0;
+for expected in [HEAP_EXPECTED] {
+    let value = $std::storage::Buffer::get(queue::buffer, 0);
+    if value == expected { score = score + 1; };
+    Heap::pop(queue);
+};
+score

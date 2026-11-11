@@ -157,3 +157,7 @@ and reports all samples plus allocated bytes. Old and current algorithms execute
 in the same Native AOT image; this isolates primitive formatting/no-op allocation
 costs, not complete editor or CLI latency. JSON goes to stdout and the check's
 status goes to stderr. No performance threshold is an acceptance gate.
+
+The [five-language library matrix](LibraryMatrix/README.md) covers a checked
+red-black tree, heap, hash table and handwritten scalar SHA-256 kernel. It is
+an exploratory comparison, separate from the product latency journeys.

@@ -188,3 +188,17 @@ The full platform delivery consumes the canonical embedded module through
 `ordered_structures_journey.py`; it does not infer installed-module acceptance
 from source-prefix probes or repeat every local assertion matrix. The detailed
 image identities and final platform results belong to the delivery record.
+
+### Cross-runtime cost observation (0.8.6)
+
+The [library matrix](../../tests/Performance/LibraryMatrix/README.md) separates
+compile time from checked insertion, search and heap-drain work. With 8,192
+Number keys the source-language Set has tens of seconds of execution cost even
+from a pre-bound image. This is not a balance-invariant failure or evidence of
+a different asymptotic complexity. The current search path obtains every key
+through an indexed Scope and a single-element payload Range and invokes a
+comparison policy. Profile those individual steps before redesigning the tree.
+A typed fast path must still preserve comparator equivalence, nullable keys and
+ownership of arbitrary payloads. The simple benchmark-only linear-probing
+table is not an API replacement: it has no resizing, deletion or general key
+semantics.

@@ -1,0 +1,32 @@
+let Buffer = $std::storage::Buffer;
+fn slot(table, capacity: Number, value: Number) -> Number {
+    let mixed = (value * 2654435761) % 4294967296;
+    let index = $std::math::floor(mixed / (4294967296 / capacity));
+    loop {
+        let old = Buffer::get(table, index);
+        if old == -1 or old == value { return index; };
+        index = (index + 1) % capacity;
+    }
+};
+let capacity = 2 * SIZE;
+let table = Buffer::new($std::ranges::repeat(-1, capacity));
+let indices = $std::ranges::iota(0, SIZE);
+let key = 0;
+let score = 0;
+for _ in indices {
+    key = (key + 40503) % 65536;
+    let index = slot(table, capacity, 2 * key);
+    if Buffer::get(table, index) == -1 {
+        Buffer::set(table, index, 2 * key);
+        score = score + 1;
+    };
+};
+key = 0;
+for _ in indices {
+    key = (key + 40503) % 65536;
+    let index = slot(table, capacity, 2 * key);
+    if Buffer::get(table, index) == 2 * key { score = score + 3; };
+    let absent = slot(table, capacity, 2 * key + 1);
+    if Buffer::get(table, absent) == -1 { score = score + 5; };
+};
+score

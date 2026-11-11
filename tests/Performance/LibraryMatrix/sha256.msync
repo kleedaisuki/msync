@@ -1,0 +1,100 @@
+let constants = $std::storage::Buffer::new([ROUND_CONSTANTS]);
+
+scope Sha {
+    bits: $std::storage::Buffer::new([AND_NIBBLES]),
+    word: fn(buffer, index: Number) -> Number { $std::storage::Buffer::get(buffer, index) },
+
+    bit_and: fn(left: Number, right: Number) -> Number {
+        let a = left;
+        let b = right;
+        let place = 1;
+        let result = 0;
+        loop {
+            let al = a % 16;
+            let bl = b % 16;
+            result = result + place * Sha::word(Sha::bits, 16 * al + bl);
+            a = (a - al) / 16;
+            b = (b - bl) / 16;
+            place = place * 16;
+            if place == 4294967296 { break; };
+        };
+        result
+    },
+
+    bit_xor: fn(a: Number, b: Number) -> Number { a + b - 2 * Sha::bit_and(a, b) },
+    xor3: fn(a: Number, b: Number, c: Number) -> Number { Sha::bit_xor(Sha::bit_xor(a, b), c) },
+    shr: fn(a: Number, divisor: Number) -> Number { (a - a % divisor) / divisor },
+    rotr: fn(a: Number, divisor: Number) -> Number {
+        let lo = a % divisor;
+        (a - lo) / divisor + lo * (4294967296 / divisor)
+    },
+
+};
+
+let input = $std::storage::Buffer::new([INPUT_WORDS]);
+let w = $std::storage::Buffer::new($std::ranges::repeat(0, 64));
+let h0 = 1779033703;
+let h1 = 3144134277;
+let h2 = 1013904242;
+let h3 = 2773480762;
+let h4 = 1359893119;
+let h5 = 2600822924;
+let h6 = 528734635;
+let h7 = 1541459225;
+let base = 0;
+let modulus = 4294967296;
+loop {
+    if base == WORD_COUNT { break; };
+    let i = 0;
+    loop {
+        $std::storage::Buffer::set(w, i, Sha::word(input, base + i));
+        i = i + 1;
+        if i == 16 { break; };
+    };
+    loop {
+        let x = Sha::word(w, i - 15);
+        let y = Sha::word(w, i - 2);
+        let s0 = Sha::xor3(Sha::rotr(x, 128), Sha::rotr(x, 262144), Sha::shr(x, 8));
+        let s1 = Sha::xor3(Sha::rotr(y, 131072), Sha::rotr(y, 524288), Sha::shr(y, 1024));
+        $std::storage::Buffer::set(w, i, (Sha::word(w, i - 16) + s0 + Sha::word(w, i - 7) + s1) % modulus);
+        i = i + 1;
+        if i == 64 { break; };
+    };
+    let a = h0;
+    let b = h1;
+    let c = h2;
+    let d = h3;
+    let e = h4;
+    let f = h5;
+    let g = h6;
+    let h = h7;
+    i = 0;
+    loop {
+        let s1 = Sha::xor3(Sha::rotr(e, 64), Sha::rotr(e, 2048), Sha::rotr(e, 33554432));
+        let ch = Sha::bit_xor(Sha::bit_and(e, f), Sha::bit_and(modulus - 1 - e, g));
+        let t1 = (h + s1 + ch + Sha::word(constants, i) + Sha::word(w, i)) % modulus;
+        let s0 = Sha::xor3(Sha::rotr(a, 4), Sha::rotr(a, 8192), Sha::rotr(a, 4194304));
+        let maj = Sha::xor3(Sha::bit_and(a, b), Sha::bit_and(a, c), Sha::bit_and(b, c));
+        let t2 = (s0 + maj) % modulus;
+        h = g;
+        g = f;
+        f = e;
+        e = (d + t1) % modulus;
+        d = c;
+        c = b;
+        b = a;
+        a = (t1 + t2) % modulus;
+        i = i + 1;
+        if i == 64 { break; };
+    };
+    h0 = (h0 + a) % modulus;
+    h1 = (h1 + b) % modulus;
+    h2 = (h2 + c) % modulus;
+    h3 = (h3 + d) % modulus;
+    h4 = (h4 + e) % modulus;
+    h5 = (h5 + f) % modulus;
+    h6 = (h6 + g) % modulus;
+    h7 = (h7 + h) % modulus;
+    base = base + 16;
+};
+scope { h0: h0, h1: h1, h2: h2, h3: h3, h4: h4, h5: h5, h6: h6, h7: h7 }
