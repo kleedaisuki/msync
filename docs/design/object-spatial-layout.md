@@ -138,6 +138,49 @@ doubles remain eligible for numeric placement. Only immutable Number references
 are retained by this one-pattern policy; no global constant set, per-field boxed
 cache or nonnumeric managed payload is kept.
 
+### Page-level descriptors for homogeneous numeric rows
+
+Previously each packed row allocated a storage object with references to
+its shape, page and reference payload, even if its reference payload was
+empty. The row offset now belongs to the Scope handle; numeric-only rows
+on the same page share one storage descriptor. Mixed rows still own their
+references, and ordinary reference storage keeps its existing type
+dispatch. The shared descriptor contains no sibling rows or allocator
+state. A logical field index is still checked against the shape before
+adding the physical row offset; a neighboring row is not a valid field
+of this Scope. Promotion detaches only the promoted handle, not the page.
+
+A managed .NET 10 component test on Linux x86-64 (CPU 12,
+`DOTNET_TieredCompilation=0`, three AB/BA pairs) built 32,768 distinct
+four-Number rows on 136 pages, verified each field and identity, and
+scanned them in declaration order. The candidate removes 32,632 separate
+storage objects and reduces construction traffic from 9,187,640 to 7,620,224
+bytes. Approximate live heap after a forced collection falls from
+4,206,072 to 2,638,648 bytes (-37.3%). The ordinary nonpacked control
+retains the same 6,553,648 allocated bytes and 6,554,824 live bytes.
+All six scans allocate zero bytes. Raw scan elapsed time improved in the
+three packed pairs, but the controls also moved with host load; this is
+not a standalone cache-miss or latency result.
+
+A separate paired VM comparison held the exact four format-5 executable
+artifacts, Runtime, compiler and optimizer fixed, changing only Core.
+For 8,192 records each, the computed numeric case falls from 3,559,176 to
+3,167,568 bytes per execution, and mixed records from 3,362,208 to
+3,296,680 bytes. Shared literals and reference-only allocation are
+unchanged. Four alternating fork pairs with eight checked observations
+per fork give pooled descriptive elapsed medians of 42.19 to 39.13 ms
+(computed), 30.75 to 34.32 ms (shared literals), 37.08 to 39.24 ms (mixed),
+and 30.59 to 32.11 ms (reference-only). Elapsed differences across the
+control forks are mixed; prefer the allocation and retention results
+over a broad VM throughput claim. An earlier `double[]` type test in
+the accessor materially regressed even the plain control and was not
+retained. The accepted representation uses the existing storage-class
+discriminator and leaves the public artifact ABI unchanged.
+
+Receipts (build manifests, component and exact VM samples, focused test
+output and artifact identities) are in
+`artifacts/benchmarks/library-matrix-v086/locality-deep/`.
+
 ## Preparation applicability versus physical scans
 
 The first matched source control showed why raw-VM field access alone is not an

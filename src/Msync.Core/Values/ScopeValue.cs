@@ -5,6 +5,7 @@ namespace Msync.Core;
 public sealed record ScopeValue : Value, IReadOnlyDictionary<string, Value>
 {
     private object fields;
+    private readonly int rowOffset;
     public bool Equals(ScopeValue? other) => ReferenceEquals(this, other);
     public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
 
@@ -23,10 +24,11 @@ public sealed record ScopeValue : Value, IReadOnlyDictionary<string, Value>
         Layout = layout;
         this.fields = fields;
     }
-    internal ScopeValue(ScopeLayout layout, PackedScopeStorage fields)
+    internal ScopeValue(ScopeLayout layout, PackedScopeStorage fields, int rowOffset)
     {
         Layout = layout;
         this.fields = fields;
+        this.rowOffset = rowOffset;
     }
     internal bool IsPacked => fields is PackedScopeStorage;
     public ScopeValue(IReadOnlyDictionary<string, Value> members, int allocationSite) : this(members) => AllocationSite = allocationSite;
@@ -44,13 +46,13 @@ public sealed record ScopeValue : Value, IReadOnlyDictionary<string, Value>
         value = Value.Null; return false;
     }
     public Value GetField(int offset) => Read(fields is Value[] direct ? direct[offset]
-        : ((PackedScopeStorage)fields).GetField(offset));
+        : ((PackedScopeStorage)fields).GetField(rowOffset, offset));
     // Null denotes a raw numeric operand, not the language's Null value.
     public Value? GetOperandField(int offset, out double number)
     {
         if (fields is PackedScopeStorage packed)
         {
-            var value = packed.GetOperandField(offset, out number);
+            var value = packed.GetOperandField(rowOffset, offset, out number);
             return value is null ? null : Read(value);
         }
         number = 0;
@@ -58,7 +60,7 @@ public sealed record ScopeValue : Value, IReadOnlyDictionary<string, Value>
     }
     public bool TryGetNumber(int offset, out double number)
     {
-        if (fields is PackedScopeStorage packed) return packed.TryGetNumber(offset, out number);
+        if (fields is PackedScopeStorage packed) return packed.TryGetNumber(rowOffset, offset, out number);
         Value value = Read(((Value[])fields)[offset]);
         if (value is NumberValue numeric) { number = numeric.Data; return true; }
         number = 0;
@@ -66,7 +68,7 @@ public sealed record ScopeValue : Value, IReadOnlyDictionary<string, Value>
     }
     public void SetNumber(int offset, double number)
     {
-        if (fields is PackedScopeStorage packed) { packed.SetNumber(offset, number); return; }
+        if (fields is PackedScopeStorage packed) { packed.SetNumber(rowOffset, offset, number); return; }
         SetField(offset, new NumberValue(number));
     }
     public bool IsField(int offset, string name) => (uint)offset < (uint)Layout.Count
@@ -84,8 +86,8 @@ public sealed record ScopeValue : Value, IReadOnlyDictionary<string, Value>
         if (fields is PackedScopeStorage packed)
         {
             if (!packed.IsNumeric(offset)) { packed.SetField(offset, value); return; }
-            if (value is NumberValue number) { packed.SetNumber(offset, number.Data); return; }
-            fields = packed.Materialize();
+            if (value is NumberValue number) { packed.SetNumber(rowOffset, offset, number.Data); return; }
+            fields = packed.Materialize(rowOffset);
         }
         Value[] direct = (Value[])fields;
         if (direct[offset] is CellValue cell) cell.Data = value;

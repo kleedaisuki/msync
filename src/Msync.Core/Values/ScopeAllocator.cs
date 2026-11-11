@@ -31,11 +31,11 @@ public sealed class ScopeAllocator
             if (!candidate.Matches(values, out bool shared)) continue;
             // Repeated immutable references already share their numeric payload.
             return shared ? Plain(layout, values, numbers, allocationSite)
-                : new(layout, candidate.Allocate(values, numbers)) { AllocationSite = allocationSite };
+                : candidate.Allocate(layout, allocationSite, values, numbers);
         }
         var shape = new NumericScopePool(values, numericCount);
         candidates.Add(shape);
-        return new(layout, shape.Allocate(values, numbers)) { AllocationSite = allocationSite };
+        return shape.Allocate(layout, allocationSite, values, numbers);
     }
 
     private static ScopeValue Plain(ScopeLayout layout, ReadOnlySpan<Value?> values,
@@ -73,6 +73,7 @@ internal sealed class NumericScopePool
     private readonly int maximumRows;
     private readonly NumberValue?[] previousNumbers;
     private double[]? page;
+    private PackedScopeStorage? numericPage;
     private int used;
     private int nextRows = 1;
 
@@ -98,17 +99,30 @@ internal sealed class NumericScopePool
         return true;
     }
 
-    internal PackedScopeStorage Allocate(ReadOnlySpan<Value?> values, ReadOnlySpan<double> numbers)
+    internal ScopeValue Allocate(ScopeLayout layout, int site, ReadOnlySpan<Value?> values, ReadOnlySpan<double> numbers)
     {
         if (page is null || used == page.Length)
         {
             page = new double[checked(nextRows * numericCount)];
+            // Reference-free rows can share their storage descriptor and page.
+            if (referenceCount == 0) numericPage = new(shape, page, []);
             used = 0;
             nextRows = Math.Min(maximumRows, nextRows * 2);
         }
-        var references = referenceCount == 0 ? [] : new Value[referenceCount];
         int offset = used;
         used += numericCount;
+        if (numericPage is not null)
+        {
+            for (int index = 0; index < values.Length; index++)
+            {
+                var value = values[index] as NumberValue;
+                page[offset + index] = value is null ? numbers[index] : value.Data;
+                previousNumbers[index] = value;
+            }
+            return new(layout, numericPage, offset) { AllocationSite = site };
+        }
+
+        var references = new Value[referenceCount];
         for (int index = 0; index < shape.Count; index++)
         {
             int slot = shape.Slot(index);
@@ -119,13 +133,13 @@ internal sealed class NumericScopePool
             }
             else references[-slot - 1] = values[index]!;
         }
-        return new(shape, page, offset, references);
+        return new(layout, new PackedScopeStorage(shape, page, references), offset) { AllocationSite = site };
     }
 }
 
-internal sealed class PackedScopeStorage(NumericScopeShape shape, double[] page, int offset, Value[] references)
+internal sealed class PackedScopeStorage(NumericScopeShape shape, double[] page, Value[] references)
 {
-    internal Value? GetOperandField(int field, out double number)
+    internal Value? GetOperandField(int offset, int field, out double number)
     {
         int slot = shape.Slot(field);
         if (slot >= 0) { number = page[offset + slot]; return null; }
@@ -133,13 +147,13 @@ internal sealed class PackedScopeStorage(NumericScopeShape shape, double[] page,
         return references[-slot - 1];
     }
 
-    internal Value GetField(int field)
+    internal Value GetField(int offset, int field)
     {
         int slot = shape.Slot(field);
         return slot >= 0 ? new NumberValue(page[offset + slot]) : references[-slot - 1];
     }
 
-    internal bool TryGetNumber(int field, out double number)
+    internal bool TryGetNumber(int offset, int field, out double number)
     {
         int slot = shape.Slot(field);
         if (slot >= 0) { number = page[offset + slot]; return true; }
@@ -154,7 +168,7 @@ internal sealed class PackedScopeStorage(NumericScopeShape shape, double[] page,
     internal CellValue? GetCell(int field) => shape.Slot(field) is var slot && slot < 0
         ? references[-slot - 1] as CellValue : null;
 
-    internal void SetNumber(int field, double number)
+    internal void SetNumber(int offset, int field, double number)
     {
         int slot = shape.Slot(field);
         if (slot >= 0) page[offset + slot] = number;
@@ -168,10 +182,10 @@ internal sealed class PackedScopeStorage(NumericScopeShape shape, double[] page,
         else references[slot] = value;
     }
 
-    internal Value[] Materialize()
+    internal Value[] Materialize(int offset)
     {
         Value[] values = new Value[shape.Count];
-        for (int index = 0; index < values.Length; index++) values[index] = GetField(index);
+        for (int index = 0; index < values.Length; index++) values[index] = GetField(offset, index);
         return values;
     }
 }

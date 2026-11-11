@@ -70,11 +70,40 @@ internal static class SpatialLayoutChecks
             foreach (int field in new[] { 0, 64, 129 })
                 Check(wide.GetField(field) is NumberValue number && number.Data == field + 1, "Sparse wide numeric offsets changed values.");
             Check(wide.GetField(128) is StringValue { Data: "reference" }, "Wide reference offset changed.");
+            ScopeValue[] dense = Enumerable.Range(0, 32).Select(index => create(numeric,
+                [new NumberValue(index), new NumberValue(index + 1),
+                 new NumberValue(index + 2), new NumberValue(index + 3)])).ToArray();
+            Check(dense.All(IsPacked), "A numeric-only row did not use packed storage.");
+            var neighbors = dense.GroupBy(NumericPage, ReferenceEqualityComparer.Instance).First(group => group.Count() >= 2)
+                .Take(2).ToArray();
+            Check(ReferenceEquals(FieldStorage(neighbors[0]), FieldStorage(neighbors[1])),
+                "Rows in one reference-free page still have separate storage descriptors.");
+            Check(neighbors[0].GetOperandField(2, out double raw) is null
+                && raw == ((NumberValue)neighbors[0]["c"]).Data, "Dense read did not return a raw numeric operand.");
+            foreach (int offset in new[] { -1, numeric.Count })
+            {
+                try
+                {
+                    _ = neighbors[0].GetOperandField(offset, out _);
+                    throw new InvalidOperationException("Dense row read crossed its logical boundary.");
+                }
+                catch (IndexOutOfRangeException) { checks++; }
+            }
+            long neighborBits = Bits(neighbors[1]["a"]);
+            neighbors[0].SetNumber(0, BitConverter.Int64BitsToDouble(long.MinValue));
+            Check(Bits(neighbors[0]["a"]) == long.MinValue, "Dense row store changed the numeric bits.");
+            var denseCell = new CellValue(new NumberValue(17));
+            neighbors[0].SetField(0, denseCell);
+            neighbors[0].SetNumber(0, 19);
+            Check(!IsPacked(neighbors[0]) && IsPacked(neighbors[1]) && Bits(neighbors[1]["a"]) == neighborBits,
+                "Dense promotion changed a neighboring row.");
+            Check(neighbors[0].TryGetFieldCell(0, out var fieldCell) && ReferenceEquals(fieldCell, denseCell)
+                && fieldCell.Data is NumberValue { Data: 19 }, "Dense promotion lost the captured location.");
             ScopeValue[] clustered = Enumerable.Range(0, 32).Select(index => Create(create, layout, index, "clustered")).ToArray();
             HashSet<double[]> pages = new(ReferenceEqualityComparer.Instance);
             foreach (ScopeValue row in clustered)
             {
-                Check(IsPacked(row), "A homogeneous numeric row did not use packed storage.");
+                Check(IsPacked(row), "A mixed numeric row did not use packed storage.");
                 pages.Add(NumericPage(row));
             }
             Check(pages.Count < clustered.Length, "Each numeric row still owns a separate numeric array.");
@@ -181,11 +210,14 @@ internal static class SpatialLayoutChecks
 
     private static double[] NumericPage(ScopeValue value)
     {
-        object storage = typeof(ScopeValue).GetField("fields", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(value)!;
+        object storage = FieldStorage(value);
         FieldInfo page = storage.GetType().GetFields(BindingFlags.Instance | BindingFlags.NonPublic)
             .Single(field => field.FieldType == typeof(double[]));
         return (double[])page.GetValue(storage)!;
     }
+
+    private static object FieldStorage(ScopeValue value) =>
+        typeof(ScopeValue).GetField("fields", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(value)!;
 
     private delegate bool NumberReader(ScopeValue value, int field, out double number);
     private delegate void NumberWriter(ScopeValue value, int field, double number);
