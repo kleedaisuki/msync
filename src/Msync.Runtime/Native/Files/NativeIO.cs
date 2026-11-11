@@ -12,6 +12,7 @@ public static partial class NativeRegistry
     private static async ValueTask<Value> IOOperationAsync(string name, IReadOnlyList<Value> args,
         RuntimeContext context, CancellationToken token)
     {
+        if (StandardIO(name, args, context, token) is { } standard) return await standard;
         PathValue path = context.AsPath(args[0]);
         if (name == "read_lines") return new RangeValue(ReadLines(path, context, token), TypeRef.String);
         if (name == "read_bytes") return new RangeValue(ReadBytes(path, context, token), TypeRef.Number);

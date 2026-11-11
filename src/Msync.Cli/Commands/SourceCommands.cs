@@ -4,8 +4,8 @@ namespace Msync.Cli;
 
 internal static class SourceCommands
 {
-    internal static ValueTask<string> ReadSource(string file) => file == "-"
-        ? new(Console.In.ReadToEndAsync()) : ValueTask.FromResult(File.ReadAllText(file));
+    internal static ValueTask<string> ReadSource(string file, TextReader? input = null) => file == "-"
+        ? new((input ?? Console.In).ReadToEndAsync(CancellationToken.None)) : ValueTask.FromResult(File.ReadAllText(file));
     internal static int Format(string file, CommandOptions options)
     {
         string original = ReadSource(file).GetAwaiter().GetResult();

@@ -10,6 +10,7 @@ internal sealed class ReplSession(ExecutionOptions options, int optimization, st
     private static readonly string ShellPrelude = CreateShellPrelude();
     private readonly CompilerSession compiler = new(optimization: optimization);
     private readonly ExecutionSession execution = new(options);
+    private readonly TextReader? inputReader = Console.IsInputRedirected ? options.Input : null;
     private readonly SubmissionSyntax syntax = new();
     private readonly object cancellationGate = new();
     private CancellationTokenSource? active;
@@ -72,7 +73,7 @@ internal sealed class ReplSession(ExecutionOptions options, int optimization, st
     {
         if (prompt is not null) return await prompt.ReadAsync();
         if (!Console.IsInputRedirected) Console.Write(pending.Length == 0 ? "> " : "· ");
-        string? line = Console.ReadLine();
+        string? line = await (inputReader ?? Console.In).ReadLineAsync(CancellationToken.None);
         if (line is null) return new(TerminalInputKind.EndOfInput, "", CancellationToken.None);
         if (Volatile.Read(ref interruptedInput)) { pending = ""; Volatile.Write(ref interruptedInput, false); }
         return new(TerminalInputKind.Text, pending + line + "\n", CancellationToken.None);

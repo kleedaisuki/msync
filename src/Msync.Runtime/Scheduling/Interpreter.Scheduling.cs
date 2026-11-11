@@ -154,9 +154,12 @@ public sealed partial class Interpreter
         var effects = InstructionEffects.NativeEffects(name);
         if ((effects & (InstructionEffect.Read | InstructionEffect.Write)) == 0) return;
         await ordering;
-        var operands = arguments.Where((value, index) => index < signature.Parameters.Count
-            && (signature.Parameters[index].Kind & TypeKind.Path) != 0 && value is PathValue or StringValue)
-            .Select(context.AsPath).ToArray();
+        List<PathValue>? operands = null;
+        for (int index = 0; index < Math.Min(arguments.Count, signature.Parameters.Count); index++)
+            if ((signature.Parameters[index].Kind & TypeKind.Path) != 0
+                && arguments[index] is PathValue or StringValue)
+                (operands ??= []).Add(context.AsPath(arguments[index]));
+        if (operands is null) return;
         await AwaitNamespacePublicationsAsync(operands);
         var filesystem = new PlanFileSystem(context, planResources, cancellationToken);
         var entries = operands.Select(path => Key(filesystem.Resource(path, true))).ToArray();

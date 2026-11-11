@@ -8,6 +8,7 @@ public sealed class RuntimeContext
     public string HomeDirectory { get; }
     public string? SourceFile { get; }
     public bool DryRun { get; }
+    public TextReader Input => input ?? Console.In;
     public TextWriter Output { get; }
     public TextWriter Error { get; }
     public int Jobs { get; }
@@ -16,6 +17,7 @@ public sealed class RuntimeContext
     public long? SpoolLimit { get; }
     public Action<RuntimeObservation>? Observe { get; }
     public Action<MsyncException>? ReportError { get; }
+    private readonly TextReader? input;
     private readonly Action<string>? workingDirectoryChanged;
     private RuntimeContext? directoryCapture;
     public RuntimeContext(ExecutionOptions? options = null, BindingContext? binding = null)
@@ -25,6 +27,7 @@ public sealed class RuntimeContext
         HomeDirectory = binding?.HomeDirectory ?? HostContext.HomeDirectory;
         SourceFile = binding?.SourceFile ?? options.SourceFile;
         DryRun = options.DryRun;
+        input = options.Input;
         Output = options.Output ?? Console.Out;
         Error = options.Error ?? Console.Error;
         ReportError = options.ReportError;
@@ -38,6 +41,7 @@ public sealed class RuntimeContext
         HomeDirectory = source.HomeDirectory;
         SourceFile = source.SourceFile;
         DryRun = source.DryRun;
+        input = source.input;
         Output = source.Output;
         Error = source.Error;
         ReportError = source.ReportError;

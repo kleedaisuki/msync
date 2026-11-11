@@ -4,6 +4,12 @@ using Msync.Compiler;
 using Msync.Core;
 using Msync.Runtime;
 
+if (args.FirstOrDefault() == "--standard-streams")
+{
+    await StandardStreamChecks.RunAsync();
+    return;
+}
+
 if (args.FirstOrDefault() is "--child-echo" or "--child-identity")
 {
     string content = await Console.In.ReadToEndAsync();

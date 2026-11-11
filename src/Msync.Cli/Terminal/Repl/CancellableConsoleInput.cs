@@ -52,7 +52,7 @@ internal sealed class CancellableConsoleInput : IDisposable
             }
             cancellationToken.ThrowIfCancellationRequested();
             if ((descriptors![0].Returned & (8 | 16 | 32)) != 0)
-                throw new EndOfStreamException("Terminal input closed during SSH authentication.");
+                throw new EndOfStreamException("Foreground terminal input closed.");
         }
         cancellationToken.ThrowIfCancellationRequested();
         return Console.ReadKey(intercept: true);

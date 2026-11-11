@@ -15,6 +15,15 @@ public static partial class NativeSignatures
         Add("io.write_bytes", TypeRef.Null, NativeEffect.Write, path, new(TypeKind.Range, TypeRef.Number));
         Add("io.append_bytes", TypeRef.Null, NativeEffect.Write, path, new(TypeKind.Range, TypeRef.Number));
         Add("io.file_size", TypeRef.Number, NativeEffect.Read, path);
+        Add("io.read_line", TypeRef.String.WithNull, NativeEffect.Read);
+        Add("io.read_stdin", TypeRef.String, NativeEffect.Read);
+        // The range borrows a live input reader and must not become a planner constant.
+        result.Add("io.stdin_lines", new("io.stdin_lines", [], new(TypeKind.Range, TypeRef.String),
+            NativeEffect.Read, Behavior: NativeBehavior.Deferred));
+        foreach (string name in new[] { "io.print", "io.println", "io.eprint", "io.eprintln" })
+            Add(name, TypeRef.Null, NativeEffect.Write, TypeRef.String);
+        Add("io.flush", TypeRef.Null, NativeEffect.Write);
+        Add("io.flush_error", TypeRef.Null, NativeEffect.Write);
         Add("process.spawn", TypeRef.Process, NativeEffect.Write, path, new(TypeKind.Range));
         Add("process.pid", TypeRef.Number, NativeEffect.Read, TypeRef.Process);
         Add("process.running", TypeRef.Bool, NativeEffect.Read, TypeRef.Process);

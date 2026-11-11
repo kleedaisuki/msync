@@ -8,6 +8,26 @@ native fn write_bytes(path: Path | String, bytes: Range<Number>) -> Null;
 native fn append_bytes(path: Path | String, bytes: Range<Number>) -> Null;
 native fn file_size(path: Path | String) -> Number;
 
+# Borrow the execution's text streams. Empty lines are Strings; only EOF is Null.
+native fn read_line() -> String?;
+native fn read_stdin() -> String;
+# Single-pass, lazy lines from the same stdin reader, without line terminators.
+native fn stdin_lines() -> Range<String>;
+
+# Raw text output. Use $std::text::format explicitly for brace formatting.
+native fn print(text: String) -> Null;
+native fn println(text: String) -> Null;
+native fn eprint(text: String) -> Null;
+native fn eprintln(text: String) -> Null;
+native fn flush() -> Null;
+native fn flush_error() -> Null;
+
+fn prompt(text: String) -> String? {
+    print(text);
+    flush();
+    read_line()
+};
+
 fn read(path) { read_text(path) };
 fn lines(path) { read_lines(path) };
 fn bytes(path) { read_bytes(path) };

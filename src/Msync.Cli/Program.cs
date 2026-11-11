@@ -59,13 +59,16 @@ internal static class Program
                 SpoolLimit = configuration.SpoolLimit is { } limit ? checked((long)limit) : null
             };
             telemetry = TelemetrySession.TryOpen(configuration, options.Command, options.File, options.TracePath, options.TelemetryDatabase, options.NoTelemetry);
-            if (options.Command == "repl") return Complete(await Repl(options, telemetry, configuration), telemetry);
+            bool executes = options.Command is "run" or "run-ir" or "repl";
+            if (executes) consoleEncoding ??= ConsoleEncodingScope.Open(redirectedText: true);
+            using TextReader? input = executes ? (TextReader?)RedirectedTextInput.Open() ?? new TerminalProgramInput() : null;
+            if (options.Command == "repl") return Complete(await Repl(options, telemetry, configuration, input), telemetry);
             if (options.Command == "doctor") return Complete(Doctor(), telemetry);
             string file = options.File ?? throw new ArgumentException("A source or artifact filename is required; use --help for commands.");
             if (options.Command == "fmt") return Complete(Format(file, options), telemetry);
             bool hirInput = HirCommands.IsArtifact(file);
             bool binary = hirInput || IsArtifact(file);
-            string? source = binary ? null : await ReadSource(file);
+            string? source = binary ? null : await ReadSource(file, input);
             if (source is not null) snapshot = new(file, source);
             long compileStart = Stopwatch.GetTimestamp();
             HirModule? semanticInput = hirInput ? HirArtifact.Read(file) : null;
@@ -132,7 +135,7 @@ internal static class Program
                     PrintPlan(module, color);
                     return Complete(0, telemetry);
                 }
-                Interpreter interpreter = new(module, RuntimeOptions(options, options.SourceFile ?? (binary || file == "-" ? null : Path.GetFullPath(file)), telemetry, color, snapshot), cancellation.Token);
+                Interpreter interpreter = new(module, RuntimeOptions(options, options.SourceFile ?? (binary || file == "-" ? null : Path.GetFullPath(file)), telemetry, color, snapshot, input), cancellation.Token);
                 await interpreter.ExecuteAsync(cancellation.Token);
                 return Complete(interpreter.FailedTransfers == 0 ? 0 : 1, telemetry);
             }
@@ -155,16 +158,17 @@ internal static class Program
     }
 
     private static ExecutionOptions RuntimeOptions(CommandOptions options, string? sourceFile, TelemetrySession? telemetry,
-        string color, SourceSnapshot? snapshot = null) =>
+        string color, SourceSnapshot? snapshot = null, TextReader? input = null) =>
         new(SourceFile: sourceFile, DryRun: options.DryRun, Jobs: options.Jobs, BufferSize: options.BufferSize,
             MemoryLimit: options.MemoryLimit, SpoolLimit: options.SpoolLimit, Observe: telemetry is null ? null : telemetry.Observe)
         {
+            Input = input,
             ReportError = error => TerminalPresentation.Error(error, color, snapshot,
                 "Check the source, destination and permissions, then retry. Completed transfers are retained.")
         };
 
-    private static Task<int> Repl(CommandOptions options, TelemetrySession? telemetry, Configuration configuration) =>
-        new ReplSession(RuntimeOptions(options, null, telemetry, configuration.Color), options.Optimization, configuration.Color).RunAsync();
+    private static Task<int> Repl(CommandOptions options, TelemetrySession? telemetry, Configuration configuration, TextReader? input) =>
+        new ReplSession(RuntimeOptions(options, null, telemetry, configuration.Color, input: input), options.Optimization, configuration.Color).RunAsync();
 
     private static int Doctor()
     {
