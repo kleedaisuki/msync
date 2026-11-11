@@ -247,6 +247,11 @@ same mutable location as ordinary closures, rather than a copied namespace or
 an independently initialized singleton. A named Scope expression supplies its
 name inside that expression; a declaration also binds it in the enclosing scope.
 
+Fields form a named mapping. A Scope does not expose address arithmetic or
+promise declaration order for storage, display, or enumeration. Initializer
+expressions still evaluate in source order; changing slot placement must not
+reorder their effects or change the locations captured by closures.
+
 `scope { ... }` constructs a fresh instance each time it is evaluated. Thus a
 named namespace can expose an anonymous factory for independent objects:
 

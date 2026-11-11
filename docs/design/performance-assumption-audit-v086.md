@@ -288,7 +288,7 @@ Treat these as separate contracts, not different views of one universal
 
 | Layer | Observable commitment | Implementation freedom |
 | --- | --- | --- |
-| Scope and captures | Fresh anonymous identities, one named instance per program/session, stable logical names and enumeration order, fixed field types, shared updates through aliases and cells | Field addresses, box identity of Numbers, contiguous layout, allocation granularity, and even whether a proved nonescaping object is allocated |
+| Scope and captures | Fresh anonymous identities, one named instance per program/session, stable field names and types, shared updates through aliases and cells | Field order and addresses, box identity of Numbers, contiguous layout, allocation granularity, and even whether a proved nonescaping object is allocated |
 | Scalar execution | Values, selected failure and effects, strict binary64 behavior | Slot representation, transport of arguments, frame allocation, order of independent non-observable operations |
 | Finite external work | Selected endpoint/operand, resource dependencies, directional fences, demanded results and operation failures | Graph shape, batch granularity, number and order of independent workers |
 
@@ -431,3 +431,50 @@ passed the artifact suite against that exact CLI. The final Windows x64
 managed target built cleanly; the candidate has not run on a Windows host.
 Exact binary hashes, samples and journey receipts are under
 `artifacts/benchmarks/library-matrix-v086/deep-integrated/`.
+
+## Phase ownership follow-up: no portable optimizer in binding
+
+The previous feature gate still sent the **whole** image to the portable
+optimizer when one operation could use new context. That did not fix the
+phase boundary. Binding now performs relocation, local contextual folding
+in the existing lowering scan, and trace placement. Adjacent constant
+operands can fold without building a data-flow graph; a jump into the
+interior prevents that rewrite. Other expressions stay in the bytecode,
+not on a fallback route through the portable optimizer. Contextual I/O
+preparation still owns selected filesystem observations and transfer
+dependencies. The VM does not revisit these decisions.
+
+The producer/consumer audit yielded three further concrete changes:
+
+| Phase | Owned facts and removed work |
+| --- | --- |
+| Artifact handoff | The CLI encodes compiler output or reader-owned images without validating the same module again. Decoders still handle external format/shape errors; the general writer for explicitly assembled modules retains its existing checks. The bytecode reader consumes existing operand slices instead of allocating temporary arrays just to verify them. |
+| Lowering and VM | Scope initialization stays in source order, while HIR lowering emits a canonical slot mapping independent of declaration order. Permuted declarations share a layout; small layouts use inline names instead of a per-layout hash map. The compiler/reader establish direct-call arity and construction count. Runtime checks remain for a genuinely indirect callable, not every direct instruction. |
+| Session and I/O | Stable REPL entry slots do not prohibit intraprocedural scalar replacement in private callables. Unused `max_streams`/progress settings are parsed but do not gate execution. Owned local replacement cohorts register their source reads and replaced root; only endangered source members are staged. |
+
+This amends C01 (owned local replacement only), C04 (private intraprocedural
+passes), C05 and C06 of the concurrent C# audit. Lazy producers and merges
+through existing directories still need their own admission footprints;
+namespace identity reuse and Windows reparse-tag classification are separate
+work. No claim is made that the whole fallback family has disappeared.
+
+For the mixed-control workload, a real literal transfer was prepended to
+the frozen 8,192-key Heap source and compiled once with `0c55773`. The same
+`.mso` was bound by the two Linux Native AOT CLIs in six alternating
+fresh-process pairs on CPU 5, after one untimed pair. The bind median
+(including load and output) was **2,027.2 → 36.9 ms**. Both executable
+artifacts produced the expected score (8,192) and exact transferred bytes.
+The executable bytes need not match; the bound code no longer receives a
+second portable transformation. This is not a throughput claim for other
+workloads. The phase separation is consistent with
+[LLVM's analysis invalidation model](https://llvm.org/docs/NewPassManager.html),
+but the performance numbers are specific to msync.
+
+The combined CLI passed 27 gated journeys, including independent replacement
+and truly dependent replacement in all three source/object/executable routes.
+A residual mixed-source replacement's `openat` trace shows staging only
+for the file inside the replaced directory; the unrelated input was opened
+directly and the final destination bytes matched. The same fixture ran with
+an unused `max_streams = 0` and negative unused progress settings. Raw
+timings, binary identities, probe source and acceptance data are in
+`artifacts/benchmarks/library-matrix-v086/phase-ownership/`.

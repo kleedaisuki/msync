@@ -71,11 +71,11 @@ their existing task ownership, not a new global memory drain.
 
 ## Compact physical layouts
 
-A Scope's field order is immutable. Physical instances can therefore share a
-layout containing ordered names and one name-to-offset index while owning a
-fresh contiguous array of Value references. Shared layout metadata is not shared
-mutable field storage. A slot containing a CellValue must keep that exact cell
-when an alias or method captures the field.
+A Scope's named fields are fixed; the source does not specify their slot order.
+Physical instances can share an immutable name-to-slot layout while owning
+fresh mutable storage. Shared layout metadata is not shared field storage.
+A slot containing a CellValue must keep that exact cell when an alias or method
+captures the field.
 
 This is a logical Value-slot layout, not the CLR's private object-header layout
 or a promise of unmanaged addresses. Path/String/Function/Connection fields are

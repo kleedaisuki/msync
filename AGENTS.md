@@ -53,13 +53,20 @@
   inputs, execute directly. The VM never calls the planner, rewrites a frame's
   instructions, or refreshes a prepared graph.
   See [the contextual backend contract](docs/design/contextual-io-backend.md).
-- Scope identity and logical field order do not promise physical contiguity.
+- Scope fields are named; declaration/enumeration order and slot layout are
+  not language contracts. Initializer evaluation order is independent of
+  storage placement, and member names, fixed storage types and aliases persist.
   VM factories may place numeric payloads in shape/allocation-site pages while
   each row owns its managed references. Immutable descriptors contain no pool,
   current-page or prior-input ownership; public plain constructors remain plain.
   Raw numeric Scope operands use the VM double sidecar, with Value materialization
   and Cell promotion only at their semantic boundaries. See
   [spatial layout](docs/design/object-spatial-layout.md).
+- The compiler owns machine-independent optimization. Binding never replays it:
+  it relocates operands, folds contextual operands and places traces.
+  External artifacts are checked by their reader; compiler-owned CLI exports
+  encode directly. The VM consumes direct call arity and constructor sizes from
+  those producers, not from per-execution revalidation.
 - Affine scan scheduling models eager snapshot ordinals and access/dependence
   facts before choosing fusion. Readonly numeric Scope scans may fuse even when
   rows alias; field stores, captures, lazy effects and cross-scan dependencies

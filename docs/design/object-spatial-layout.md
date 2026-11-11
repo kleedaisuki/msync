@@ -19,8 +19,8 @@ to count again as spatial optimization.
 
 ## Semantic and ownership boundaries
 
-Source programs observe object identity, stable declared fields, logical member
-enumeration, fixed storage types, aliases, capture cells and returned values.
+Source programs observe object identity, stable named fields, fixed storage
+types, aliases, capture cells and returned values, not a field enumeration order.
 They do not observe a physical contiguous Scope representation. Physical field
 order, payload partitions, grouping and internal handles may therefore change
 without new source types or layout syntax. Logical field names/indices remain
@@ -109,7 +109,7 @@ A numeric placement groups by logical layout, semantic allocation site and
 numeric-field shape. An immutable row descriptor maps logical member offsets to
 compact numeric or reference slots. Numeric fields occupy row-major doubles in
 managed pages; each row owns only its own reference payload. A page contains no
-GC references. Logical names, enumeration order and guarded field hints remain
+GC references. Logical names and guarded field hints remain
 independent of this physical arrangement.
 
 The allocator owns mutable pool state separately from the immutable descriptor.
