@@ -6,6 +6,8 @@ const { URI } = require('vscode-uri');
 const fs = require('node:fs');
 const path = require('node:path');
 const { registerArtifactViews, artifactUri, textUri, renderPage } = require('../artifact-viewer.cjs');
+const { createCodeRenderer } = require('../artifact-code.cjs');
+const { syntax } = createCodeRenderer();
 
 class Emitter {
     constructor() { this.listeners = new Set(); this.event = callback => { this.listeners.add(callback); return { dispose: () => this.listeners.delete(callback) }; }; }
@@ -126,9 +128,10 @@ function harness(request = async () => fixture(), nativeWatch) {
 
 function panel() {
     const disposed = new Emitter(), messages = new Emitter();
-    return { active: true, viewColumn: 1, disposed,
+    const sent = [];
+    return { active: true, viewColumn: 1, disposed, sent,
         onDidDispose: disposed.event,
-        webview: { html: '', options: {}, onDidReceiveMessage: messages.event, messages, async postMessage() {} } };
+        webview: { html: '', options: {}, onDidReceiveMessage: messages.event, messages, async postMessage(message) { sent.push(message); } } };
 }
 
 test('virtual URI preserves Unicode, spaces, UNC and remote filesystem identities', () => {
@@ -170,7 +173,8 @@ test('typed HIR uses native semantic metadata without bytecode or source replay'
     h.files.set(uri.toString(), original);
     const document = await h.views.openCustomDocument(uri), view = panel();
     await h.views.resolveCustomEditor(document, view);
-    assert.match(view.webview.html, /Typed HIR · format 1/);
+    assert.match(view.webview.html, /Typed HIR/);
+    assert.match(view.webview.html, /Format 1/);
     assert.match(view.webview.html, /semantic representation; not recovered source/);
     assert.ok(!view.webview.html.includes('Oundefined'));
     assert.ok(!view.webview.html.includes('Typed bytecode'));
@@ -210,7 +214,7 @@ test('typed HIR active-file text action refreshes after atomic replacement', asy
 test('semantic HIR webview distinguishes declarations, types, locations and structured control', () => {
     const model = hirFixture();
     model.text += '\ntemplate @g0 "copy"\n  @n2: Loop @n1 -> Bool';
-    const html = renderPage(URI.file('/job.mhir'), model);
+    const html = model.text.split('\n').map(line => syntax(line)).join('\n');
     for (const [role, value] of [
         ['keyword', 'hir'], ['keyword', 'binding'], ['path', '@s0'],
         ['type', '@t0'], ['type', 'Path'], ['local', '@l0'],
@@ -272,21 +276,45 @@ test('native registration failure retains workspace notifications and actionable
 });
 
 test('default custom editor is read-only and has bytecode metadata, outline and text controls', async () => {
-    const h = harness(); const uri = URI.file('/job.mexe'); h.files.set(uri.toString(), Buffer.from('binary'));
+    const h = harness(async () => ({ ...fixture(), stage: 'executable' }));
+    const uri = URI.file('/job.mexe'); h.files.set(uri.toString(), Buffer.from('binary'));
     const document = await h.views.openCustomDocument(uri), view = panel();
     await h.views.resolveCustomEditor(document, view);
     assert.equal(h.custom[0].type, 'msync.bytecode');
-    assert.equal(h.custom[0].options.webviewOptions.enableFindWidget, true);
     assert.equal(h.custom[0].options.supportsMultipleEditorsPerDocument, true);
     assert.equal(typeof h.views.saveCustomDocument, 'undefined');
-    assert.match(view.webview.html, /format 3/); assert.match(view.webview.html, /language 0.8.0/);
+    assert.match(view.webview.html, /Executable bytecode/);
+    assert.match(view.webview.html, /Format 3/); assert.match(view.webview.html, /Language 0.8.0/);
     assert.match(view.webview.html, /O2/); assert.match(view.webview.html, /Artifact outline/);
     assert.match(view.webview.html, /Open IR as Text/); assert.match(view.webview.html, /not recovered source/);
+    assert.match(view.webview.html, /Search entire artifact/);
+    assert.match(view.webview.html, /Selected line details/);
     await h.commands.get('msync.openArtifactText')(uri);
     assert.equal(h.host.window.activeTextEditor.document.uri.scheme, 'msync-artifact');
     view.disposed.fire(); document.dispose();
     h.closed.fire(h.host.window.activeTextEditor.document);
     assert.equal(h.nativeWatchers[0].disposed, true);
+    h.views.dispose();
+});
+
+test('refresh does not let a stale webview reinterpret its reference index', async () => {
+    let targetLine = 1;
+    const h = harness(async () => {
+        const model = fixture();
+        model.references[0].targetLine = targetLine;
+        return model;
+    });
+    const uri = URI.file('/job.mso');
+    h.files.set(uri.toString(), Buffer.from('binary'));
+    const document = await h.views.openCustomDocument(uri), view = panel();
+    await h.views.resolveCustomEditor(document, view);
+    targetLine = 7;
+    await h.views.refresh(uri);
+    await h.views.load(h.views.entry(uri));
+    view.webview.messages.fire({ command: 'reference', generation: 0, index: 0 });
+    assert.ok(!view.sent.some(item => Number.isInteger(item.reveal)));
+    view.webview.messages.fire({ command: 'reference', generation: 1, index: 0 });
+    assert.deepEqual(view.sent.filter(item => Number.isInteger(item.reveal)), [{ reveal: 7 }]);
     h.views.dispose();
 });
 
@@ -382,7 +410,20 @@ test('webview treats hostile bytecode/debug data as inert escaped text', () => {
     assert.ok(!html.includes('<img src=x')); assert.ok(!html.includes('<script>globalThis.pwned'));
     assert.match(html, /&lt;script&gt;/); assert.ok(!html.includes('href="command:'));
     assert.match(html, /default-src 'none'/); assert.match(html, /script-src 'nonce-/);
-    assert.match(html, /read-only; not recovered source/);
+    assert.match(html, /Read-only disassembly; not recovered source/);
+    const data = JSON.parse(/id="artifact-data"[^>]*>([\s\S]*?)<\/script>/.exec(html)[1]);
+    assert.equal(data.text, model.text);
+    assert.equal(data.symbols[0].name, model.symbols[0].name);
+    assert.equal(data.hovers[0].markdown, model.hovers[0].markdown);
+});
+
+test('large artifacts enter the webview as plain data, not one DOM element per line', () => {
+    const text = Array.from({ length: 60_000 }, (_, index) => `${index}: LoadLocal %0`).join('\n');
+    const html = renderPage(URI.file('/large.mso'), { ...fixture(text), symbols: [], references: [], hovers: [] });
+    assert.match(html, /Search entire artifact/);
+    assert.match(html, /59999: LoadLocal %0/);
+    assert.ok(html.length < text.length * 1.15);
+    assert.doesNotMatch(html, /<span class="opcode">LoadLocal<\/span>/);
 });
 
 test('manifest offers binary opening without routing IR through source diagnostics', () => {
@@ -472,7 +513,7 @@ test('contextual plan nodes and dependencies use IR highlighting in the webview'
         '}',
         '    0001: ExecutePlan @p0, consume 0 operands',
     ].join('\n');
-    const html = renderPage(URI.file('/job.mexe'), { ...fixture(text), stage: 'executable', symbols: [], references: [], hovers: [] });
+    const html = text.split('\n').map(line => syntax(line)).join('\n');
     for (const [role, value] of [
         ['keyword', 'execution_plan'], ['keyword', 'transfer'], ['keyword', 'batch'],
         ['block', '@p0'], ['block', '@p0n0'], ['block', '@p0b0'],
@@ -500,7 +541,7 @@ test('both binary webviews color separate IR roles through current-theme variabl
     ].join('\n');
     for (const [extension, stage] of [['mso', 'relocatable'], ['mexe', 'executable']]) {
         const model = { ...fixture(text), stage, symbols: [], references: [], hovers: [] };
-        const html = renderPage(URI.file('/job.' + extension), model);
+        const html = text.split('\n').map(line => syntax(line)).join('\n');
         for (const [role, value] of [
             ['function', '@f0'], ['constant', '@c0'], ['block', '@b0_0000'], ['local', '%0'],
             ['type', 'Path'], ['path', 'path'], ['string', '&quot;./可莉&quot;'],
@@ -509,9 +550,10 @@ test('both binary webviews color separate IR roles through current-theme variabl
             ['control', 'acqrel'], ['control', 'release'], ['field', '&quot;filename&quot;'], ['field', '&quot;.codex&quot;'],
             ['layout', 'slot'], ['layout', 'layout-checked'], ['layout', 'allocation-site'],
         ]) assert.ok(html.includes(`<span class="${role}">${value}</span>`), `${extension}: ${role} ${value}`);
+        const page = renderPage(URI.file('/job.' + extension), model);
         for (const name of ['keyword', 'operator', 'function', 'constant', 'reference', 'variable', 'property', 'number'])
-            assert.ok(html.includes(`var(--vscode-symbolIcon-${name}Foreground,`), name);
-        const styles = /<style[^>]*>([\s\S]*?)<\/style>/.exec(html)[1];
+            assert.ok(page.includes(`var(--vscode-symbolIcon-${name}Foreground,`), name);
+        const styles = /<style[^>]*>([\s\S]*?)<\/style>/.exec(page)[1];
         assert.ok(!/color:\s*#[0-9a-f]{3,8}\b/i.test(styles), 'Syntax colors must not hard-code a palette');
     }
 });

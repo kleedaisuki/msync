@@ -21,6 +21,14 @@ Language semantics stay `0.8.0`; the product release is `0.8.1`. These versions
 are separate contracts. Introducing HIR does not invalidate published bytecode
 by changing its language version string merely to match the product version.
 
+**0.8.6 compatibility note:** the current bytecode contract is format 5. The
+connection-first source operator adds the `QualifyOn` node to the format-1 HIR
+kind table, retaining the old `Qualify` node for earlier HIR. Lowering evaluates
+children in the node's recorded order. An older reader rejects an unknown node
+tag; a new HIR file that uses `QualifyOn` is therefore not forward-readable by
+0.8.5. Both forms lower to the same format-5 bytecode operation, so existing
+executable artifacts retain their recorded operand order.
+
 ## User workflow
 
 ```text
@@ -38,6 +46,68 @@ compile command prints the selected representation; `-o -` writes binary bytes
 to stdout and keeps diagnostics on stderr. Reading an artifact for inspection
 does not initialize runtime execution, bind paths, authenticate or perform
 filesystem observations beyond reading that artifact.
+
+### Artifact inspector in 0.8.6
+
+The custom editor is a stage-aware, read-only inspector for all three binary
+formats. The stage, format and language are explicit in the header; the
+outline groups declarations by their actual semantic roles. Select a callable,
+block, plan, or transfer to jump to its line. Select a line number or use the
+listing's arrow keys to inspect its annotations and references. Executable
+plans show owner, region, batches and eliminated-transfer count; individual
+operations show mode, predecessors and the declared read/write resources.
+Predecessors link to the corresponding transfer, not to guessed source syntax.
+
+Use **Search entire artifact** for literal, case-insensitive search across
+pages, **F3** / **Shift+F3** to move between matching lines, and **Go** to jump
+to a line. A result or definition can target any line, not just a mounted page.
+**Open IR as Text** retains the native read-only editor for whole-document
+selection, native search options, hover, and definitions. Outline, listing and
+details scroll independently; both side panes can be hidden when the workbench
+has little space. Narrow editors move details below the listing.
+
+The renderer receives one decoded schema-1 model, with no additional binding
+or execution request. It mounts up to 160 listing lines, 64 outline entries,
+and 24 entries in each details list. Those are presentation pages, not limits
+on the decoded artifact or search results. The initial view still reads and
+indexes the model in full; it does not claim streaming native decoding. Search
+scans the plain lines in frame-sized slices and superseded queries stop
+publishing results. A refresh retains the query, panels and selected location,
+anchoring to a matching declaration where possible. Reference actions carry the
+rendered generation, so an old panel cannot reinterpret its reference index
+against a newer model.
+
+Presentation follows the official [VS Code webview guidelines](https://code.visualstudio.com/api/ux-guidelines/webviews)
+and [theme and security guidance](https://code.visualstudio.com/api/extension-guides/webview).
+Theme tokens, keyboard focus and textual labels work in light, dark and
+high-contrast themes. Artifact data remains inert JSON; code spans are escaped,
+and details construct text nodes instead of accepting arbitrary Markdown HTML.
+Only explicit source-reference actions reach the host's existing URI allowlist.
+The nonce CSP and empty local-resource roots are unchanged.
+
+The focused **artifact-ui** extension-host journey exercises the actual bundled
+webview, using the native reader rather than a mock. With a frozen executable
+and a pinned VS Code installation, run from `editors/vscode`:
+
+```text
+npm run build
+MSYNC_TEST_ARTIFACT_UI_ONLY=1 MSYNC_TEST_SERVER_PATH=/absolute/path/to/msync \
+  MSYNC_TEST_VSCODE_EXECUTABLE=/absolute/path/to/code xvfb-run -a npm run test:integration
+```
+
+It captures dark HIR, light object search, and high-contrast executable-plan
+details; checks cross-page keyboard search, refresh state, source jumps and
+plan predecessor jumps; and verifies exact input hashes, read-only text, and
+absence of the planned output. The loopback browser debugger is enabled only
+by this isolated test runner, never by the shipped extension.
+
+The inspector journey passed in VS Code 1.144.0 with the published 0.8.5 Native
+reader. Its real relocatable object has 1,887 lines; search crosses the first
+160-line page and returns to the same selected result after refresh. The
+existing source-free HIR and artifact host suites also passed automatic
+publication refresh, invalid-file recovery, and inert source metadata checks.
+Captures and exact source/reader receipts are retained under
+`artifacts/candidates/ergonomics-086/artifact-inspector/`.
 
 ## What survives serialization
 

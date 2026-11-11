@@ -7,6 +7,18 @@ const path = require('node:path');
 const { Writable } = require('node:stream');
 const { finished } = require('node:stream/promises');
 const { createHash } = require('node:crypto');
+const { createServer } = require('node:net');
+
+async function loopbackPort() {
+    const socket = createServer();
+    await new Promise((resolve, reject) => {
+        socket.once('error', reject);
+        socket.listen(0, '127.0.0.1', resolve);
+    });
+    const { port } = socket.address();
+    await new Promise((resolve, reject) => socket.close(error => error ? reject(error) : resolve()));
+    return port;
+}
 
 async function main() {
     const extensionRoot = path.resolve(__dirname, '../..');
@@ -69,8 +81,10 @@ async function main() {
     const standardConceptsOnly = process.env.MSYNC_TEST_STANDARD_CONCEPTS_ONLY === '1';
     const protocolOnly = process.env.MSYNC_TEST_PROTOCOL_ONLY === '1';
     const artifactOnly = process.env.MSYNC_TEST_ARTIFACT_ONLY === '1';
+    const artifactUiOnly = process.env.MSYNC_TEST_ARTIFACT_UI_ONLY === '1';
     const stdlibOnly = process.env.MSYNC_TEST_STDLIB_ONLY === '1';
-    const suite = hirOnly ? 'hir' : standardConceptsOnly ? 'standard-concepts' : languageUpgradeOnly ? 'language-upgrade' : stdlibOnly ? 'stdlib' : artifactOnly ? 'artifact' : protocolOnly ? 'protocol' : 'full';
+    const suite = artifactUiOnly ? 'artifact-ui' : hirOnly ? 'hir' : standardConceptsOnly ? 'standard-concepts' : languageUpgradeOnly ? 'language-upgrade' : stdlibOnly ? 'stdlib' : artifactOnly ? 'artifact' : protocolOnly ? 'protocol' : 'full';
+    const debugPort = artifactUiOnly ? await loopbackPort() : undefined;
     const metadata = { serverPath, serverSha256, managedAssemblies, runRoot, suite, startedAt: new Date().toISOString() };
     await fs.writeFile(path.join(runRoot, 'run.json'), JSON.stringify(metadata, null, 2));
     const log = createWriteStream(path.join(runRoot, 'host.log'));
@@ -82,11 +96,12 @@ async function main() {
     try {
         await runTests({
             extensionDevelopmentPath: extensionRoot,
-            extensionTestsPath: path.join(__dirname, hirOnly ? 'hir-suite.cjs' : standardConceptsOnly ? 'standard-concepts-suite.cjs' : languageUpgradeOnly ? 'language-upgrade-suite.cjs' : stdlibOnly ? 'stdlib-suite.cjs' : artifactOnly ? 'artifact-suite.cjs' : protocolOnly ? 'protocol-suite.cjs' : 'suite.cjs'),
+            extensionTestsPath: path.join(__dirname, suite === 'full' ? 'suite.cjs' : `${suite}-suite.cjs`),
             extensionTestsEnv: {
                 MSYNC_TEST_SERVER_PATH: serverPath,
                 MSYNC_TEST_WORKSPACE: directories.workspace,
                 MSYNC_TEST_ROOT: runRoot,
+                ...(debugPort ? { MSYNC_TEST_DEBUG_PORT: String(debugPort) } : {}),
             },
             vscodeExecutablePath: process.env.MSYNC_TEST_VSCODE_EXECUTABLE,
             version: process.env.MSYNC_TEST_VSCODE_VERSION || 'stable',
@@ -101,6 +116,7 @@ async function main() {
                 '--disable-gpu',
                 '--skip-welcome',
                 '--skip-release-notes',
+                ...(debugPort ? ['--remote-debugging-address=127.0.0.1', `--remote-debugging-port=${debugPort}`] : []),
             ],
             stdout: tee(process.stdout),
             stderr: tee(process.stderr),

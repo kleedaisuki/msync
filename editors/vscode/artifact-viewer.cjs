@@ -1,6 +1,6 @@
 'use strict';
 
-const crypto = require('node:crypto');
+const { renderPage, errorText } = require('./artifact-page.cjs');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -33,19 +33,6 @@ function awaitRequest(vscode, promise, token) {
         const subscription = token.onCancellationRequested(() => reject(new vscode.CancellationError()));
         promise.then(resolve, reject).finally(() => subscription.dispose());
     });
-}
-
-function errorText(error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    return [
-        '; msync artifact could not be displayed',
-        '; The original artifact has not been modified or executed.',
-        '',
-        ...detail.split(/\r?\n/).map(line => '; ' + line),
-        '',
-        '; Use msync: Refresh Artifact View after replacing or repairing the file.',
-        '; Check msync.serverPath if the reader is missing or does not support this format.',
-    ].join('\n');
 }
 
 class ArtifactViews {
@@ -221,7 +208,7 @@ class ArtifactViews {
             if (message.command === 'refresh') this.invalidate(entry);
             if (message.command === 'text') action = this.openText(entry.uri);
             if (message.command === 'settings') action = this.vscode.commands.executeCommand('workbench.action.openSettings', 'msync.serverPath');
-            if (message.command === 'reference') action = this.followReference(entry, message.index, panel.viewColumn);
+            if (message.command === 'reference' && message.generation === entry.generation) action = this.followReference(entry, message.index, panel.viewColumn);
             action?.catch(error => this.vscode.window.showErrorMessage(`Cannot open artifact reference: ${error.message}`));
         });
         await this.render(entry, panel, token);
@@ -230,10 +217,10 @@ class ArtifactViews {
     async render(entry, panel, token) {
         const generation = entry.generation;
         if (!panel.webview.html) panel.webview.html = renderPage(entry.uri, undefined, undefined);
-        else void panel.webview.postMessage({ loading: true });
+        else void panel.webview.postMessage({ loading: true, generation });
         try {
             const model = await this.load(entry, token);
-            if (entry.generation === generation && entry.panels.has(panel)) panel.webview.html = renderPage(entry.uri, model, undefined);
+            if (entry.generation === generation && entry.panels.has(panel)) panel.webview.html = renderPage(entry.uri, model, undefined, generation);
         } catch (error) {
             if (entry.generation === generation && entry.panels.has(panel) && !token?.isCancellationRequested)
                 panel.webview.html = renderPage(entry.uri, undefined, error);
@@ -341,120 +328,11 @@ function range(vscode, value) {
     return new vscode.Range(value.start.line, value.start.character, value.end.line, value.end.character);
 }
 
-function escape(value) {
-    return String(value).replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
-}
-
-const CONTROL_OPERATIONS = new Set(['Jump', 'JumpIfTrue', 'JumpIfFalse', 'Return', 'IteratorNext', 'Barrier', 'Acquire',
-    'If', 'Match', 'Loop', 'While', 'For', 'Break', 'Continue', 'Defer', 'DeferRange', 'Release']);
-const FIELD_OPERATIONS = new Set(['MakeScope', 'GetMember', 'SetMember', 'FieldGet', 'FieldSet', 'ScopeCreate',
-    'Scope', 'MemberRead', 'MemberAssign']);
-
-function syntax(text, quotedRole = 'string') {
-    const transfer = /^(\s*transfer\s+@p\d+n\d+\s+)([A-Za-z][A-Za-z0-9_]*)/.exec(text);
-    if (transfer)
-        return syntax(transfer[1]) + `<span class="opcode">${escape(transfer[2])}</span>` + syntax(text.slice(transfer[0].length));
-    const operation = /^(\s*(?:\d+|@n\d+):\s+)([A-Za-z][A-Za-z0-9_]*)/.exec(text);
-    if (operation) {
-        const role = CONTROL_OPERATIONS.has(operation[2]) ? 'control' : 'opcode';
-        const fields = FIELD_OPERATIONS.has(operation[2]) ? 'field' : quotedRole;
-        return syntax(operation[1]) + `<span class="${role}">${escape(operation[2])}</span>` + syntax(text.slice(operation[0].length), fields);
-    }
-    const expression = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|(;.*$)|(\b(?:release|acquire|acqrel|before-and-after|before|after|region-start|join|if|match|loop|while|for|return|break|continue|defer)\b)|(\b(?:artifact|hir|context|execution_plan|transfer|batch|const|fn|block|entry|origin|format|language|optimization|semantics|captures|locals|successors|effects|pure|readonly|definition|binding|location|shape|template|instance|value|cell|mutable|closed|open)\b|\btype\b(?!\s*\())|(@(?:f|g)\d+)|([@%]c\d+)|(@b\d+_[0-9]+|\bb\d+\b|@n\d+|@p\d+(?:[nb]\d+)?)|(%\d+|@l\d+|\b(?:local|capture|arg)\d+\b)|(@t\d+|\b(?:Null|Bool|Number|String|Path|Scope|Function|Connection|Process|Range|Type|Never|Any)\b)|(@s\d+|\bpath(?=\s*\())|(\b(?:number|connection|closure|native|type|scope|range)(?=\s*[({]))|(\b(?:fields|slot|allocation-site|layout-checked|hint|raw|cwd|home|endpoint|bits|source|destination|read|write|predecessors|eliminated|subtree|exact|region|owner|transfers|item-type|items|result)\b)|(\b(?:null|true|false)\b)|((?<![A-Za-z0-9_])[+-]?(?:0x[0-9a-fA-F]+|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|Infinity|NaN)\b)/g;
-    const roles = [quotedRole, 'comment', 'control', 'keyword', 'function', 'constant', 'block', 'local', 'type', 'path', 'constructor', 'layout', 'literal', 'number'];
-    let result = '', last = 0;
-    for (const match of text.matchAll(expression)) {
-        result += escape(text.slice(last, match.index));
-        let role;
-        for (let index = 0; index < roles.length; index++)
-            if (match[index + 1] !== undefined) { role = roles[index]; break; }
-        result += `<span class="${role}">${escape(match[0])}</span>`;
-        last = match.index + match[0].length;
-    }
-    return result + escape(text.slice(last));
-}
-
-function lines(model) {
-    const referencesByLine = new Map(), hoversByLine = new Map();
-    for (const [index, reference] of (model.references || []).entries()) {
-        if (reference.range.start.line !== reference.range.end.line) continue;
-        const line = reference.range.start.line;
-        if (!referencesByLine.has(line)) referencesByLine.set(line, []);
-        referencesByLine.get(line).push({ reference, index });
-    }
-    for (const hover of model.hovers || []) {
-        const line = hover.range.start.line;
-        if (!hoversByLine.has(line)) hoversByLine.set(line, []);
-        hoversByLine.get(line).push(hover.markdown);
-    }
-    return model.text.split('\n').map((text, line) => {
-        let last = 0, body = '';
-        const references = (referencesByLine.get(line) || [])
-            .sort((left, right) => left.reference.range.start.character - right.reference.range.start.character);
-        for (const { reference, index } of references) {
-            const start = reference.range.start.character, end = reference.range.end.character;
-            if (start < last) continue;
-            body += syntax(text.slice(last, start));
-            body += `<button class="code-link" data-reference="${index}">${syntax(text.slice(start, end))}</button>`;
-            last = end;
-        }
-        body += syntax(text.slice(last));
-        const hover = (hoversByLine.get(line) || []).join('\n\n');
-        return `<div class="line" id="line-${line}" title="${escape(hover)}"><a class="line-number" href="#line-${line}">${line + 1}</a><code>${body || ' '}</code></div>`;
-    }).join('\n');
-}
-
-function outline(symbols) {
-    return symbols.map(symbol => `<li><a href="#line-${symbol.selectionRange.start.line}">${escape(symbol.name)}</a>${symbol.children?.length ? '<ul>' + outline(symbol.children) + '</ul>' : ''}</li>`).join('');
-}
-
-function renderPage(uri, model, error) {
-    const nonce = crypto.randomBytes(18).toString('base64');
-    const controls = '<button data-command="text">Open IR as Text</button><button data-command="refresh">Refresh</button><button data-command="settings">Reader Settings</button>';
-    const hir = model ? model.artifactKind === 'hir' : /\.mhir$/i.test(uri.path);
-    const metadata = model ? [
-        hir ? 'Typed HIR' : escape(model.stage),
-        `format ${escape(model.formatVersion)}`,
-        `language ${escape(model.languageVersion)}`,
-        Number.isInteger(model.optimizationLevel) ? `${hir ? 'lowering ' : ''}O${model.optimizationLevel}` : undefined,
-    ].filter(Boolean).join(' · ') : hir ? 'Typed HIR inspection' : 'Typed bytecode inspection';
-    const explanation = hir ? 'semantic representation; not recovered source' : 'not recovered source';
-    const content = error ? `<section role="alert"><h2>Cannot display this artifact</h2><pre>${escape(errorText(error))}</pre></section>`
-        : model ? `<nav aria-label="Artifact outline"><ul>${outline(model.symbols || [])}</ul></nav><main aria-label="Read-only typed IR">${lines(model)}</main>`
-            : `<p role="status">Reading ${hir ? 'typed HIR' : 'typed bytecode'}…</p>`;
-    return `<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';"><style nonce="${nonce}">
-body{color:var(--vscode-editor-foreground);background:var(--vscode-editor-background);font:var(--vscode-font-size) var(--vscode-font-family);padding:0 18px}header{position:sticky;top:0;background:var(--vscode-editor-background);padding:12px 0;border-bottom:1px solid var(--vscode-panel-border);z-index:1}h1{font-size:1.1em;font-weight:600;margin:0 0 6px;overflow-wrap:anywhere}p{color:var(--vscode-descriptionForeground)}button{cursor:pointer;color:var(--vscode-button-foreground);background:var(--vscode-button-background);border:0;padding:5px 10px;margin-right:6px}button:hover{background:var(--vscode-button-hoverBackground)}a{color:var(--vscode-textLink-foreground)}nav{float:left;max-width:240px;margin:12px 20px 12px 0;overflow-wrap:anywhere}nav ul{list-style:none;padding-left:14px}nav>ul{padding-left:0}nav a{text-decoration:none}main{overflow:auto;padding:12px 0;tab-size:4;font:var(--vscode-editor-font-size) var(--vscode-editor-font-family);line-height:1.55}.line{display:flex;white-space:pre;scroll-margin-top:115px}.line:target{background:var(--vscode-editor-lineHighlightBackground)}.line-number{color:var(--vscode-editorLineNumber-foreground);text-decoration:none;min-width:4ch;text-align:right;margin-right:20px;user-select:none}.code-link{font:inherit;line-height:inherit;display:inline;color:inherit;background:none;padding:0;margin:0;text-decoration:underline;text-decoration-color:var(--vscode-textLink-foreground)}.code-link:hover{background:var(--vscode-editor-hoverHighlightBackground)}.keyword,.control{color:var(--vscode-symbolIcon-keywordForeground,var(--vscode-editor-foreground));font-weight:600}.opcode{color:var(--vscode-symbolIcon-operatorForeground,var(--vscode-editor-foreground))}.string,.path{color:var(--vscode-debugTokenExpression-string,var(--vscode-editor-foreground))}.comment{color:var(--vscode-descriptionForeground)}.function{color:var(--vscode-symbolIcon-functionForeground,var(--vscode-editor-foreground))}.constant{color:var(--vscode-symbolIcon-constantForeground,var(--vscode-editor-foreground))}.block{color:var(--vscode-symbolIcon-referenceForeground,var(--vscode-editor-foreground))}.local{color:var(--vscode-symbolIcon-variableForeground,var(--vscode-editor-foreground))}.type,.constructor{color:var(--vscode-symbolIcon-classForeground,var(--vscode-editor-foreground))}.field,.layout{color:var(--vscode-symbolIcon-propertyForeground,var(--vscode-editor-foreground))}.literal{color:var(--vscode-symbolIcon-booleanForeground,var(--vscode-editor-foreground))}.number{color:var(--vscode-symbolIcon-numberForeground,var(--vscode-editor-foreground))}pre{white-space:pre-wrap;overflow-wrap:anywhere}button:focus-visible,a:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:2px}@media(max-width:700px){nav{float:none;max-width:none}header{position:static}}
-</style></head><body><header><h1>${escape(uri.path.split('/').at(-1))}</h1><p>${metadata} — read-only; ${explanation} <span id="status" role="status"></span></p>${controls}</header>${content}<script nonce="${nonce}">
-const host = acquireVsCodeApi();
-const main = document.querySelector('main');
-const saved = host.getState();
-if (main && saved) { window.scrollTo(0, saved.top); main.scrollLeft = saved.left; }
-let saving = false;
-function savePosition() {
-    if (!main || saving) return;
-    saving = true;
-    requestAnimationFrame(() => { host.setState({ top: window.scrollY, left: main.scrollLeft }); saving = false; });
-}
-window.addEventListener('scroll', savePosition, { passive: true });
-main?.addEventListener('scroll', savePosition, { passive: true });
-document.addEventListener('click', event => {
-    const button = event.target.closest('button');
-    if (!button) return;
-    if (button.dataset.command) host.postMessage({ command: button.dataset.command });
-    if (button.dataset.reference) host.postMessage({ command: 'reference', index: Number(button.dataset.reference) });
-});
-window.addEventListener('message', event => {
-    if (Number.isInteger(event.data.reveal)) document.getElementById('line-' + event.data.reveal)?.scrollIntoView({ block: 'center' });
-    if (event.data.loading) document.getElementById('status').textContent = ' — Reading…';
-});
-</script></body></html>`;
-}
-
 function registerArtifactViews(vscode, context, request, watch = fs.watch) {
     const views = new ArtifactViews(vscode, request, watch);
     const selector = { scheme: SCHEME, language: LANGUAGE };
     context.subscriptions.push(views,
-        vscode.window.registerCustomEditorProvider(VIEW_TYPE, views, { supportsMultipleEditorsPerDocument: true, webviewOptions: { enableFindWidget: true } }),
+        vscode.window.registerCustomEditorProvider(VIEW_TYPE, views, { supportsMultipleEditorsPerDocument: true }),
         vscode.workspace.registerTextDocumentContentProvider(SCHEME, views),
         vscode.workspace.onDidCloseTextDocument(document => views.closeText(document)),
         vscode.commands.registerCommand('msync.openArtifactText', uri => views.openText(uri)),
