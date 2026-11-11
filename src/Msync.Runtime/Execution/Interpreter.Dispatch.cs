@@ -89,7 +89,7 @@ public sealed partial class Interpreter
                         if (instruction.Text == "math.pow" && instruction.A == 2
                             && stack.TryPopNumbers(out double baseNumber, out double exponent))
                             stack.AddNumber(NativeRegistry.Power(baseNumber, exponent));
-                        else stack.Add(await InvokeNativeAsync(instruction.Text!, stack.PopArguments(instruction.A), cancellationToken));
+                        else stack.Add(await InvokeNativeAsync(instruction.Text!, stack.PopArguments(instruction.A), cancellationToken, direct: true));
                         break;
                     case OpCode.Barrier: await FenceAsync(instruction.A, instruction.B, instruction.Text); break;
                     case OpCode.Acquire:
@@ -249,9 +249,15 @@ public sealed partial class Interpreter
 
     private int SourceCallTarget(FunctionValue function, Instruction instruction)
     {
-        if (instruction.Op != OpCode.Call) return function.Function;
-        if (instruction.B < 0) return SessionDispatchTarget(function, -instruction.B - 1, instruction.Span);
-        if (instruction.Text is not null) return DispatchTarget(function, instruction);
-        return instruction.B != 0 ? instruction.B - 1 : function.Function;
+        if (instruction.Op == OpCode.Call && instruction.B < 0)
+            return SessionDispatchTarget(function, -instruction.B - 1, instruction.Span);
+        RefreshSessionImage();
+        if (instruction.Op == OpCode.Call)
+        {
+            if (instruction.Text is not null) return DispatchTarget(function, instruction);
+            if (instruction.B > 0) return instruction.B - 1;
+        }
+        RequireArity(module.Functions[function.Function], instruction.A);
+        return function.Function;
     }
 }

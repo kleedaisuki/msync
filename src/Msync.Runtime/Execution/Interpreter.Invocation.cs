@@ -95,16 +95,23 @@ public sealed partial class Interpreter
             { var candidate = Path.Combine(Path.IsPathRooted(directory) ? directory : Path.Combine(context.WorkingDirectory, directory), name + extension); if (File.Exists(candidate)) return candidate; }
         throw new MsyncException($"Executable '{name}' was not found on PATH");
     }
-    private async ValueTask<Value> InvokeNativeAsync(string name, IReadOnlyList<Value> arguments, CancellationToken cancellationToken)
+    private async ValueTask<Value> InvokeNativeAsync(string name, IReadOnlyList<Value> arguments,
+        CancellationToken cancellationToken, bool direct = false)
     {
         try
         {
+            NativeRegistry.Operation? operation = null;
+            if (!direct)
+            {
+                operation = NativeRegistry.GetOperation(name);
+                NativeRegistry.RequireArity(operation, arguments.Count);
+            }
             if (name == "_core.iterator_close") return await CloseIteratorAsync(arguments[0]);
             if (name is "io.read_lines" or "io.read_bytes") return ReadIORange(name, arguments, cancellationToken);
             if (name == "process.spawn") return await SpawnProcessAsync(arguments, cancellationToken);
             if (name is "process.stdout" or "process.stderr" or "process.success" or "process.exit_code" && arguments[0] is ProcessValue process)
                 return ProcessMember(process, name[8..]);
-            var operation = NativeRegistry.GetOperation(name);
+            operation ??= NativeRegistry.GetOperation(name);
             int deferred = FirstDeferredArgument(arguments);
             if (deferred >= 0
                 && (operation.Effects & (InstructionEffect.Read | InstructionEffect.Write | InstructionEffect.Invoke)) == 0

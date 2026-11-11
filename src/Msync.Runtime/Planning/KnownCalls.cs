@@ -39,7 +39,7 @@ internal sealed class KnownCalls(Module module, RuntimeContext context, PlanFile
     private Value? Invoke(FunctionValue closure, IReadOnlyList<Value> arguments, int? selected,
         CancellationToken cancellationToken)
     {
-        if (closure.NativeName is { } native) return Native(native, arguments);
+        if (closure.NativeName is { } native) return Native(native, arguments, indirect: true);
         int target = selected ?? closure.Function;
         if (!active.Add(target)) return null;
         try
@@ -56,12 +56,13 @@ internal sealed class KnownCalls(Module module, RuntimeContext context, PlanFile
         finally { active.Remove(target); }
     }
 
-    private Value? Native(string name, IReadOnlyList<Value> arguments)
+    private Value? Native(string name, IReadOnlyList<Value> arguments, bool indirect = false)
     {
         if (arguments.Any(value => value is KnownCopyResult)
             || !NativeSignatures.TryGet(name, out var signature) || signature.Effect != NativeEffect.Pure
             || (signature.Behavior.GetValueOrDefault() & (NativeBehavior.Invokes | NativeBehavior.LocalMemory)) != 0)
             return null;
+        if (indirect && !signature.Variadic && arguments.Count != signature.Parameters.Count) return null;
         if (!NativeEvaluation.CanEnumerate(signature, arguments)) return null;
         try { return files.Invoke(name, arguments); }
         catch (Exception error) when (error is MsyncException or ArgumentException or InvalidOperationException

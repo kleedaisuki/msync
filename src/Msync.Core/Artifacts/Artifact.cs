@@ -33,7 +33,6 @@ public static partial class Artifact
         var optimization = reader.ReadInt32();
         var entry = reader.ReadInt32();
         BindingContext? context = reader.ReadBoolean() ? new(reader.ReadString(), reader.ReadString(), ReadOptional(reader)) : null;
-        if ((stage == ArtifactStage.Executable) != (context is not null)) throw new MsyncException("Executable artifacts require a binding context; relocatable artifacts must not contain one");
         var constants = ReadArray(reader, ReadValue);
         var functions = ReadArray(reader, r =>
         {
@@ -58,20 +57,50 @@ public static partial class Artifact
     }
     public static void Write(Module module, string path)
     {
+        ValidateExport(module);
+        Validate(module);
+        EncodePath(module, path);
+    }
+
+    /// <summary>Encode a compiler, binder, or reader-owned module without replaying validation.</summary>
+    public static void WriteProduced(Module module, string path)
+    {
+        ValidateExport(module);
+        EncodePath(module, path);
+    }
+
+    private static void EncodePath(Module module, string path)
+    {
         var full = Path.GetFullPath(path);
         var temp = Path.Combine(Path.GetDirectoryName(full)!, $".{Path.GetFileName(full)}.msync-{Guid.NewGuid():N}");
         try
         {
-            using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None)) Write(module, stream);
+            using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None)) Encode(module, stream);
             File.Move(temp, full, overwrite: true);
         }
         finally { if (File.Exists(temp)) File.Delete(temp); }
     }
     public static void Write(Module module, Stream stream)
     {
+        ValidateExport(module);
+        Validate(module);
+        Encode(module, stream);
+    }
+
+    public static void WriteProduced(Module module, Stream stream)
+    {
+        ValidateExport(module);
+        Encode(module, stream);
+    }
+
+    private static void ValidateExport(Module module)
+    {
         if (module.SessionDispatches is { Count: > 0 })
             throw new MsyncException("Open session call signatures require an active REPL session and cannot be exported as standalone bytecode. Compile a self-contained .msync source instead.");
-        Validate(module);
+    }
+
+    private static void Encode(Module module, Stream stream)
+    {
         using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
         writer.Write(Magic); writer.Write(FormatVersion); writer.Write(LanguageVersion); writer.Write((byte)module.Semantics); writer.Write((byte)module.Stage);
         writer.Write(module.OptimizationLevel); writer.Write(module.EntryPoint);
@@ -139,6 +168,8 @@ public static partial class Artifact
                             throw new MsyncException("Compiled dispatch table refers to a missing function", instruction.Span);
                         if (module.Functions[source].CaptureCount != module.Functions[target].CaptureCount)
                             throw new MsyncException("Compiled dispatch alternative changes closure capture layout", instruction.Span);
+                        if (instruction.Op == OpCode.Call && module.Functions[target].ParameterCount != instruction.A)
+                            throw new MsyncException("Compiled dispatch alternative changes call argument count", instruction.Span);
                     }
                 }
             }

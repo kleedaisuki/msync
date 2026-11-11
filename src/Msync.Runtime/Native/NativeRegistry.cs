@@ -28,16 +28,25 @@ public static partial class NativeRegistry
             : throw new MsyncException($"Unknown native function '{key}'"));
 
     public static ValueTask<Value> InvokeAsync(string name, IReadOnlyList<Value> arguments, RuntimeContext context,
-        Func<Value, IReadOnlyList<Value>, CancellationToken, ValueTask<Value>> invoke, CancellationToken cancellationToken = default) =>
-        InvokeAsync(GetOperation(name), arguments, context, invoke, cancellationToken);
+        Func<Value, IReadOnlyList<Value>, CancellationToken, ValueTask<Value>> invoke, CancellationToken cancellationToken = default)
+    {
+        var operation = GetOperation(name);
+        RequireArity(operation, arguments.Count);
+        return InvokeAsync(operation, arguments, context, invoke, cancellationToken);
+    }
+
+    internal static void RequireArity(Operation operation, int count)
+    {
+        var signature = operation.Signature;
+        if (!signature.Variadic && count != signature.Parameters.Count)
+            throw new MsyncException($"Native '{signature.Name}' expects {signature.Parameters.Count} arguments, received {count}");
+    }
 
     internal static async ValueTask<Value> InvokeAsync(Operation native, IReadOnlyList<Value> arguments, RuntimeContext context,
         Func<Value, IReadOnlyList<Value>, CancellationToken, ValueTask<Value>> invoke, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         NativeSignature signature = native.Signature;
-        if (!signature.Variadic && arguments.Count != signature.Parameters.Count)
-            throw new MsyncException($"Native '{signature.Name}' expects {signature.Parameters.Count} arguments, received {arguments.Count}");
         if (context.DryRun && signature.Effect == NativeEffect.Write
             && (signature.Behavior.GetValueOrDefault() & NativeBehavior.LocalMemory) == 0)
             return signature.Result == TypeRef.Bool ? Value.True : Value.Null;

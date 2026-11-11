@@ -68,7 +68,9 @@ public sealed partial class Interpreter
     }
     private ValueTask<Value> RunFunctionAsync(int functionIndex, IReadOnlyList<Value> captures, IReadOnlyList<Value> arguments, CancellationToken cancellationToken)
     {
-        var function = CallLayout(functionIndex, arguments.Count);
+        RefreshSessionImage();
+        var function = module.Functions[functionIndex];
+        RequireArity(function, arguments.Count);
         var locals = InitializeFrame(function, captures);
         for (var i = 0; i < arguments.Count; i++) locals[function.CaptureCount + i] = arguments[i];
         return RunCodeAsync(functionIndex, locals, 0, cancellationToken, captures, arguments);
@@ -77,19 +79,16 @@ public sealed partial class Interpreter
     private ValueTask<Value> RunStackFunctionAsync(int functionIndex, FunctionValue callee, int count,
         ref OperandStack operands, CancellationToken cancellationToken)
     {
-        var function = CallLayout(functionIndex, count);
+        var function = module.Functions[functionIndex];
         var captures = callee.Captures ?? [];
         var locals = InitializeFrame(function, captures);
         var arguments = operands.CopyArguments(count, locals, function.CaptureCount);
         return RunCodeAsync(functionIndex, locals, 0, cancellationToken, captures, callerArguments: arguments);
     }
 
-    private FunctionCode CallLayout(int functionIndex, int argumentCount)
+    private static void RequireArity(FunctionCode function, int argumentCount)
     {
-        RefreshSessionImage();
-        var function = module.Functions[functionIndex];
         if (argumentCount != function.ParameterCount) throw new MsyncException($"Function '{function.Name}' expects {function.ParameterCount} arguments, received {argumentCount}");
-        return function;
     }
 
     private static Value[] InitializeFrame(FunctionCode function, IReadOnlyList<Value> captures)

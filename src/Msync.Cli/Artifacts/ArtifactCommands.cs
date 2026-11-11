@@ -13,9 +13,9 @@ internal static class ArtifactCommands
     }
     internal static void Write(Module module, string output)
     {
-        if (output != "-") { Artifact.Write(module, output); return; }
+        if (output != "-") { Artifact.WriteProduced(module, output); return; }
         using Stream stream = Console.OpenStandardOutput();
-        Artifact.Write(module, stream);
+        Artifact.WriteProduced(module, stream);
     }
 
     internal static void PrintPlan(Module module, string policy)

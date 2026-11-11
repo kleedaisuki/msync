@@ -44,11 +44,18 @@ public static class HirArtifact
 
     public static void Write(HirModule module, string path)
     {
+        HirValidation.Validate(module);
+        WriteProduced(module, path);
+    }
+
+    /// <summary>Encode sealed compiler output or HIR already decoded at the input boundary.</summary>
+    public static void WriteProduced(HirModule module, string path)
+    {
         string destination = Path.GetFullPath(path);
         string temporary = Path.Combine(Path.GetDirectoryName(destination)!, $".{Path.GetFileName(destination)}.msync-{Guid.NewGuid():N}");
         try
         {
-            using (FileStream stream = new(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None)) Write(module, stream);
+            using (FileStream stream = new(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None)) WriteProduced(module, stream);
             File.Move(temporary, destination, overwrite: true);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
@@ -57,6 +64,11 @@ public static class HirArtifact
     public static void Write(HirModule module, Stream stream)
     {
         HirValidation.Validate(module);
+        WriteProduced(module, stream);
+    }
+
+    public static void WriteProduced(HirModule module, Stream stream)
+    {
         using BinaryWriter writer = new(stream, Utf8, leaveOpen: true);
         writer.Write(Magic);
         writer.Write(FormatVersion);

@@ -16,8 +16,7 @@ internal static class BytecodeValidation
         private readonly State?[] states = new State?[function.Instructions.Count + 1];
         private readonly Queue<int> work = new();
         private bool[] starts = [];
-        private readonly HashSet<int> cells = function.Instructions.Where(instruction => instruction.Op == OpCode.LoadCell)
-            .Select(instruction => instruction.A).ToHashSet();
+        private HashSet<int>? cells;
 
         internal void Validate()
         {
@@ -48,13 +47,14 @@ internal static class BytecodeValidation
             }
         }
 
-        private static bool[] BlockStarts(IReadOnlyList<Instruction> instructions)
+        private bool[] BlockStarts(IReadOnlyList<Instruction> instructions)
         {
             var result = new bool[instructions.Count + 1];
             result[0] = result[^1] = true;
             for (var pc = 0; pc < instructions.Count; pc++)
             {
                 var instruction = instructions[pc];
+                if (instruction.Op == OpCode.LoadCell) (cells ??= []).Add(instruction.A);
                 if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue)
                 {
                     result[instruction.A] = result[pc + 1] = true;
@@ -77,11 +77,12 @@ internal static class BytecodeValidation
                 if (stack.Count == 0) throw Error("operand stack underflow");
                 var item = stack[^1]; stack.RemoveAt(stack.Count - 1); return item;
             }
-            Item[] PopMany(int count)
+            int OperandStart(int count)
             {
                 if (count < 0 || count > stack.Count) throw Error($"operation requires {count} stack operands, has {stack.Count}");
-                var values = new Item[count]; for (var i = count - 1; i >= 0; i--) values[i] = Pop(); return values;
+                return stack.Count - count;
             }
+            void Consume(int count) => stack.RemoveRange(OperandStart(count), count);
             void Require(Item item, TypeKind kinds)
             {
                 if (item.Iterator || (item.Type.Kind & kinds) == TypeKind.Never)
@@ -92,8 +93,8 @@ internal static class BytecodeValidation
             {
                 case OpCode.Nop: break;
                 case OpCode.Barrier: break;
-                case OpCode.ExecutePlan: PopMany(instruction.B); break;
-                case OpCode.PlanResult: PopMany(instruction.B); Push(TypeRef.Bool); break;
+                case OpCode.ExecutePlan: Consume(instruction.B); break;
+                case OpCode.PlanResult: Consume(instruction.B); Push(TypeRef.Bool); break;
                 case OpCode.Acquire:
                     if (instruction.A != 0) { var process = Pop(); Require(process, TypeKind.Process); stack.Add(process); }
                     break;
@@ -108,7 +109,7 @@ internal static class BytecodeValidation
                     var local = locals[instruction.A] ?? throw Error($"local {instruction.A} is not defined on every incoming path");
                     // An escaped location can be written through closure aliases,
                     // including aliases introduced when a callee is inlined.
-                    stack.Add(cells.Contains(instruction.A) ? local with { Type = TypeRef.Any, Constant = null, Function = null } : local); break;
+                    stack.Add(cells?.Contains(instruction.A) == true ? local with { Type = TypeRef.Any, Constant = null, Function = null } : local); break;
                 case OpCode.StoreLocal:
                 case OpCode.InitializeLocal: locals[instruction.A] = Pop(); break;
                 case OpCode.Pop: Pop(); break;
@@ -129,13 +130,13 @@ internal static class BytecodeValidation
                     return false;
                 case OpCode.MakeClosure:
                     if (instruction.B != module.Functions[instruction.A].CaptureCount) throw Error("closure capture layout disagrees with function");
-                    PopMany(instruction.B); stack.Add(new(TypeRef.Function, instruction.A)); break;
+                    Consume(instruction.B); stack.Add(new(TypeRef.Function, instruction.A)); break;
                 case OpCode.SpecializeClosure:
                     Require(Pop(), TypeKind.Function); stack.Add(new(TypeRef.Function, instruction.A >= 0 && instruction.Text is null ? instruction.A : null)); break;
                 case OpCode.Call:
                 case OpCode.ProcessCall:
                     {
-                        PopMany(instruction.A); var callee = Pop(); Require(callee, TypeKind.Function | TypeKind.Path | TypeKind.String);
+                        Consume(instruction.A); var callee = Pop(); Require(callee, TypeKind.Function | TypeKind.Path | TypeKind.String);
                         var target = instruction.Op == OpCode.ProcessCall || instruction.B < 0 ? null : instruction.B == 0 ? callee.Function : instruction.B - 1;
                         if (instruction.Op == OpCode.Call && instruction.B < 0)
                         {
@@ -168,23 +169,29 @@ internal static class BytecodeValidation
                         Push(TypeRef.Null); break;
                     }
                     if (instruction.Text is null || !NativeSignatures.TryGet(instruction.Text, out var signature)) throw Error($"native '{instruction.Text}' is not registered");
-                    var arguments = PopMany(instruction.A);
-                    if (!signature.Variadic && arguments.Length != signature.Parameters.Count || signature.Variadic && arguments.Length < signature.Parameters.Count)
+                    int arguments = OperandStart(instruction.A);
+                    if (!signature.Variadic && instruction.A != signature.Parameters.Count || signature.Variadic && instruction.A < signature.Parameters.Count)
                         throw Error("native argument count disagrees with registry signature");
-                    for (var i = 0; i < signature.Parameters.Count; i++) Require(arguments[i], signature.Parameters[i].Kind);
+                    for (var i = 0; i < signature.Parameters.Count; i++) Require(stack[arguments + i], signature.Parameters[i].Kind);
+                    stack.RemoveRange(arguments, instruction.A);
                     Push(signature.Result); break;
                 case OpCode.LoadBuiltin: Push(instruction.Text?.TrimStart('$') is "std" ? TypeRef.Scope : TypeRef.Connection); break;
-                case OpCode.MakeRange: PopMany(instruction.A); Push(new(TypeKind.Range)); break;
+                case OpCode.MakeRange: Consume(instruction.A); Push(new(TypeKind.Range)); break;
                 case OpCode.MakeLazyRange:
-                    var items = PopMany(instruction.A);
-                    if (instruction.Text is { } mask && (mask.Length != items.Length || mask.Any(c => c is not ('0' or '1')))) throw Error("lazy range mask disagrees with item table");
-                    for (var i = 0; i < items.Length; i++) if (instruction.Text is null || instruction.Text[i] == '1') Require(items[i], TypeKind.Function);
+                    int items = OperandStart(instruction.A);
+                    if (instruction.Text is { } mask && (mask.Length != instruction.A || mask.Any(c => c is not ('0' or '1')))) throw Error("lazy range mask disagrees with item table");
+                    for (var i = 0; i < instruction.A; i++) if (instruction.Text is null || instruction.Text[i] == '1') Require(stack[items + i], TypeKind.Function);
+                    stack.RemoveRange(items, instruction.A);
                     if (instruction.B != 0 && (instruction.B < 0 || instruction.B > module.Constants.Count || module.Constants[instruction.B - 1] is not TypeValue)) throw Error("lazy range item type does not identify a Type constant");
                     Push(new(TypeKind.Range)); break;
                 case OpCode.DeferRange: Require(Pop(), TypeKind.Function); Push(new(TypeKind.Range)); break;
                 case OpCode.MakeScope:
-                    if ((instruction.Text is null ? 0 : instruction.Text.Split('\0', StringSplitOptions.RemoveEmptyEntries).Length) != instruction.A) throw Error("scope member names disagree with value count");
-                    PopMany(instruction.A); Push(TypeRef.Scope); break;
+                    int names = 0;
+                    ReadOnlySpan<char> spelling = instruction.Text.AsSpan();
+                    foreach (Range part in spelling.Split('\0'))
+                        if (!spelling[part].IsEmpty) names++;
+                    if (names != instruction.A) throw Error("scope member names disagree with value count");
+                    Consume(instruction.A); Push(TypeRef.Scope); break;
                 case OpCode.GetSingleton: Push(new(TypeKind.Scope | TypeKind.Null)); break;
                 case OpCode.SetSingleton: Require(Pop(), TypeKind.Scope); Push(TypeRef.Scope); break;
                 case OpCode.GetMember: Require(Pop(), TypeKind.Scope | TypeKind.Connection | TypeKind.Process); Push(TypeRef.Any); break;

@@ -24,6 +24,9 @@ Module instructionsOnly = Artifact.Read(bytes, formBlocks: false);
 Require(instructionsOnly.Blocks is null, "Instruction-only decode formed unused execution blocks");
 Require((await Interpreter.ExecuteAsync(instructionsOnly)) is PathValue { Raw: "./input", LocalSpelling: "native-input" },
     "Instruction-only artifact did not execute");
+using MemoryStream produced = new();
+Artifact.WriteProduced(instructionsOnly, produced);
+Require(produced.ToArray().SequenceEqual(image), "Producer encoding differs from the public artifact writer");
 foreach (ushort old in new ushort[] { 1, 2, 3, 4 })
 {
     using MemoryStream obsolete = new();
