@@ -15,12 +15,14 @@ public sealed partial class Interpreter
     {
         Module image = module;
         var code = image.Functions[functionIndex].Instructions;
+        var array = code as Instruction[];
+        int arrayLength = array?.Length ?? 0;
         OperandStack stack = new();
         Dictionary<int, PlanSubmission>? submissions = null;
-        for (int pc = startInstruction; pc < code.Count; pc++)
+        for (int pc = startInstruction; pc < (array is null ? code.Count : arrayLength); pc++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var instruction = code[pc];
+            var instruction = array is null ? code[pc] : array[pc];
             try
             {
                 switch (instruction.Op)
@@ -146,7 +148,8 @@ public sealed partial class Interpreter
                     case OpCode.LocalTransfer:
                         {
                             var destination = stack.Pop(); var source = stack.Pop();
-                            bool discarded = pc + 1 < code.Count && code[pc + 1].Op == OpCode.Pop
+                            bool discarded = pc + 1 < (array is null ? code.Count : arrayLength)
+                                && (array is null ? code[pc + 1] : array[pc + 1]).Op == OpCode.Pop
                                 && source is PathValue or StringValue or DeferredValue
                                 && destination is PathValue or StringValue or DeferredValue;
                             bool local = instruction.Op == OpCode.LocalTransfer
