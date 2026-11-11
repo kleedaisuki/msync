@@ -3,8 +3,10 @@ using Msync.Core;
 
 namespace Msync.Runtime;
 
-internal sealed class OperandStack
+internal struct OperandStack
 {
+    public OperandStack() { }
+
     // A null slot denotes an unboxed Number; language null remains Value.Null.
     private Value?[] items = new Value?[4];
     // Literal ranges grow the reference stack without paying for numeric scratch.
@@ -54,6 +56,18 @@ internal sealed class OperandStack
         Value[] values = new Value[count];
         for (int index = count - 1; index >= 0; index--) values[index] = Pop();
         return values;
+    }
+
+    public Value[] PopArguments(int count)
+    {
+        if (count == 0) return [];
+        Value[] arguments = new Value[count];
+        for (int index = count - 1; index >= 0; index--)
+        {
+            Value value = Pop();
+            arguments[index] = value is CellValue cell ? cell.Data : value;
+        }
+        return arguments;
     }
 
     public ScopeValue PopScope(ScopeAllocator allocator, ScopeLayout layout, int count, int allocationSite)

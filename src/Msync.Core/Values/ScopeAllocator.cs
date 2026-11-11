@@ -125,6 +125,14 @@ internal sealed class NumericScopePool
 
 internal sealed class PackedScopeStorage(NumericScopeShape shape, double[] page, int offset, Value[] references)
 {
+    internal Value? GetOperandField(int field, out double number)
+    {
+        int slot = shape.Slot(field);
+        if (slot >= 0) { number = page[offset + slot]; return null; }
+        number = 0;
+        return references[-slot - 1];
+    }
+
     internal Value GetField(int field)
     {
         int slot = shape.Slot(field);

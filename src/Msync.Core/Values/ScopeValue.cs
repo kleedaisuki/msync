@@ -45,6 +45,17 @@ public sealed record ScopeValue : Value, IReadOnlyDictionary<string, Value>
     }
     public Value GetField(int offset) => Read(fields is Value[] direct ? direct[offset]
         : ((PackedScopeStorage)fields).GetField(offset));
+    // Null denotes a raw numeric operand, not the language's Null value.
+    public Value? GetOperandField(int offset, out double number)
+    {
+        if (fields is PackedScopeStorage packed)
+        {
+            var value = packed.GetOperandField(offset, out number);
+            return value is null ? null : Read(value);
+        }
+        number = 0;
+        return Read(((Value[])fields)[offset]);
+    }
     public bool TryGetNumber(int offset, out double number)
     {
         if (fields is PackedScopeStorage packed) return packed.TryGetNumber(offset, out number);

@@ -70,7 +70,7 @@ public sealed partial class Interpreter
                     case OpCode.Call:
                     case OpCode.ProcessCall:
                         {
-                            var arguments = ValueArguments(stack.PopMany(instruction.A)); var callee = ReadValue(stack.Pop());
+                            var arguments = stack.PopArguments(instruction.A); var callee = ReadValue(stack.Pop());
                             int? target = null;
                             if (instruction.Op == OpCode.Call && instruction.B < 0)
                             {
@@ -90,7 +90,7 @@ public sealed partial class Interpreter
                         if (instruction.Text == "math.pow" && instruction.A == 2
                             && stack.TryPopNumbers(out double baseNumber, out double exponent))
                             stack.AddNumber(NativeRegistry.Power(baseNumber, exponent));
-                        else stack.Add(await InvokeNativeAsync(instruction.Text!, ValueArguments(stack.PopMany(instruction.A)), cancellationToken));
+                        else stack.Add(await InvokeNativeAsync(instruction.Text!, stack.PopArguments(instruction.A), cancellationToken));
                         break;
                     case OpCode.Barrier: await FenceAsync(instruction.A, instruction.B, instruction.Text); break;
                     case OpCode.Acquire:
@@ -121,8 +121,11 @@ public sealed partial class Interpreter
                     case OpCode.GetSingleton: stack.Add(GetSingleton(instruction.A)); break;
                     case OpCode.SetSingleton: stack.Add(SetSingleton(instruction.A, stack.Pop())); break;
                     case OpCode.MakeScope:
-                        stack.Add(MakeScope(instruction, stack)); break;
-                    case OpCode.GetMember: LoadMember(stack, instruction.Text!, instruction.A); break;
+                        {
+                            var scope = MakeScope(instruction, ref stack);
+                            stack.Add(scope); break;
+                        }
+                    case OpCode.GetMember: LoadMember(ref stack, instruction.Text!, instruction.A); break;
                     case OpCode.Qualify:
                         {
                             var item = stack.Pop(); var scope = stack.Pop();
