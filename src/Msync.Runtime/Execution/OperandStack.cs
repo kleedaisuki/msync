@@ -12,6 +12,19 @@ internal struct OperandStack<TFrame>(TFrame frame) where TFrame : struct, Runtim
     public int Count { get; private set; }
     public Value this[int index] => items[index] ?? BoxNumber(index);
     public Value Peek(int depth) => this[Count - depth - 1];
+    public Value? PeekReference(int depth) => items[Count - depth - 1];
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryPeekNumber(int depth, out double number)
+    {
+        int index = Count - depth - 1;
+        switch (items[index])
+        {
+            case null: number = numbers[index]; return true;
+            case NumberValue value: number = value.Data; return true;
+            default: number = 0; return false;
+        }
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void Add(Value value)
@@ -101,6 +114,11 @@ internal struct OperandStack<TFrame>(TFrame frame) where TFrame : struct, Runtim
     }
 
     public void Discard() => items[--Count] = null;
+
+    public void Discard(int count)
+    {
+        while (count-- != 0) Discard();
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryPopNumbers(out double left, out double right)

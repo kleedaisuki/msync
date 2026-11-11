@@ -14,20 +14,17 @@ internal static class IndexedStorageOperations
             await foreach (Value value in range.Items.WithCancellation(token)) values.Add(value);
             return new RangeValue(new IndexedItems(values, range.ItemType), range.ItemType) { RetainedValues = values };
         }
-        if (range.Items is not IndexedItems buffer)
+        if (!TryGetItems(range, out List<Value> items))
             throw new MsyncException($"storage.{operation} requires Buffer storage; construct it with Buffer::new.");
-        List<Value> items = buffer.Values;
         switch (operation)
         {
             case "buffer_size": return new NumberValue(items.Count);
             case "buffer_snapshot": return new RangeValue(items.ToArray(), range.ItemType);
             case "buffer_clear": items.Clear(); return Value.Null;
-            case "buffer_get": return items[BufferIndex(args[1], items.Count, false, operation)];
+            case "buffer_get": return Get(items, ((NumberValue)args[1]).Data);
             case "buffer_set":
                 Value replacement = StoreValue(range, args[2], context);
-                items[BufferIndex(args[1], items.Count, false, operation)] = replacement;
-                range.InferItemType(replacement);
-                return Value.Null;
+                return SetConverted(range, items, ((NumberValue)args[1]).Data, replacement);
             case "buffer_push":
                 int next = items.Count;
                 Value appended = StoreValue(range, args[1], context);
@@ -59,6 +56,30 @@ internal static class IndexedStorageOperations
         }
     }
 
+    internal static bool TryGetItems(RangeValue range, out List<Value> items)
+    {
+        if (range.Items is IndexedItems buffer)
+        {
+            items = buffer.Values;
+            return true;
+        }
+        items = null!;
+        return false;
+    }
+
+    internal static Value Get(List<Value> items, double index) =>
+        items[BufferIndex(index, items.Count, false, "buffer_get")];
+
+    internal static Value Set(RangeValue range, List<Value> items, double index, Value replacement,
+        RuntimeContext context) => SetConverted(range, items, index, StoreValue(range, replacement, context));
+
+    private static Value SetConverted(RangeValue range, List<Value> items, double index, Value replacement)
+    {
+        items[BufferIndex(index, items.Count, false, "buffer_set")] = replacement;
+        range.InferItemType(replacement);
+        return Value.Null;
+    }
+
     // A selected resource can have a different text representation from another
     // resource in the same static view; conversion belongs to the actual target.
     private static Value StoreValue(RangeValue range, Value value, RuntimeContext context) => value switch
@@ -68,9 +89,11 @@ internal static class IndexedStorageOperations
         _ => value
     };
 
-    private static int BufferIndex(Value value, int count, bool insert, string operation)
+    private static int BufferIndex(Value value, int count, bool insert, string operation) =>
+        BufferIndex(((NumberValue)value).Data, count, insert, operation);
+
+    private static int BufferIndex(double index, int count, bool insert, string operation)
     {
-        double index = ((NumberValue)value).Data;
         if (index >= 0 && index <= (insert ? count : count - 1) && index == Math.Truncate(index))
             return (int)index;
         throw new MsyncException($"storage.{operation} index {index} is outside the {(insert ? "insertion positions" : "items")} of a buffer with {count} items.");

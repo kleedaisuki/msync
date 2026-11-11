@@ -108,7 +108,8 @@ public sealed partial class Interpreter
                         if (instruction.Text == "math.pow"
                             && stack.TryPopNumbers(out double baseNumber, out double exponent))
                             stack.AddNumber(frame.Power(baseNumber, exponent, image, instruction));
-                        else stack.Add(await frame.Observe(InvokeNativeAsync(instruction, stack.PopArguments(instruction.A),
+                        else if (!TryInlineNative(image, instruction, frame, ref stack, cancellationToken))
+                            stack.Add(await frame.Observe(InvokeNativeAsync(instruction, stack.PopArguments(instruction.A),
                             cancellationToken), pc, instruction, "native_call"));
                         break;
                     case OpCode.Barrier:

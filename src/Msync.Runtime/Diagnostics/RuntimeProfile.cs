@@ -191,6 +191,7 @@ public sealed class RuntimeProfile(bool instructionSites = false)
         void Call(int pc, Module image, int target);
         void Box();
         double Power(double left, double right, Module image, Instruction instruction);
+        RuntimeTimelineScope? BeginInlineNative(Module image, Instruction instruction);
         ValueTask<T> Observe<T>(ValueTask<T> pending, int pc, Instruction instruction, string reason);
         ValueTask Observe(ValueTask pending, int pc, Instruction instruction, string reason);
         Task<T> Observe<T>(Task<T> pending, int pc, Instruction instruction, string reason);
@@ -206,6 +207,8 @@ public sealed class RuntimeProfile(bool instructionSites = false)
         public void Box() { }
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public double Power(double left, double right, Module image, Instruction instruction) => NativeRegistry.Power(left, right);
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public RuntimeTimelineScope? BeginInlineNative(Module image, Instruction instruction) => null;
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ValueTask<T> Observe<T>(ValueTask<T> pending, int pc, Instruction instruction, string reason) => pending;
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -228,6 +231,12 @@ public sealed class RuntimeProfile(bool instructionSites = false)
         {
             owner?.Native(image, "math.pow", fast: true);
             return trace is null ? NativeRegistry.Power(left, right) : trace.Power(left, right, instruction.Span);
+        }
+
+        public readonly RuntimeTimelineScope? BeginInlineNative(Module image, Instruction instruction)
+        {
+            owner?.Native(image, instruction.Text!, fast: true);
+            return trace?.BeginInlineNative(instruction);
         }
 
         public readonly ValueTask<T> Observe<T>(ValueTask<T> pending, int pc, Instruction instruction, string reason) =>

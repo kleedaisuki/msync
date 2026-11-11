@@ -111,8 +111,7 @@ public static partial class NativeRegistry
         Func<Value, IReadOnlyList<Value>, CancellationToken, ValueTask<Value>> invoke, CancellationToken token)
     {
         if (operation is ("front" or "first") && source.OwnedSnapshot is { } snapshot)
-            return snapshot.Count != 0 ? snapshot[0]
-                : throw new MsyncException($"ranges.{operation} found no matching item");
+            return SnapshotFront(snapshot, operation);
         Value? last = null;
         await foreach (Value value in source.Items.WithCancellation(token))
         {
@@ -135,4 +134,7 @@ public static partial class NativeRegistry
             _ => throw new MsyncException($"Unknown range native '{operation}'")
         };
     }
+
+    internal static Value SnapshotFront(IReadOnlyList<Value> snapshot, string operation) => snapshot.Count != 0
+        ? snapshot[0] : throw new MsyncException($"ranges.{operation} found no matching item");
 }

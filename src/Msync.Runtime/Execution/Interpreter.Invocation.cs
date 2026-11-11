@@ -152,10 +152,13 @@ public sealed partial class Interpreter
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
-            context.Observe?.Invoke(new("native", "failure", Detail: $"{name}: {error}"));
+            ReportNativeFailure(name, error);
             throw;
         }
     }
+
+    private void ReportNativeFailure(string name, Exception error) =>
+        context.Observe?.Invoke(new("native", "failure", Detail: $"{name}: {error}"));
 
     private DeferredValue DeferNative(NativeRegistry.Operation operation, IReadOnlyList<Value> arguments, int deferred,
         CancellationToken cancellationToken)

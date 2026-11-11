@@ -298,3 +298,54 @@ completed task; ordinary resource dependencies deliberately retain faulted
 or canceled tasks until observed. Do not merge those completion policies.
 The [frontier probe and alias controls](performance-scheduler.md#residual-native-observations-scan-unrelated-namespace-producers-2026-11-11)
 cover the scale and ordering obligations separately.
+
+## Direct native stack operations for owned indexed storage
+
+A selected direct native call can consume the operand representation the VM
+already owns. Buffer get/set/size, owned-snapshot front/first/at and numeric
+floor do not need an argument array, native registry dispatch or an async
+invocation boundary. Admission is by actual backing representation and ready
+operands, not by source type or function spelling alone. A miss leaves all
+operands untouched: raw cells, deferred arguments, custom/unowned Range
+producers and wrong receivers still use generic normalization and diagnostics.
+The interpreter does not memoize a backing list, element, count, or captured
+context at a call site. Aliases still access the live list, and an owned
+snapshot is proved by its producer identity. Fast and generic Buffer operations
+share the index and store helpers, including first-write carrier inference and
+target-dependent Path/String conversion before index validation. Successful
+reads return the actual stored object.
+
+This follows the narrow guard/fallback pattern used by
+[CPython's list-index specialization](https://github.com/python/cpython/blob/main/Python/bytecodes.c)
+and the distinction between portable bytecode and ready representation in
+[HotSpot's template interpreter](https://github.com/openjdk/jdk/blob/master/src/hotspot/cpu/x86/templateTable_x86.cpp).
+The msync path does not mutate portable bytecode or require adaptive guards,
+warmup or a JIT. Format 5, native signatures and the general NativeRegistry API
+are unchanged. AOT profile-disabled instantiations erase the observer hook;
+profile runs count the same logical native attempts and separately report
+`fast_calls`. Diagnostic runs retain timed native spans, cancellation, source
+locations and the existing native failure event.
+
+An isolated Linux Native AOT comparison uses the same bound O2 image for
+each before/after pair. The existing LibraryMatrix inputs (8,192 keys, 1,024
+SHA bytes) print the score or all eight unsigned digest words for independent
+output checks. Timings use seven interleaved fresh CLI process pairs on CPU 9,
+excluding compile/bind and recording; profiles use separate executions.
+Wall-clock medians and cumulative execute allocation:
+
+| Fixture | Before → after ms | Faster pairs | Paired median Δ ms | Before → after MB |
+| --- | ---: | ---: | ---: | ---: |
+| Set | 1690.4 → 1367.1 | 7/7 | −298.0 | 152.38 → 125.50 |
+| Heap | 794.8 → 648.9 | 7/7 | −121.6 | 57.15 → 39.77 |
+| Hash | 212.0 → 194.7 | 5/7 | −34.5 | 12.89 → 8.78 |
+| SHA-256 | 602.3 → 512.2 | 5/7 | −80.3 | 54.08 → 48.57 |
+
+Selected Set reads were **424,304 Buffer gets and 309,586 snapshot front
+calls**, all fast after the change and all generic before. Heap kept 224,710
+gets and 120,960 sets; SHA kept 136,272 gets and 1,088 sets. This removes
+invocation work without eliminating a language-level call or I/O operation.
+Run `tests/Msync.Runtime.Tests -- --inline-native` for exact format-5 paths,
+raw-cell and lazy fallback, and diagnosed failures. The before/after native
+hashes begin `bf99379a5108` / `4d561e807ecf`; raw pairs, SQLite databases
+and the reproducer are under `.temp/native-stack-lane/`. Hash and SHA timings
+varied on the shared host; do not interpret seven pairs as a tail estimate.

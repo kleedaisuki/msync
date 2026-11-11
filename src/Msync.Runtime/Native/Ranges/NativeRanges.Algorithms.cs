@@ -64,8 +64,10 @@ public static partial class NativeRegistry
         ? number.Data : throw new MsyncException($"{module}.{operation} requires finite Number arguments");
 
     private static long Ordinal(Value value, string operation, bool positive, string module = "ranges")
+        => Ordinal(FiniteNumber(value, operation, module), operation, positive, module);
+
+    private static long Ordinal(double number, string operation, bool positive, string module)
     {
-        double number = FiniteNumber(value, operation, module);
         if (number < (positive ? 1 : 0) || number != Math.Truncate(number) || number >= 9223372036854775808d)
             throw new MsyncException($"{module}.{operation} requires a {(positive ? "positive" : "nonnegative")} integral count representable by the platform iterator");
         return (long)number;
@@ -166,13 +168,22 @@ public static partial class NativeRegistry
         if (source.SnapshotValues is { } snapshot)
         {
             token.ThrowIfCancellationRequested();
-            return index < snapshot.Count ? snapshot[(int)index] : throw MissingIndex(index);
+            return SnapshotItem(snapshot, index);
         }
         long position = 0;
         await foreach (Value value in source.Items.WithCancellation(token))
             if (position++ == index) return value;
         throw MissingIndex(index);
     }
+
+    internal static Value SnapshotAt(IReadOnlyList<Value> snapshot, double index)
+    {
+        if (!double.IsFinite(index)) throw new MsyncException("ranges.at requires finite Number arguments");
+        return SnapshotItem(snapshot, Ordinal(index, "at", false, "ranges"));
+    }
+
+    private static Value SnapshotItem(IReadOnlyList<Value> snapshot, long index) =>
+        index < snapshot.Count ? snapshot[(int)index] : throw MissingIndex(index);
 
     private static MsyncException MissingIndex(long index) => new($"ranges.at has no item at index {index}");
 

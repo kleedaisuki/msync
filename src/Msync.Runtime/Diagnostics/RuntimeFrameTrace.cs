@@ -22,6 +22,9 @@ internal sealed class RuntimeFrameTrace(RuntimeTimeline timeline)
         catch (Exception error) { span.Fail(error); throw; }
     }
 
+    public RuntimeTimelineScope BeginInlineNative(Instruction instruction) =>
+        BeginNative(timeline, instruction.Text!, "inline", instruction.Span);
+
     public static RuntimeTimelineScope BeginNative(RuntimeTimeline timeline, string name, string route, SourceSpan? source = null)
     {
         var span = timeline.Begin("vm.native");

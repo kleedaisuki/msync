@@ -8,6 +8,12 @@ if (args.Contains("--profile", StringComparer.Ordinal))
     return;
 }
 
+if (args.Contains("--inline-native", StringComparer.Ordinal))
+{
+    await InlineNativeChecks.RunAsync();
+    return;
+}
+
 if (args.Contains("--mutable-state", StringComparer.Ordinal))
 {
     await MutableStateChecks.RunCurrentState();
