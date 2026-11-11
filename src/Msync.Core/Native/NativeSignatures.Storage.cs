@@ -6,6 +6,8 @@ public static partial class NativeSignatures
     {
         TypeRef range = new(TypeKind.Range);
         const NativeBehavior memory = NativeBehavior.LocalMemory | NativeBehavior.MayFail;
+        result.Add("storage._leaf_callable", new("storage._leaf_callable", [TypeRef.Function],
+            TypeRef.Bool, Behavior: NativeBehavior.None));
         void Add(string name, TypeRef output, NativeEffect effect, NativeResultRule rule, params TypeRef[] parameters) =>
             result.Add("storage." + name, new("storage." + name, parameters, output, effect,
                 ResultRule: rule, Behavior: memory));

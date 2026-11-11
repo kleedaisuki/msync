@@ -5,6 +5,18 @@ using Msync.Runtime;
 
 var cases = new (string Name, string Source, string Expected)[]
 {
+    ("heap-order-writes", """
+        let storage = $std::storage::Buffer::new([5, 1, 2]);
+        let policy = scope {
+            less: fn(a: Number, b: Number) -> Bool {
+                if a == 2 and b == 1 { $std::storage::Buffer::set(storage, 1, 99); };
+                a < b
+            },
+        };
+        $std::containers::Heap::sift_down(scope { buffer: storage, order: policy }, 0);
+        $std::text::format("{} {}", $std::storage::Buffer::get(storage, 0),
+            $std::storage::Buffer::get(storage, 1))
+        """, "5 99"),
     ("distinct", """
         let nodes = $std::storage::Buffer::new([scope { red: false }, scope { red: false }]);
         let a = $std::storage::Buffer::get(nodes, 0);
@@ -104,8 +116,9 @@ var cases = new (string Name, string Source, string Expected)[]
         """, "ok"),
 };
 int checks = 0;
+bool decisionsOnly = args.Contains("--decisions-only", StringComparer.Ordinal);
 foreach (var level in new[] { 0, 2, 3 })
-foreach (var test in cases)
+foreach (var test in cases.Where(test => !decisionsOnly || test.Name == "heap-order-writes"))
 {
     var module = Compiler.Compile(test.Source, test.Name + ".msync", level);
     using var relocatable = new MemoryStream();
@@ -122,6 +135,12 @@ foreach (var test in cases)
             throw new InvalidOperationException($"{test.Name} O{level}: {result}");
         checks++;
     }
+}
+if (decisionsOnly)
+{
+    checks += await RuntimeCarrierChecks.RunAsync();
+    Console.WriteLine($"PASS: {checks} cohort, Heap policy and snapshot ownership decisions");
+    return;
 }
 foreach (var level in new[] { 0, 2, 3 })
 foreach (var source in new[]

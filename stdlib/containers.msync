@@ -2583,17 +2583,28 @@ scope Heap {
             if child >= count {
                 break;
             };
-            if child + 1 < count {
+            let below? = if child + 1 < count {
                 let left? = $std::storage::Buffer::get(self::buffer, child);
                 let right? = $std::storage::Buffer::get(
                     self::buffer,
                     child + 1
                 );
-                if self::order::less(right, left) {
-                    child = child + 1;
-                };
+                if $std::storage::_leaf_callable(self::order::less) {
+                    if self::order::less(right, left) {
+                        child = child + 1;
+                        right
+                    } else {
+                        left
+                    }
+                } else {
+                    if self::order::less(right, left) {
+                        child = child + 1;
+                    };
+                    $std::storage::Buffer::get(self::buffer, child)
+                }
+            } else {
+                $std::storage::Buffer::get(self::buffer, child)
             };
-            let below? = $std::storage::Buffer::get(self::buffer, child);
             if not self::order::less(below, value) {
                 break;
             };

@@ -37,3 +37,4 @@ scope Buffer {
     clear: buffer_clear,
     snapshot: buffer_snapshot,
 };
+native fn _leaf_callable(comparator: Function) -> Bool;

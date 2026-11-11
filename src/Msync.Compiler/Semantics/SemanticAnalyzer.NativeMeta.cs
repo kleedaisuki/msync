@@ -13,7 +13,8 @@ internal sealed partial class SemanticAnalyzer
     internal static bool IsDependentMeta(string? name) => name is
         "meta.is_invocable" or "meta.is_invocable_r" or "meta.invoke_result" or "meta.try_invoke_result" or "meta.common_type_of" or
         "meta.parameter_count" or "meta.parameter_types" or "meta.is_variadic" or "meta.signature_of" or
-        "meta.has_member" or "meta.member_type" or "meta.member_names" or "meta.member_count" or "meta.members_of";
+        "meta.has_member" or "meta.member_type" or "meta.member_names" or "meta.member_count" or "meta.members_of"
+        or "storage._leaf_callable";
 
     private bool TryMetaCall(HirNode node, ReadOnlySpan<HirNodeId> children,
         SemanticContext context, out SemanticValue result)
@@ -65,18 +66,20 @@ internal sealed partial class SemanticAnalyzer
     {
         NativeSignature signature = NativeSignatures.Get(name!);
         int count = children.Length - 1;
+        string operation = name[(name.IndexOf('.') + 1)..];
         if (count < signature.Parameters.Count || !signature.Variadic && count != signature.Parameters.Count)
-            throw Error(node.Source, $"{name![5..]} expects {(signature.Variadic ? "at least " : "")}{signature.Parameters.Count} arguments.", "E0222");
+            throw Error(node.Source, $"{operation} expects {(signature.Variadic ? "at least " : "")}{signature.Parameters.Count} arguments.", "E0222");
         SemanticContext query = context.QueryFork();
         SemanticValue[] arguments = new SemanticValue[count];
         for (int index = 0; index < count; index++) arguments[index] = Analyze(children[index + 1], query);
-        var answer = DependentMetaResult(name![5..], arguments, node.Source, query);
+        var answer = DependentMetaResult(operation, arguments, node.Source, query);
         return EmitMetaResult(answer, node.Source, context);
     }
 
     private MetaQueryResult DependentMetaResult(string operation, SemanticValue[] arguments,
         HirSourceRange source, SemanticContext context)
     {
+        if (operation == "_leaf_callable") return MetaBoolean(IsLeafCallable(arguments[0]));
         if (operation == "common_type_of") return CommonTypeOf(arguments, source);
         if (operation is "is_invocable" or "is_invocable_r" or "invoke_result" or "try_invoke_result")
             return MetaInvocation(operation, arguments, source, context);
@@ -93,6 +96,48 @@ internal sealed partial class SemanticAnalyzer
             throw Error(source, "A member query requires a statically inferred String name.", "E0222");
         bool found = members.TryGetValue(member, out var value);
         return operation == "has_member" ? MetaBoolean(found) : found ? MetaType(value!.Type) : MetaNull();
+    }
+
+    private Dictionary<HirTemplateId, bool>? leafCallables;
+
+    // Only scalar parameter operations; no captured or reachable mutable storage.
+    private bool IsLeafCallable(SemanticValue value)
+    {
+        if (value.Callables.IsDefaultOrEmpty) return false;
+        var known = leafCallables ??= [];
+        if (!AllLeaves(value.Callables)) return false;
+        return value.FutureCallableDomain is not { } future
+            || AllLeaves(future.Choices) && AllLeaves(future.Current);
+
+        bool AllLeaves(ImmutableArray<SemanticCallable> choices)
+        {
+            if (choices.IsDefaultOrEmpty) return true;
+            foreach (var choice in choices)
+            {
+                if (choice.Template is not { } id || !choice.Captures.IsDefaultOrEmpty) return false;
+                if (!known.TryGetValue(id, out bool leaf))
+                {
+                    var template = hir.Templates[id.Value];
+                    leaf = IsLeafBody(template.Body, template.Parameters);
+                    known.Add(id, leaf);
+                }
+                if (!leaf) return false;
+            }
+            return true;
+        }
+    }
+
+    private bool IsLeafBody(HirNodeId id, ImmutableArray<HirLocationId> parameters)
+    {
+        if (id.IsNone) return false;
+        var node = program.Node(id);
+        if (node.Kind is HirKind.TypeOf or HirKind.Literal or HirKind.TypeValue) return true;
+        if (node.Kind is HirKind.ReadLocation or HirKind.ReadStorage) return parameters.Contains(new(node.Data));
+        if (node.Kind is not (HirKind.Block or HirKind.Return or HirKind.If or HirKind.Discard
+            or HirKind.IsNull or HirKind.IsType or HirKind.Unary or HirKind.Binary)) return false;
+        foreach (var child in program.Children(id))
+            if (!IsLeafBody(child, parameters)) return false;
+        return true;
     }
 
     private SemanticValue MetaInvocation(string operation, SemanticValue[] inputs,
