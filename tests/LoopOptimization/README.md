@@ -72,13 +72,16 @@ dominating backedge, single latch and unique preheader establish the
 records graph membership independent of bytecode layout; this first
 transform handles two-block loops with one ordered comparison and an
 exact positive integral induction recurrence. The private counter has
-one preheader seed and one backedge update. The scalar body may not
-observe the counter, call code, write the bound, or expose a carried
-slot. A mutable cell is not an invariant bound.
+one preheader seed and one backedge update. The scalar body may read the
+counter but may not call code, write the counter or bound, or expose a
+carried slot. A mutable cell is not an invariant bound.
 
 The fast region uses the last counter of a four-iteration chunk to prove
 that all four iterations enter. A finite bound within the exact integer
-domain keeps the grouped counter update bit-exact. Fractional bounds are
+domain keeps the grouped counter update bit-exact. If the body reads
+the counter, each copy retains the original update, so every read sees
+the original binary64 value. A balanced counter update can execute above
+the carried accumulator on the operand stack. Fractional bounds are
 handled by the original comparison (there is no conversion to an
 integer trip count), and a failed guard uses the original loop. Known
 counts up to four are computed by applying the original comparison and
@@ -117,3 +120,24 @@ bytecodes per four updates. This measures the bytecode transformation,
 not a change to native dispatch. The source and both artifact routes
 also printed the same checked value at N=101. Raw samples and
 disassemblies are in `.temp/natural-loop-check/`.
+
+[`counter-recurrence.msync`](counter-recurrence.msync) uses the counter
+in the arithmetic. The instruction profile oracle runs 4,099 iterations
+with O1 and O2: both perform 4,099 remainder operations and counter
+stores, while backedges and accumulator stores drop from 4,099 to
+1,027 (1,024 four-iteration chunks plus a three-iteration tail).
+
+The O2 Native CLI comparison held the runtime binary fixed, compiled
+both artifacts with the same compiler sources except for counter-read
+support, and checked stdout `5243155.887799761\n` for 1,048,579
+iterations. Nine alternating fresh-process pairs with profiling off on
+Linux x86-64 CPU 10 gave medians of 905.70 → 516.12 ms (paired median
+difference −343.16 ms, nine faster pairs). Separate SQLite instruction
+profiles showed 17,825,870 → 12,845,144 dispatches, 1,048,579 → 262,147
+backedges, and 2,097,158 → 1,310,726 Number boxes. Both artifacts
+performed exactly 1,048,579 multiplies and remainders. The timing is a
+controlled fixture measurement, not a general estimate; the dynamic
+counts account for the dispatch and box changes. Reproduce with
+[`profile_compare.py`](../Performance/profile_compare.py), supplying the
+same runtime on both sides and different O2 compiler paths. Raw profiles
+and timings are in `.temp/counter-loop-matched/`.

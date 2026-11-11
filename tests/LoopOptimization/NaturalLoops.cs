@@ -1,3 +1,4 @@
+using System.Globalization;
 using Msync.Compiler;
 using Msync.Core;
 using Msync.Optimization;
@@ -15,16 +16,22 @@ internal static class NaturalLoops
             ("-3", "2", ">", new[] { "-Infinity", "-5", "-3", "-1.5", "0", "3", "3.1", "5", "11", "32" }),
             ("9007199254740980", "1", ">=", new[] { "9007199254740980", "9007199254740985", "9007199254740988", "9007199254740992" })
         })
+        foreach (var (recurrence, readsCounter) in new[]
         {
-            string source = Program(start, step, comparison, "line as Number");
+            ("x * 1.0000000001 + 0.125", false),
+            ("x * 1.0000000001 + i % 11", true)
+        })
+        {
+            string source = Program(start, step, comparison, "line as Number", recurrence);
             var baseline = Compiler.Compile(source, "scalar-loop", 0);
             foreach (int level in new[] { 2, 3 })
             {
                 var optimized = Compiler.Compile(source, "scalar-loop", level);
                 Require(optimized.Functions.Any(function => function.Instructions.Count(i => i.Op == OpCode.Multiply) >= 5),
                     "Runtime-bounded scalar loop did not emit its fast region and exact fallback");
-                Require(optimized.Functions.Any(function => function.Instructions.Count(i => i.Op == OpCode.StoreLocal) <
-                    2 * function.Instructions.Count(i => i.Op == OpCode.Multiply)), "Private recurrence did not carry on the operand stack");
+                if (!readsCounter)
+                    Require(optimized.Functions.Any(function => function.Instructions.Count(i => i.Op == OpCode.StoreLocal) <
+                        2 * function.Instructions.Count(i => i.Op == OpCode.Multiply)), "Private recurrence did not carry on the operand stack");
                 var portable = RoundTrip(optimized);
                 var bound = RoundTrip(Binding.Bind(portable, new(root, root)));
                 foreach (string input in inputs)
@@ -39,7 +46,7 @@ internal static class NaturalLoops
 
         foreach (string bound in new[] { "0", "1", "3.1", "4" })
         {
-            string source = Program("0", "1", ">=", bound);
+            string source = Program("0", "1", ">=", bound, "x * 1.0000000001 + i % 11", "x + i");
             var baseline = Compiler.Compile(source, "finite-scalar-loop", 0);
             var optimized = Compiler.Compile(source, "finite-scalar-loop", 2);
             Require(optimized.Functions.All(function => !function.Instructions.Select((instruction, pc) =>
@@ -72,6 +79,31 @@ internal static class NaturalLoops
         Require(await Execute(signedZero, "9") == BitConverter.DoubleToInt64Bits(-0d),
             "Stack-carried recurrence did not preserve negative zero");
 
+        string indexed = Program("0", "1", ">=", "line as Number", "x * 1.0000000001 + i % 11");
+        RuntimeProfile profile = new(instructionSites: true);
+        const string count = "4099";
+        var unrolled = Compiler.Compile(indexed, "indexed-recurrence", 2);
+        var original = Compiler.Compile(indexed, "indexed-recurrence", 1);
+        long originalBits = await Execute(original, count, profile: profile);
+        var originalSamples = profile.Drain();
+        long unrolledBits = await Execute(unrolled, count, profile: profile);
+        var unrolledSamples = profile.Drain();
+        Require(originalBits == unrolledBits, "Grouped checks changed the counter-dependent result");
+        Require(Backedges(originalSamples) == 4099 && Backedges(unrolledSamples) == 1027,
+            "Grouped checks did not remove three out of every four backedges while preserving the tail");
+        Require(Visits(originalSamples, OpCode.Remainder) == 4099 && Visits(unrolledSamples, OpCode.Remainder) == 4099,
+            "Grouping changed the number of counter-dependent calculations");
+        Require(Instructions(unrolledSamples) < Instructions(originalSamples),
+            "Counter-dependent grouping did not reduce dynamic dispatch");
+        int counterStore = indexed.IndexOf("i = i +", StringComparison.Ordinal);
+        int accumulatorStore = indexed.IndexOf("x = x *", StringComparison.Ordinal);
+        Require(SiteVisits(originalSamples, OpCode.StoreLocal, counterStore) == 4099
+            && SiteVisits(unrolledSamples, OpCode.StoreLocal, counterStore) == 4099,
+            "Grouped execution did not retain each counter update");
+        Require(SiteVisits(originalSamples, OpCode.StoreLocal, accumulatorStore) == 4099
+            && SiteVisits(unrolledSamples, OpCode.StoreLocal, accumulatorStore) == 1027,
+            "Grouped execution retained intermediate accumulator stores");
+
         var infinite = Compiler.Compile(Program("0", "1", ">=", "line as Number"), "nan-loop", 2);
         using var cancellation = new CancellationTokenSource();
         cancellation.CancelAfter(TimeSpan.FromMilliseconds(100));
@@ -83,10 +115,12 @@ internal static class NaturalLoops
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { checks++; }
         return checks;
 
-        async Task<long> Execute(Module module, string input, CancellationToken cancellationToken = default)
+        async Task<long> Execute(Module module, string input, CancellationToken cancellationToken = default,
+            RuntimeProfile? profile = null)
         {
             using var reader = new StringReader(input + "\n");
-            Value value = await Interpreter.ExecuteAsync(module, new(WorkingDirectory: root) { Input = reader }, cancellationToken);
+            Value value = await Interpreter.ExecuteAsync(module, new(WorkingDirectory: root) { Input = reader, Profile = profile },
+                cancellationToken);
             return BitConverter.DoubleToInt64Bits(((NumberValue)value).Data);
         }
 
@@ -97,16 +131,36 @@ internal static class NaturalLoops
         }
     }
 
-    private static string Program(string start, string step, string comparison, string bound) => $$"""
+    private static ulong Backedges(IReadOnlyList<RuntimeProfileSample> samples) => samples
+        .Where(sample => sample.Name == "vm.edge" && int.Parse(sample.Attributes["target.pc"], CultureInfo.InvariantCulture)
+            < int.Parse(sample.Attributes["instruction.pc"], CultureInfo.InvariantCulture))
+        .Aggregate(0UL, (total, sample) => total + sample.Metrics["hits"]);
+
+    private static ulong Visits(IReadOnlyList<RuntimeProfileSample> samples, OpCode opcode) => samples
+        .Where(sample => sample.Name == "vm.opcode" && sample.Attributes["opcode"] == opcode.ToString())
+        .Aggregate(0UL, (total, sample) => total + sample.Metrics["hits"]);
+
+    private static ulong SiteVisits(IReadOnlyList<RuntimeProfileSample> samples, OpCode opcode, int sourceOffset) => samples
+        .Where(sample => sample.Name == "vm.instruction" && sample.Attributes["opcode"] == opcode.ToString()
+            && sample.Attributes.TryGetValue("source.offset", out string? offset)
+            && int.Parse(offset, CultureInfo.InvariantCulture) == sourceOffset)
+        .Aggregate(0UL, (total, sample) => total + sample.Metrics["hits"]);
+
+    private static ulong Instructions(IReadOnlyList<RuntimeProfileSample> samples) => samples
+        .Where(sample => sample.Name == "vm.function")
+        .Aggregate(0UL, (total, sample) => total + sample.Metrics["instructions"]);
+
+    private static string Program(string start, string step, string comparison, string bound,
+        string recurrence = "x * 1.0000000001 + 0.125", string result = "x") => $$"""
         fn run(n: Number) {
             let i = {{start}};
             let x = 0;
             loop {
                 if i {{comparison}} n { break; };
-                x = x * 1.0000000001 + 0.125;
+                x = {{recurrence}};
                 i = i + {{step}};
             };
-            x
+            {{result}}
         };
         let line? = $std::io::read_line();
         if line? { 0 } else { run({{bound}}) }

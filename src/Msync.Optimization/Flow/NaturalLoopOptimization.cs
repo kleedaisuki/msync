@@ -6,9 +6,11 @@ internal static class NaturalLoopOptimization
     private const int MaxBodyInstructions = 24;
     private const double ExactIntegerLimit = 9_007_199_254_740_992d;
 
+    private readonly record struct BodyPlan(bool ReadsCounter, bool CarryOnStack);
+
     private sealed record Candidate(int Header, int Body, int Update, int Latch, int Exit,
         double Start, double Step, Instruction Bound, double? KnownBound,
-        OpCode Comparison, bool KeepOnTrue, bool CarryOnStack)
+        OpCode Comparison, bool KeepOnTrue, BodyPlan Plan)
     {
         internal OpCode ContinueComparison => Comparison is OpCode.LessEqual or OpCode.Greater
             ? OpCode.LessEqual : OpCode.Less;
@@ -141,27 +143,30 @@ internal static class NaturalLoopOptimization
             || bound.Op == OpCode.LoadLocal && bound.A == counter) return null;
         double? knownBound = bound.Op == OpCode.Constant ? (constants[bound.A] as NumberValue)?.Data
             : locals.PrivateNumericSeed(preheader, bound.A, -1);
-        if (knownBound is null && (bound.Op != OpCode.LoadLocal || !locals.InvariantBound(preheader, bound.A))
-            || !AnalyzeBody(code, constants, preheader, latch.Start, update, counter, bound, locals, out bool carry))
+        if (knownBound is null && (bound.Op != OpCode.LoadLocal || !locals.InvariantBound(preheader, bound.A))) return null;
+        if (AnalyzeBody(code, constants, preheader, latch.Start, update, counter, bound, locals) is not { } plan)
             return null;
         var candidate = new Candidate(test, latch.Start, update, latch.End - 1, bodyIsTarget ? header.End : branch.A,
-            initial, step, bound, knownBound, comparison, keepOnTrue, carry);
+            initial, step, bound, knownBound, comparison, keepOnTrue, plan);
         return knownBound is double known && !(known <= candidate.SafeBound)
             && CountSmall(candidate) is null ? null : candidate;
     }
 
-    private static bool AnalyzeBody(IReadOnlyList<Instruction> code, IReadOnlyList<Value> constants, BasicBlock preheader,
-        int start, int end, int counter, Instruction bound, LocalFacts locals, out bool carry)
+    private static BodyPlan? AnalyzeBody(IReadOnlyList<Instruction> code, IReadOnlyList<Value> constants, BasicBlock preheader,
+        int start, int end, int counter, Instruction bound, LocalFacts locals)
     {
         int depth = 0, stores = 0;
-        carry = false;
+        bool readsCounter = false;
         for (int pc = start; pc < end; pc++)
         {
             var instruction = code[pc];
             switch (instruction.Op)
             {
                 case OpCode.Constant when constants[instruction.A] is NumberValue:
-                case OpCode.LoadLocal when instruction.A != counter:
+                    depth++;
+                    break;
+                case OpCode.LoadLocal:
+                    readsCounter |= instruction.A == counter;
                     depth++;
                     break;
                 case OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide or OpCode.Remainder when depth >= 2:
@@ -177,14 +182,14 @@ internal static class NaturalLoopOptimization
                     depth--;
                     break;
                 default:
-                    return false;
+                    return null;
             }
         }
         int carrySlot = code[end - 1].A;
-        carry = stores == 1 && code[end - 1].Op == OpCode.StoreLocal
+        bool carry = stores == 1 && code[end - 1].Op == OpCode.StoreLocal
             && code[start] is { Op: OpCode.LoadLocal, A: var source } && source == carrySlot
             && !UsesLocal(code, start + 1, end - 1, carrySlot);
-        return depth == 0 && stores != 0;
+        return depth == 0 && stores != 0 ? new(readsCounter, carry) : null;
     }
 
     private static bool IsNonCellProducer(OpCode operation) => operation is OpCode.Constant or OpCode.Add
@@ -296,10 +301,19 @@ internal static class NaturalLoopOptimization
         {
             // A private, single-store recurrence does not need to publish
             // intermediate values. Its arithmetic stays in original order.
-            int start = loop.Body + (loop.CarryOnStack && copy != 0 ? 1 : 0);
-            int end = loop.Update - (loop.CarryOnStack && copy != count - 1 ? 1 : 0);
+            int start = loop.Body + (loop.Plan.CarryOnStack && copy != 0 ? 1 : 0);
+            int end = loop.Update - (loop.Plan.CarryOnStack && copy != count - 1 ? 1 : 0);
             for (int pc = start; pc < end; pc++) output.Add(code[pc]);
+            // Preserve the original value and rounding at each observation of
+            // the counter. The update is balanced even above a carried value.
+            if (loop.Plan.ReadsCounter) EmitUpdate(code, output, loop, 1, constants);
         }
+        if (!loop.Plan.ReadsCounter) EmitUpdate(code, output, loop, count, constants);
+    }
+
+    private static void EmitUpdate(IReadOnlyList<Instruction> code, List<Instruction> output, Candidate loop,
+        int count, ConstantInterner constants)
+    {
         output.Add(code[loop.Update]);
         var step = code[loop.Update + 1];
         output.Add(count == 1 ? step : step with { A = constants.Intern(new NumberValue(count * loop.Step)) });

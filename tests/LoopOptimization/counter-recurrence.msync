@@ -1,0 +1,13 @@
+fn run(n: Number) {
+    let i = 0;
+    let x = 0;
+    loop {
+        if i >= n { break; };
+        x = x * 1.0000000001 + i % 11;
+        i = i + 1;
+    };
+    x
+};
+let line? = $std::io::read_line();
+let result = if line? { 0 } else { run(line as Number) };
+$std::io::println(result as String);
