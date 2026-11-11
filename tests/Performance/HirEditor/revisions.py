@@ -11,15 +11,17 @@ import statistics
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 ROOT: Path = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "tests/Msync.EndToEnd"))
 
 from lsp_latency import Client
 
+Fixture = Literal["generic", "seeded-set", "seeded-list"]
 
-def document(rows: int) -> list[str]:
+
+def document(rows: int, fixture: Fixture = "generic") -> list[str]:
     lines: list[str] = []
     for index in range(rows):
         lines.extend(
@@ -28,7 +30,17 @@ def document(rows: int) -> list[str]:
                 f"let row_{index} = wrap_{index}({index});",
             )
         )
-    lines.append(f"let selected = row_{rows // 2}::item;")
+    if fixture == "generic":
+        lines.append(f"let selected = row_{rows // 2}::item;")
+    else:
+        family = "Set" if fixture == "seeded-set" else "List"
+        lines.extend(
+            (
+                f"let items = $std::containers::{family}::new([3, 1, 2]);",
+                f"let count = $std::containers::{family}::size(items);",
+                f"let selected = wrap_{rows // 2}(count)::item;",
+            )
+        )
     return lines
 
 
@@ -36,9 +48,11 @@ def sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def probe(binary: Path, rows: int, edits: int) -> dict[str, Any]:
+def probe(
+    binary: Path, rows: int, edits: int, fixture: Fixture = "generic"
+) -> dict[str, Any]:
     client = Client(binary)
-    lines = document(rows)
+    lines = document(rows, fixture)
     uri = "file:///msync-generic-edit.msync"
     descriptor = {"uri": uri}
     source = "\n".join(lines) + "\n"
@@ -129,8 +143,14 @@ def main() -> None:
     parser.add_argument("--rows", type=int, default=400)
     parser.add_argument("--edits", type=int, default=9)
     parser.add_argument("--rounds", type=int, default=2)
+    parser.add_argument(
+        "--fixture",
+        choices=("generic", "seeded-set", "seeded-list"),
+        default="generic",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    fixture = cast(Fixture, args.fixture)
     if args.rows < 2 or args.edits < 2 or args.rounds < 1:
         parser.error("Use at least two rows and edits, and one paired round.")
     images: dict[str, Path] = {
@@ -144,11 +164,13 @@ def main() -> None:
             {
                 "order": order,
                 "samples": {
-                    name: probe(images[name], args.rows, args.edits) for name in order
+                    name: probe(images[name], args.rows, args.edits, fixture)
+                    for name in order
                 },
             }
         )
     report = {
+        "fixture": fixture,
         "rows": args.rows,
         "edits_per_session": args.edits,
         "clock": "range didChange send through matching hover reply",
