@@ -169,18 +169,22 @@ public sealed partial class Interpreter
         CancellationToken cancellationToken)
     {
         await ordering;
-        if (pending.Count == 0) return;
-        List<PathValue>? operands = null;
+        if (pending.Count == 0 || !resources.HasRegistrations) return;
+        List<(PathValue Path, bool Writes)>? operands = null;
         for (int index = 0; index < Math.Min(arguments.Count, signature.Parameters.Count); index++)
-            if ((signature.Parameters[index].Kind & TypeKind.Path) != 0
-                && arguments[index] is PathValue or StringValue)
-                (operands ??= []).Add(context.AsPath(arguments[index]));
+        {
+            if ((signature.Parameters[index].Kind & TypeKind.Path) == 0
+                || arguments[index] is not (PathValue or StringValue)) continue;
+            NativePathAccess access = signature.AccessOfPathArgument(index);
+            if (access == NativePathAccess.None || access == NativePathAccess.ReadIfPath && arguments[index] is not PathValue) continue;
+            (operands ??= []).Add((context.AsPath(arguments[index]), access == NativePathAccess.Write));
+        }
         if (operands is null) return;
-        await AwaitNamespacePublicationsAsync(operands);
+        await AwaitNamespacePublicationsAsync(operands.Select(operand => operand.Path));
         var filesystem = new PlanFileSystem(context, planResources, cancellationToken);
-        var entries = operands.Select(path => Key(filesystem.Resource(path, true))).ToArray();
-        var publications = signature.Effect == NativeEffect.Write
-            ? resources.Dependencies([], entries) : resources.Dependencies(entries, []);
+        HashSet<Task> publications = [];
+        foreach (var operand in operands)
+            resources.Collect(Key(filesystem.Resource(operand.Path, true)), operand.Writes, publications);
         if (publications.Count != 0)
         {
             nativeHazardWaits++;
@@ -188,9 +192,10 @@ public sealed partial class Interpreter
         }
         bool follow = signature.Name is not ("fs.symlink_status" or "fs.is_symlink" or "fs.read_symlink"
             or "fs.remove" or "fs.remove_all" or "fs.rename");
-        var paths = operands.SelectMany(path => filesystem.ObservationResources(path, follow)).Select(Key).ToArray();
-        var dependencies = signature.Effect == NativeEffect.Write
-            ? resources.Dependencies([], paths) : resources.Dependencies(paths, []);
+        HashSet<Task> dependencies = [];
+        foreach (var operand in operands)
+            foreach (var resource in filesystem.ObservationResources(operand.Path, follow))
+                resources.Collect(Key(resource), operand.Writes, dependencies);
         if (dependencies.Count != 0)
         {
             nativeHazardWaits++;

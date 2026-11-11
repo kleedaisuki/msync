@@ -40,6 +40,9 @@ public static partial class NativeSignatures
         Add("fs", "create_directory create_directories remove remove_all remove_directory", TypeRef.Bool, NativeEffect.Write, path);
         Add("fs", "rename create_hard_link create_symlink create_directory_symlink copy_symlink", TypeRef.Null, NativeEffect.Write, path, path);
         Add("fs", "copy_file copy", TypeRef.Bool, NativeEffect.Write, path, path);
+        foreach (string name in new[] { "fs.copy_file", "fs.copy_symlink" })
+            result[name] = result[name] with { PathAccess = [NativePathAccess.Read, NativePathAccess.Write] };
+        result["fs.copy"] = result["fs.copy"] with { PathAccess = [NativePathAccess.ReadIfPath, NativePathAccess.Write] };
         Add("fs", "root_name root_directory root_path relative_path parent_path filename stem extension lexically_normal remove_filename make_preferred", TypeRef.Path, NativeEffect.Pure, path);
         Add("fs", "lexically_relative lexically_proximate replace_filename replace_extension append concat", TypeRef.Path, NativeEffect.Pure, path, path);
         Add("fs", "string generic_string native", TypeRef.String, NativeEffect.Pure, path);

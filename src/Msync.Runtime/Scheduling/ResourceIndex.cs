@@ -1,29 +1,124 @@
 namespace Msync.Runtime;
 
-internal sealed record ResourceKey(string Endpoint, string Path);
+internal readonly record struct ResourceKey(string Endpoint, string Path);
 
 internal sealed class ResourceIndex
 {
-    public sealed class Node(StringComparer comparer, Node? parent = null, string? name = null)
+    public sealed class Node(Node? parent = null, string? name = null)
     {
-        public readonly Dictionary<string, Node> Children = new(comparer);
-        public readonly HashSet<Task> Readers = [];
-        public readonly HashSet<Task> Writers = [];
-        public readonly Node? Parent = parent;
-        public readonly string? Name = name;
+        // Only branch points need a table. Most common path prefixes are unary.
+        internal object? Children;
+        internal TaskSet Readers;
+        internal TaskSet Writers;
+        internal readonly Node? Parent = parent;
+        internal readonly string? Name = name;
+
+        internal Node? FindChild(ReadOnlySpan<char> name, bool windows)
+        {
+            if (Children is Node child)
+                return name.Equals(child.Name, windows ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)
+                    ? child : null;
+            return Children is Dictionary<string, Node> branches
+                && branches.GetAlternateLookup<ReadOnlySpan<char>>().TryGetValue(name, out var match) ? match : null;
+        }
+
+        internal Node AddChild(ReadOnlySpan<char> name, bool windows)
+        {
+            string key = name.ToString();
+            Node child = new(this, key);
+            if (Children is null) Children = child;
+            else
+            {
+                if (Children is Node first)
+                    Children = new Dictionary<string, Node>(windows ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal)
+                    { [first.Name!] = first };
+                ((Dictionary<string, Node>)Children).Add(key, child);
+            }
+            return child;
+        }
+
+        internal bool RemoveChild(Node child)
+        {
+            if (ReferenceEquals(Children, child)) { Children = null; return true; }
+            if (Children is not Dictionary<string, Node> branches
+                || !branches.TryGetValue(child.Name!, out var match) || !ReferenceEquals(match, child)) return false;
+            branches.Remove(child.Name!);
+            if (branches.Count == 1)
+            {
+                using var remaining = branches.Values.GetEnumerator();
+                remaining.MoveNext();
+                Children = remaining.Current;
+            }
+            return true;
+        }
     }
+
+    // Most leaves represent one active transfer; shared sources retain set semantics.
+    internal struct TaskSet
+    {
+        private Task? first;
+        private HashSet<Task>? shared;
+
+        internal readonly bool IsEmpty => first is null && shared is null;
+
+        internal void Add(Task task)
+        {
+            if (shared is { } tasks) tasks.Add(task);
+            else if (first is null) first = task;
+            else if (!ReferenceEquals(first, task))
+            {
+                shared = [first, task];
+                first = null;
+            }
+        }
+
+        internal void Remove(Task task)
+        {
+            if (ReferenceEquals(first, task)) first = null;
+            if (shared is { } tasks && tasks.Remove(task)) Compact(tasks);
+        }
+
+        internal void Collect(HashSet<Task> target)
+        {
+            if (first is { } task)
+            {
+                if (task.IsCompletedSuccessfully) first = null;
+                else target.Add(task);
+            }
+            if (shared is not { } tasks) return;
+            tasks.RemoveWhere(static item => item.IsCompletedSuccessfully);
+            target.UnionWith(tasks);
+            Compact(tasks);
+        }
+
+        private void Compact(HashSet<Task> tasks)
+        {
+            if (tasks.Count > 1) return;
+            using var remaining = tasks.GetEnumerator();
+            first = remaining.MoveNext() ? remaining.Current : null;
+            shared = null;
+        }
+    }
+
     public readonly record struct Registration(Node? Reader, Node? Writer);
     private readonly Dictionary<string, Node> roots = new(StringComparer.Ordinal);
     private Node? unknown;
     public long NodesVisited { get; private set; }
-    private static StringComparer Comparer(string endpoint) => endpoint == "local" && OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
-    private Node Root(ResourceKey key)
+    internal bool HasRegistrations
     {
-        if (key.Endpoint == "*") return unknown ??= new(StringComparer.Ordinal);
-        if (!roots.TryGetValue(key.Endpoint, out var root)) roots.Add(key.Endpoint, root = new(Comparer(key.Endpoint)));
-        return root;
+        get
+        {
+            if (unknown is { } wildcard && !Vacant(wildcard)) return true;
+            foreach (var (_, root) in roots)
+                if (!Vacant(root)) return true;
+            return false;
+        }
     }
-    private static IEnumerable<string> Parts(ResourceKey key) => key.Path.Split(key.Endpoint == "local" && OperatingSystem.IsWindows() ? ['/', '\\'] : ['/'], StringSplitOptions.RemoveEmptyEntries);
+
+    private static bool Vacant(Node node) => node.Children is null && node.Readers.IsEmpty && node.Writers.IsEmpty;
+
+    private static bool Windows(string endpoint) => endpoint == "local" && OperatingSystem.IsWindows();
+
     public HashSet<Task> Dependencies(IReadOnlyList<ResourceKey> reads, IReadOnlyList<ResourceKey> writes)
     {
         HashSet<Task> tasks = [];
@@ -31,93 +126,117 @@ internal sealed class ResourceIndex
         foreach (var key in writes) Collect(key, true, tasks);
         return tasks;
     }
-    private static void AddActive(HashSet<Task> source, HashSet<Task> target)
+
+    internal void Collect(ResourceKey key, bool writing, HashSet<Task> tasks)
     {
-        source.RemoveWhere(task => task.IsCompletedSuccessfully);
-        target.UnionWith(source);
-    }
-    private void Collect(ResourceKey key, bool writing, HashSet<Task> tasks)
-    {
-        if (unknown is not null)
-        {
-            AddActive(unknown.Writers, tasks);
-            if (writing) AddActive(unknown.Readers, tasks);
-        }
+        if (unknown is not null) CollectNode(unknown, writing, tasks);
         if (key.Endpoint == "*")
         {
             foreach (var root in roots.Values)
             {
                 NodesVisited++;
-                AddActive(root.Writers, tasks);
-                if (writing) AddActive(root.Readers, tasks);
+                CollectNode(root, writing, tasks);
                 CollectDescendants(root, writing, tasks);
             }
             return;
         }
-        var node = Root(key);
+        if (!roots.TryGetValue(key.Endpoint, out var node)) return;
         NodesVisited++;
-        AddActive(node.Writers, tasks);
-        if (writing) AddActive(node.Readers, tasks);
-        foreach (var part in Parts(key))
+        CollectNode(node, writing, tasks);
+        bool windows = Windows(key.Endpoint);
+        var path = key.Path.AsSpan();
+        while (TryNextPart(ref path, windows, out var part))
         {
-            if (!node.Children.TryGetValue(part, out node!)) return;
+            if (node.FindChild(part, windows) is not { } next) return;
+            node = next;
             NodesVisited++;
-            AddActive(node.Writers, tasks);
-            if (writing) AddActive(node.Readers, tasks);
+            CollectNode(node, writing, tasks);
         }
         CollectDescendants(node, writing, tasks);
     }
+
+    private static void CollectNode(Node node, bool writing, HashSet<Task> tasks)
+    {
+        node.Writers.Collect(tasks);
+        if (writing) node.Readers.Collect(tasks);
+    }
+
     private void CollectDescendants(Node node, bool writing, HashSet<Task> tasks)
     {
-        foreach (var child in node.Children.Values)
-        {
-            NodesVisited++;
-            AddActive(child.Writers, tasks);
-            if (writing) AddActive(child.Readers, tasks);
-            CollectDescendants(child, writing, tasks);
-        }
+        if (node.Children is Node single) CollectChild(single, writing, tasks);
+        else if (node.Children is Dictionary<string, Node> branches)
+            foreach (var child in branches.Values) CollectChild(child, writing, tasks);
     }
+
+    private void CollectChild(Node child, bool writing, HashSet<Task> tasks)
+    {
+        NodesVisited++;
+        CollectNode(child, writing, tasks);
+        CollectDescendants(child, writing, tasks);
+    }
+
     public Registration Add(Task completion, ResourceKey? read, ResourceKey write)
     {
-        var reader = read is null ? null : Leaf(read);
+        var reader = read is { } input ? Leaf(input) : null;
         var writer = Leaf(write);
-        reader?.Readers.Add(completion);
+        if (reader is not null) reader.Readers.Add(completion);
         writer.Writers.Add(completion);
         return new(reader, writer);
     }
+
     public Registration AddRead(Task completion, ResourceKey read)
     {
         var node = Leaf(read);
         node.Readers.Add(completion);
         return new(node, null);
     }
+
     public void Remove(Task completion, Registration registration)
     {
-        registration.Reader?.Readers.Remove(completion);
-        registration.Writer?.Writers.Remove(completion);
-        if (registration.Reader is { } reader) Prune(reader);
-        if (registration.Writer is { } writer) Prune(writer);
+        if (registration.Reader is { } reader)
+        {
+            reader.Readers.Remove(completion);
+            Prune(reader);
+        }
+        if (registration.Writer is { } writer)
+        {
+            writer.Writers.Remove(completion);
+            Prune(writer);
+        }
     }
+
     private static void Prune(Node node)
     {
-        while (node.Parent is { } parent && node.Children.Count == 0 && node.Readers.Count == 0 && node.Writers.Count == 0)
+        while (node.Parent is { } parent && Vacant(node))
         {
-            // A query can clear completed tasks before their owner's lease is retired.
-            if (!parent.Children.TryGetValue(node.Name!, out var child) || !ReferenceEquals(child, node)) return;
-            parent.Children.Remove(node.Name!);
+            // Several leases can still refer to a pruned child.
+            if (!parent.RemoveChild(node)) return;
             node = parent;
         }
     }
+
     private Node Leaf(ResourceKey key)
     {
-        var node = Root(key);
         NodesVisited++;
-        foreach (var part in Parts(key))
+        if (key.Endpoint == "*") return unknown ??= new();
+        if (!roots.TryGetValue(key.Endpoint, out var node)) roots.Add(key.Endpoint, node = new());
+        var windows = Windows(key.Endpoint);
+        var path = key.Path.AsSpan();
+        while (TryNextPart(ref path, windows, out var part))
         {
-            if (!node.Children.TryGetValue(part, out var child)) node.Children.Add(part, child = new(Comparer(key.Endpoint), node, part));
-            node = child;
+            node = node.FindChild(part, windows) ?? node.AddChild(part, windows);
             NodesVisited++;
         }
         return node;
+    }
+
+    private static bool TryNextPart(ref ReadOnlySpan<char> path, bool windows, out ReadOnlySpan<char> part)
+    {
+        while (!path.IsEmpty && (path[0] == '/' || windows && path[0] == '\\')) path = path[1..];
+        if (path.IsEmpty) { part = default; return false; }
+        int end = windows ? path.IndexOfAny('/', '\\') : path.IndexOf('/');
+        if (end < 0) { part = path; path = default; }
+        else { part = path[..end]; path = path[(end + 1)..]; }
+        return true;
     }
 }

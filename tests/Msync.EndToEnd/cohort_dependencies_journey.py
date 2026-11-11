@@ -1,4 +1,4 @@
-"""Check that finite local cohorts wait only for actual producers."""
+"""Check that local cohorts and native copies wait only for actual hazards."""
 
 from __future__ import annotations
 
@@ -10,6 +10,15 @@ import time
 from pathlib import Path
 
 ROOT: Path = Path(__file__).resolve().parents[2]
+CASES: tuple[str, ...] = (
+    "scalar",
+    "cohort",
+    "scalar-dependent",
+    "cohort-dependent",
+    "native-shared-reader",
+    "native-source-dependent",
+    "native-destination-dependent",
+)
 
 
 def command(binary: Path, work: Path, *args: str) -> str:
@@ -48,9 +57,21 @@ child::stdout -> ./held.txt;
     elif kind == "scalar-dependent":
         source += "./held.txt -> ./output.txt;\n"
         output = work / "output.txt"
-    else:
+    elif kind == "cohort-dependent":
         source += "let members = $std::ranges::materialize([./held.txt]);\nmembers -> ./output/;\n"
         output = work / "output/held.txt"
+    elif kind == "native-shared-reader":
+        source += "./input.txt -> ./held.txt;\n$std::fs::copy_file(./input.txt, ./output.txt);\n"
+        output = work / "output.txt"
+    elif kind == "native-source-dependent":
+        source += "$std::fs::copy_file(./held.txt, ./output.txt);\n"
+        output = work / "output.txt"
+    else:
+        source += (
+            "if $std::fs::copy_file(./input.txt, ./held.txt) "
+            '{ "independent" -> ./output.txt; };\n'
+        )
+        output = work / "output.txt"
     source += "acquire child;\n"
     (work / "input.txt").write_bytes(b"independent")
     (work / "wait.sh").write_text(
@@ -81,9 +102,14 @@ child::stdout -> ./held.txt;
         (work / "gate").touch()
         stdout, stderr = child.communicate(timeout=15)
     assert child.returncode == 0, (stdout, stderr, work)
-    assert output.read_bytes() == (
-        b"held" if kind.endswith("dependent") else b"independent"
-    ), work
+    reads_held: bool = kind in (
+        "scalar-dependent",
+        "cohort-dependent",
+        "native-source-dependent",
+    )
+    assert output.read_bytes() == (b"held" if reads_held else b"independent"), work
+    if kind in ("native-shared-reader", "native-destination-dependent"):
+        assert (work / "held.txt").read_bytes() == b"independent", work
     assert before_release == (not kind.endswith("dependent")), (route, kind, work)
     return {
         "route": route,
@@ -96,6 +122,7 @@ child::stdout -> ./held.txt;
 def main() -> None:
     parser: argparse.ArgumentParser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
+    parser.add_argument("--case", choices=CASES, action="append", default=[])
     opts: argparse.Namespace = parser.parse_args()
     binary: Path = opts.binary.resolve()
     scratch = ROOT / ".temp"
@@ -106,7 +133,7 @@ def main() -> None:
         outcomes = [
             run(binary, Path(work), route, kind)
             for route in ("msync", "mso", "mexe")
-            for kind in ("scalar", "cohort", "scalar-dependent", "cohort-dependent")
+            for kind in (opts.case or CASES)
         ]
     print(json.dumps(outcomes, indent=2))
 

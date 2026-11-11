@@ -36,7 +36,7 @@ public sealed partial class Interpreter
         }
 
         var inputs = new HashSet<Task>[batches.Count];
-        bool hasPriorWork = pending.Count != 0;
+        bool hasPriorWork = pending.Count != 0 && resources.HasRegistrations;
         for (int batch = 0; batch < batches.Count; batch++)
         {
             var dependencies = inputs[batch] = [ordering];
@@ -44,8 +44,10 @@ public sealed partial class Interpreter
             {
                 var transfer = plan.Transfers[node];
                 if (hasPriorWork)
-                    dependencies.UnionWith(resources.Dependencies(transfer.Reads.Select(Key).ToArray(),
-                        transfer.Writes.Select(Key).ToArray()));
+                {
+                    foreach (var read in transfer.Reads) resources.Collect(Key(read), false, dependencies);
+                    foreach (var write in transfer.Writes) resources.Collect(Key(write), true, dependencies);
+                }
                 foreach (int predecessor in transfer.Predecessors)
                     dependencies.Add(completed[nodeBatches[predecessor]]);
             }
@@ -254,13 +256,13 @@ public sealed partial class Interpreter
         values.OfType<PathValue>().FirstOrDefault(path => path.Connection?.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl)
             is { Connection: { } connection } ? planResources.Enter(connection, cancellationToken) : null;
 
-    private async ValueTask AwaitNamespacePublicationsAsync(IReadOnlyList<PathValue> paths)
+    private async ValueTask AwaitNamespacePublicationsAsync(IEnumerable<PathValue> paths)
     {
         if (NamespaceDependencies(paths) is { } dependencies)
             await Task.WhenAll(dependencies);
     }
 
-    private List<Task>? NamespaceDependencies(IReadOnlyList<PathValue> paths)
+    private List<Task>? NamespaceDependencies(IEnumerable<PathValue> paths)
     {
         if (namespaceProducers.Count == 0) return null;
         HashSet<string> entries = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
