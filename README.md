@@ -262,6 +262,8 @@ The modules include filesystem/IO, Path/String/Number operations, Range
 algorithms, live processes, containers, text construction, regular expressions,
 data composition, metaprogramming and terminal utilities. `msync skill library`
 lists the embedded modules and progressively displays their actual declarations.
+Use `msync skill library containers Set new` for one operation, or
+`msync skill library console` for a runnable standard-stream recipe.
 
 Named Scope families use PascalCase; associated functions use snake_case and
 take their instance explicitly. Instances store data and selected policies,
@@ -273,6 +275,10 @@ let files = List::new([./input.txt]);
 List::push(files, ./settings.toml);
 let before = List::snapshot(files);
 
+let Set = $std::containers::Set;
+let numbers = Set::new(Number);
+Set::insert(numbers, 42);
+
 let report = $std::files::File::new(./report.txt);
 $std::files::File::write(report, "ready");
 ```
@@ -280,9 +286,21 @@ $std::files::File::write(report, "ready");
 `$std::data` provides Pair, Option, Result and Either families. An absent Option
 is native Null; `Option::some(null)` remains a distinct present value. The
 `$std::meta` queries support type-directed composition without executing the
-function or member access being inspected. In the REPL, terminal utilities such
+function or member access being inspected. For explicit navigation, a
+`$std::ranges::Cursor` owns a finite snapshot position; ordinary `for` and lazy
+adapters still stream their inputs. In the REPL, terminal utilities such
 as `ls()` and `cat(./report.txt)` are available directly; scripts use
 `$std::shell` explicitly.
+
+Text formatting is separate from I/O:
+
+```msync
+$std::io::println($std::text::format("{}: {:.2f}", "Total", 12.5));
+let line? = $std::io::read_line();
+```
+
+`read_line` distinguishes EOF (`null`) from an empty line (`""`).
+`stdin_lines` streams input once; `eprintln` writes to standard error.
 
 Pure compositions use ordinary functions; host-only operations use explicitly
 typed native declarations:
@@ -400,7 +418,7 @@ The current checkout and packages contain only the C# implementation. Historical
 Rust sources, standard modules and tests remain available at the immutable
 [`v0.7.3` tag](https://github.com/kleedaisuki/msync/tree/v0.7.3); they are not a
 build or execution dependency. There is no legacy command or executable routing.
-Version 0.8.5 bytecode artifacts use format 5; the earlier 0.8.1
+Current bytecode artifacts use format 5; the earlier 0.8.1
 format-4 packages remain unchanged. Recompile earlier bytecode with the current
 compiler rather than treating it as the new plan representation. Scripts use
 `fn`, `let`, brace blocks and semicolons instead of

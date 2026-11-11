@@ -2,7 +2,7 @@
   "name": "msync-language",
   "displayName": "msync Language",
   "description": "Inferred types, actionable diagnostics, navigation and formatting for msync 0.8",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "publisher": "msync",
   "license": "GPL-3.0-only",
   "engines": {

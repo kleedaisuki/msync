@@ -1,6 +1,6 @@
 # Project engineering knowledge
 
-## C# staged language (product v0.8.5; language v0.8.0)
+## C# staged language (product v0.8.6; artifact language semantics v0.8.0)
 
 - The current product is the .NET 10 Native AOT implementation in `src/Msync.*`.
   The retired Rust implementation is available in Git history at `v0.7.3`, not
@@ -30,7 +30,9 @@
   lexical ancestor locations, not process-global names.
 - `Scope` is lexical; `Connection` is physical. `$wsl`, `$local` and SSH URLs
   produce Connection values in 0.8. `Scope::member` selects lexical members;
-  `path @ connection` qualifies Path/String values. Connection `::` is removed.
+  source uses `connection @ path` for Path/String qualification and evaluates
+  the Connection first. Existing artifacts retain their original evaluation
+  order. Connection `::` is removed.
   Endpoint qualification retains raw path
   provenance; path separators follow the selected endpoint's grammar, so a
   POSIX backslash is filename data even on a Windows interpreter.
@@ -194,6 +196,14 @@
   `data`, `text` and `regex` own the corresponding families; `io` and `process`
   retain host primitives. The unpublished factory interfaces have been removed,
   not preserved through compatibility adapters.
+- Typed empty collections accept Type witnesses, not dummy elements. Preserve
+  the distinction between a witness and an existing Type-valued exemplar when
+  extending a constructor. A snapshot Cursor owns a position, not a new type;
+  its exhaustion test is independent of a nullable element.
+- Formatting is invariant and separate from effects. Selected named fields
+  can be read without enumerating a Range or waiting on a Process for display.
+  Program stdio uses its owned/injected text streams; redirected REPL commands
+  and program input share one reader, and LSP streams remain framed protocol.
 - Inline `typename` binders introduce associated types in concept requirements.
   Qualified standard concepts are compile-time declarations, not runtime Scope
   fields. `$std::meta` dependent queries do not execute their operands and must

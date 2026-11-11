@@ -9,14 +9,14 @@ use the language's invariant/ordinal semantics; the runtime does not expose
 locale-dependent operations.
 
 Keep the extracted package in a stable per-user directory, for example
-`~/.local/opt/msync-0.8.5-linux-x86_64`. Keep the complete `bin/` payload together:
+`~/.local/opt/msync-0.8.6-linux-x86_64`. Keep the complete `bin/` payload together:
 `libe_sqlite3.so` is a runtime dependency and must remain beside `msync`, including
 when telemetry is enabled later. Copying only the executable loses that library.
 Create a command symlink and ensure `~/.local/bin` is on PATH:
 
 ```sh
 mkdir -p ~/.local/bin
-ln -s ~/.local/opt/msync-0.8.5-linux-x86_64/bin/msync ~/.local/bin/msync
+ln -s ~/.local/opt/msync-0.8.6-linux-x86_64/bin/msync ~/.local/bin/msync
 ```
 
 No root permission or automatic configuration change is necessary. To upgrade,
