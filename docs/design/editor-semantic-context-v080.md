@@ -96,6 +96,32 @@ also has a cost. [Adapton](https://matthewhammer.org/adapton/) distinguishes
 demanded computations from their observers; that separation motivates retaining
 formal inference without retaining hover/diagnostic source projections.
 
+### What to borrow from clangd
+
+[clangd's scheduler](https://clang.llvm.org/extra/doxygen/TUScheduler_8cpp_source.html)
+separates the per-file main AST, preamble and symbol index. A preamble can
+survive main-file edits if its bounds, compile command, file dependencies and
+required modules still match
+([compatibility check](https://clang.llvm.org/extra/doxygen/Preamble_8cpp_source.html)).
+The scheduler can rebuild an evicted main AST on demand; it coalesces
+potentially superseded updates without delaying a requested read just to
+debounce it. The [symbol index](https://clangd.llvm.org/design/indexing) stores
+preamble and main-file contributions separately, not as another copy of the
+complete AST. Some completion requests allow stale preamble information;
+that is not a license to return stale inferred types or diagnostics.
+
+For msync the stable dependency boundary need not be a contiguous file
+prefix: the bundled standard sources are independently versioned, and closed
+declarations can be addressed by bound identity rather than source offset.
+Keep three owners: a shared immutable source/export catalog, a document-owned
+cache of dependency-valid formal summaries, and a replaceable revision
+projection for hover, tokens, navigation and diagnostics. A catalog entry
+can suggest an export without asserting that a concrete invocation type
+checks. Use the exact revision for those assertions. Start by reusing stable
+standard dependencies, then extend to user templates where a small
+dependency stamp is proven sufficient; do not import clangd's serialization
+or global indexing machinery just to support local source edits.
+
 ## Typed HIR migration contract (0.8.1)
 
 The Typed HIR migration separates editor analysis from executable lowering.
