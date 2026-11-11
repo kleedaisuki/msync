@@ -8,12 +8,11 @@ internal sealed class EditorSemanticIndex(SemanticObservationView view,
     Func<string, NativePresentation?>? nativeMetadata = null)
 {
 
-    public IReadOnlyList<SemanticOccurrence> Occurrences()
+    public IReadOnlyList<SemanticOccurrence> Occurrences(Func<SourceSpan, bool>? select = null)
     {
         SemanticValuePresenter presenter = new(view, nativeMetadata);
         List<SemanticOccurrence> result = [];
-        foreach (var group in view.Observations.Where(item => item.Span.Source == view.Source)
-            .GroupBy(item => new SourceSpan(item.Span.Start, item.Span.Length)))
+        foreach (var group in OccurrenceGroups(select))
         {
             var observations = group.Any(item => item.Concrete)
                 ? group.Where(item => item.Concrete).ToArray() : group.ToArray();
@@ -25,6 +24,51 @@ internal sealed class EditorSemanticIndex(SemanticObservationView view,
                 member.Members, member.Endpoint, member.SemanticRole, member.KnownPath, member.KnownText));
         }
         return result.OrderBy(item => item.Span.Start).ThenBy(item => item.Span.Length).ToArray();
+    }
+
+    private IEnumerable<IGrouping<SourceSpan, SemanticObservation>> OccurrenceGroups(Func<SourceSpan, bool>? select = null) =>
+        view.Observations.Where(item => item.Span.Source == view.Source
+            && (select is null || select(new(item.Span.Start, item.Span.Length))))
+            .GroupBy(item => new SourceSpan(item.Span.Start, item.Span.Length));
+
+    internal IEnumerable<(SourceSpan Span, string? Role)> TokenRoles()
+    {
+        foreach (var group in OccurrenceGroups())
+        {
+            bool concrete = group.Any(item => item.Concrete);
+            string? role = null;
+            bool parameter = true, unknown = false;
+            TypeKind kinds = TypeKind.Never;
+            HashSet<SemanticValueId>? expanded = null;
+            foreach (var item in group)
+            {
+                if (concrete && !item.Concrete) continue;
+                parameter &= item.IsParameter;
+                Add(item.Value);
+            }
+            TypeKind nonNull = kinds & ~TypeKind.Null;
+            bool scope = !unknown && nonNull == TypeKind.Scope;
+            if (parameter && !unknown && (nonNull & TypeKind.Scope) != 0
+                && ((int)nonNull & ((int)TypeKind.Scope - 1)) == 0) role = "variable";
+            yield return (group.Key, scope || role is "function" or "type" ? role : null);
+
+            void Add(SemanticValueId id)
+            {
+                SemanticValueView value = view.Value(id);
+                if (!value.Alternatives.IsDefaultOrEmpty)
+                {
+                    if (!(expanded ??= []).Add(id)) return;
+                    foreach (var part in value.Alternatives) Add(part);
+                    return;
+                }
+                var runtime = value.CurrentType ?? view.Module.RuntimeType(value.Type);
+                bool unresolved = value.IsUnknown || view.Module.Types[value.Type.Value].TypeParameter >= 0;
+                string next = SemanticValuePresenter.Role(value, runtime, unresolved);
+                kinds |= runtime.Kind;
+                unknown |= unresolved;
+                role = role is null || role == next ? next : "variable";
+            }
+        }
     }
 
     public EditorContext At(int offset)

@@ -5,7 +5,7 @@ namespace Msync.Compiler.Syntax;
 
 internal enum TokenKind { End, Atom, Number, String, Regex, LeftBrace, RightBrace, LeftParen, RightParen, LeftBracket, RightBracket, Comma, Semicolon, Colon, Select, Equal, Arrow, FatArrow, Question, Dollar, Slash, Pipe, At, EqualEqual, NotEqual, Less, LessEqual, Greater, GreaterEqual }
 internal readonly record struct Token(TokenKind Kind, string Text, SourceSpan Span);
-internal sealed class Lexer(string source, string sourceName)
+internal sealed class Lexer(string source, string sourceName, CancellationToken cancellationToken = default)
 {
     private int position;
     private readonly List<Token> tokens = [];
@@ -24,6 +24,7 @@ internal sealed class Lexer(string source, string sourceName)
     {
         while (position < source.Length)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (char.IsWhiteSpace(source[position])) { position++; continue; }
             if (source[position] == '#' && (position == 0 || char.IsWhiteSpace(source[position - 1])))
             { while (position < source.Length && source[position] is not ('\r' or '\n')) position++; continue; }

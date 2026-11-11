@@ -7,6 +7,13 @@ void Require(bool condition, string reason)
     if (!condition) throw new InvalidOperationException(reason);
 }
 
+if (args.Contains("--editor-revisions", StringComparer.Ordinal))
+{
+    EditorRevisionChecks.Run(Require);
+    Console.WriteLine($"PASS {checks} editor revision contracts");
+    return;
+}
+
 if (args.Contains("--declaration-metadata", StringComparer.Ordinal))
 {
     DeclarationMetadataChecks.Run(Require);

@@ -59,14 +59,12 @@ internal sealed class SemanticSession(string sourceName, int optimization)
         SemanticObservationBuilder observations = new(bound);
         SourceDiagnostic? diagnostic = bound.Diagnostics.FirstOrDefault();
         SemanticAnalyzer analyzer = new(bound, observations, instances, dispatches.Fork());
-        HirModule module;
-        try { module = analyzer.Analyze(seed); }
+        try { analyzer.AnalyzeForEditor(seed); }
         catch (CompileException error)
         {
             diagnostic ??= error.Diagnostic;
-            module = bound.Hir.Freeze(bound.Entry, isSession: true);
         }
-        return new(observations.Freeze(module), diagnostic);
+        return new(observations.Freeze(), diagnostic);
     }
 
     public IReadOnlyList<SemanticMember> DescribeBindings()

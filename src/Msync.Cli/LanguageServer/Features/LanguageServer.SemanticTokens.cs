@@ -13,13 +13,13 @@ internal sealed partial class LanguageServer
             return new JsonObject { ["data"] = JsonArray.Create(cached) };
         SourceText source = document.Source;
         string text = source.Text;
-        var inferred = (document.Analysis?.Occurrences ?? []).Where(item => item.SemanticRole is "function" or "type" || item.Type is "Scope" or "Scope?")
-            .GroupBy(item => item.Span.Start).ToDictionary(group => group.Key, group => group.MinBy(item => item.Span.Length)!);
+        var inferred = (document.Analysis?.TokenRoles() ?? [])
+            .GroupBy(item => item.Span.Start).ToDictionary(group => group.Key, group => group.MinBy(item => item.Span.Length));
         List<int> data = [];
         int previousLine = 0, previousColumn = 0;
         var patterns = document.Analysis?.RegexSpans ?? [];
         int patternIndex = 0, patternEnd = -1;
-        var numberSpans = Msync.Compiler.Syntax.Parser.NumberSpans(text);
+        var numberSpans = document.Analysis?.NumberSpans ?? Msync.Compiler.Syntax.Parser.NumberSpans(text);
         List<(int Index, int Length, bool Number)> lexical = [];
         int numberIndex = 0;
         foreach (ValueMatch match in LexicalTokens().EnumerateMatches(text))
@@ -68,11 +68,11 @@ internal sealed partial class LanguageServer
             }
             if (!keyword)
             {
-                inferred.TryGetValue(match.Index, out var semantic);
-                if (semantic is null && match.Index > 0 && text[match.Index - 1] == '$')
-                    inferred.TryGetValue(match.Index - 1, out semantic);
-                if (semantic is not null && semantic.Span.End == match.Index + match.Length)
-                    type = semantic.SemanticRole switch { "function" => 1, "type" => 3, _ => 2 };
+                if ((inferred.TryGetValue(match.Index, out var semantic)
+                    || match.Index > 0 && text[match.Index - 1] == '$'
+                        && inferred.TryGetValue(match.Index - 1, out semantic))
+                    && semantic.Span.End == match.Index + match.Length)
+                    type = semantic.Role switch { "function" => 1, "type" => 3, _ => 2 };
             }
             AddToken(match.Index, match.Length, type);
         }

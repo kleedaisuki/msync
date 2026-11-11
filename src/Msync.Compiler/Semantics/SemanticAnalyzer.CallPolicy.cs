@@ -128,6 +128,13 @@ internal sealed partial class SemanticAnalyzer
         if (callable.Template is not { } templateId) return null;
         HirTemplate template = hir.Templates[templateId.Value];
         if (template.Parameters.Length != arguments.Count) return null;
+        // A closed scalar annotation is already the return scheme. Do not
+        // fingerprint a captured module/Scope merely to cache that answer.
+        if (template.ResultAnnotation is { } fixedAnnotation && hir.Types[fixedAnnotation.Value].TypeParameter < 0)
+        {
+            HirTypeId resolved = ResolveHirType(fixedAnnotation, caller);
+            if (ScalarReturn(hir.Types[resolved.Value].RuntimeType)) return Shape(resolved);
+        }
         var key = templateId.Value + (caller.DeferredReads ? "d:" : "i:") + string.Join(",", arguments.Select(argument =>
             (argument.Fact.SemanticType ?? hir.Type(argument.Fact.Type)).Value + (argument.Eager ? "!" : ".")
                 + argument.Fact.Boolean + (argument.Value is { } value ? ValueKey(value) + PolicyKey(value, caller) : "")))
@@ -175,9 +182,7 @@ internal sealed partial class SemanticAnalyzer
             }
         HirTypeId annotation = template.ResultAnnotation is { } annotated
             ? ResolveHirType(annotated, context) : hir.Type(TypeRef.Any);
-        if (template.ResultAnnotation is not null && hir.Types[annotation.Value].RuntimeType.WithoutNull.Kind is
-            TypeKind.Number or TypeKind.Bool or TypeKind.String or TypeKind.Path or TypeKind.Process
-                or TypeKind.Connection or TypeKind.Type or TypeKind.Null)
+        if (template.ResultAnnotation is not null && ScalarReturn(hir.Types[annotation.Value].RuntimeType))
         {
             ReturnShape fixedResult = Shape(annotation);
             returnSchemes[key] = fixedResult;
@@ -239,6 +244,10 @@ internal sealed partial class SemanticAnalyzer
             return result;
         }
         finally { activeReturnSchemes.Remove(key); }
+
+        static bool ScalarReturn(TypeRef type) => (type.Kind & ~TypeKind.Null) is
+            TypeKind.Number or TypeKind.Bool or TypeKind.String or TypeKind.Path or TypeKind.Process
+                or TypeKind.Connection or TypeKind.Type;
     }
 
     private ReturnShape ProjectReturn(HirNodeId id, SemanticContext context, ref FlowFacts facts,

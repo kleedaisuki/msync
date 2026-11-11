@@ -22,7 +22,7 @@ internal static class Program
         string color = TerminalPresentation.RequestedColor(args);
         try
         {
-            if (args.Contains("--language-server", StringComparer.Ordinal)) return await new LanguageServer(CheckForEditor, source => Formatter.Format(source)).RunAsync();
+            if (args.Contains("--language-server", StringComparer.Ordinal)) return await new LanguageServer(source => Formatter.Format(source)).RunAsync();
             consoleEncoding = ConsoleEncodingScope.Open();
             if (args.Contains("--help", StringComparer.Ordinal) || args.Contains("-h", StringComparer.Ordinal))
             {
@@ -162,9 +162,6 @@ internal static class Program
             ReportError = error => TerminalPresentation.Error(error, color, snapshot,
                 "Check the source, destination and permissions, then retry. Completed transfers are retained.")
         };
-
-    private static EditorAnalysis CheckForEditor(string source, string? name) =>
-        EditorCompiler.Analyze(source, name ?? "<source>");
 
     private static Task<int> Repl(CommandOptions options, TelemetrySession? telemetry, Configuration configuration) =>
         new ReplSession(RuntimeOptions(options, null, telemetry, configuration.Color), options.Optimization, configuration.Color).RunAsync();

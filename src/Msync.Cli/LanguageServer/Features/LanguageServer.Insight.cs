@@ -32,9 +32,7 @@ internal sealed partial class LanguageServer
     private static JsonNode? Hover(EditorDocument document, JsonElement parameters)
     {
         int offset = Offset(document.Source, parameters.GetProperty("position"));
-        var occurrence = document.Analysis?.Occurrences
-            .Where(item => item.Span.Start <= offset && offset < item.Span.End)
-            .MinBy(item => item.Span.Length);
+        var occurrence = document.Analysis?.OccurrenceAt(offset);
         if (occurrence is not null)
             return new JsonObject
             {

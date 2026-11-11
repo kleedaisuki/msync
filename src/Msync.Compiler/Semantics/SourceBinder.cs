@@ -32,6 +32,7 @@ internal sealed partial class SourceBinder
     private readonly bool observations;
     private readonly bool editorMode;
     private readonly bool incremental;
+    private readonly CancellationToken cancellationToken;
     private HirSourceId source;
     private string sourceName = "<source>";
     private string sourceText = "";
@@ -42,19 +43,23 @@ internal sealed partial class SourceBinder
     private readonly Stack<HirLoopId> loops = [];
     private readonly Queue<string> pendingModules = new();
 
-    public SourceBinder(HirBuilder? builder = null, bool observations = false, bool editorMode = false, bool isSession = false)
+    public SourceBinder(HirBuilder? builder = null, bool observations = false, bool editorMode = false,
+        bool isSession = false, CancellationToken cancellationToken = default)
     {
         hir = builder ?? new();
         program = new(hir);
         program.IsSession = isSession;
         this.observations = observations;
         this.editorMode = editorMode;
+        this.cancellationToken = cancellationToken;
     }
 
-    public SourceBinder(BoundProgram previous, bool observations = false, bool editorMode = false)
-        : this(previous.Hir, observations, editorMode, isSession: true)
+    public SourceBinder(BoundProgram previous, bool observations = false, bool editorMode = false,
+        bool appendDocument = false, CancellationToken cancellationToken = default)
+        : this(previous.Hir, observations, editorMode, isSession: !appendDocument, cancellationToken)
     {
         program.Inherit(previous);
+        if (appendDocument) program.DocumentPrefix = previous.Body;
         incremental = true;
     }
 
@@ -249,6 +254,7 @@ internal sealed partial class SourceBinder
         int startContext = Context(span.Start);
         foreach (var statement in statements)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             int before = Context(statement.Span.Start);
             var beforeValues = scope.Values;
             var beforeConcepts = scope.Concepts;

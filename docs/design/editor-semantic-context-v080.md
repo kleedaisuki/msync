@@ -1,5 +1,61 @@
 # Lexical semantic contexts for editing incomplete source
 
+## 0.8.6 document revision ownership
+
+Each open document owns an analysis session. The protocol thread coalesces
+pending versions and cancels superseded work; only the analysis worker mutates
+the session. A result is immutable, and the generation check still governs
+publication. Closing and reopening the same URI creates a new session, even if
+the version restarts. Cancellation is checked in lexical/binding work and at
+semantic observation boundaries, not just before publication.
+
+The retained state has two deliberately different reuse boundaries:
+
+* A cosmetic revision with identical complete statement bytes and token
+  meanings reuses the inferred model and rebases its source ranges. Whitespace
+  in a bare Path, source strings and documentation comments is not discarded.
+  Source/definition views use the current document, including UTF-16 offsets.
+* A semantic edit can keep one unchanged, independently analyzed lexical
+  prefix. A suffix borrows its frozen facts and formal specializations in a
+  transactional arena, and publishes only an immutable projection. It cannot
+  change any earlier binding or contaminate the retained arena on cancellation.
+  The admission is restricted to mutation-free source without named
+  singleton/standard-module dependencies; a prefix that inspects the whole
+  invocation graph, or a suffix requiring a new earlier-template instance,
+  instead uses complete current-document analysis. The write/points-to analysis
+  still sees the prefix's bound initializers during an admitted suffix.
+
+This is a source-order checkpoint, not a rule that every function body is
+independent. [rust-analyzer's architecture](https://rust-analyzer.github.io/book/contributing/architecture.html)
+shows why separating global dependencies from body work matters;
+[Roslyn's incremental parser](https://github.com/dotnet/roslyn/blob/main/docs/compilers/Design/Incremental%20Parser.md)
+keeps text changes and source mapping explicit. Here absolute source spans and
+mutable storage/call domains make it important to prove the reuse boundary
+instead of carrying old caller facts into a different semantic generation.
+
+Editor analysis no longer compacts executable HIR merely to freeze source/type
+tables. Hover projects the requested occurrence, and tokens use role-only
+projection and the parsed Number spans. An uncalled body still exposes the
+bound lexical references and named-Scope self roles. For full and incremental
+analysis alike, specialization reserves only declarations belonging to its
+template; a closed scalar return annotation does not require fingerprinting a
+captured Scope to discover the return type.
+
+`tests/Performance/HirEditor/revisions.py` sends real LSP range edits to 400
+independently specialized functions and checks the alternating inferred
+Number/String field types on each hover. On the matched managed Release pair
+(Compiler SHA256 `17352fc6...` versus `3ee975a3...`,
+`DOTNET_TieredCompilation=0`), the two consecutive-body-edit medians after
+checkpoint creation were 234.34 → 111.13 ms and 219.96 → 112.95 ms.
+Cosmetic edits were 263.12 → 89.24 ms and 212.61 → 117.22 ms. The first body
+edit instead increased from 317.43 to 370.71 ms and 307.35 to 433.96 ms:
+constructing the initial checkpoint and invoking its new managed paths is
+not free. Keep that phase separate from repeated local edits.
+Both orders and all samples remain in `.temp/editor-086/body-paired.json`.
+The first baseline arm can overlap the last four seconds of an existing skill
+journey; the reverse order is the clean descriptive control. These are not
+Native AOT tail estimates or CI thresholds.
+
 ## Typed HIR migration contract (0.8.1)
 
 The Typed HIR migration separates editor analysis from executable lowering.

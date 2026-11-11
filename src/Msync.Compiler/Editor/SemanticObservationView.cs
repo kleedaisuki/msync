@@ -41,7 +41,7 @@ internal readonly record struct SemanticObservation(HirSourceRange Span,
 
 internal sealed record SemanticVisibility(SourceSpan Owner, bool IncludesEnd,
     int Point, IReadOnlyDictionary<string, SemanticBindingView> Bindings,
-    ImmutableDictionary<string, SemanticConceptView> Concepts, bool Concrete = true);
+    ImmutableDictionary<string, SemanticConceptView> Concepts, bool Concrete = true, bool After = false);
 
 internal readonly record struct SemanticReceiver(SourceSpan Span,
     SemanticValueId Value, EditorReceiverKind Kind = EditorReceiverKind.Member,

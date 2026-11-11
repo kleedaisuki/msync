@@ -5,6 +5,7 @@ namespace Msync.Compiler.Syntax;
 public sealed record EditorParseResult(Document Document, SyntaxException? Error, int? IncompleteStart = null)
 {
     public IReadOnlyList<SourceSpan> RegexSpans { get; init; } = [];
+    internal IReadOnlyList<Token> Tokens { get; init; } = [];
 }
 
 public sealed class Parser
@@ -13,18 +14,21 @@ public sealed class Parser
     private readonly string sourceName;
     private readonly IReadOnlyList<Token> tokens;
     private readonly bool editorMode;
+    private readonly CancellationToken cancellationToken;
     private SyntaxException? firstError;
     private int errorCount;
     private int? incompleteRoot;
     private int position;
     private Parser(string source, string sourceName) : this(source, sourceName, new Lexer(source, sourceName).Lex()) { }
-    private Parser(string source, string sourceName, IReadOnlyList<Token> tokens, bool editorMode = false, SyntaxException? firstError = null)
+    private Parser(string source, string sourceName, IReadOnlyList<Token> tokens, bool editorMode = false,
+        SyntaxException? firstError = null, CancellationToken cancellationToken = default)
     {
         this.source = source;
         this.sourceName = sourceName;
         this.tokens = tokens;
         this.editorMode = editorMode;
         this.firstError = firstError;
+        this.cancellationToken = cancellationToken;
     }
     public static Document Parse(string source, string sourceName = "<source>")
     {
@@ -33,12 +37,15 @@ public sealed class Parser
         return new(statements, new(0, source.Length));
     }
 
-    public static EditorParseResult ParseForEditor(string source, string sourceName = "<source>")
+    public static EditorParseResult ParseForEditor(string source, string sourceName = "<source>") =>
+        ParseForEditor(source, sourceName, default);
+
+    internal static EditorParseResult ParseForEditor(string source, string sourceName, CancellationToken cancellationToken)
     {
-        var tokens = new Lexer(source, sourceName).LexForEditor(out SyntaxException? error);
+        var tokens = new Lexer(source, sourceName, cancellationToken).LexForEditor(out SyntaxException? error);
         var regexSpans = tokens.Where(token => token.Kind == TokenKind.Regex).Select(token => token.Span).ToList();
         if (error is { IsIncomplete: true } && source[error.Span.Start] == '<') regexSpans.Add(error.Span);
-        Parser parser = new(source, sourceName, tokens, editorMode: true, error);
+        Parser parser = new(source, sourceName, tokens, editorMode: true, error, cancellationToken);
         List<Statement> statements = [];
         try { _ = parser.Statements(TokenKind.End, statements); }
         catch (SyntaxException syntax)
@@ -46,7 +53,8 @@ public sealed class Parser
             if (error is null || syntax.Span.Start < error.Span.Start) error = syntax;
         }
         SyntaxException? first = parser.firstError ?? error;
-        return new(new(statements, new(0, source.Length)) { EditorError = first }, first, parser.incompleteRoot) { RegexSpans = regexSpans };
+        return new(new(statements, new(0, source.Length)) { EditorError = first }, first, parser.incompleteRoot)
+        { RegexSpans = regexSpans, Tokens = tokens };
     }
 
     public static IReadOnlyList<SourceSpan> NumberSpans(string source) => new Lexer(source, "<editor>")
@@ -133,6 +141,7 @@ public sealed class Parser
         List<Statement> result = completed ?? [];
         while (!At(end) && !At(TokenKind.End))
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (Take(TokenKind.Semicolon)) continue;
             int before = position;
             int errors = errorCount;

@@ -195,6 +195,9 @@ internal sealed partial class SemanticAnalyzer
         var cache = caller.Publish ? instances : (caller.Queries ??= new()).Instances;
         if (!cache.TryGetValue(key, out var instance))
         {
+            // A new specialization could add concrete facts to an earlier
+            // function body. That edit must replace the whole projection.
+            if (id.Value < reusedEditorTemplates) throw new EditorPrefixChanged();
             instance = BuildInstance(id, template, arguments, captureValues, actualCaptures, source, caller, cache, key);
         }
         return ProjectInvocation(instance, arguments, captureValues, actualCaptures, caller, applyEffects, source);
@@ -220,10 +223,9 @@ internal sealed partial class SemanticAnalyzer
         caller.Output?.ReserveFunction(new(template.Name, [], [],
             hir.Type(new TypeRef(TypeKind.Never)), HirNodeId.None, id, IsOpen: true));
         SemanticContext context = new(function, caller.Output) { Queries = caller.Queries, DeferredReads = caller.DeferredReads };
-        foreach (var declaration in program.Declarations)
+        foreach (var declaration in program.DeclarationsOf(id))
         {
             var location = hir.Locations[declaration.Location.Value];
-            if (location.TemplateOwner != id) continue;
             var target = declaration.Location;
             if (caller.Publish)
             {

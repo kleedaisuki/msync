@@ -10,6 +10,7 @@ namespace Msync.Compiler;
 internal sealed partial class SemanticObservationBuilder
 {
     private readonly BoundProgram program;
+    private readonly CancellationToken cancellationToken;
     private readonly HirSourceId source;
     private readonly List<SemanticValueView> values = [];
     private readonly List<SemanticObservation> observations = [];
@@ -39,9 +40,10 @@ internal sealed partial class SemanticObservationBuilder
     private readonly Dictionary<ImmutableDictionary<string, int>, ImmutableDictionary<string, SemanticConceptView>> conceptViews
         = new(ReferenceEqualityComparer.Instance);
 
-    public SemanticObservationBuilder(BoundProgram program)
+    public SemanticObservationBuilder(BoundProgram program, CancellationToken cancellationToken = default)
     {
         this.program = program;
+        this.cancellationToken = cancellationToken;
         source = program.Node(program.Body).Source.Source;
         before = program.Visibility.Where(item => !item.After && item.Owner.Source == source)
             .GroupBy(item => item.Anchor).ToDictionary(group => group.Key, group => group.ToArray());
@@ -72,6 +74,7 @@ internal sealed partial class SemanticObservationBuilder
 
     public void BeforeNode(HirNodeId original, SemanticContext context)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!context.Publish || !before.TryGetValue(original, out var visible)) return;
         foreach (var item in visible) RecordContext(item, context, concrete: true);
     }
@@ -116,8 +119,9 @@ internal sealed partial class SemanticObservationBuilder
             foreach (var item in completed) RecordContext(item, context, concrete: true);
     }
 
-    public SemanticObservationView Freeze(HirModule module)
+    public SemanticObservationView Freeze()
     {
+        cancellationToken.ThrowIfCancellationRequested();
         // Uninstantiated generic bodies already have bound names and type variables.
         // Their lexical information does not require checking an artificial call.
         SemanticContext generic = new(program.Entry);
@@ -127,6 +131,7 @@ internal sealed partial class SemanticObservationBuilder
         var definitions = ImmutableDictionary.CreateBuilder<HirLocationId, SemanticBindingView>();
         foreach (var declaration in program.Declarations)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             SemanticValue value = BoundValue(declaration.Location);
             definitions.Add(declaration.Location, new(declaration.Name, declaration.Location,
                 Value(value, generic), Parameter(declaration.Location)));
@@ -159,15 +164,25 @@ internal sealed partial class SemanticObservationBuilder
             int concept = program.Hir.Types[use.Type.Value].Concept;
             if (concept >= 0) references.Add(new(Span(use.Source), [program.Concepts[concept].Source]));
         }
+        var observed = observations.Select(item => item.Span).ToHashSet();
+        foreach (var use in program.References)
+        {
+            if (use.Declaration || use.Source.Source != source || !observed.Add(use.Source)) continue;
+            // An uncalled body has no concrete observations, but lexical
+            // ownership and the declaration's role are already known.
+            var binding = definitions[use.Location];
+            observations.Add(new(use.Source, binding.Value, binding.Name, Concrete: false, IsParameter: binding.IsParameter));
+            references.Add(new(Span(use.Source), [Definition(use.Location)], false));
+        }
         var declarations = definitions.ToImmutable();
         var visible = contexts.Select(item => new SemanticVisibility(Span(item.Visibility.Owner),
             item.Visibility.IncludesEnd, item.Visibility.Position,
             item.Facts.Bindings(item.Visibility.Bindings, declarations),
-            Concepts(item.Visibility.Concepts), item.Concrete)).ToImmutableArray();
+            Concepts(item.Visibility.Concepts), item.Concrete, item.Visibility.After)).ToImmutableArray();
         var imported = imports.Select(item => new SemanticImport(item.Span,
             item.Facts.Bindings(item.Bindings, declarations), item.Concrete)).ToImmutableArray();
         foreach (var state in states.Values) state.Detach();
-        var tables = SemanticTypeTables.From(module) with
+        var tables = SemanticTypeTables.From(program.Hir) with
         {
             ConceptNames = ConceptNames(),
             AssociatedTypes = AssociatedTypes()

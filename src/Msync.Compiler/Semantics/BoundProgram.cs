@@ -52,12 +52,14 @@ internal sealed class BoundProgram(HirBuilder hir)
     public HirBuilder Hir { get; } = hir;
     public HirFunctionId Entry { get; set; }
     public HirNodeId Body { get; set; }
+    public HirNodeId? DocumentPrefix { get; set; }
     public bool IsSession { get; set; }
     public int NextTypeParameter { get; set; }
     public int NextSingleton { get; set; }
     public int NextLoop { get; set; }
     public List<BoundDeclaration> Declarations { get; } = [];
     private readonly Dictionary<HirLocationId, BoundDeclaration> declarations = [];
+    private readonly Dictionary<HirTemplateId, List<BoundDeclaration>> templateDeclarations = [];
     public List<BoundTemplate> Templates { get; } = [];
     public List<BoundConcept> Concepts { get; } = [];
     public List<BoundReference> References { get; } = [];
@@ -109,6 +111,8 @@ internal sealed class BoundProgram(HirBuilder hir)
 
     public HirNode Node(HirNodeId id) => Hir.Nodes[id.Value];
     public BoundDeclaration Declaration(HirLocationId location) => declarations[location];
+    public IReadOnlyList<BoundDeclaration> DeclarationsOf(HirTemplateId template) =>
+        templateDeclarations.TryGetValue(template, out var owned) ? owned : [];
     public bool TryDeclaration(HirLocationId location, out BoundDeclaration declaration) =>
         declarations.TryGetValue(location, out declaration!);
     public HirLocationId Original(HirLocationId location)
@@ -132,6 +136,10 @@ internal sealed class BoundProgram(HirBuilder hir)
     {
         Declarations.Add(declaration);
         declarations.Add(declaration.Location, declaration);
+        if (declaration.Template is not { } template) return;
+        if (!templateDeclarations.TryGetValue(template, out var owned))
+            templateDeclarations.Add(template, owned = []);
+        owned.Add(declaration);
     }
     public TypeRef RuntimeType(HirNodeId id) => Hir.Types[Node(id).Type.Value].RuntimeType;
     public ReadOnlySpan<HirNodeId> Children(HirNodeId id)

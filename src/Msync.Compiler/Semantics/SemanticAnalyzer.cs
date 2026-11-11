@@ -7,15 +7,27 @@ using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 namespace Msync.Compiler.Semantics;
 
 internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObservationBuilder? observations = null,
-    SemanticInstanceCache? codeCache = null, SemanticSessionDispatch? sessionDispatch = null)
+    SemanticInstanceCache? codeCache = null, SemanticSessionDispatch? sessionDispatch = null,
+    int reusedEditorTemplates = 0)
 {
     private readonly SemanticArena hir = new(program.Hir);
     private readonly int boundNodeCount = program.Hir.Nodes.Count;
     private int nextRegion;
 
     internal SemanticContext FinalState => entryState ?? throw new InvalidOperationException("No semantic generation has been analyzed.");
+    internal bool InspectedInvocationGraph => futureCallableWrites?.InspectedInvocationGraph == true;
 
     internal HirModule Analyze(SemanticContext? seed = null)
+    {
+        AnalyzeCore(seed);
+        return HirSealer.Seal(program.Hir.Freeze(program.Entry, program.IsSession) with
+        { SessionDispatches = sessionDispatch?.Tables ?? [] });
+    }
+
+    // Editor consumers retain source/type tables, never compacted executable bodies.
+    internal void AnalyzeForEditor(SemanticContext? seed = null) => AnalyzeCore(seed);
+
+    private void AnalyzeCore(SemanticContext? seed)
     {
         SemanticOutput output = new(program.Hir);
         SemanticContext context = new(program.Entry, output, seed);
@@ -35,8 +47,6 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
         RefreshSessionCalls(context);
         output.SealFunction(program.Entry, new("<main>", [], [], body.Type, body.Node));
         context.NextRegion = nextRegion;
-        return HirSealer.Seal(output.Freeze(program.Entry, program.IsSession) with
-        { SessionDispatches = sessionDispatch?.Tables ?? [] });
     }
 
     private SemanticValue Analyze(HirNodeId id, SemanticContext context)

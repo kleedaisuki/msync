@@ -251,7 +251,7 @@ internal sealed class SemanticValuePresenter(SemanticObservationView view,
         return prefix.Length == 0 ? signature : $"{prefix}{name}{signature[start..]}";
     }
 
-    private static string Role(SemanticValueView? value, TypeRef type, bool unknown) => unknown ? "variable"
+    internal static string Role(SemanticValueView? value, TypeRef type, bool unknown) => unknown ? "variable"
         : type.WithoutNull == TypeRef.Function ? "function"
         : type == TypeRef.Type || value?.IsNamedScope == true ? "type" : "variable";
 

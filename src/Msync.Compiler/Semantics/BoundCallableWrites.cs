@@ -33,11 +33,14 @@ internal sealed class BoundCallableWrites
             if (program.StandardLocations.TryGetValue(pair.Key, out HirLocationId location))
                 Scope(location).Add(program.Node(pair.Value.Body).Data);
         foreach (var pair in program.FunctionLocations) Function(pair.Key).Add(pair.Value);
+        if (program.DocumentPrefix is { } prefix) Visit(prefix);
         Visit(program.Body);
         foreach (BoundModule module in program.StandardModules.Values) Visit(module.Body);
         HashSet<HirNodeId> inspected = [];
         foreach (BoundTemplate template in program.Templates) MemberNames(template.Body, inspected);
     }
+
+    internal bool InspectedInvocationGraph => resolved;
 
     private void Resolve()
     {
