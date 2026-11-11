@@ -17,7 +17,10 @@ public sealed partial class Interpreter
         SubmittedPlans = submittedPlans,
         SubmittedBatches = submittedBatches,
         AdmittedOperations = admittedOperations,
-        EliminatedTransfers = eliminatedTransfers
+        EliminatedTransfers = eliminatedTransfers,
+        AdmissionNanoseconds = Interlocked.Read(ref admissionNanoseconds),
+        CohortAdmissionNanoseconds = Interlocked.Read(ref cohortAdmissionNanoseconds),
+        WaitNanoseconds = Interlocked.Read(ref waitNanoseconds)
     };
     private readonly List<PendingWork> pending;
     private readonly HashSet<ProcessValue> sessionProcesses;
@@ -92,8 +95,36 @@ public sealed partial class Interpreter
             if (resolved[index] is DeferredValue deferred) resolved[index] = await deferred.Completion;
         return resolved;
     }
-    private async ValueTask<Task<bool>> ScheduleTransferAsync(Value source, Value destination, SourceSpan? span, bool local,
-        CancellationToken cancellationToken, bool discarded = false, TransferFootprint? footprint = null)
+    private ValueTask<Task<bool>> ScheduleTransferAsync(Value source, Value destination, SourceSpan? span, bool local,
+        CancellationToken cancellationToken, bool discarded = false, TransferFootprint? footprint = null) =>
+        ObserveScheduling ? ScheduleObservedTransferAsync(source, destination, span, local, cancellationToken, discarded, footprint)
+            : ScheduleTransferCoreAsync(source, destination, span, local, cancellationToken, discarded, footprint);
+
+    private async ValueTask<Task<bool>> ScheduleObservedTransferAsync(Value source, Value destination, SourceSpan? span, bool local,
+        CancellationToken cancellationToken, bool discarded, TransferFootprint? footprint)
+    {
+        using var measurement = MeasureAdmission("scheduler.admission");
+        var admission = measurement.Span;
+        if (admission is not null)
+        {
+            admission.SetSource(span);
+            admission.SetAttribute("transfer.kind", source is RangeValue ? "cohort" : "scalar");
+            admission.SetAttribute("transfer.destination", destination is PathValue path ? path.ToString()
+                : destination is StringValue text ? text.Data : "deferred");
+            if (source is PathValue sourcePath) admission.SetAttribute("transfer.source", sourcePath.ToString());
+            admission.SetMetric("pending.candidates", pending.Count);
+            admission.SetMetric("transfer.local", local ? 1 : 0);
+            admission.SetMetric("transfer.discarded", discarded ? 1 : 0);
+        }
+        try
+        {
+            return await ScheduleTransferCoreAsync(source, destination, span, local, cancellationToken, discarded, footprint, admission);
+        }
+        catch (Exception error) { admission?.Fail(error); throw; }
+    }
+
+    private async ValueTask<Task<bool>> ScheduleTransferCoreAsync(Value source, Value destination, SourceSpan? span, bool local,
+        CancellationToken cancellationToken, bool discarded, TransferFootprint? footprint, RuntimeTimelineScope? admission = null)
     {
         // Resolve dependencies before starting I/O; the VM never runs mutable scalar bytecode in workers.
         var target = destination is DeferredValue ? null : context.AsPath(destination);
@@ -115,25 +146,44 @@ public sealed partial class Interpreter
         if (namespaceDependencies is not null)
         {
             // A prior directory/link publication can change physical aliases beneath its destination.
-            await Task.WhenAll(namespaceDependencies);
+            await AwaitScheduled("transfer.namespace_publication", "relevant", namespaceDependencies);
             if (source is PathValue resolvedSource) reads = [Key(resolvedSource)];
             if (target is not null) writes = [Key(target)];
             dependencies = resources.Dependencies(reads, writes);
         }
         admittedTransfers++;
         dependencyEdges += dependencies.Count;
+        if (admission is not null)
+        {
+            admission.SetMetric("resources.reads", reads.Length);
+            admission.SetMetric("resources.writes", writes.Length);
+            admission.SetMetric("dependencies.matched", dependencies.Count);
+            for (int index = 0; index < reads.Length; index++) RecordResource(admission, "read", index, reads[index], false);
+            for (int index = 0; index < writes.Length; index++) RecordResource(admission, "write", index, writes[index], true);
+        }
         var predecessor = ordering;
         async Task<bool> Run()
         {
-            await predecessor;
-            if (dependencies.Count != 0) await Task.WhenAll(dependencies);
+            await AwaitScheduled("transfer.ordering", "ordering", predecessor);
+            if (dependencies.Count != 0) await AwaitScheduled("transfer.resources", "relevant", dependencies);
             var value = await ResolveAsync(source);
             var actualTarget = target ?? origin.AsPath(await ResolveAsync(destination));
-            await slots.WaitAsync(cancellationToken);
+            await AwaitScheduled("transfer.capacity", "capacity", slots.WaitAsync(cancellationToken));
             try { return await TransferAsync(value, actualTarget, span, local, origin, cancellationToken); }
             finally { slots.Release(); }
         }
         var completion = Run();
+        if (admission is not null)
+        {
+            bool ready = completion.IsCompleted;
+            admission.SetMetric("completion.ready_at_admission", ready ? 1 : 0);
+            if (!ready)
+            {
+                // A synchronous async-method result may reuse a runtime-cached Task.
+                admission.SetMetric("task.id", completion.Id);
+                context.Timeline!.Register(completion, admission);
+            }
+        }
         IReadOnlyList<ProcessValue> processes = source is DeferredValue && destination is DeferredValue
             ? Processes(source).Concat(Processes(destination)).Distinct().ToArray()
             : source is DeferredValue ? Processes(source) : Processes(destination);
@@ -165,10 +215,25 @@ public sealed partial class Interpreter
         return child.Path.Length > prefix.Length && child.Path.AsSpan().StartsWith(prefix, comparison)
             && (child.Path[prefix.Length] == '/' || windows && child.Path[prefix.Length] == '\\');
     }
-    private async ValueTask AwaitNativeDependenciesAsync(NativeSignature signature, IReadOnlyList<Value> arguments,
+    private ValueTask AwaitNativeDependenciesAsync(NativeSignature signature, IReadOnlyList<Value> arguments,
+        CancellationToken cancellationToken) =>
+        context.Timeline is null ? AwaitNativeDependenciesCoreAsync(signature, arguments, cancellationToken)
+            : ObserveNativeDependenciesAsync(signature, arguments, cancellationToken);
+
+    private async ValueTask ObserveNativeDependenciesAsync(NativeSignature signature, IReadOnlyList<Value> arguments,
         CancellationToken cancellationToken)
     {
-        await ordering;
+        using var observation = context.Timeline!.Begin("scheduler.native_dependencies");
+        observation.SetAttribute("native.name", signature.Name);
+        observation.SetMetric("pending.candidates", pending.Count);
+        try { await AwaitNativeDependenciesCoreAsync(signature, arguments, cancellationToken, observation); }
+        catch (Exception error) { observation.Fail(error); throw; }
+    }
+
+    private async ValueTask AwaitNativeDependenciesCoreAsync(NativeSignature signature, IReadOnlyList<Value> arguments,
+        CancellationToken cancellationToken, RuntimeTimelineScope? observation = null)
+    {
+        await AwaitScheduled("native.ordering", "ordering", ordering);
         if (pending.Count == 0 || !resources.HasRegistrations) return;
         List<(PathValue Path, bool Writes)>? operands = null;
         for (int index = 0; index < Math.Min(arguments.Count, signature.Parameters.Count); index++)
@@ -180,26 +245,39 @@ public sealed partial class Interpreter
             (operands ??= []).Add((context.AsPath(arguments[index]), access == NativePathAccess.Write));
         }
         if (operands is null) return;
+        observation?.SetMetric("resources.operands", operands.Count);
         await AwaitNamespacePublicationsAsync(operands.Select(operand => operand.Path));
         var filesystem = new PlanFileSystem(context, planResources, cancellationToken);
         HashSet<Task> publications = [];
+        int resourceIndex = 0;
         foreach (var operand in operands)
-            resources.Collect(Key(filesystem.Resource(operand.Path, true)), operand.Writes, publications);
+        {
+            ResourceKey key = Key(filesystem.Resource(operand.Path, true));
+            if (observation is not null) RecordResource(observation, "publication", resourceIndex++, key, operand.Writes);
+            resources.Collect(key, operand.Writes, publications);
+        }
+        observation?.SetMetric("publications.matched", publications.Count);
         if (publications.Count != 0)
         {
             nativeHazardWaits++;
-            await Task.WhenAll(publications);
+            await AwaitScheduled("native.resource_publication", "relevant", publications);
         }
         bool follow = signature.Name is not ("fs.symlink_status" or "fs.is_symlink" or "fs.read_symlink"
             or "fs.remove" or "fs.remove_all" or "fs.rename");
         HashSet<Task> dependencies = [];
+        resourceIndex = 0;
         foreach (var operand in operands)
             foreach (var resource in filesystem.ObservationResources(operand.Path, follow))
-                resources.Collect(Key(resource), operand.Writes, dependencies);
+            {
+                ResourceKey key = Key(resource);
+                if (observation is not null) RecordResource(observation, "observation", resourceIndex++, key, operand.Writes);
+                resources.Collect(key, operand.Writes, dependencies);
+            }
+        observation?.SetMetric("dependencies.matched", dependencies.Count);
         if (dependencies.Count != 0)
         {
             nativeHazardWaits++;
-            await Task.WhenAll(dependencies);
+            await AwaitScheduled("native.resources", "relevant", dependencies);
         }
     }
     private async ValueTask FenceAsync(int direction, int beginRegion, string? region)
@@ -211,7 +289,12 @@ public sealed partial class Interpreter
         }
         if (region is null && direction == (int)BarrierDirection.Release) return;
         // A fence orders finite work, not unrelated live program lifetime.
-        if (direction == (int)BarrierDirection.Acquire) { await ordering; await JoinTransfersAsync(includeProcessFlows: false); return; }
+        if (direction == (int)BarrierDirection.Acquire)
+        {
+            await AwaitScheduled("fence.ordering", "ordering", ordering);
+            await JoinTransfersAsync(includeProcessFlows: false);
+            return;
+        }
         var first = currentOwner.AfterRegions is { } regions && regions.Remove(region ?? "", out var boundary)
             ? boundary : currentOwner.Tasks?.Count ?? 0;
         var associated = currentOwner.Tasks?.Skip(first).Select(work => (Task)work.Completion) ?? [];
@@ -221,11 +304,11 @@ public sealed partial class Interpreter
     private async ValueTask<Value> AcquireAsync(Value value)
     {
         if (value is not ProcessValue process) throw new MsyncException($"acquire requires Process, received {value.Type}");
-        var completed = process.Completion is null ? process : await process.Completion;
+        var completed = process.Completion is null ? process : await AwaitScheduledResultAsync("acquire.process", "relevant", process.Completion);
         var flows = pending.Where(work => work.Processes.Any(related => ReferenceEquals(related, process))).ToArray();
         if (flows.Length != 0)
         {
-            await Task.WhenAll(flows.Select(work => work.Completion));
+            await AwaitScheduled("acquire.process_transfers", "relevant", flows.Select(work => work.Completion));
             foreach (var work in flows) { Retire(work); pending.Remove(work); }
         }
         sessionProcesses.Remove(process);
@@ -236,20 +319,23 @@ public sealed partial class Interpreter
     private async ValueTask JoinOwnerAsync(WorkOwner owner)
     {
         if (owner.Processes is { Count: > 0 })
-            await Task.WhenAll(owner.Processes.Where(process => process.Completion is not null).Select(process => process.Completion!));
+            await AwaitScheduled("owner.processes", "owner",
+                owner.Processes.Where(process => process.Completion is not null).Select(process => process.Completion!));
         if (owner.Tasks is { Count: > 0 })
         {
-            await Task.WhenAll(owner.Tasks.Select(work => work.Completion));
+            await AwaitScheduled("owner.transfers", "owner", owner.Tasks.Select(work => work.Completion));
             foreach (var work in owner.Tasks) Retire(work);
             if (owner.Tasks.Any(work => work.RequireSuccess && !work.Completion.Result))
                 throw new MsyncException("One or more file transfers failed; completed files remain in place and the operation can be retried");
         }
     }
-    private async ValueTask JoinTransfersAsync(bool includeProcessFlows = true)
+    private async ValueTask JoinTransfersAsync(bool includeProcessFlows = true, string? fallback = null)
     {
         var work = pending.Where(item => includeProcessFlows || item.Processes.Count == 0).ToArray();
         if (work.Length == 0) return;
-        await Task.WhenAll(work.Select(item => item.Completion));
+        await AwaitScheduled(fallback ?? (includeProcessFlows ? "join.transfers" : "fence.transfers"),
+            fallback is not null ? "fallback" : includeProcessFlows ? "global" : "ordering",
+            work.Select(item => item.Completion));
         foreach (var item in work) Retire(item);
         if (work.Any(item => item.RequireSuccess && !item.Completion.Result))
             throw new MsyncException("One or more file transfers failed; completed files remain in place and the operation can be retried");
@@ -266,11 +352,12 @@ public sealed partial class Interpreter
         processDependencies.Remove(work.Completion);
         namespaceProducers.Remove(work.Completion);
     }
-    private async ValueTask JoinAllAsync()
+    private async ValueTask JoinAllAsync(string? fallback = null)
     {
         if (sessionProcesses.Count != 0)
-            await Task.WhenAll(sessionProcesses.Where(process => process.Completion is not null).Select(process => process.Completion!));
-        await JoinTransfersAsync();
+            await AwaitScheduled(fallback ?? "join.processes", fallback is null ? "global" : "fallback",
+                sessionProcesses.Where(process => process.Completion is not null).Select(process => process.Completion!));
+        await JoinTransfersAsync(fallback: fallback);
         sessionProcesses.RemoveWhere(process => process.Completion?.IsCompletedSuccessfully ?? true);
     }
     private ValueTask DrainAsync() => JoinAllAsync();

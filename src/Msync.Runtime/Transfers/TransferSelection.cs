@@ -16,12 +16,23 @@ public static partial class TransferEngine
         bool receipt = !sameEndpoint && RequiresArchiveReceipt(sourceConnection);
         string archive = receipt ? WithArchiveReceipt(SelectionArchive) : SelectionArchive;
         string script = SelectionPrelude + SelectionQueryScript + SelectionDecode + (sameEndpoint ? "\nset -- \"$destination_raw\" \"$selection_mode\" \"$@\"\n" + CohortInstallScript : archive);
-        using Process source = Start(sourceConnection, script, [selection.Directory.Raw, destination.Raw, Mode(container: true, replace), selection.Recursive ? "recursive" : "flat"], redirectInput: true);
+        using var activity = context.Timeline?.Begin("transport.selector");
+        if (activity is not null)
+        {
+            TransferTimeline.Path(activity, "source", selection.Directory);
+            TransferTimeline.Path(activity, "destination", destination);
+            activity.SetAttribute("selection.recursive", selection.Recursive ? "true" : "false");
+        }
+        using Process source = Start(sourceConnection, script,
+            [selection.Directory.Raw, destination.Raw, Mode(container: true, replace), selection.Recursive ? "recursive" : "flat"],
+            redirectInput: true, context.Timeline, "selector");
         using CancellationTokenRegistration registration = cancellationToken.Register(() => Kill(source));
         try
         {
             IReadOnlyList<string> names = await ReadSelectionNamesAsync(source.StandardOutput.BaseStream, selection.Pattern, cancellationToken);
-            IReadOnlyList<Value> selected = await ApplySelectionAsync(selection, names, source, cancellationToken);
+            activity?.SetMetric("selection.discovered", names.Count);
+            IReadOnlyList<Value> selected = await ApplySelectionAsync(selection, names, source, cancellationToken, context.Timeline);
+            activity?.SetMetric("selection.selected", selected.Count);
             bool originalEndpoint = selected.All(value => value is PathValue path && Remote(path) == sourceConnection);
             if (originalEndpoint) ValidateNames(selected, container: true);
             IReadOnlyList<string> paths = originalEndpoint ? selected.Cast<PathValue>().Select(path => path.Raw).ToArray() : [];
@@ -30,13 +41,13 @@ public static partial class TransferEngine
             if (!originalEndpoint)
             {
                 await PumpArchiveAsync(source, Stream.Null, receipt, context.BufferSize, cancellationToken);
-                await FinishAsync(source, sourceConnection, cancellationToken);
+                await FinishAsync(source, sourceConnection, cancellationToken, context.Timeline);
                 return await CopyAsync(new RangeValue(selected, selected.Aggregate(new TypeRef(TypeKind.Never), (type, value) => TypeRef.Union(type, value.Type))), destination, context, cancellationToken);
             }
             if (sameEndpoint)
             {
                 string result = await source.StandardOutput.ReadToEndAsync(cancellationToken);
-                await FinishAsync(source, sourceConnection, cancellationToken);
+                await FinishAsync(source, sourceConnection, cancellationToken, context.Timeline);
                 if (result != "MSYNC-DONE\n") throw new IOException($"Remote selector copy returned no completion: {result}");
                 return true;
             }
@@ -45,25 +56,26 @@ public static partial class TransferEngine
                 await ReadArchiveAsync(source.StandardOutput.BaseStream, destination, context, container: true, replace, cancellationToken);
                 if (receipt) await AcknowledgeArchiveAsync(source, cancellationToken);
                 await source.StandardOutput.BaseStream.CopyToAsync(Stream.Null, cancellationToken);
-                await FinishAsync(source, sourceConnection, cancellationToken);
+                await FinishAsync(source, sourceConnection, cancellationToken, context.Timeline);
                 return true;
             }
             if (paths.Count == 0)
             {
                 await PumpArchiveAsync(source, Stream.Null, receipt, context.BufferSize, cancellationToken);
-                await FinishAsync(source, sourceConnection, cancellationToken);
+                await FinishAsync(source, sourceConnection, cancellationToken, context.Timeline);
                 return true;
             }
             using Process target = Start(targetConnection, RelayScript,
-                [destination.Raw, Mode(container: true, replace), "", "cohort", "filesystem"], redirectInput: true);
+                [destination.Raw, Mode(container: true, replace), "", "cohort", "filesystem"],
+                redirectInput: true, context.Timeline, "selector-relay-target");
             using CancellationTokenRegistration targetRegistration = cancellationToken.Register(() => Kill(target));
             try
             {
                 await PumpArchiveAsync(source, target.StandardInput.BaseStream, receipt, context.BufferSize, cancellationToken);
                 target.StandardInput.Close();
                 string result = await target.StandardOutput.ReadToEndAsync(cancellationToken);
-                await FinishAsync(source, sourceConnection, cancellationToken);
-                await FinishAsync(target, targetConnection, cancellationToken);
+                await FinishAsync(source, sourceConnection, cancellationToken, context.Timeline);
+                await FinishAsync(target, targetConnection, cancellationToken, context.Timeline);
                 if (result != "MSYNC-DONE\n") throw new IOException($"Remote selector relay returned no completion: {result}");
             }
             catch
@@ -76,6 +88,7 @@ public static partial class TransferEngine
         }
         catch (Exception error)
         {
+            activity?.Fail(error);
             Kill(source);
             await source.WaitForExitAsync(CancellationToken.None);
             if (error is OperationCanceledException) throw;
@@ -99,7 +112,8 @@ public static partial class TransferEngine
             TransferFiles.RemoveNode(target);
             Directory.CreateDirectory(target);
             foreach (var source in sources)
-                await TransferFiles.CopyNodeAsync(source.Source, Path.Combine(target, Basename(source.Path)), cancellationToken, context.BufferSize);
+                await TransferFiles.CopyNodeAsync(source.Source, Path.Combine(target, Basename(source.Path)),
+                    cancellationToken, context.BufferSize, context.Timeline);
             return;
         }
         string parent = Path.GetDirectoryName(target) ?? ".";
@@ -122,7 +136,7 @@ public static partial class TransferEngine
             {
                 string name = Basename(sources[index].Path);
                 string source = retained[index] is null ? sources[index].Source : Path.Combine(stage, name);
-                await TransferFiles.CopyNodeAsync(source, Path.Combine(target, name), cancellationToken, context.BufferSize);
+                await TransferFiles.CopyNodeAsync(source, Path.Combine(target, name), cancellationToken, context.BufferSize, context.Timeline);
             }
         }
         finally

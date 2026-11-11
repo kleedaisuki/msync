@@ -17,7 +17,10 @@ public static partial class TransferEngine
     }
 
     public static RemoteTransferSession OpenSession(ConnectionValue connection, CancellationToken cancellationToken = default)
-        => new(connection, cancellationToken);
+        => new(connection, cancellationToken, null);
+
+    internal static RemoteTransferSession OpenSession(ConnectionValue connection, CancellationToken cancellationToken, RuntimeTimeline? timeline)
+        => new(connection, cancellationToken, timeline);
 
     public static IDisposable UseSession(RemoteTransferSession session)
     {
@@ -41,7 +44,7 @@ public static partial class TransferEngine
             return await selected.CopyBatchAsync(items, context, cancellationToken);
         try
         {
-            await using var session = OpenSession(connection, cancellationToken);
+            await using var session = OpenSession(connection, cancellationToken, context.Timeline);
             return await session.CopyBatchAsync(items, context, cancellationToken);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
@@ -58,16 +61,18 @@ public static partial class TransferEngine
         private readonly Stream output;
         private readonly SemaphoreSlim serial = new(1);
         private readonly CancellationTokenRegistration cancellation;
+        private readonly RuntimeTimeline? timeline;
         private volatile bool aborted;
         private volatile bool disposed;
         public ConnectionValue Connection { get; }
         public bool IsActive => !disposed && !aborted && !process.HasExited;
 
-        internal RemoteTransferSession(ConnectionValue connection, CancellationToken cancellationToken)
+        internal RemoteTransferSession(ConnectionValue connection, CancellationToken cancellationToken, RuntimeTimeline? timeline)
         {
             cancellationToken.ThrowIfCancellationRequested();
             Connection = connection;
-            process = Start(connection, BatchServer, [], redirectInput: true);
+            this.timeline = timeline;
+            process = Start(connection, BatchServer, [], redirectInput: true, timeline, "batch-session");
             input = new BufferedStream(process.StandardInput.BaseStream, 4096);
             output = new BufferedStream(process.StandardOutput.BaseStream, 4096);
             cancellation = cancellationToken.Register(Abort);
@@ -76,7 +81,9 @@ public static partial class TransferEngine
         public async Task<string> QueryAsync(string script, IReadOnlyList<string> arguments,
             CancellationToken cancellationToken = default)
         {
-            await serial.WaitAsync(cancellationToken);
+            using var activity = BeginSession("transport.query", timeline);
+            activity?.SetMetric("query.arguments", arguments.Count);
+            await EnterSerialAsync(cancellationToken, activity);
             using var registration = cancellationToken.Register(Abort);
             try
             {
@@ -94,10 +101,12 @@ public static partial class TransferEngine
                     Abort();
                     throw;
                 }
+                activity?.SetAttribute("transport.response_status", response.Status.ToString(CultureInfo.InvariantCulture));
                 if (response.Status != 0)
                     throw new IOException($"Selected native operation on {Connection} failed: {response.Detail}");
                 return response.Detail;
             }
+            catch (Exception error) { activity?.Fail(error); throw; }
             finally { serial.Release(); }
         }
 
@@ -113,7 +122,13 @@ public static partial class TransferEngine
             }
             if (route.Connection != Connection || route.Direction is BatchDirection.Local or BatchDirection.Other)
                 throw new ArgumentException($"The transfer batch is not owned by {Connection}.", nameof(items));
-            await serial.WaitAsync(cancellationToken);
+            using var activity = BeginSession("transport.batch", context.Timeline ?? timeline);
+            if (activity is not null)
+            {
+                activity.SetAttribute("transfer.direction", route.Direction.ToString());
+                activity.SetMetric("transfer.items", items.Count);
+            }
+            await EnterSerialAsync(cancellationToken, activity);
             using var registration = cancellationToken.Register(Abort);
             var outcomes = new TransferBatchOutcome?[items.Count];
             try
@@ -124,19 +139,48 @@ public static partial class TransferEngine
                     : WritePathsAsync(input, items, route.Direction, cancellationToken);
                 Task reader = route.Direction == BatchDirection.Download
                     ? ReadDownloadsAsync(output, items, context, outcomes, cancellationToken)
-                    : ReadOutcomesAsync(output, items, outcomes, cancellationToken);
+                    : ReadOutcomesAsync(output, items, outcomes, cancellationToken, context.Timeline ?? timeline);
                 await CompleteDuplexAsync(writer, reader);
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException
                 or InvalidOperationException or System.ComponentModel.Win32Exception)
             {
+                activity?.Fail(error);
                 Abort();
                 await process.WaitForExitAsync(CancellationToken.None);
                 for (int index = 0; index < outcomes.Length; index++)
                     outcomes[index] ??= new(false, new IOException($"Native batch on {Connection} failed for {items[index].Source} -> {items[index].Destination}: {error.Message}", error));
             }
+            catch (Exception error) { activity?.Fail(error); throw; }
             finally { serial.Release(); }
-            return outcomes.Select(outcome => outcome!).ToArray();
+            var results = outcomes.Select(outcome => outcome!).ToArray();
+            if (activity is not null)
+            {
+                var succeeded = results.Count(result => result.Success);
+                activity.SetMetric("transfer.succeeded", succeeded);
+                activity.Complete(succeeded == results.Length);
+            }
+            return results;
+        }
+
+        private RuntimeTimelineScope? BeginSession(string name, RuntimeTimeline? recorder)
+        {
+            var activity = BeginTransport(recorder, name, Connection);
+            activity?.SetMetric("transport.pid", process.Id);
+            return activity;
+        }
+
+        private Task EnterSerialAsync(CancellationToken token, RuntimeTimelineScope? activity)
+        {
+            Task wait = serial.WaitAsync(token);
+            return activity is null ? wait : ObserveWait(wait, activity);
+
+            static async Task ObserveWait(Task wait, RuntimeTimelineScope activity)
+            {
+                activity.SetAttribute("wait.pending_on_entry", wait.IsCompleted ? "false" : "true");
+                try { await wait; }
+                catch (Exception error) { activity.Fail(error); throw; }
+            }
         }
 
         private async Task CompleteDuplexAsync(Task writer, Task reader)
@@ -159,15 +203,20 @@ public static partial class TransferEngine
         public async ValueTask DisposeAsync()
         {
             if (disposed) return;
+            using var activity = BeginSession("transport.session.close", timeline);
             disposed = true;
-            await serial.WaitAsync();
+            await EnterSerialAsync(CancellationToken.None, activity);
             try
             {
                 // Commands flush before their response; disposal must not turn an
                 // already reported failure/cancellation into a second pipe error.
                 try { await input.DisposeAsync(); } catch (IOException) { }
                 await process.WaitForExitAsync(CancellationToken.None);
+                activity?.SetAttribute("transport.exit_code", process.ExitCode.ToString(CultureInfo.InvariantCulture));
+                activity?.SetAttribute("transport.aborted", aborted ? "true" : "false");
+                activity?.Complete(!aborted && process.ExitCode == 0);
             }
+            catch (Exception error) { activity?.Fail(error); throw; }
             finally
             {
                 cancellation.Dispose();
@@ -221,13 +270,35 @@ public static partial class TransferEngine
     }
 
     private static async Task ReadOutcomesAsync(Stream stream, IReadOnlyList<TransferBatchItem> items,
-        TransferBatchOutcome?[] outcomes, CancellationToken token)
+        TransferBatchOutcome?[] outcomes, CancellationToken token, RuntimeTimeline? timeline = null)
     {
         for (int index = 0; index < items.Count; index++)
         {
-            var response = await ReadResponseAsync(stream, index, token);
-            outcomes[index] ??= response.Status == 0 ? new(true)
-                : new(false, new IOException($"Cannot transfer {items[index].Source} -> {items[index].Destination}: {response.Detail}"));
+            using var activity = BeginBatchItem(timeline, "transport.batch.response", items[index], index);
+            try
+            {
+                var response = await ReadResponseAsync(stream, index, token);
+                outcomes[index] ??= response.Status == 0 ? new(true)
+                    : new(false, new IOException($"Cannot transfer {items[index].Source} -> {items[index].Destination}: {response.Detail}"));
+                if (activity is not null)
+                {
+                    activity.SetAttribute("transport.response_status", response.Status.ToString(CultureInfo.InvariantCulture));
+                    if (outcomes[index]?.Error is { } failure) activity.Fail(failure);
+                }
+            }
+            catch (Exception error) { activity?.Fail(error); throw; }
         }
+    }
+
+    private static RuntimeTimelineScope? BeginBatchItem(RuntimeTimeline? timeline, string name, TransferBatchItem item, int index)
+    {
+        var activity = timeline?.Begin(name);
+        if (activity is null) return null;
+        TransferTimeline.Source(activity, item.Source);
+        TransferTimeline.Path(activity, "destination", item.Destination);
+        activity.SetMetric("transfer.item_index", index);
+        activity.SetAttribute("transfer.kind", item.Kind.ToString());
+        activity.SetAttribute("transfer.mode", item.Mode.ToString());
+        return activity;
     }
 }

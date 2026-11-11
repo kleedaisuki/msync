@@ -10,4 +10,5 @@ public sealed record ExecutionOptions(string? WorkingDirectory = null, string? S
     public Action<MsyncException>? ReportError { get; init; }
     public Action<string>? WorkingDirectoryChanged { get; init; }
     public RuntimeProfile? Profile { get; init; }
+    public RuntimeTimeline? Timeline { get; init; }
 }

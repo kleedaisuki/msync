@@ -8,9 +8,25 @@ public sealed partial class Interpreter
     private readonly record struct PlanNodeResult(Task<IReadOnlyList<TransferBatchOutcome>> Completion, int Offset);
     private sealed record PlanSubmission(PlanNodeResult[] Results);
 
-    private PlanSubmission SubmitPlan(ExecutionPlan plan, CancellationToken cancellationToken)
+    private PlanSubmission SubmitPlan(ExecutionPlan plan, CancellationToken cancellationToken) =>
+        ObserveScheduling ? SubmitObservedPlan(plan, cancellationToken) : SubmitPlanCore(plan, cancellationToken);
+
+    private PlanSubmission SubmitObservedPlan(ExecutionPlan plan, CancellationToken cancellationToken)
+    {
+        using var measurement = MeasureAdmission("scheduler.plan");
+        var submission = measurement.Span;
+        submission?.SetMetric("pending.candidates", pending.Count);
+        try { return SubmitPlanCore(plan, cancellationToken, submission); }
+        catch (Exception error) { submission?.Fail(error); throw; }
+    }
+
+    private PlanSubmission SubmitPlanCore(ExecutionPlan plan, CancellationToken cancellationToken,
+        RuntimeTimelineScope? submission = null)
     {
         var batches = ExecutionBatches(plan);
+        submission?.SetMetric("plan.nodes", plan.Transfers.Count);
+        submission?.SetMetric("plan.batches", batches.Count);
+        submission?.SetMetric("plan.eliminated_transfers", plan.EliminatedTransfers);
         submittedPlans++;
         submittedBatches += batches.Count;
         eliminatedTransfers += plan.EliminatedTransfers;
@@ -36,10 +52,14 @@ public sealed partial class Interpreter
         }
 
         var inputs = new HashSet<Task>[batches.Count];
+        Task[]? fences = submission is null ? null : new Task[batches.Count];
         bool hasPriorWork = pending.Count != 0 && resources.HasRegistrations;
+        long initialEdges = 0;
         for (int batch = 0; batch < batches.Count; batch++)
         {
-            var dependencies = inputs[batch] = [ordering];
+            Task predecessorFence = ordering;
+            var dependencies = inputs[batch] = [predecessorFence];
+            if (fences is not null) fences[batch] = predecessorFence;
             foreach (int node in batches[batch])
             {
                 var transfer = plan.Transfers[node];
@@ -52,7 +72,9 @@ public sealed partial class Interpreter
                     dependencies.Add(completed[nodeBatches[predecessor]]);
             }
             dependencyEdges += dependencies.Count - 1;
+            if (submission is not null) initialEdges += dependencies.Count - 1;
         }
+        submission?.SetMetric("dependencies.matched", initialEdges);
 
         RuntimeContext origin = context.CaptureDirectory();
         for (int batch = 0; batch < batches.Count; batch++)
@@ -82,7 +104,8 @@ public sealed partial class Interpreter
             admittedOperations += ids.Count;
             admittedTransfers += ids.Count(id => plan.Transfers[id].Kind is not
                 (PlannedTransferKind.EnsureDirectory or PlannedTransferKind.ApplyDirectoryMetadata));
-            _ = RunPlanBatchAsync(plan, ids, inputs[batch], outcomes[batch], results, origin, cancellationToken);
+            _ = RunPlanBatchAsync(plan, ids, inputs[batch], outcomes[batch], results, origin, cancellationToken,
+                batch, completion, fences?[batch]);
         }
         return new(results);
     }
@@ -107,11 +130,24 @@ public sealed partial class Interpreter
 
     private async Task RunPlanBatchAsync(ExecutionPlan plan, IReadOnlyList<int> ids,
         HashSet<Task> dependencies, TaskCompletionSource<IReadOnlyList<TransferBatchOutcome>> completion,
-        PlanNodeResult[] predecessors, RuntimeContext origin, CancellationToken cancellationToken)
+        PlanNodeResult[] predecessors, RuntimeContext origin, CancellationToken cancellationToken,
+        int batchId, Task admitted, Task? orderingDependency)
     {
+        var timeline = origin.Timeline;
+        var batch = timeline?.Begin("scheduler.plan_batch");
+        if (batch is not null)
+        {
+            batch.SetMetric("plan.batch_id", batchId);
+            batch.SetMetric("plan.nodes", ids.Count);
+            batch.SetMetric("dependencies.matched", dependencies.Count);
+            batch.SetMetric("task.id", admitted.Id);
+            batch.SetMetric("plan.result_task_id", completion.Task.Id);
+            timeline!.Register(admitted, batch);
+            timeline.Register(completion.Task, batch);
+        }
         try
         {
-            await Task.WhenAll(dependencies);
+            await AwaitScheduled("plan.dependencies", "relevant", dependencies, orderingDependency);
             List<int>? ready = null;
             for (int offset = 0; offset < ids.Count; offset++)
             {
@@ -122,12 +158,14 @@ public sealed partial class Interpreter
                 else ready?.Add(offset);
             }
             var active = ready is null ? ids : ready.Select(offset => ids[offset]).ToArray();
+            batch?.SetMetric("plan.active_nodes", active.Count);
+            batch?.SetMetric("plan.blocked_nodes", ids.Count - active.Count);
             IReadOnlyList<TransferBatchOutcome> values;
             long started = origin.Observe is null ? 0 : Stopwatch.GetTimestamp();
             IReadOnlyList<TransferBatchOutcome> executed = [];
             if (active.Count != 0)
             {
-                await slots.WaitAsync(cancellationToken);
+                await AwaitScheduled("plan.capacity", "capacity", slots.WaitAsync(cancellationToken));
                 List<IDisposable>? selected = null;
                 try
                 {
@@ -157,10 +195,22 @@ public sealed partial class Interpreter
                 else origin.Observe?.Invoke(new(PlanPhase(transfer), outcome.Executed ? outcome.Success ? "success" : "failure" : "blocked",
                     SourceLabel(transfer.Source), transfer.Destination.ToString()));
             }
+            batch?.Complete(values.All(value => value.Success));
+            batch?.Dispose();
             completion.SetResult(values);
         }
-        catch (OperationCanceledException error) { completion.SetCanceled(error.CancellationToken); }
-        catch (Exception error) { completion.SetException(error); }
+        catch (OperationCanceledException error)
+        {
+            batch?.Fail(error);
+            batch?.Dispose();
+            completion.SetCanceled(error.CancellationToken);
+        }
+        catch (Exception error)
+        {
+            batch?.Fail(error);
+            batch?.Dispose();
+            completion.SetException(error);
+        }
     }
 
     private async ValueTask ReportPlannedFailureAsync(PlannedTransfer transfer, Exception error, RuntimeContext origin)
@@ -188,13 +238,13 @@ public sealed partial class Interpreter
         return true;
     }
 
-    private static async ValueTask<bool> ReadPlanResultAsync(ExecutionPlan plan, PlanSubmission submission)
+    private async ValueTask<bool> ReadPlanResultAsync(ExecutionPlan plan, PlanSubmission submission)
     {
         bool result = true;
         foreach (int node in plan.ResultTransfers!)
         {
             var selected = submission.Results[node];
-            result &= (await selected.Completion)[selected.Offset].Success;
+            result &= (await AwaitScheduledResultAsync("plan.result", "relevant", selected.Completion))[selected.Offset].Success;
         }
         return result;
     }
@@ -208,12 +258,12 @@ public sealed partial class Interpreter
         _ => "transfer"
     };
 
-    private static async ValueTask<bool> SuccessfulPredecessorsAsync(PlannedTransfer operation, PlanNodeResult[] results)
+    private async ValueTask<bool> SuccessfulPredecessorsAsync(PlannedTransfer operation, PlanNodeResult[] results)
     {
         foreach (int predecessor in operation.Predecessors)
         {
             var result = results[predecessor];
-            if (!(await result.Completion)[result.Offset].Success) return false;
+            if (!(await AwaitScheduledResultAsync("plan.successful_predecessor", "relevant", result.Completion))[result.Offset].Success) return false;
         }
         return true;
     }
@@ -258,14 +308,27 @@ public sealed partial class Interpreter
 
     private async ValueTask AwaitNamespacePublicationsAsync(IEnumerable<PathValue> paths)
     {
-        if (NamespaceDependencies(paths) is { } dependencies)
-            await Task.WhenAll(dependencies);
+        HashSet<Task>? dependencies;
+        using (var query = context.Timeline?.Begin("scheduler.namespace_query"))
+        {
+            query?.SetMetric("pending.candidates", pending.Count);
+            query?.SetMetric("namespace.entries_probed", 0);
+            try
+            {
+                dependencies = NamespaceDependencies(paths, query);
+                query?.SetMetric("dependencies.matched", dependencies?.Count ?? 0);
+            }
+            catch (Exception error) { query?.Fail(error); throw; }
+        }
+        if (dependencies is not null)
+            await AwaitScheduled("namespace.publication", "relevant", dependencies);
     }
 
-    private HashSet<Task>? NamespaceDependencies(IEnumerable<PathValue> paths)
+    private HashSet<Task>? NamespaceDependencies(IEnumerable<PathValue> paths, RuntimeTimelineScope? query = null)
     {
         if (!namespaceProducers.HasLocalEntries) return null;
         HashSet<Task>? dependencies = null;
+        long entries = 0;
         foreach (var path in paths)
         {
             if (path.Connection?.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl) continue;
@@ -275,12 +338,14 @@ public sealed partial class Interpreter
                 string? parent = Path.GetDirectoryName(name);
                 string entry = parent is null ? name : Path.Combine(ResourcePath.Resolve(parent), Path.GetFileName(name));
                 namespaceProducers.CollectPending(entry, ref dependencies);
+                if (query is not null) entries++;
                 name = parent;
             }
         }
         // As with the resource projection, classify completion after all
         // selected entries have been resolved, not at the first matching name.
         dependencies?.RemoveWhere(static task => task.IsCompleted);
+        query?.SetMetric("namespace.entries_probed", entries);
         return dependencies is { Count: > 0 } ? dependencies : null;
     }
 

@@ -402,6 +402,60 @@ The runner retains the source, object, executable and per-round samples in
 the selected scratch directory. This run's receipt is
 `.temp/vm-io-investigation/pinned/result.json`.
 
+### Scheduler self-observation
+
+With telemetry enabled, the execution owner accumulates three distinct
+monotonic intervals: `scheduler.admission_ns` for transfer registration
+and prepared plan submission; `scheduler.cohort_admission_ns` for Range
+selection and footprint admission; and `scheduler.wait_ns` for explicit
+scheduler waits that were incomplete at observation. Cohort admission
+includes its final transfer admission, and either admission can include a
+wait. Waits on different operations can overlap. These sums are work and
+wait accounting, not additive wall-time components or exclusive CPU time.
+Unobserved execution does not read a clock at these sites.
+
+At `diagnostics`, `scheduler.admission`, `scheduler.cohort`,
+`scheduler.plan`, and `scheduler.plan_batch` preserve the actual
+operation owners. Native hazard lookup and namespace entry projection have
+their own spans. `pending.candidates` describes the current pending list
+(which can retain completed registrations); `dependencies.matched`
+describes selected tasks, not the size of the candidate frontier.
+`resource.*` attributes preserve the actual endpoint/path and access mode
+used for scalar/cohort registration or native publication/observation
+probes, rather than inferring physical aliases from source spelling.
+`dependencies.pending` is a readiness snapshot; `await.suspended` means
+the selected task was still incomplete immediately before awaiting, not
+that the OS necessarily descheduled a thread. The
+[Task completion predicate](https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.task.iscompleted?view=net-10.0)
+also includes fault and cancellation, so completion and success remain distinct.
+
+The dependency scope distinguishes selected resource hazards from
+ordering fences, per-owner joins, global joins, worker capacity and
+unresolved-cohort fallback. A fallback can wait on work without a proven
+dependency; this is not equivalent to proving that the work is unrelated.
+`runtime.dependency` events carry actual Task IDs and, when already
+registered, the admitting span; like an
+[OpenTelemetry span link](https://opentelemetry.io/docs/specs/otel/trace/api/#add-link),
+this is a causal edge, not a replacement for the owner parent. A ready synchronous result may use a
+runtime-cached Task, so it is marked `completion.ready_at_admission`
+instead of acquiring a false producer identity. Plan batch spans record
+both their registered completion and result Task IDs, so task ID remains
+available for joins when a linked target is published later.
+
+The focused Linux
+[scheduler timeline journey](../../tests/Telemetry/scheduler_timeline.py)
+uses real processes and SQLite records. A selected unrelated native copy
+must publish before releasing a gate, while a dependent copy or an
+unresolved-destination Range remains held. The test waits for the actual
+diagnostic link rather than assuming a fixed runtime delay. A prepared
+artifact separately checks plan/batch/wait parent ownership and exact bytes.
+All three checks passed in isolated managed Release and Linux Native AOT
+builds; use `--workspace .temp/scheduler-timeline` to retain the SQLite
+evidence. Nine unobserved source/object/executable gate checks also passed
+for a dependent lazy callback, a namespace entry dependency, and an
+independent shared reader. The Native trace receipt is under
+`.temp/scheduler-telemetry-snapshot/native-traces/`.
+
 ### Exact-entry namespace producer index
 
 `NamespaceProducerIndex` now keeps both task-to-root ownership and exact

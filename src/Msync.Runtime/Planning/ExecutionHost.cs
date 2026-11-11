@@ -18,7 +18,7 @@ public static class ExecutionHost
         var bound = preparationTrace is null ? Binding.BindInstructions(module, context)
             : preparationTrace.Measure("bind", (module, context),
                 static state => Binding.BindInstructions(state.module, state.context));
-        var resources = new ContextualResources(cancellationToken);
+        var resources = new ContextualResources(cancellationToken, options.Timeline);
         try
         {
             var prepared = preparationTrace is null ? ContextualBackend.PrepareInstructions(bound, options, resources, cancellationToken)

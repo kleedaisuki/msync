@@ -1,6 +1,6 @@
 namespace Msync.Cli;
 
-internal enum TelemetryLevel { Summary, Phases, Profile, Instructions }
+internal enum TelemetryLevel { Summary, Phases, Profile, Instructions, Diagnostics }
 
 internal static class TelemetryLevels
 {
@@ -10,6 +10,7 @@ internal static class TelemetryLevels
         "phases" => TelemetryLevel.Phases,
         "profile" => TelemetryLevel.Profile,
         "instructions" => TelemetryLevel.Instructions,
+        "diagnostics" => TelemetryLevel.Diagnostics,
         _ => null
     };
 
@@ -18,6 +19,7 @@ internal static class TelemetryLevels
         TelemetryLevel.Summary => "summary",
         TelemetryLevel.Phases => "phases",
         TelemetryLevel.Profile => "profile",
-        _ => "instructions"
+        TelemetryLevel.Instructions => "instructions",
+        _ => "diagnostics"
     };
 }

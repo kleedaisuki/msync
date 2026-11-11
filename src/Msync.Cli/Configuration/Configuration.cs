@@ -20,7 +20,7 @@ internal sealed class Configuration
     public bool TelemetryEnabled => settings["telemetry.enabled"].Value is true;
     public string TelemetryBackend => Text("telemetry.backend");
     public TelemetryLevel TelemetryLevel => TelemetryLevels.Parse(Text("telemetry.level"))
-        ?? throw Error("telemetry.level", "must be summary, phases, profile, or instructions");
+        ?? throw Error("telemetry.level", "must be summary, phases, profile, instructions, or diagnostics");
     public string? TelemetryPath => OptionalText("telemetry.path");
     internal ulong TelemetryUnsigned(string name) => Unsigned($"telemetry.{name}");
     internal bool TelemetryBoolean(string name) => settings[$"telemetry.{name}"].Value is bool value

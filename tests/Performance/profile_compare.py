@@ -206,6 +206,7 @@ def compare(
         "route": route,
         "same_artifact": same_artifact,
         "telemetry_level": level,
+        "profile_span_duration_semantics": "inclusive sums; not exclusive CPU or wall time",
         "stdin_sha256": digest(stdin),
         "expected_stdout_sha256": digest(expected),
         "source_sha256": digest(source),
@@ -231,7 +232,9 @@ def main() -> None:
     parser.add_argument("--rounds", type=int, default=9)
     parser.add_argument("--warmups", type=int, default=2)
     parser.add_argument(
-        "--telemetry-level", choices=("profile", "instructions"), default="profile"
+        "--telemetry-level",
+        choices=("profile", "instructions", "diagnostics"),
+        default="profile",
     )
     parser.add_argument(
         "--timing-only",

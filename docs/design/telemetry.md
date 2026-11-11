@@ -4,8 +4,9 @@
 
 The C# CLI retains opt-in `--trace FILE`, `--trace -`, `--telemetry-db FILE`,
 configured destinations, and `--no-telemetry`. `TelemetrySession` owns one
-bounded BCL channel and one writer task. Producers use nonblocking `TryWrite`;
-queue overflow is counted and reported as incomplete recording. Disabled
+bounded BCL channel and one writer task. Ordinary levels use nonblocking
+`TryWrite`; overflow is counted and reported as incomplete recording. The
+explicit diagnostics level instead waits for the writer. Disabled
 execution supplies no runtime observer, compiler trace or profile. The
 uninstrumented interpreter does not test for profile counters per opcode.
 
@@ -74,6 +75,7 @@ native package results, not a claim of Windows execution.
 ```sh
 msync run workload.msync --telemetry-db .temp/workload.sqlite --telemetry-level profile
 msync run-ir workload.mexe --telemetry-db .temp/workload.sqlite --telemetry-level instructions
+msync run-ir workload.mexe --telemetry-db .temp/diagnostic.sqlite --telemetry-level diagnostics
 ```
 
 Recording remains disabled unless a destination is supplied on the command
@@ -91,6 +93,7 @@ compare matching workloads/optimization levels. Root attributes include
 | `phases` | Source reads, parse/bind/analyze/HIR lowering/optimization spans, preparation within the standalone execution host, scheduler counts on the execute span |
 | `profile` | Aggregate optimizer-pass events and VM function/opcode/native counts, process CPU and managed allocation/collection counts |
 | `instructions` | Aggregate dynamic bytecode positions, branch/iterator edges and actual source call-site targets |
+| `diagnostics` | Exact operation timeline: VM frames and awaits that see incomplete work, scheduler admission and dependency links, transfer/transport and process lifecycle; lossless queue backpressure |
 
 Object and executable loads are artifact reads, not compiler stages.
 An executable submitted for replay does not report binding or planning;
@@ -132,6 +135,44 @@ early intervals, without inventing before-admission spans. Exporter startup
 overlaps the root span; process launch before managed entry is outside these
 metrics.
 
+### Causal runtime timeline
+
+`diagnostics` records one interval for each instrumented operation actually
+selected, not for candidate paths mentioned in the source or an unselected
+branch. It retains path/endpoint provenance, source positions, typed outcomes,
+and operational causes. It does not collect process output payloads, arbitrary
+argv or credentials as trace attributes. A frame interval includes nested
+execution and time spent awaiting owned work. `vm.await` records a task that
+was incomplete when inspected immediately before an await; it does not equate
+syntactically async code with suspension or estimate on-CPU time.
+
+Selected native operations have inclusive `vm.native` spans even when they
+finish synchronously; the same name in `events` denotes aggregate call counts.
+A deferred native admission and its eventual completion are separately
+labeled. The scheduler distinguishes relevant resource dependencies, ordering fences,
+capacity waits, owner/global joins and unresolved-member fallbacks.
+`scheduler.wait` reports matched and pending task counts and the observed
+ready/incomplete state. Each `runtime.dependency` event is owned by the wait
+span; `dependency.span_id` points to the corresponding admission when this
+trace owns it, while `dependency.task_id` identifies the actual awaited task
+even when it has no instrumented producer. The link is separate from parent
+ancestry, so one wait can depend on multiple producers without inventing a
+tree. Transfer, transport and process intervals remain children of their
+causal operation across actual worker boundaries. Scheduler counters on
+`execute` include cumulative admission and wait durations; those can overlap
+each other, operation spans, or VM awaits. Do not add them to obtain an
+exclusive time breakdown.
+
+This highest level uses the existing bounded
+[.NET Channel](https://learn.microsoft.com/en-us/dotnet/core/extensions/channels#full-mode-behavior)
+in lossless wait mode. Producers may wait for the local writer, including
+when a lot of selected work occurs; other levels still use nonblocking
+admission and report overflow. Explicit whole-trace sampling and recording
+budgets still apply. A failing exporter closes admission to release blocked
+producers and records incomplete session health rather than changing the
+program's result. Compare latency with telemetry off, not by subtracting
+nested diagnostic intervals.
+
 The schema remains v1. For example, identify hot functions in the latest
 complete recording with the stock SQLite CLI:
 
@@ -153,13 +194,30 @@ GROUP BY image.value, fnid.value, fn.value ORDER BY instructions DESC LIMIT 20;
 SQL
 ```
 
+On a diagnostic database, identify what a real scheduler wait depended on:
+
+```sql
+SELECT w.trace_id, w.span_id AS wait_id, w.duration_ns,
+       policy.value AS policy, reason.value AS reason,
+       link.value AS producer_id, producer.name AS producer
+FROM spans AS w
+JOIN attributes AS policy ON policy.record_id=w.id AND policy.key='dependency.scope'
+JOIN attributes AS reason ON reason.record_id=w.id AND reason.key='wait.reason'
+LEFT JOIN events AS e ON e.trace_id=w.trace_id AND e.span_id=w.span_id
+    AND e.name='runtime.dependency'
+LEFT JOIN attributes AS link ON link.record_id=e.id AND link.key='dependency.span_id'
+LEFT JOIN spans AS producer ON producer.trace_id=w.trace_id AND producer.span_id=link.value
+WHERE w.name='scheduler.wait'
+ORDER BY w.duration_ns DESC LIMIT 20;
+```
+
 Compare the same checked workload with [the paired CLI measurement driver](../../tests/Performance/profile_compare.py).
 The collector follows the explicit parent/owner model of the
 [OpenTelemetry tracing API](https://opentelemetry.io/docs/specs/otel/trace/api/)
 without requiring a global tracing provider or a network exporter.
 
-The focused [CLI journey](../../tests/Telemetry/journeys.py) now checks all
-four levels, source/HIR/object/executable stage identities, optimizer-pass
+The focused [CLI journey](../../tests/Telemetry/journeys.py) checks the
+aggregate levels, source/HIR/object/executable stage identities, optimizer-pass
 events, profile count reconciliation, REPL submission ownership, and scheduler
 counts plus a real destination payload. The nine journeys also exercise
 existing JSONL/SQLite behavior, sink failure, failed transfers, and disabled
@@ -167,6 +225,33 @@ or sampled-out admission. They passed on the isolated Linux Native AOT
 candidate `3a605f6253525ef5959caad242073a53edc655737a0f2dcd16a14503a8139ea8`
 and the split CLI's isolated managed Release build. The Native receipt is
 `.temp/telemetry-v080/3a605f625352/results.json`.
+
+The extended Linux Native AOT candidate
+`316c3310173b2ba07155a9a4bcd40a4c593771a0882aa13522d5cfd52f105214`
+passed eleven CLI journeys. The two-route diagnostics control uses a real
+gated child and a queue capacity of one; both runs have complete ownership,
+an incomplete relevant wait linked to the held publication, a synchronously
+completed `ranges.front` timing, exact copied/collected bytes, and no observed
+unselected path or child payload. A deliberate SQLite record budget failure
+releases producers without failing a real copy. The same binary passed four
+loopback OpenSSH journeys, including runtime-selected and prepared work with
+one client per transfer; see [I/O verification](io-process-v080.md#diagnostic-timelines-at-selected-physical-boundaries).
+Receipts: `.temp/timeline-integrated/journeys-native.log` and
+`.temp/telemetry-v080/316c3310173b/results.json`.
+
+The paired driver also exercised the Native O0/O2 bound
+[counter recurrence](../../tests/LoopOptimization/counter-recurrence.msync):
+32,771 updates with a checked result of `163846.26844396352`, five alternating
+telemetry-off pairs after warmup on logical CPU 11, then separate diagnostics
+recordings. O0/O2 medians were 56.93/41.27 ms (paired median difference
+−18.74 ms). The profiles explain the workload change: **950,440 → 557,136
+bytecodes**, **2 → 1 source frames**, and **65,542 → 65,542 operand Number
+boxes**. That implicates instruction/control-flow savings without suggesting
+that private numeric storage was improved. This comparison changes the
+whole optimization level, not one isolated pass. The O0 frame spans sum to
+79.95 ms within a 40.79 ms execute span; their overlap is precisely why
+inclusive intervals are not an exclusive CPU accounting. Raw matched
+profiles and SQLite files are in `.temp/timeline-study/compare/`.
 
 ## Historical Rust SQLite recording and operator workflow
 

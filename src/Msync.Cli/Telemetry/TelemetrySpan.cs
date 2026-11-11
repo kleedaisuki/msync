@@ -70,6 +70,9 @@ internal sealed class TelemetrySpan(TelemetrySession session, string name, strin
         SetMetric("scheduler.submitted_batches", stats.SubmittedBatches);
         SetMetric("scheduler.admitted_operations", stats.AdmittedOperations);
         SetMetric("scheduler.eliminated_transfers", stats.EliminatedTransfers);
+        SetMetric("scheduler.admission_ns", stats.AdmissionNanoseconds);
+        SetMetric("scheduler.cohort_admission_ns", stats.CohortAdmissionNanoseconds);
+        SetMetric("scheduler.wait_ns", stats.WaitNanoseconds);
     }
 
     public void Dispose() => session.EndSpan(name, id, parent, startedUnix, TelemetrySession.Elapsed(started),

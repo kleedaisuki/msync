@@ -144,6 +144,7 @@ internal sealed class ReplSession
                 }
             }
             using TelemetrySpan? execute = submission?.Begin("execute");
+            using IDisposable? owner = execute is null ? null : telemetry?.Timeline?.Attach(execute.Id);
             ProcessCounters? before = execute?.MeasureProcess();
             try
             {

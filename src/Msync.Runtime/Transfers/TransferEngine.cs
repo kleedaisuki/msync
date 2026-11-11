@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Formats.Tar;
+using System.Globalization;
 using System.Text;
 using Msync.Core;
 
@@ -43,7 +44,7 @@ public static partial class TransferEngine
         if (remoteTarget is not null)
         {
             if (remoteSources.Length == sources.Count && remoteSources.All(path => path.Connection == remoteTarget))
-                await CopyRemoteAsync(remoteSources, target, container, replace, cohort, cancellationToken);
+                await CopyRemoteAsync(remoteSources, target, container, replace, cohort, context.Timeline, cancellationToken);
             else if (remoteSources.Length == 0)
                 await UploadAsync(sources, target, context, container, replace, cohort, cancellationToken);
             else
@@ -104,35 +105,52 @@ public static partial class TransferEngine
 
     private static async Task CopyLocalItemAsync(Value source, string target, RuntimeContext context, bool container, bool replace, CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        if (source is StringValue text)
+        using var activity = context.Timeline?.Begin("transfer.local.item");
+        if (activity is not null)
         {
-            await TransferFiles.WriteLiteralAsync(text.Data, target, cancellationToken, context.BufferSize);
-            return;
+            TransferTimeline.Source(activity, source);
+            activity.SetAttribute("destination.resolved_path", target);
+            activity.SetAttribute("transfer.mode", Mode(container, replace));
         }
-        if (source is not PathValue path) throw new MsyncException($"Cannot transfer a value of type {source.Type}.");
-        string sourcePath = path.LocalPath(context.WorkingDirectory, context.HomeDirectory);
-        if (TransferOverlap.SameNode(sourcePath, target)) return;
-        CheckTarget(sourcePath, target, container, replace);
-        if (TransferOverlap.NeedsSnapshot(sourcePath, target, replace))
+        try
         {
-            await TransferOverlap.CopyAsync(sourcePath, target, replace, cancellationToken, context.BufferSize);
-            return;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (source is StringValue text)
+            {
+                await TransferFiles.WriteLiteralAsync(text.Data, target, cancellationToken, context.BufferSize, context.Timeline);
+                return;
+            }
+            if (source is not PathValue path) throw new MsyncException($"Cannot transfer a value of type {source.Type}.");
+            string sourcePath = path.LocalPath(context.WorkingDirectory, context.HomeDirectory);
+            activity?.SetAttribute("source.resolved_path", sourcePath);
+            if (TransferOverlap.SameNode(sourcePath, target)) { activity?.SetAttribute("transfer.action", "same_node"); return; }
+            CheckTarget(sourcePath, target, container, replace);
+            if (TransferOverlap.NeedsSnapshot(sourcePath, target, replace))
+            {
+                activity?.SetAttribute("transfer.action", "overlap_snapshot");
+                await TransferOverlap.CopyAsync(sourcePath, target, replace, cancellationToken, context.BufferSize, context.Timeline);
+                return;
+            }
+            if (replace) TransferFiles.RemoveNode(target);
+            await TransferFiles.CopyNodeAsync(sourcePath, target, cancellationToken, context.BufferSize, context.Timeline);
         }
-        if (replace) TransferFiles.RemoveNode(target);
-        await TransferFiles.CopyNodeAsync(sourcePath, target, cancellationToken, context.BufferSize);
+        catch (Exception error) { activity?.Fail(error); throw; }
     }
 
-    public static async Task<string> RunCommandAsync(ConnectionValue connection, string script, IReadOnlyList<string> args, CancellationToken cancellationToken = default)
+    public static Task<string> RunCommandAsync(ConnectionValue connection, string script, IReadOnlyList<string> args, CancellationToken cancellationToken = default) =>
+        RunCommandAsync(connection, script, args, cancellationToken, null);
+
+    private static async Task<string> RunCommandAsync(ConnectionValue connection, string script, IReadOnlyList<string> args,
+        CancellationToken cancellationToken, RuntimeTimeline? timeline)
     {
         if (ActiveQuery.Value is { } selected && selected.Connection == connection)
             return await selected.InvokeAsync(script, args, cancellationToken);
         if (CurrentSession(connection) is { } batch)
             return await batch.QueryAsync(script, args, cancellationToken);
-        using Process process = Start(connection, script, args, redirectInput: false);
+        using Process process = Start(connection, script, args, redirectInput: false, timeline, "command");
         using CancellationTokenRegistration registration = cancellationToken.Register(() => Kill(process));
         string output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-        await FinishAsync(process, connection, cancellationToken);
+        await FinishAsync(process, connection, cancellationToken, timeline);
         return output;
     }
 
@@ -178,7 +196,7 @@ public static partial class TransferEngine
         ConnectionValue connection = Remote(target)!;
         string name = sources[0] is PathValue first ? Basename(first) : "";
         string[] args = [target.Raw, Mode(container, replace), name, cohort ? "cohort" : "single", sources[0] is StringValue ? "literal" : "filesystem"];
-        using Process process = Start(connection, UploadScript, args, redirectInput: true);
+        using Process process = Start(connection, UploadScript, args, redirectInput: true, context.Timeline, "upload");
         using CancellationTokenRegistration registration = cancellationToken.Register(() => Kill(process));
         try
         {
@@ -190,11 +208,13 @@ public static partial class TransferEngine
                     foreach (Value source in sources)
                     {
                         PathValue path = (PathValue)source;
-                        await WriteArchiveNodeAsync(writer, path.LocalPath(context.WorkingDirectory, context.HomeDirectory), "payload/" + Basename(path), cancellationToken);
+                        await WriteArchiveNodeAsync(writer, path.LocalPath(context.WorkingDirectory, context.HomeDirectory),
+                            "payload/" + Basename(path), cancellationToken, timeline: context.Timeline);
                     }
                 }
                 else if (sources[0] is PathValue path)
-                    await WriteArchiveNodeAsync(writer, path.LocalPath(context.WorkingDirectory, context.HomeDirectory), "payload", cancellationToken);
+                    await WriteArchiveNodeAsync(writer, path.LocalPath(context.WorkingDirectory, context.HomeDirectory), "payload",
+                        cancellationToken, timeline: context.Timeline);
                 else if (sources[0] is StringValue text)
                 {
                     using MemoryStream bytes = new(Encoding.UTF8.GetBytes(text.Data), writable: false);
@@ -205,7 +225,7 @@ public static partial class TransferEngine
             }
             process.StandardInput.Close();
             string result = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-            await FinishAsync(process, connection, cancellationToken);
+            await FinishAsync(process, connection, cancellationToken, context.Timeline);
             if (result != "MSYNC-DONE\n") throw new IOException($"Remote upload to {connection} returned no completion: {result}");
         }
         catch
@@ -217,47 +237,57 @@ public static partial class TransferEngine
     }
 
     private static async Task WriteArchiveNodeAsync(TarWriter writer, string source, string name, CancellationToken cancellationToken,
-        PlannedTransferKind kind = PlannedTransferKind.GenericCopy)
+        PlannedTransferKind kind = PlannedTransferKind.GenericCopy, RuntimeTimeline? timeline = null)
     {
-        FileMetadata metadata = NativeFileMetadata.Capture(source);
-        bool directory = kind == PlannedTransferKind.CopyDirectory || kind == PlannedTransferKind.GenericCopy && metadata.IsDirectory;
-        bool link = kind == PlannedTransferKind.CopyLink || kind == PlannedTransferKind.GenericCopy && metadata.IsLink;
-        TarEntryType type = link ? TarEntryType.SymbolicLink : directory ? TarEntryType.Directory : TarEntryType.RegularFile;
-        try { await writer.WriteEntryAsync(new PaxGlobalExtendedAttributesTarEntry([KeyValuePair.Create("mtime", metadata.Modified.Pax)]), cancellationToken); }
-        catch (IOException error) { throw new ArchiveStreamException(error); }
-        // .NET 10 rewrites local PAX mtime through 100ns DateTimeOffset. A standard
-        // global PAX timestamp plus a GNU member retains the native decimal value.
-        GnuTarEntry entry = new(type, name) { ModificationTime = DateTimeOffset.UnixEpoch };
-        if (!OperatingSystem.IsWindows() && !link) entry.Mode = metadata.Mode;
-        if (link)
+        using var activity = timeline?.Begin("transport.archive.write_entry");
+        activity?.SetAttribute("source.resolved_path", source);
+        activity?.SetAttribute("archive.member", name);
+        try
         {
-            FileSystemInfo info = metadata.IsDirectory ? new DirectoryInfo(source) : new FileInfo(source);
-            entry.LinkName = info.LinkTarget ?? throw new IOException($"Cannot read symbolic link '{source}'.");
-        }
-        if (type == TarEntryType.RegularFile)
-        {
-            await using FileStream bytes = new(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 65536, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            if (metadata.Length == 0)
+            FileMetadata metadata = NativeFileMetadata.Capture(source);
+            bool directory = kind == PlannedTransferKind.CopyDirectory || kind == PlannedTransferKind.GenericCopy && metadata.IsDirectory;
+            bool link = kind == PlannedTransferKind.CopyLink || kind == PlannedTransferKind.GenericCopy && metadata.IsLink;
+            TarEntryType type = link ? TarEntryType.SymbolicLink : directory ? TarEntryType.Directory : TarEntryType.RegularFile;
+            activity?.SetAttribute("archive.kind", type.ToString());
+            try { await writer.WriteEntryAsync(new PaxGlobalExtendedAttributesTarEntry([KeyValuePair.Create("mtime", metadata.Modified.Pax)]), cancellationToken); }
+            catch (IOException error) { throw new ArchiveStreamException(error); }
+            // .NET 10 rewrites local PAX mtime through 100ns DateTimeOffset. A standard
+            // global PAX timestamp plus a GNU member retains the native decimal value.
+            GnuTarEntry entry = new(type, name) { ModificationTime = DateTimeOffset.UnixEpoch };
+            if (!OperatingSystem.IsWindows() && !link) entry.Mode = metadata.Mode;
+            if (link)
             {
-                using MemoryStream contents = new();
-                await bytes.CopyToAsync(contents, cancellationToken);
-                contents.Position = 0; entry.DataStream = contents;
-                try { await writer.WriteEntryAsync(entry, cancellationToken); }
-                catch (IOException error) { throw new ArchiveStreamException(error); }
+                FileSystemInfo info = metadata.IsDirectory ? new DirectoryInfo(source) : new FileInfo(source);
+                entry.LinkName = info.LinkTarget ?? throw new IOException($"Cannot read symbolic link '{source}'.");
             }
-            else
+            if (type == TarEntryType.RegularFile)
             {
-                entry.DataStream = bytes;
-                try { await writer.WriteEntryAsync(entry, cancellationToken); }
-                catch (IOException error) { throw new ArchiveStreamException(error); }
+                await using FileStream bytes = new(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 65536, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                if (metadata.Length == 0)
+                {
+                    using MemoryStream contents = new();
+                    await bytes.CopyToAsync(contents, cancellationToken);
+                    contents.Position = 0; entry.DataStream = contents;
+                    try { await writer.WriteEntryAsync(entry, cancellationToken); }
+                    catch (IOException error) { throw new ArchiveStreamException(error); }
+                    activity?.SetMetric("bytes.payload", contents.Length);
+                }
+                else
+                {
+                    entry.DataStream = bytes;
+                    try { await writer.WriteEntryAsync(entry, cancellationToken); }
+                    catch (IOException error) { throw new ArchiveStreamException(error); }
+                    activity?.SetMetric("bytes.payload", bytes.Position);
+                }
+                return;
             }
-            return;
+            try { await writer.WriteEntryAsync(entry, cancellationToken); }
+            catch (IOException error) { throw new ArchiveStreamException(error); }
+            if (!directory || link) return;
+            foreach (string child in Directory.EnumerateFileSystemEntries(source).Order(TextSemantics.Ordinal))
+                await WriteArchiveNodeAsync(writer, child, name + "/" + Path.GetFileName(child), cancellationToken, timeline: timeline);
         }
-        try { await writer.WriteEntryAsync(entry, cancellationToken); }
-        catch (IOException error) { throw new ArchiveStreamException(error); }
-        if (!directory || link) return;
-        foreach (string child in Directory.EnumerateFileSystemEntries(source).Order(TextSemantics.Ordinal))
-            await WriteArchiveNodeAsync(writer, child, name + "/" + Path.GetFileName(child), cancellationToken);
+        catch (Exception error) { activity?.Fail(error); throw; }
     }
 
     private static async Task DownloadAsync(IReadOnlyList<PathValue> sources, PathValue target, RuntimeContext context, bool container, bool replace, CancellationToken cancellationToken)
@@ -265,14 +295,15 @@ public static partial class TransferEngine
         ConnectionValue connection = Remote(sources[0])!;
         bool receipt = RequiresArchiveReceipt(connection);
         string program = DownloadScript(sources.Count);
-        using Process process = Start(connection, receipt ? WithArchiveReceipt(program) : program, sources.Select(path => path.Raw).ToArray(), redirectInput: receipt);
+        using Process process = Start(connection, receipt ? WithArchiveReceipt(program) : program, sources.Select(path => path.Raw).ToArray(),
+            redirectInput: receipt, context.Timeline, "download");
         using CancellationTokenRegistration registration = cancellationToken.Register(() => Kill(process));
         try
         {
             await ReadArchiveAsync(process.StandardOutput.BaseStream, target, context, container, replace, cancellationToken);
             if (receipt) await AcknowledgeArchiveAsync(process, cancellationToken);
             await process.StandardOutput.BaseStream.CopyToAsync(Stream.Null, cancellationToken);
-            await FinishAsync(process, connection, cancellationToken);
+            await FinishAsync(process, connection, cancellationToken, context.Timeline);
         }
         catch
         {
@@ -316,11 +347,12 @@ public static partial class TransferEngine
         finally { File.Delete(stage); }
     }
 
-    private static async Task CopyRemoteAsync(IReadOnlyList<PathValue> sources, PathValue target, bool container, bool replace, bool cohort, CancellationToken cancellationToken)
+    private static async Task CopyRemoteAsync(IReadOnlyList<PathValue> sources, PathValue target, bool container, bool replace, bool cohort,
+        RuntimeTimeline? timeline, CancellationToken cancellationToken)
     {
         List<string> args = cohort ? [target.Raw, Mode(container, replace)] : [target.Raw, Mode(container, replace), "single"];
         args.AddRange(sources.Select(path => path.Raw));
-        string output = await RunCommandAsync(Remote(target)!, cohort ? CohortInstallScript : CopyScript, args, cancellationToken);
+        string output = await RunCommandAsync(Remote(target)!, cohort ? CohortInstallScript : CopyScript, args, cancellationToken, timeline);
         if (output != "MSYNC-DONE\n") throw new IOException($"Remote copy returned no completion: {output}");
     }
 
@@ -333,18 +365,19 @@ public static partial class TransferEngine
         ConnectionValue destinationConnection = Remote(target)!;
         bool receipt = RequiresArchiveReceipt(sourceConnection);
         string program = DownloadScript(paths.Length);
-        using Process download = Start(sourceConnection, receipt ? WithArchiveReceipt(program) : program, paths.Select(path => path.Raw).ToArray(), redirectInput: receipt);
+        using Process download = Start(sourceConnection, receipt ? WithArchiveReceipt(program) : program, paths.Select(path => path.Raw).ToArray(),
+            redirectInput: receipt, context.Timeline, "relay-source");
         string name = Basename(paths[0]);
         string[] args = [target.Raw, Mode(container, replace), name, cohort ? "cohort" : "single", "filesystem"];
-        using Process upload = Start(destinationConnection, RelayScript, args, redirectInput: true);
+        using Process upload = Start(destinationConnection, RelayScript, args, redirectInput: true, context.Timeline, "relay-target");
         using CancellationTokenRegistration registration = cancellationToken.Register(() => { Kill(download); Kill(upload); });
         try
         {
             await PumpArchiveAsync(download, upload.StandardInput.BaseStream, receipt, context.BufferSize, cancellationToken);
             upload.StandardInput.Close();
             string result = await upload.StandardOutput.ReadToEndAsync(cancellationToken);
-            await FinishAsync(download, sourceConnection, cancellationToken);
-            await FinishAsync(upload, destinationConnection, cancellationToken);
+            await FinishAsync(download, sourceConnection, cancellationToken, context.Timeline);
+            await FinishAsync(upload, destinationConnection, cancellationToken, context.Timeline);
             if (result != "MSYNC-DONE\n") throw new IOException($"Remote relay returned no completion: {result}");
         }
         catch
@@ -371,13 +404,21 @@ public static partial class TransferEngine
     public static ProcessStartInfo CreateRemoteShellProcessStartInfo(ConnectionValue connection) =>
         CreateShellProcessStartInfo(connection, "exec sh -s", [], redirectInput: true);
 
-    private static Process Start(ConnectionValue connection, string script, IReadOnlyList<string> args, bool redirectInput)
+    private static Process Start(ConnectionValue connection, string script, IReadOnlyList<string> args, bool redirectInput,
+        RuntimeTimeline? timeline = null, string? role = null)
     {
-        ProcessStartInfo info = CreateShellProcessStartInfo(connection, script, args, redirectInput: true);
-        Process process = new() { StartInfo = info };
-        if (!process.Start()) throw new IOException($"Cannot start native transport {process.StartInfo.FileName} for {connection}.");
-        if (!redirectInput) process.StandardInput.Close();
-        return process;
+        using var activity = BeginTransport(timeline, "transport.start", connection);
+        if (activity is not null && role is not null) activity.SetAttribute("transport.role", role);
+        try
+        {
+            ProcessStartInfo info = CreateShellProcessStartInfo(connection, script, args, redirectInput: true);
+            Process process = new() { StartInfo = info };
+            if (!process.Start()) throw new IOException($"Cannot start native transport {process.StartInfo.FileName} for {connection}.");
+            activity?.SetMetric("transport.pid", process.Id);
+            if (!redirectInput) process.StandardInput.Close();
+            return process;
+        }
+        catch (Exception error) { activity?.Fail(error); throw; }
     }
 
     private static ProcessStartInfo CreateShellProcessStartInfo(ConnectionValue connection, string script, IReadOnlyList<string> args, bool redirectInput)
@@ -412,10 +453,26 @@ public static partial class TransferEngine
         return info;
     }
 
-    private static async Task FinishAsync(Process process, ConnectionValue connection, CancellationToken cancellationToken)
+    private static async Task FinishAsync(Process process, ConnectionValue connection, CancellationToken cancellationToken, RuntimeTimeline? timeline = null)
     {
-        await process.WaitForExitAsync(cancellationToken);
-        if (process.ExitCode != 0) throw new IOException($"Native transport for {connection} failed with exit status {process.ExitCode}; see its diagnostic output.");
+        using var activity = BeginTransport(timeline, "transport.exit_wait", connection);
+        activity?.SetMetric("transport.pid", process.Id);
+        try
+        {
+            Task exit = process.WaitForExitAsync(cancellationToken);
+            activity?.SetAttribute("wait.pending_on_entry", exit.IsCompleted ? "false" : "true");
+            await exit;
+            activity?.SetAttribute("transport.exit_code", process.ExitCode.ToString(CultureInfo.InvariantCulture));
+            if (process.ExitCode != 0) throw new IOException($"Native transport for {connection} failed with exit status {process.ExitCode}; see its diagnostic output.");
+        }
+        catch (Exception error) { activity?.Fail(error); throw; }
+    }
+
+    private static RuntimeTimelineScope? BeginTransport(RuntimeTimeline? timeline, string name, ConnectionValue connection)
+    {
+        var activity = timeline?.Begin(name);
+        if (activity is not null) TransferTimeline.Endpoint(activity, "transport", connection);
+        return activity;
     }
 
     private static void Kill(Process process)

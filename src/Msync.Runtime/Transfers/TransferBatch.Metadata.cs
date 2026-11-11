@@ -11,15 +11,30 @@ public static partial class TransferEngine
         public async Task<IReadOnlyList<RemotePathMetadata>> ReadDirectoryMetadataAsync(PathValue directory,
             bool recursive = false, CancellationToken cancellationToken = default)
         {
-            string data = await QueryAsync(DirectoryMetadataProgram, [directory.Raw, recursive ? "recursive" : "flat"], cancellationToken);
-            return ParseDirectoryMetadata(directory, data);
+            using var activity = BeginSession("transport.directory_metadata", timeline);
+            if (activity is not null)
+            {
+                TransferTimeline.Path(activity, "source", directory);
+                activity.SetAttribute("directory.recursive", recursive ? "true" : "false");
+            }
+            try
+            {
+                string data = await QueryAsync(DirectoryMetadataProgram, [directory.Raw, recursive ? "recursive" : "flat"], cancellationToken);
+                var metadata = ParseDirectoryMetadata(directory, data);
+                activity?.SetMetric("directory.entries", metadata.Count);
+                return metadata;
+            }
+            catch (Exception error) { activity?.Fail(error); throw; }
         }
 
         public async Task<IReadOnlyList<RemotePathMetadata>> ReadMetadataBatchAsync(IReadOnlyList<PathValue> paths,
             CancellationToken cancellationToken = default, bool includeKinds = true)
         {
             if (paths.Count == 0) return [];
-            await serial.WaitAsync(cancellationToken);
+            using var activity = BeginSession("transport.metadata_batch", timeline);
+            activity?.SetMetric("metadata.paths", paths.Count);
+            activity?.SetAttribute("metadata.kinds", includeKinds ? "true" : "false");
+            await EnterSerialAsync(cancellationToken, activity);
             using var registration = cancellationToken.Register(Abort);
             var results = new RemotePathMetadata[paths.Count];
             try
@@ -47,8 +62,15 @@ public static partial class TransferEngine
                     }
                 }
                 await CompleteDuplexAsync(Send(), Receive());
+                if (activity is not null)
+                {
+                    int failures = results.Count(result => result.Error is not null);
+                    activity.SetMetric("metadata.failed", failures);
+                    activity.Complete(failures == 0);
+                }
                 return results;
             }
+            catch (Exception error) { activity?.Fail(error); throw; }
             finally { serial.Release(); }
         }
     }

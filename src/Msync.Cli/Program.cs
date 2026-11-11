@@ -167,7 +167,7 @@ internal static class Program
 
     private static Task<int> Repl(CommandOptions options, TelemetrySession? telemetry, Configuration configuration, TextReader? input) =>
         new ReplSession(RuntimeOptions(options, null, telemetry is null ? null : telemetry.Observe, configuration.Color, input: input)
-        with { Profile = telemetry?.CreateProfile() }, options.Optimization, configuration.Color, telemetry).RunAsync();
+        with { Profile = telemetry?.CreateProfile(), Timeline = telemetry?.Timeline }, options.Optimization, configuration.Color, telemetry).RunAsync();
 
     private static int Doctor()
     {

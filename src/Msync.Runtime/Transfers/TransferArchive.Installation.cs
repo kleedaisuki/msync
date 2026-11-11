@@ -73,7 +73,7 @@ public static partial class TransferEngine
                 case TarEntryType.V7RegularFile:
                 case TarEntryType.ContiguousFile:
                     await TransferFiles.WriteFileAsync(entry.DataStream ?? Stream.Null, installed, null, cancellationToken,
-                        stage => ApplyArchiveMetadata(entry, stage), context.BufferSize, expectedLength: entry.Length);
+                        stage => ApplyArchiveMetadata(entry, stage), context.BufferSize, expectedLength: entry.Length, timeline: context.Timeline);
                     break;
                 case TarEntryType.SymbolicLink:
                     CreateArchiveLink(installed, entry.LinkName, entry);
@@ -82,7 +82,7 @@ public static partial class TransferEngine
                     string linkedName = entry.LinkName;
                     while (linkedName.StartsWith("./", StringComparison.Ordinal)) linkedName = linkedName[2..];
                     string linkedRelative = container ? linkedName : linkedName == root ? "" : linkedName[(root.Length + 1)..];
-                    await TransferFiles.CopyNodeAsync(Path.Combine(destination, linkedRelative), installed, cancellationToken, context.BufferSize);
+                    await TransferFiles.CopyNodeAsync(Path.Combine(destination, linkedRelative), installed, cancellationToken, context.BufferSize, context.Timeline);
                     break;
                 default:
                     throw new IOException($"Unsupported archive entry '{entry.Name}' of type {entry.EntryType}.");

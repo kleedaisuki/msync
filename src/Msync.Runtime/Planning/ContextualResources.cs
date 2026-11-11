@@ -2,8 +2,19 @@ using Msync.Core;
 
 namespace Msync.Runtime;
 
-public sealed class ContextualResources(CancellationToken ownerCancellation = default) : IAsyncDisposable
+public sealed class ContextualResources : IAsyncDisposable
 {
+    private readonly CancellationToken ownerCancellation;
+    private readonly RuntimeTimeline? timeline;
+
+    public ContextualResources(CancellationToken ownerCancellation = default) : this(ownerCancellation, null) { }
+
+    internal ContextualResources(CancellationToken ownerCancellation, RuntimeTimeline? timeline)
+    {
+        this.ownerCancellation = ownerCancellation;
+        this.timeline = timeline;
+    }
+
     private sealed class QueryScope : IDisposable
     {
         internal static readonly QueryScope Instance = new();
@@ -25,7 +36,7 @@ public sealed class ContextualResources(CancellationToken ownerCancellation = de
                 sessions.Remove(connection);
                 session.DisposeAsync().AsTask().GetAwaiter().GetResult();
             }
-            sessions.Add(connection, session = TransferEngine.OpenSession(connection, cancellationToken));
+            sessions.Add(connection, session = TransferEngine.OpenSession(connection, cancellationToken, timeline));
             return session;
         }
     }

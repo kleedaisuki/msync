@@ -62,7 +62,7 @@ internal sealed record CommandOptions(string Command, string? File, string? Outp
                 case "--telemetry-level":
                     string level = Next();
                     if (TelemetryLevels.Parse(level) is null)
-                        throw new ArgumentException($"Unknown telemetry level '{level}'. Use summary, phases, profile, or instructions.");
+                        throw new ArgumentException($"Unknown telemetry level '{level}'. Use summary, phases, profile, instructions, or diagnostics.");
                     overrides["telemetry.level"] = level;
                     break;
                 case "--no-telemetry": noTelemetry = true; break;

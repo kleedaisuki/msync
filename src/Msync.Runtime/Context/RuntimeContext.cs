@@ -16,6 +16,7 @@ public sealed class RuntimeContext
     public long MemoryLimit { get; }
     public long? SpoolLimit { get; }
     public Action<RuntimeObservation>? Observe { get; }
+    public RuntimeTimeline? Timeline { get; }
     public Action<MsyncException>? ReportError { get; }
     private readonly TextReader? input;
     private readonly Action<string>? workingDirectoryChanged;
@@ -34,6 +35,7 @@ public sealed class RuntimeContext
         workingDirectoryChanged = options.WorkingDirectoryChanged;
         Jobs = options.Jobs;
         BufferSize = options.BufferSize; MemoryLimit = options.MemoryLimit; SpoolLimit = options.SpoolLimit; Observe = options.Observe;
+        Timeline = options.Timeline;
     }
     private RuntimeContext(RuntimeContext source)
     {
@@ -50,6 +52,7 @@ public sealed class RuntimeContext
         MemoryLimit = source.MemoryLimit;
         SpoolLimit = source.SpoolLimit;
         Observe = source.Observe;
+        Timeline = source.Timeline;
         directoryCapture = this;
     }
     // Deferred work retains its admission's directory, not later cd state.

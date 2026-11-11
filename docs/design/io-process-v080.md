@@ -176,3 +176,46 @@ The first real SSH domain acceptance observed 17 operations, 17 native ssh
 clients/authentications/sessions, no scp processes, and correct text/NUL/all-byte
 payloads. Nine controlled process runs independently compared the reported PID
 to the child application's own PID, so a positive proxy PID could not pass.
+
+## Diagnostic timelines at selected physical boundaries
+
+The opt-in `diagnostics` level adds operation intervals without changing
+transfer or process ownership. Physical I/O records only work actually
+selected: residual and batch transfers feed local item spans; staged regular
+files report writes/copies, actual publication moves, and separate explicit
+file syncs where the implementation performs them. The file byte metric is
+the output stream position after successful copying, not file metadata size;
+the Windows native-copy path reports its source size separately. Directory
+merges and archive installations retain their existing semantics. Observing
+them does not add a flush, filesystem scan, or SSH command.
+
+Native transport startup and exit or owned-session close are correlated by
+the transport PID. Selected query, selector, metadata, send, download, and
+protocol response intervals carry the actual endpoint and operation
+dimensions. Archive byte counts are payload, not encrypted wire bytes; native
+client startup is not an estimate of SSH authentication time. A logical
+endpoint can share a physical tunnel, as described in
+[the SSH connection protocol](https://www.rfc-editor.org/rfc/rfc4254.html).
+
+Process startup and collection preserve parentage across asynchronous flows
+and identify local transport vs. controlled process PIDs. Completion tasks
+carry the producer span for dependency joins. Exit wait and pipe collection
+can overlap; stdout and stderr provide byte counts, not argument vectors or
+payloads. Parent intervals and concurrent child spans are inclusive and must
+not be summed as exclusive CPU. This follows the distinction between
+[asynchronous context](https://learn.microsoft.com/en-us/dotnet/api/system.threading.asynclocal-1?view=net-10.0)
+and [causal links](https://opentelemetry.io/docs/specs/otel/trace/api/#add-link)
+between separately owned work.
+
+The focused loopback check is
+`python3 tests/Telemetry/ssh_diagnostics.py /path/to/msync`. Its runtime
+condition separates selecting a real transfer from merely mentioning a Path
+in an unselected branch; it checks source, object and executable routes,
+native client count, matched transport start/end identity, local bytes and
+atomic publication ancestry directly from SQLite.
+The same fixture checks a prepared two-file upload, including archive
+payload counts and the shared batch-response owner. On Linux Native AOT
+image `316c3310173b2ba07155a9a4bcd40a4c593771a0882aa13522d5cfd52f105214`,
+all four real SSH cases passed: each launched one client with the original
+configured alias. The raw trace databases are under
+`.temp/ssh-diagnostics/s-5e4ke5tn/work/`. This is not Windows or WSL evidence.

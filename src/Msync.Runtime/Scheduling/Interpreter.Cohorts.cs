@@ -6,15 +6,36 @@ public sealed partial class Interpreter
 {
     private sealed record TransferFootprint(RangeValue Source, ResourceKey[] Reads, ResourceKey[] Writes);
 
-    private async ValueTask<Task<bool>> ScheduleCohortAsync(RangeValue source, Value destination,
+    private ValueTask<Task<bool>> ScheduleCohortAsync(RangeValue source, Value destination,
+        SourceSpan? span, bool local, CancellationToken cancellationToken) =>
+        ObserveScheduling ? ScheduleObservedCohortAsync(source, destination, span, local, cancellationToken)
+            : ScheduleCohortCoreAsync(source, destination, span, local, cancellationToken);
+
+    private async ValueTask<Task<bool>> ScheduleObservedCohortAsync(RangeValue source, Value destination,
         SourceSpan? span, bool local, CancellationToken cancellationToken)
     {
+        using var measurement = MeasureAdmission("scheduler.cohort", cohort: true);
+        var observation = measurement.Span;
+        observation?.SetSource(span);
+        observation?.SetMetric("pending.candidates", pending.Count);
+        if (observation is not null && source.OwnedSnapshot is { } snapshot)
+            observation.SetMetric("cohort.members", snapshot.Count);
+        try { return await ScheduleCohortCoreAsync(source, destination, span, local, cancellationToken, observation); }
+        catch (Exception error) { observation?.Fail(error); throw; }
+    }
+
+    private async ValueTask<Task<bool>> ScheduleCohortCoreAsync(RangeValue source, Value destination,
+        SourceSpan? span, bool local, CancellationToken cancellationToken, RuntimeTimelineScope? observation = null)
+    {
         if (pending.Count == 0 && source is { Selection: null, Resolve: null, OwnedSnapshot: not null })
+        {
+            observation?.SetAttribute("cohort.strategy", "owned-empty-frontier");
             return await ScheduleTransferAsync(source, destination, span, local, cancellationToken);
+        }
         if (!context.DryRun && destination is PathValue or StringValue
             && context.AsPath(destination).Connection is null or { Kind: ConnectionKind.Local })
         {
-            await ordering;
+            await AwaitScheduled("cohort.ordering", "ordering", ordering);
             while (source.Resolve is { } resolve) source = await resolve(cancellationToken);
             // Remote selectors retain metadata and payload on their selected transport channel.
             if (source.Selection?.Directory.Connection?.Kind is not (ConnectionKind.Ssh or ConnectionKind.Wsl))
@@ -26,15 +47,23 @@ public sealed partial class Interpreter
                         selected.Add(member);
                     source = RangeValue.TakeSnapshotOwnership(selected, source.ItemType);
                 }
+                observation?.SetMetric("cohort.members", source.OwnedSnapshot!.Count);
                 if (pending.Count == 0)
+                {
+                    observation?.SetAttribute("cohort.strategy", "local-empty-frontier");
                     return await ScheduleTransferAsync(source, destination, span, local, cancellationToken);
+                }
                 if (await LocalCohortFootprintAsync(source.OwnedSnapshot!, source.ItemType,
                     context.AsPath(destination), cancellationToken) is { } footprint)
+                {
+                    observation?.SetAttribute("cohort.strategy", "local-footprint");
                     return await ScheduleTransferAsync(footprint.Source, destination, span, local, cancellationToken, footprint: footprint);
+                }
             }
         }
 
-        await DrainAsync();
+        observation?.SetAttribute("cohort.strategy", "drain-fallback");
+        await JoinAllAsync("cohort.unresolved_frontier");
         return await ScheduleTransferAsync(source, destination, span, local, cancellationToken);
     }
 
@@ -62,7 +91,7 @@ public sealed partial class Interpreter
             publications.UnionWith(resources.Dependencies(reads, writes).Where(namespaceProducers.Contains));
         if (publications.Count != 0)
         {
-            await Task.WhenAll(publications);
+            await AwaitScheduled("cohort.publications", "relevant", publications);
             reads = sources.Select(Key).ToArray();
             writes = CohortWrites(target, targets, replace);
         }
@@ -89,7 +118,7 @@ public sealed partial class Interpreter
         ResourceKey[] writes = MergeAliases(roots, targets, directories);
         var aliases = resources.Dependencies([], writes).Where(namespaceProducers.Contains).ToArray();
         if (aliases.Length == 0) return writes;
-        await Task.WhenAll(aliases);
+        await AwaitScheduled("cohort.alias_publications", "relevant", aliases);
         return MergeAliases(roots, targets, directories);
     }
 

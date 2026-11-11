@@ -10,7 +10,7 @@ public sealed partial class Interpreter
     private ValueTask<Value> InvokeValueAsync(Value callee, IReadOnlyList<Value> arguments,
         CancellationToken cancellationToken, int? target = null, int scheduling = 0, SourceSpan? origin = null) => callee switch
     {
-        FunctionValue { NativeName: { } name } => InvokeNativeAsync(name, arguments, cancellationToken),
+        FunctionValue { NativeName: { } name } => InvokeNativeAsync(name, arguments, cancellationToken, origin: origin),
         FunctionValue function => RunFunctionAsync(target ?? function.Function, function.Captures ?? [], arguments, cancellationToken),
         PathValue executable => RunProcessAsync(executable, arguments, cancellationToken, scheduling, origin),
         StringValue executable => RunProcessAsync(context.AsPath(executable), arguments, cancellationToken, scheduling, origin),
@@ -95,8 +95,33 @@ public sealed partial class Interpreter
             { var candidate = Path.Combine(Path.IsPathRooted(directory) ? directory : Path.Combine(context.WorkingDirectory, directory), name + extension); if (File.Exists(candidate)) return candidate; }
         throw new MsyncException($"Executable '{name}' was not found on PATH");
     }
-    private async ValueTask<Value> InvokeNativeAsync(string name, IReadOnlyList<Value> arguments,
-        CancellationToken cancellationToken, bool direct = false)
+    private ValueTask<Value> InvokeNativeAsync(string name, IReadOnlyList<Value> arguments, CancellationToken cancellationToken,
+        SourceSpan? origin) =>
+        context.Timeline is { } timeline
+            ? InvokeObservedNativeAsync(timeline, name, arguments, cancellationToken, direct: false, origin)
+            : InvokeNativeCoreAsync(name, arguments, cancellationToken, direct: false);
+
+    private ValueTask<Value> InvokeNativeAsync(Instruction instruction, IReadOnlyList<Value> arguments,
+        CancellationToken cancellationToken) =>
+        context.Timeline is { } timeline
+            ? InvokeObservedNativeAsync(timeline, instruction.Text!, arguments, cancellationToken, direct: true, instruction.Span)
+            : InvokeNativeCoreAsync(instruction.Text!, arguments, cancellationToken, direct: true);
+
+    private async ValueTask<Value> InvokeObservedNativeAsync(RuntimeTimeline timeline, string name, IReadOnlyList<Value> arguments,
+        CancellationToken cancellationToken, bool direct, SourceSpan? origin)
+    {
+        using var span = RuntimeFrameTrace.BeginNative(timeline, name, direct ? "direct" : "dynamic", origin);
+        try
+        {
+            Value result = await InvokeNativeCoreAsync(name, arguments, cancellationToken, direct);
+            if (result is DeferredValue) span.SetAttribute("native.result", "deferred");
+            return result;
+        }
+        catch (Exception error) { span.Fail(error); throw; }
+    }
+
+    private async ValueTask<Value> InvokeNativeCoreAsync(string name, IReadOnlyList<Value> arguments,
+        CancellationToken cancellationToken, bool direct)
     {
         profile?.Native(module, name);
         try
@@ -145,7 +170,21 @@ public sealed partial class Interpreter
             resultType, arguments.SelectMany(Processes).Distinct().ToArray(), endpoint);
     }
 
-    private async Task<Value> CompleteDeferredNativeAsync(NativeRegistry.Operation operation, IReadOnlyList<Value> arguments,
+    private Task<Value> CompleteDeferredNativeAsync(NativeRegistry.Operation operation, IReadOnlyList<Value> arguments,
+        int deferred, RuntimeContext origin, CancellationToken cancellationToken) =>
+        origin.Timeline is { } timeline
+            ? CompleteObservedNativeAsync(timeline, operation, arguments, deferred, origin, cancellationToken)
+            : CompleteDeferredNativeCoreAsync(operation, arguments, deferred, origin, cancellationToken);
+
+    private async Task<Value> CompleteObservedNativeAsync(RuntimeTimeline timeline, NativeRegistry.Operation operation,
+        IReadOnlyList<Value> arguments, int deferred, RuntimeContext origin, CancellationToken cancellationToken)
+    {
+        using var span = RuntimeFrameTrace.BeginNative(timeline, operation.Signature.Name, "deferred_completion");
+        try { return await CompleteDeferredNativeCoreAsync(operation, arguments, deferred, origin, cancellationToken); }
+        catch (Exception error) { span.Fail(error); throw; }
+    }
+
+    private async Task<Value> CompleteDeferredNativeCoreAsync(NativeRegistry.Operation operation, IReadOnlyList<Value> arguments,
         int deferred, RuntimeContext origin, CancellationToken cancellationToken)
         => await NativeRegistry.InvokeAsync(operation, await ResolveDeferredArgumentsAsync(arguments, deferred),
             origin, NativeCallback, cancellationToken);

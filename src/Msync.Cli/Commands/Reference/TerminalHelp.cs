@@ -66,7 +66,7 @@ internal static class TerminalHelp
         Row("--no-config", "Disable configuration discovery", color);
         Row("--trace FILE", "Write opt-in JSONL events; '-' is stderr", color);
         Row("--telemetry-db FILE", "Write opt-in SQLite telemetry", color);
-        Row("--telemetry-level LEVEL", "Choose summary, phases, profile, or instructions", color);
+        Row("--telemetry-level LEVEL", "Choose summary, phases, profile, instructions, or diagnostics", color);
         Row("--no-telemetry", "Disable configured telemetry", color);
         Row("--language-server", "Serve LSP over standard input/output", color);
         Row("-h, --help", "Show help; COMMAND --help adds details", color);

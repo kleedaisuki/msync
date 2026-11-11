@@ -39,13 +39,32 @@ public static partial class TransferEngine
                 continue;
             }
             var selected = indices.Select(index => items[index]).ToArray();
-            var results = route.Direction == BatchDirection.Local
-                ? await CopyLocalBatchAsync(selected, context, cancellationToken)
-                : route.Direction == BatchDirection.DirectoryActions
-                    ? await CopyDirectoryActionsAsync(selected, context, cancellationToken)
-                : route.Direction == BatchDirection.Relay
-                    ? await CopyRelayBatchAsync(selected, route.Connection!, route.Target!, context.BufferSize, cancellationToken)
-                : await CopyRemoteBatchAsync(selected, route.Direction, route.Connection!, context, cancellationToken);
+            using var activity = context.Timeline?.Begin("transfer.batch.route");
+            if (activity is not null)
+            {
+                activity.SetAttribute("transfer.direction", route.Direction.ToString());
+                activity.SetMetric("transfer.items", selected.Length);
+                TransferTimeline.Endpoint(activity, "transport", route.Connection);
+                if (route.Target is { } target) TransferTimeline.Endpoint(activity, "destination", target);
+            }
+            IReadOnlyList<TransferBatchOutcome> results;
+            try
+            {
+                results = route.Direction == BatchDirection.Local
+                    ? await CopyLocalBatchAsync(selected, context, cancellationToken)
+                    : route.Direction == BatchDirection.DirectoryActions
+                        ? await CopyDirectoryActionsAsync(selected, context, cancellationToken)
+                    : route.Direction == BatchDirection.Relay
+                        ? await CopyRelayBatchAsync(selected, route.Connection!, route.Target!, context.BufferSize, cancellationToken, context.Timeline)
+                    : await CopyRemoteBatchAsync(selected, route.Direction, route.Connection!, context, cancellationToken);
+                if (activity is not null)
+                {
+                    var succeeded = results.Count(result => result.Success);
+                    activity.SetMetric("transfer.succeeded", succeeded);
+                    activity.Complete(succeeded == results.Count);
+                }
+            }
+            catch (Exception error) { activity?.Fail(error); throw; }
             for (int index = 0; index < indices.Count; index++) outcomes[indices[index]] = results[index];
         }
         return outcomes;
@@ -92,13 +111,23 @@ public static partial class TransferEngine
             for (int index = 0; index < items.Count; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                TransferBatchItem item = items[index];
+                using var activity = context.Timeline?.Begin("transfer.local.item");
+                if (activity is not null)
+                {
+                    TransferTimeline.Source(activity, item.Source);
+                    TransferTimeline.Path(activity, "destination", item.Destination);
+                    activity.SetAttribute("transfer.kind", item.Kind.ToString());
+                    activity.SetAttribute("transfer.mode", item.Mode.ToString());
+                }
                 try
                 {
-                    CopyLocalBatchItem(items[index], context, buffer, cancellationToken);
+                    CopyLocalBatchItem(item, context, buffer, cancellationToken);
                     outcomes[index] = new(true);
                 }
                 catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
-                { outcomes[index] = new(false, error); }
+                { activity?.Fail(error); outcomes[index] = new(false, error); }
+                catch (Exception error) { activity?.Fail(error); throw; }
             }
         }
         finally { if (rented is not null) ArrayPool<byte>.Shared.Return(rented); }
@@ -124,7 +153,7 @@ public static partial class TransferEngine
             : item.Destination.LocalPath(context.WorkingDirectory, context.HomeDirectory);
         if (item.Source is StringValue text)
         {
-            TransferFiles.WriteLiteral(text.Data, destination, buffer, cancellationToken);
+            TransferFiles.WriteLiteral(text.Data, destination, buffer, cancellationToken, context.Timeline);
             return;
         }
         string source = ((PathValue)item.Source).LocalPath(context.WorkingDirectory, context.HomeDirectory);
@@ -137,11 +166,11 @@ public static partial class TransferEngine
             throw new IOException($"Exact destination '{destination}' is an existing directory; append '/' for container insertion or '/.' for replacement.");
         if (directory && TransferOverlap.NeedsSnapshot(source, destination, replace))
         {
-            TransferOverlap.CopyAsync(source, destination, replace, cancellationToken, context.BufferSize).GetAwaiter().GetResult();
+            TransferOverlap.CopyAsync(source, destination, replace, cancellationToken, context.BufferSize, context.Timeline).GetAwaiter().GetResult();
             return;
         }
         if (replace) TransferFiles.RemoveNode(destination);
-        TransferFiles.CopyPreparedNode(source, destination, item.Kind, buffer, cancellationToken);
+        TransferFiles.CopyPreparedNode(source, destination, item.Kind, buffer, cancellationToken, context.Timeline);
     }
 
     private static string BatchMode(TransferBatchItem item) => item.Mode switch

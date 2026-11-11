@@ -30,7 +30,8 @@ internal static class TransferOverlap
         return normalizedPath.StartsWith(normalizedRoot + Path.DirectorySeparatorChar, comparison);
     }
 
-    internal static async Task CopyAsync(string source, string target, bool replace, CancellationToken cancellationToken, int bufferSize = 65536)
+    internal static async Task CopyAsync(string source, string target, bool replace, CancellationToken cancellationToken, int bufferSize = 65536,
+        RuntimeTimeline? timeline = null)
     {
         // Only an actually overlapping tree needs retained bytes before publication.
         IReadOnlyList<Node> nodes = await Task.Run(() => CaptureTree(source, cancellationToken), cancellationToken);
@@ -43,7 +44,7 @@ internal static class TransferOverlap
         {
             await Task.Run(() => Materialize(nodes, payload, cancellationToken, bufferSize), cancellationToken);
             if (replace) TransferFiles.RemoveNode(target);
-            await TransferFiles.CopyNodeAsync(payload, target, cancellationToken, bufferSize);
+            await TransferFiles.CopyNodeAsync(payload, target, cancellationToken, bufferSize, timeline);
         }
         finally { MakeSnapshotWritable(nodes, payload); Directory.Delete(stage, recursive: true); }
     }

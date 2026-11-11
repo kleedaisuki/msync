@@ -11,14 +11,18 @@ public static partial class TransferEngine
 
     internal static bool HasSelectedQuery(ConnectionValue connection) => ActiveQuery.Value?.Connection == connection;
 
-    private sealed class SelectedQuery(ConnectionValue connection, Process process) : IDisposable
+    private sealed class SelectedQuery(ConnectionValue connection, Process process, RuntimeTimeline? timeline) : IDisposable
     {
         private readonly SemaphoreSlim serial = new(1);
         internal ConnectionValue Connection { get; } = connection;
 
         internal async Task<string> InvokeAsync(string script, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
         {
-            await serial.WaitAsync(cancellationToken);
+            using var activity = BeginTransport(timeline, "transport.selector_query", Connection);
+            activity?.SetMetric("transport.pid", process.Id);
+            activity?.SetMetric("query.arguments", arguments.Count);
+            try { await serial.WaitAsync(cancellationToken); }
+            catch (Exception error) { activity?.Fail(error); throw; }
             try
             {
                 Stream input = process.StandardInput.BaseStream;
@@ -33,11 +37,13 @@ public static partial class TransferEngine
                     throw new IOException($"Invalid selected metadata response from {Connection}: {header}");
                 int status = int.Parse(fields[1], CultureInfo.InvariantCulture);
                 int bytes = int.Parse(fields[2], CultureInfo.InvariantCulture);
+                activity?.SetMetric("protocol.response_bytes", bytes);
                 byte[] output = new byte[bytes];
                 await process.StandardOutput.BaseStream.ReadExactlyAsync(output, cancellationToken);
                 if (status != 0) throw new IOException($"Selected native operation on {Connection} failed with exit status {status}; see its diagnostic output.");
                 return Encoding.UTF8.GetString(output);
             }
+            catch (Exception error) { activity?.Fail(error); throw; }
             finally { serial.Release(); }
         }
 
@@ -66,13 +72,13 @@ public static partial class TransferEngine
     }
 
     private static async Task<IReadOnlyList<Value>> ApplySelectionAsync(PathSelection selection, IReadOnlyList<string> names,
-        Process process, CancellationToken cancellationToken)
+        Process process, CancellationToken cancellationToken, RuntimeTimeline? timeline)
     {
         IEnumerable<Value> values = names.Select(name => selection.Directory.WithRaw(selection.Directory.Raw.TrimEnd('/') + "/" + name));
         RangeValue discovered = new(values, TypeRef.Path);
         List<Value> results = [];
         SelectedQuery? previous = ActiveQuery.Value;
-        using SelectedQuery query = new(Remote(selection.Directory)!, process);
+        using SelectedQuery query = new(Remote(selection.Directory)!, process, timeline);
         ActiveQuery.Value = query;
         try
         {

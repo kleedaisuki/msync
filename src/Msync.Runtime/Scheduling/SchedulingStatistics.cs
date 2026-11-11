@@ -6,4 +6,7 @@ public readonly record struct SchedulingStatistics(long AdmittedTransfers, long 
     public long SubmittedBatches { get; init; }
     public long AdmittedOperations { get; init; }
     public long EliminatedTransfers { get; init; }
+    public long AdmissionNanoseconds { get; init; }
+    public long CohortAdmissionNanoseconds { get; init; }
+    public long WaitNanoseconds { get; init; }
 }

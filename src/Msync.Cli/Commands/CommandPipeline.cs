@@ -97,6 +97,9 @@ internal static class CommandPipeline
             bound = bind is null ? Binding.BindInstructions(module, context)
                 : bind.Measure((module, context), static state => Binding.BindInstructions(state.module, state.context));
         using TelemetrySpan? prepare = telemetry?.Begin("prepare");
+        RuntimeTimeline? timeline = telemetry?.Timeline;
+        using IDisposable? owner = prepare is null ? null : timeline?.Attach(prepare.Id);
+        if (timeline is not null) options = options with { Timeline = timeline };
         return prepare is null ? ContextualBackend.PrepareInstructions(bound, options, cancellationToken)
             : prepare.Measure((bound, options, cancellationToken),
                 static state => ContextualBackend.PrepareInstructions(state.bound, state.options, state.cancellationToken));
@@ -115,15 +118,17 @@ internal static class CommandPipeline
         using TelemetrySpan runtime = telemetry.Begin("runtime")!;
         RuntimeProfile? profile = telemetry.CreateProfile();
         ExecutionOptions execution = RuntimeOptions(options, sourceFile, runtime.RuntimeObserver, color, snapshot, input)
-            with { Profile = profile };
+            with { Profile = profile, Timeline = telemetry.Timeline };
         string profileOwner = runtime.Id;
         try
         {
             Interpreter interpreter;
             using (TelemetrySpan initialize = runtime.Begin("runtime.initialize")!)
+            using (telemetry.Timeline?.Attach(initialize.Id))
                 interpreter = initialize.Measure((module, execution, trace: initialize.CompilerTrace, cancellationToken),
                     static state => ExecutionHost.Create(state.module, state.execution, state.trace, state.cancellationToken));
             using TelemetrySpan execute = runtime.Begin("execute")!;
+            using IDisposable? owner = telemetry.Timeline?.Attach(execute.Id);
             profileOwner = execute.Id;
             ProcessCounters? before = execute.MeasureProcess();
             try { await interpreter.ExecuteAsync(cancellationToken); }

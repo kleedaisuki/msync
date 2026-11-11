@@ -188,6 +188,56 @@ in keeping code identity and dynamic counters separate. Here the profiles
 inform engineering decisions; they are neither artifact validity proofs nor
 inputs that change execution semantics.
 
+### Diagnostic frame and wait intervals
+
+At the diagnostic level, `vm.frame` records each actual guest invocation
+from frame entry through its ownership cleanup. It identifies the executing
+function and, when a VM profile is also present, shares its image ID. The
+frame records return, failure or cancellation and counts its observed
+incomplete awaits. Its wall duration is inclusive of child frames, native
+calls and cleanup.
+
+`vm.await` is emitted only when the original Task or ValueTask is
+incomplete at the VM await boundary. It carries the waiting frame, reason,
+PC, opcode and source site where applicable; a known completion Task also
+has a dependency link. Root result/drain waits and frame ownership waits have
+a reason rather than an opcode. Already-ready results, faults and
+cancellations do not produce wait spans. An incomplete check can race with
+task completion; the interval does not establish a scheduler thread switch
+or measure CPU consumption. A caller's wait can overlap a child's wait and
+independently tracked work, so these intervals must not be summed as
+exclusive time.
+
+`vm.native` span rows time actual selected native invocations, including
+immediate operations, separately from aggregate `vm.native` event rows.
+The route distinguishes direct bytecode, dynamic callable values, inline
+arithmetic, and deferred completion. A native admission which returns a
+deferred value marks that result; a deferred native operation has a child
+completion span spanning its operand wait and execution. Those intervals
+can overlap other VM waits and must not be summed as exclusive native CPU.
+
+A gated real standard-input reader checks both nested source and native
+awaits, parent IDs, offsets, return, cancellation and error propagation.
+A ready standard-input control checks that asynchronous methods which
+complete synchronously do not produce wait records, while its actual native
+call still has an operation span. Inline power, a native callable value, and
+a gated deferred native operand independently check the other native routes.
+The disabled dispatch
+specialization returns original awaitables without checking completion or
+creating wait scopes.
+
+A second isolated Native AOT check used `1d216ae` as the base and added only
+the runtime timeline API and VM frame, native, and wait observations. With
+collection disabled, six alternating fresh-process pairs on logical CPU 12
+checked the same frozen Set, Hash and SHA-256 bytecode and results. Paired
+median process CPU deltas were −2.1%, +2.2% and −0.5%, with mixed signs within
+all three workloads; wall deltas were −0.9%, −1.3% and +0.5%. This comparison
+does not establish a disabled-path regression or a performance gain. In
+the disabled dispatch body, the only new await helpers reached were
+pass-throughs for iterator next/disposal; no wait-scope or completion-test
+helper was called. The stripped harness grew by 29,344 bytes (+0.47%).
+Receipts: `artifacts/benchmarks/vm-execution-head-v086/diagnostics-off/`.
+
 ### Disabled-mode check
 
 An isolated Linux x64 SDK 10.0.403 Native AOT candidate applied only runtime

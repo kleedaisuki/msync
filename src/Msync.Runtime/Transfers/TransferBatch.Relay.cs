@@ -7,15 +7,16 @@ namespace Msync.Runtime;
 public static partial class TransferEngine
 {
     private static async Task<IReadOnlyList<TransferBatchOutcome>> CopyRelayBatchAsync(
-        IReadOnlyList<TransferBatchItem> items, ConnectionValue source, ConnectionValue target, int bufferSize, CancellationToken token)
+        IReadOnlyList<TransferBatchItem> items, ConnectionValue source, ConnectionValue target, int bufferSize, CancellationToken token,
+        RuntimeTimeline? timeline)
     {
         RemoteTransferSession? ownedSource = null;
         RemoteTransferSession? ownedTarget = null;
         try
         {
-            var producer = CurrentSession(source) ?? (ownedSource = OpenSession(source, token));
-            var consumer = CurrentSession(target) ?? (ownedTarget = OpenSession(target, token));
-            return await producer.RelayBatchAsync(consumer, items, bufferSize, token);
+            var producer = CurrentSession(source) ?? (ownedSource = OpenSession(source, token, timeline));
+            var consumer = CurrentSession(target) ?? (ownedTarget = OpenSession(target, token, timeline));
+            return await producer.RelayBatchAsync(consumer, items, bufferSize, token, timeline);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
         {
@@ -32,7 +33,7 @@ public static partial class TransferEngine
     public sealed partial class RemoteTransferSession
     {
         internal async Task<IReadOnlyList<TransferBatchOutcome>> RelayBatchAsync(RemoteTransferSession target,
-            IReadOnlyList<TransferBatchItem> items, int bufferSize, CancellationToken token)
+            IReadOnlyList<TransferBatchItem> items, int bufferSize, CancellationToken token, RuntimeTimeline? timeline)
         {
             int order = ((int)Connection.Kind).CompareTo((int)target.Connection.Kind);
             if (order == 0) order = string.CompareOrdinal(Connection.Address, target.Connection.Address);
@@ -42,14 +43,14 @@ public static partial class TransferEngine
             try
             {
                 await second.serial.WaitAsync(token);
-                try { return await RelayOwnedBatchAsync(target, items, bufferSize, token); }
+                try { return await RelayOwnedBatchAsync(target, items, bufferSize, token, timeline); }
                 finally { second.serial.Release(); }
             }
             finally { first.serial.Release(); }
         }
 
         private async Task<IReadOnlyList<TransferBatchOutcome>> RelayOwnedBatchAsync(RemoteTransferSession target,
-            IReadOnlyList<TransferBatchItem> items, int bufferSize, CancellationToken token)
+            IReadOnlyList<TransferBatchItem> items, int bufferSize, CancellationToken token, RuntimeTimeline? timeline)
         {
             using var registration = token.Register(() => { Abort(); target.Abort(); });
             var outcomes = new TransferBatchOutcome?[items.Count];
@@ -60,7 +61,7 @@ public static partial class TransferEngine
                 await WriteCommandAsync(target.input, "UPLOAD", items.Count, token);
                 work = [WritePathsAsync(input, items, BatchDirection.Download, token),
                     ForwardRelayAsync(output, target.input, items, outcomes, bufferSize, token),
-                    ReadOutcomesAsync(target.output, items, outcomes, token)];
+                    ReadOutcomesAsync(target.output, items, outcomes, token, timeline)];
                 List<Task> remaining = [.. work];
                 while (remaining.Count != 0)
                 {

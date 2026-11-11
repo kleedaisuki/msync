@@ -11,12 +11,14 @@ public sealed partial class Interpreter
         value is StringValue or PathValue { Connection: null or { Kind: ConnectionKind.Local } };
 
     private ValueTask<Value> RunOwnedCodeAsync(int functionIndex, Value[] locals, int startInstruction,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, RuntimeFrameTrace? trace)
     {
         Module image = module;
-        return profile is { } recorder
-            ? RunOwnedCodeAsync(image, functionIndex, locals, startInstruction, cancellationToken, recorder.Enter(image, functionIndex))
-            : RunOwnedCodeAsync(image, functionIndex, locals, startInstruction, cancellationToken, new RuntimeProfile.DisabledFrame());
+        if (profile is { } recorder)
+            return RunOwnedCodeAsync(image, functionIndex, locals, startInstruction, cancellationToken, recorder.Enter(image, functionIndex, trace));
+        if (trace is not null)
+            return RunOwnedCodeAsync(image, functionIndex, locals, startInstruction, cancellationToken, new RuntimeProfile.Frame(null, null, trace));
+        return RunOwnedCodeAsync(image, functionIndex, locals, startInstruction, cancellationToken, new RuntimeProfile.DisabledFrame());
     }
 
     // The disabled AOT specialization has no per-opcode profiling branch.
@@ -69,7 +71,8 @@ public sealed partial class Interpreter
                         pc = instruction.A - 1; break;
                     case OpCode.JumpIfFalse:
                     case OpCode.JumpIfTrue:
-                        if (AsBool(await ResolveAsync(stack.Pop())) == (instruction.Op == OpCode.JumpIfTrue)) pc = instruction.A - 1;
+                        if (AsBool(await frame.Observe(ResolveAsync(stack.Pop()), pc, instruction, "condition"))
+                            == (instruction.Op == OpCode.JumpIfTrue)) pc = instruction.A - 1;
                         break;
                     case OpCode.MakeClosure:
                         {
@@ -87,7 +90,9 @@ public sealed partial class Interpreter
                             {
                                 int target = SourceCallTarget(function, instruction);
                                 frame.Call(pc, module, target);
-                                Value value = await RunStackFunctionAsync(target, function, instruction.A, ref stack, cancellationToken);
+                                Value value = await frame.Observe(
+                                    RunStackFunctionAsync(target, function, instruction.A, ref stack, cancellationToken),
+                                    pc, instruction, "source_call");
                                 stack.CompleteCall(instruction.A, value);
                                 break;
                             }
@@ -95,22 +100,22 @@ public sealed partial class Interpreter
                                 throw new MsyncException("An open session call requires a Function value.", instruction.Span);
                             var arguments = stack.PopArguments(instruction.A);
                             stack.Discard();
-                            stack.Add(await InvokeValueAsync(callee, arguments, cancellationToken, scheduling: instruction.B, origin: instruction.Span));
+                            stack.Add(await frame.Observe(InvokeValueAsync(callee, arguments, cancellationToken,
+                                scheduling: instruction.B, origin: instruction.Span), pc, instruction, "callable"));
                             break;
                         }
                     case OpCode.NativeCall:
                         if (instruction.Text == "math.pow"
                             && stack.TryPopNumbers(out double baseNumber, out double exponent))
-                        {
-                            frame.FastNative(image, "math.pow");
-                            stack.AddNumber(NativeRegistry.Power(baseNumber, exponent));
-                        }
-                        else stack.Add(await InvokeNativeAsync(instruction.Text!, stack.PopArguments(instruction.A), cancellationToken, direct: true));
+                            stack.AddNumber(frame.Power(baseNumber, exponent, image, instruction));
+                        else stack.Add(await frame.Observe(InvokeNativeAsync(instruction, stack.PopArguments(instruction.A),
+                            cancellationToken), pc, instruction, "native_call"));
                         break;
-                    case OpCode.Barrier: await FenceAsync(instruction.A, instruction.B, instruction.Text); break;
+                    case OpCode.Barrier:
+                        await frame.Observe(FenceAsync(instruction.A, instruction.B, instruction.Text), pc, instruction, "fence"); break;
                     case OpCode.Acquire:
-                        if (instruction.A == 0) await JoinAllAsync();
-                        else stack.Add(await AcquireAsync(stack.Pop()));
+                        if (instruction.A == 0) await frame.Observe(JoinAllAsync(), pc, instruction, "acquire_all");
+                        else stack.Add(await frame.Observe(AcquireAsync(stack.Pop()), pc, instruction, "acquire_process"));
                         break;
                     case OpCode.Return:
                         return stack.Count == 0 ? Value.Null : stack.Pop();
@@ -146,7 +151,7 @@ public sealed partial class Interpreter
                             var item = stack.Pop(); var scope = stack.Pop();
                             stack.Add(scope is ConnectionValue connection
                                 ? MapValue(item, TypeRef.Path, value => Qualify(connection, value), connection.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl ? connection.ToString() : "local")
-                                : Member(scope, Text(await ResolveAsync(item)))); break;
+                                : Member(scope, Text(await frame.Observe(ResolveAsync(item), pc, instruction, "qualified_member")))); break;
                         }
                     case OpCode.PathJoin:
                         {
@@ -168,11 +173,12 @@ public sealed partial class Interpreter
                                 && destination is PathValue or StringValue or DeferredValue;
                             bool local = instruction.Op == OpCode.LocalTransfer
                                 || LocalTransferOperand(source) && LocalTransferOperand(destination);
-                            var completion = source is RangeValue range
-                                ? await ScheduleCohortAsync(range, destination, instruction.Span, local, cancellationToken)
-                                : await ScheduleTransferAsync(source, destination, instruction.Span, local, cancellationToken, discarded);
+                            var admission = source is RangeValue range
+                                ? ScheduleCohortAsync(range, destination, instruction.Span, local, cancellationToken)
+                                : ScheduleTransferAsync(source, destination, instruction.Span, local, cancellationToken, discarded);
+                            var completion = await frame.Observe(admission, pc, instruction, "transfer_admission");
                             if (discarded) pc++;
-                            else stack.Add(await completion ? Value.True : Value.False);
+                            else stack.Add(await frame.Observe(completion, pc, instruction, "transfer_completion") ? Value.True : Value.False);
                             break;
                         }
                     case OpCode.ExecutePlan:
@@ -181,7 +187,8 @@ public sealed partial class Interpreter
                         break;
                     case OpCode.PlanResult:
                         for (int item = 0; item < instruction.B; item++) stack.Discard();
-                        stack.Add(await ReadPlanResultAsync(image.ExecutionPlans![instruction.A], submissions![instruction.A])
+                        stack.Add(await frame.Observe(ReadPlanResultAsync(image.ExecutionPlans![instruction.A], submissions![instruction.A]),
+                            pc, instruction, "plan_result")
                             ? Value.True : Value.False);
                         break;
                     case OpCode.Not: stack.Add(MapValue(stack.Pop(), TypeRef.Bool, value => AsBool(value) ? Value.False : Value.True)); break;
@@ -221,8 +228,13 @@ public sealed partial class Interpreter
                     case OpCode.IteratorNext:
                         {
                             var iterator = ((IteratorValue)locals[instruction.A]).Iterator;
-                            if (await iterator.MoveNextAsync()) stack.Add(iterator.Current);
-                            else { await iterator.DisposeAsync(); iterators.Remove(iterator); pc = instruction.B - 1; }
+                            if (await frame.Observe(iterator.MoveNextAsync(), pc, instruction, "iterator_next")) stack.Add(iterator.Current);
+                            else
+                            {
+                                await frame.Observe(iterator.DisposeAsync(), pc, instruction, "iterator_dispose");
+                                iterators.Remove(iterator);
+                                pc = instruction.B - 1;
+                            }
                             break;
                         }
                     case OpCode.Add:

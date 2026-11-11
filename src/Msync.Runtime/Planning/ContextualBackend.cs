@@ -58,7 +58,7 @@ public static partial class ContextualBackend
         if (module.Context is null) throw new MsyncException("Contextual planning requires a bound execution context.");
         if (!HasEntryOpportunity(module, out var copies)) return module with { ExecutionPlans = [] };
         cancellationToken.ThrowIfCancellationRequested();
-        var resources = new ContextualResources(cancellationToken);
+        var resources = new ContextualResources(cancellationToken, options?.Timeline);
         try { return PrepareEntry(module, options, resources, cancellationToken, copies); }
         finally { resources.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
     }
@@ -89,7 +89,7 @@ public static partial class ContextualBackend
         if (!NeedsPreparation(module.Functions[function]))
             return new(module.ExecutionPlans is null ? module with { ExecutionPlans = [] } : module, null, []);
         cancellationToken.ThrowIfCancellationRequested();
-        var resources = new ContextualResources(cancellationToken);
+        var resources = new ContextualResources(cancellationToken, options?.Timeline);
         try { return new Preparation(module, function, start, locals, stack, options, resources, cancellationToken).Run(); }
         finally { resources.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
     }

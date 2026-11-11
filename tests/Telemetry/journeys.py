@@ -10,6 +10,8 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -452,6 +454,224 @@ def repl_profile(binary: Path, fixture: Path) -> Result:
     return Result("repl-profile-submission-ownership", count)
 
 
+def wait_for_file(path: Path, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return True
+        time.sleep(0.005)
+    return path.exists()
+
+
+def diagnostics(binary: Path, fixture: Path) -> Result:
+    output_token = "child-payload-is-not-trace-metadata"
+    (fixture / "producer.py").write_text(
+        """from pathlib import Path
+import sys
+import time
+
+Path("child-ready").touch()
+while not Path("gate").exists():
+    time.sleep(0.01)
+"""
+        + f"sys.stdout.write({output_token!r})\n",
+        encoding="utf-8",
+    )
+    (fixture / "input.txt").write_bytes(b"selected input")
+    python = json.dumps(Path(sys.executable).resolve().as_posix(), ensure_ascii=False)
+    (fixture / "case.msync").write_text(
+        f"""let child = $std::process::spawn({python}, ["producer.py"]);
+child::stdout -> ./held.txt;
+let route? = $std::io::read_line();
+if route? {{ ./never-src.txt -> ./unselected.txt; }} else {{
+    if route == "copy" {{ ./input.txt -> ./independent.txt; }}
+    else {{ ./never-src.txt -> ./unselected.txt; }};
+}};
+$std::io::write_text(./at-query, "entered");
+let first = $std::ranges::front([1, 2]);
+if $std::fs::exists(./held.txt) and first == 1 {{ $std::io::println("visible"); }};
+acquire child;
+""",
+        encoding="utf-8",
+    )
+    config = fixture / "lossless.toml"
+    config.write_text("[telemetry]\nqueue_capacity = 1\n", encoding="utf-8")
+    for args in (
+        ["compile", "-O0", "case.msync", "-o", "case.mso"],
+        ["bind-ir", "case.mso", "-o", "case.mexe"],
+    ):
+        require(invoke(binary, fixture, ["--no-config", *args]))
+
+    record_count = 0
+    for route in ("msync", "mexe"):
+        for filename in (
+            "gate",
+            "child-ready",
+            "at-query",
+            "held.txt",
+            "independent.txt",
+        ):
+            (fixture / filename).unlink(missing_ok=True)
+        database = fixture / f"{route}.sqlite"
+        with subprocess.Popen(
+            [
+                str(binary),
+                "--config",
+                str(config),
+                "--telemetry-db",
+                str(database),
+                "--telemetry-level",
+                "diagnostics",
+                "run",
+                "-O0",
+                f"case.{route}",
+            ],
+            cwd=fixture,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+        ) as process:
+            assert process.stdin is not None
+            try:
+                process.stdin.write("copy\n")
+                process.stdin.flush()
+                assert wait_for_file(fixture / "child-ready", 10), process.poll()
+                assert wait_for_file(fixture / "at-query", 10), process.poll()
+                assert wait_for_file(fixture / "independent.txt", 1), process.poll()
+                assert not (fixture / "held.txt").exists()
+                assert process.poll() is None
+                time.sleep(0.10)
+            finally:
+                (fixture / "gate").touch()
+                stdout, stderr = process.communicate(timeout=25)
+        assert process.returncode == 0 and stdout.strip() == "visible", (stdout, stderr)
+        assert (fixture / "held.txt").read_text(encoding="utf-8") == output_token
+        assert (fixture / "independent.txt").read_bytes() == b"selected input"
+        assert not (fixture / "unselected.txt").exists()
+        with sqlite3.connect(database) as connection:
+            assert connection.execute(
+                "SELECT status, exporter_error FROM sessions"
+            ).fetchall() == [("complete", None)]
+            assert connection.execute(
+                """SELECT value FROM attributes
+                   WHERE key='telemetry.queue.mode'"""
+            ).fetchone() == ("lossless_backpressure",)
+            assert not connection.execute(
+                """SELECT id FROM records AS r
+                   WHERE (kind='event' OR parent_span_id IS NOT NULL)
+                     AND NOT EXISTS (
+                       SELECT 1 FROM spans AS p WHERE p.trace_id=r.trace_id
+                       AND p.span_id=CASE r.kind WHEN 'event' THEN r.span_id ELSE r.parent_span_id END)"""
+            ).fetchall()
+            assert (
+                connection.execute(
+                    "SELECT count(*) FROM spans WHERE name='vm.await' AND duration_ns>0"
+                ).fetchone()[0]
+                > 0
+            )
+            assert (
+                connection.execute(
+                    """SELECT count(*) FROM spans WHERE name='vm.frame'"""
+                ).fetchone()
+                == connection.execute(
+                    """SELECT sum(m.value_int) FROM events AS e JOIN metrics AS m ON m.record_id=e.id
+                   WHERE e.name='vm.function' AND m.key='calls'"""
+                ).fetchone()
+            )
+            assert (
+                connection.execute(
+                    """SELECT count(*) FROM events AS edge
+                   JOIN attributes AS related ON related.record_id=edge.id
+                     AND related.key='dependency.span_id'
+                   JOIN spans AS dependency ON dependency.trace_id=edge.trace_id
+                     AND dependency.span_id=related.value
+                   JOIN spans AS owner ON owner.trace_id=edge.trace_id
+                     AND owner.span_id=edge.span_id
+                   JOIN attributes AS scope ON scope.record_id=owner.id
+                     AND scope.key='dependency.scope' AND scope.value='relevant'
+                   JOIN attributes AS destination ON destination.record_id=dependency.id
+                     AND destination.key='transfer.destination' AND destination.value LIKE '%held.txt'
+                   JOIN metrics AS suspended ON suspended.record_id=owner.id
+                     AND suspended.key='await.suspended' AND suspended.value_int=1
+                   WHERE edge.name='runtime.dependency' AND owner.name='scheduler.wait'
+                     AND dependency.name='scheduler.admission'"""
+                ).fetchone()[0]
+                > 0
+            )
+            assert connection.execute(
+                """SELECT m.value_int FROM spans AS s JOIN metrics AS m ON m.record_id=s.id
+                   WHERE s.name='process.stdout' AND m.key='bytes.read' AND s.status='ok'"""
+            ).fetchone() == (len(output_token),)
+            assert connection.execute(
+                """SELECT a.value FROM spans AS s JOIN attributes AS a ON a.record_id=s.id
+                   WHERE s.name='process.exit_wait' AND a.key='wait.pending_on_entry'"""
+            ).fetchone() == ("true",)
+            assert connection.execute(
+                """SELECT m.value_int FROM spans AS s JOIN metrics AS m ON m.record_id=s.id
+                   WHERE s.name='file.copy' AND m.key=? AND s.status='ok'""",
+                ("source.size_bytes" if os.name == "nt" else "bytes.written",),
+            ).fetchone() == (len(b"selected input"),)
+            assert connection.execute(
+                """SELECT a.value FROM spans AS s JOIN attributes AS a ON a.record_id=s.id
+                   WHERE s.name='vm.native' AND a.key='native.name' AND a.value='ranges.front'
+                     AND s.status='ok' AND s.duration_ns>=0"""
+            ).fetchone() == ("ranges.front",)
+            assert (
+                connection.execute(
+                    """SELECT count(*) FROM spans AS s JOIN attributes AS a ON a.record_id=s.id
+                   WHERE s.name GLOB 'transfer.*' AND a.value LIKE '%independent.txt'"""
+                ).fetchone()[0]
+                > 0
+            )
+            assert not connection.execute(
+                """SELECT value FROM attributes
+                   WHERE value LIKE '%unselected.txt%' OR value LIKE '%never-src.txt%'
+                      OR value LIKE '%' || ? || '%'""",
+                (output_token,),
+            ).fetchall()
+            record_count += connection.execute(
+                "SELECT count(*) FROM records"
+            ).fetchone()[0]
+    return Result(
+        "sqlite-lossless-timeline-selected-effects-and-real-dependency", record_count
+    )
+
+
+def diagnostics_exporter_failure(binary: Path, fixture: Path) -> Result:
+    config = fixture / "tiny.toml"
+    config.write_text(
+        "[telemetry]\nqueue_capacity = 1\nmax_records_per_session = 1\n",
+        encoding="utf-8",
+    )
+    source = fixture / "copy.msync"
+    source.write_text('"still copied" -> ./copy.txt;\n', encoding="utf-8")
+    database = fixture / "tiny.sqlite"
+    run = invoke(
+        binary,
+        fixture,
+        [
+            "--config",
+            str(config),
+            "--telemetry-db",
+            str(database),
+            "--telemetry-level",
+            "diagnostics",
+            source.name,
+        ],
+    )
+    require(run)
+    assert (fixture / "copy.txt").read_bytes() == b"still copied"
+    assert "telemetry warning" in run.stderr and "record limit" in run.stderr, run
+    with sqlite3.connect(database) as connection:
+        status, error = connection.execute(
+            "SELECT status,exporter_error FROM sessions"
+        ).fetchone()
+        assert status == "error" and "record limit" in error, (status, error)
+    return Result("sqlite-lossless-exporter-failure-releases-producers")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
@@ -467,6 +687,8 @@ def main() -> None:
             "profile",
             "repl",
             "scheduler",
+            "diagnostics",
+            "diagnostics-error",
         ],
     )
     options: argparse.Namespace = parser.parse_args()
@@ -484,6 +706,8 @@ def main() -> None:
         "profile": profile,
         "repl": repl_profile,
         "scheduler": scheduler_profile,
+        "diagnostics": diagnostics,
+        "diagnostics-error": diagnostics_exporter_failure,
     }
     results: list[dict[str, str | int]] = []
     for name, case in cases.items():

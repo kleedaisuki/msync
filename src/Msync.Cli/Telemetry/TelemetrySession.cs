@@ -38,6 +38,7 @@ internal sealed class TelemetrySession : IDisposable
     private int disposed;
 
     public TelemetryLevel Level { get; }
+    public RuntimeTimeline? Timeline { get; }
 
     private TelemetrySession(string command, string? source, string destination, bool sqlite, TelemetryPolicy policy,
         TelemetryLevel level, TextWriter warnings)
@@ -51,6 +52,11 @@ internal sealed class TelemetrySession : IDisposable
             SingleReader = true,
             AllowSynchronousContinuations = false
         });
+        if (level == TelemetryLevel.Diagnostics)
+        {
+            Timeline = new(ObserveTimeline, RootId, NextSpan);
+            attributes["telemetry.queue.mode"] = "lossless_backpressure";
+        }
         sink = sqlite ? new SqliteTelemetrySink(destination, traceId, startedUnix, policy) : new JsonTelemetrySink(destination);
         worker = Task.Run(WriteAsync);
     }
@@ -102,6 +108,12 @@ internal sealed class TelemetrySession : IDisposable
     public TelemetrySpan? Begin(string name, TelemetryLevel minimum = TelemetryLevel.Summary, string parent = RootId) =>
         Level >= minimum ? new(this, name, NextSpan(), parent) : null;
 
+    internal void RecordMeasurement(string name, long elapsedNanoseconds, string outcome,
+        Dictionary<string, string>? attributes = null, string parent = RootId) =>
+        Record(new("event", traceId, parent, null, name, null, null, Timestamp(), outcome,
+            outcome == "cancelled" ? "cancelled" : "complete", attributes ?? [],
+            new() { ["duration_ns"] = (ulong)elapsedNanoseconds }, []));
+
     public RuntimeProfile? CreateProfile() =>
         Level >= TelemetryLevel.Profile ? new(instructionSites: Level >= TelemetryLevel.Instructions) : null;
 
@@ -118,6 +130,7 @@ internal sealed class TelemetrySession : IDisposable
 
     internal void Observe(RuntimeObservation observation, string parent)
     {
+        if (Timeline?.CurrentSpanId is { } owner && owner != RootId) parent = owner;
         string status = observation.Outcome switch { "success" => "ok", "failure" => "error", _ => observation.Outcome };
         Dictionary<string, string> attributes = [];
         if (observation.Source is not null) attributes["source.path"] = observation.Source;
@@ -130,6 +143,16 @@ internal sealed class TelemetrySession : IDisposable
         Record(new(span ? "span" : "event", traceId, id, span ? parent : null, observation.Phase,
             span ? now - observation.DurationNanoseconds : null, span ? observation.DurationNanoseconds : null,
             span ? null : now, status, "complete", attributes, [], causes));
+    }
+
+    private void ObserveTimeline(RuntimeTimelineRecord observation)
+    {
+        bool span = observation.DurationNanoseconds.HasValue;
+        Record(new(span ? "span" : "event", traceId, observation.SpanId, observation.ParentSpanId,
+            observation.Name, span ? observation.StartUnixNanoseconds : null, observation.DurationNanoseconds,
+            span ? null : observation.StartUnixNanoseconds, observation.Outcome,
+            observation.Outcome == "cancelled" ? "cancelled" : "complete",
+            observation.Attributes, observation.Metrics, Causes(observation.Error)));
     }
 
     internal void EndSpan(string name, string id, string parent, long startUnix, long elapsed,
@@ -212,7 +235,14 @@ internal sealed class TelemetrySession : IDisposable
 
     private void Enqueue(Batch batch)
     {
-        if (Volatile.Read(ref disposed) == 0 && !records.Writer.TryWrite(batch)) Interlocked.Add(ref dropped, batch.Count);
+        if (Volatile.Read(ref disposed) != 0 || records.Writer.TryWrite(batch)) return;
+        if (Level == TelemetryLevel.Diagnostics)
+        {
+            // Fidelity mode can wait for the sink but still reports an exporter failure independently of the run.
+            try { records.Writer.WriteAsync(batch).AsTask().GetAwaiter().GetResult(); return; }
+            catch (ChannelClosedException) { }
+        }
+        Interlocked.Add(ref dropped, batch.Count);
     }
 
     private async Task WriteAsync()
@@ -242,7 +272,11 @@ internal sealed class TelemetrySession : IDisposable
             }
             if (terminal is not null) sink.Write([terminal]);
         }
-        catch (Exception exception) when (IsObserverError(exception)) { failure = exception.Message; }
+        catch (Exception exception) when (IsObserverError(exception))
+        {
+            failure = exception.Message;
+            records.Writer.TryComplete(exception);
+        }
         finally
         {
             long lost = Interlocked.Read(ref dropped);

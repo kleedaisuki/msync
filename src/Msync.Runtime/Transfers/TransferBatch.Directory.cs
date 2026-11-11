@@ -44,7 +44,7 @@ public static partial class TransferEngine
             foreach (var connection in connections)
             {
                 if (CurrentSession(connection!) is not null) continue;
-                var session = OpenSession(connection!, token);
+                var session = OpenSession(connection!, token, context.Timeline);
                 owned.Add(session);
                 scopes.Add(UseSession(session));
             }

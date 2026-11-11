@@ -13,12 +13,12 @@ public sealed class RuntimeProfile(bool instructionSites = false)
     private readonly ConditionalWeakTable<Module, ImageIdentity> identities = new();
     private int nextImage;
 
-    internal Frame Enter(Module image, int functionId)
+    internal Frame Enter(Module image, int functionId, RuntimeFrameTrace? trace)
     {
         ImageCounts counts = Image(image);
         FunctionCounts function = counts.GetFunction(functionId);
         Interlocked.Increment(ref function.Calls);
-        return new(this, function);
+        return new(this, function, trace);
     }
 
     internal void Native(Module image, string name, bool fast = false)
@@ -31,7 +31,7 @@ public sealed class RuntimeProfile(bool instructionSites = false)
     private ImageCounts Image(Module image) => images.GetOrAdd(image, static (module, profile) =>
         new(module, profile.ImageId(module), profile.InstructionSites), this);
 
-    private int ImageId(Module image) =>
+    internal int ImageId(Module image) =>
         identities.GetValue(image, _ => new(Interlocked.Increment(ref nextImage))).Id;
 
     private bool InstructionSites { get; } = instructionSites;
@@ -190,7 +190,10 @@ public sealed class RuntimeProfile(bool instructionSites = false)
         void Visit(int pc, OpCode op);
         void Call(int pc, Module image, int target);
         void Box();
-        void FastNative(Module image, string name);
+        double Power(double left, double right, Module image, Instruction instruction);
+        ValueTask<T> Observe<T>(ValueTask<T> pending, int pc, Instruction instruction, string reason);
+        ValueTask Observe(ValueTask pending, int pc, Instruction instruction, string reason);
+        Task<T> Observe<T>(Task<T> pending, int pc, Instruction instruction, string reason);
     }
 
     internal readonly struct DisabledFrame : IFrame
@@ -202,20 +205,43 @@ public sealed class RuntimeProfile(bool instructionSites = false)
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Box() { }
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void FastNative(Module image, string name) { }
+        public double Power(double left, double right, Module image, Instruction instruction) => NativeRegistry.Power(left, right);
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public ValueTask<T> Observe<T>(ValueTask<T> pending, int pc, Instruction instruction, string reason) => pending;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public ValueTask Observe(ValueTask pending, int pc, Instruction instruction, string reason) => pending;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public Task<T> Observe<T>(Task<T> pending, int pc, Instruction instruction, string reason) => pending;
     }
 
-    internal struct Frame(RuntimeProfile owner, FunctionCounts counters) : IFrame
+    internal struct Frame(RuntimeProfile? owner, FunctionCounts? counters, RuntimeFrameTrace? trace) : IFrame
     {
         private int previousBranch = -1;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public readonly void Box() => Interlocked.Increment(ref counters.Boxes);
+        public readonly void Box()
+        {
+            if (counters is not null) Interlocked.Increment(ref counters.Boxes);
+        }
 
-        public readonly void FastNative(Module image, string name) => owner.Native(image, name, fast: true);
+        public readonly double Power(double left, double right, Module image, Instruction instruction)
+        {
+            owner?.Native(image, "math.pow", fast: true);
+            return trace is null ? NativeRegistry.Power(left, right) : trace.Power(left, right, instruction.Span);
+        }
+
+        public readonly ValueTask<T> Observe<T>(ValueTask<T> pending, int pc, Instruction instruction, string reason) =>
+            trace is null ? pending : trace.Observe(pending, reason, pc, instruction);
+
+        public readonly ValueTask Observe(ValueTask pending, int pc, Instruction instruction, string reason) =>
+            trace is null ? pending : trace.Observe(pending, reason, pc, instruction);
+
+        public readonly Task<T> Observe<T>(Task<T> pending, int pc, Instruction instruction, string reason) =>
+            trace is null ? pending : trace.Observe(pending, reason, pc, instruction);
 
         public void Visit(int pc, OpCode op)
         {
+            if (counters is null) return;
             Interlocked.Increment(ref counters.Opcodes[(byte)op]);
             if (counters.Sites is not { } sites) return;
             Interlocked.Increment(ref sites[pc].Hits);
@@ -230,8 +256,8 @@ public sealed class RuntimeProfile(bool instructionSites = false)
 
         public readonly void Call(int pc, Module image, int target)
         {
-            if (counters.Targets is not { } targets) return;
-            var key = new CallTarget(pc, owner.Image(image).Id, target, image.Functions[target].Name);
+            if (counters?.Targets is not { } targets) return;
+            var key = new CallTarget(pc, owner!.Image(image).Id, target, image.Functions[target].Name);
             Interlocked.Increment(ref targets.GetOrAdd(key, static _ => new()).Hits);
         }
     }

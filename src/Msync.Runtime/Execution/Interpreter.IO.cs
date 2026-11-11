@@ -37,14 +37,25 @@ public sealed partial class Interpreter
     private async Task<bool> TransferAsync(Value source, Value destination, SourceSpan? span, bool local, RuntimeContext context, CancellationToken cancellationToken)
     {
         var started = context.Observe is null ? 0 : Stopwatch.GetTimestamp();
+        using var activity = context.Timeline?.Begin("transfer.residual");
+        if (activity is not null)
+        {
+            TransferTimeline.Source(activity, source);
+            if (destination is PathValue path) TransferTimeline.Path(activity, "destination", path);
+            else if (destination is StringValue text) activity.SetAttribute("destination.path", text.Data);
+            activity.SetSource(span);
+            activity.SetAttribute("transfer.dry_run", context.DryRun ? "true" : "false");
+        }
         try
         {
             var result = local ? await TransferEngine.CopyLocalAsync(source, destination, context, cancellationToken) : await TransferEngine.CopyAsync(source, destination, context, cancellationToken);
+            activity?.Complete(result);
             context.Observe?.Invoke(new("transfer", result ? "success" : "failure", SourceLabel(source), destination.ToString(), DurationNanoseconds: (long)(Stopwatch.GetElapsedTime(started).TotalMilliseconds * 1_000_000)));
             return result;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
         {
+            activity?.Fail(error);
             Interlocked.Increment(ref failedTransfers);
             context.Observe?.Invoke(new("transfer", "failure", SourceLabel(source), destination.ToString(), error.ToString(), (long)(Stopwatch.GetElapsedTime(started).TotalMilliseconds * 1_000_000)));
             if (context.ReportError is { } report)
@@ -58,6 +69,7 @@ public sealed partial class Interpreter
             }
             return false;
         }
+        catch (Exception error) { activity?.Fail(error); throw; }
     }
     private static string SourceLabel(Value value) => value is StringValue text ? $"literal ({Encoding.UTF8.GetByteCount(text.Data)} UTF-8 bytes)" : value.ToString()!;
 }

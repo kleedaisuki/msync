@@ -1,3 +1,4 @@
+using System.Globalization;
 using Msync.Core;
 
 namespace Msync.Runtime;
@@ -23,7 +24,7 @@ public sealed partial class Interpreter
         CancellationToken cancellationToken = default, ContextualResources? transferredResources = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        planResources = transferredResources ?? previous?.planResources ?? new();
+        planResources = transferredResources ?? previous?.planResources ?? new(default, options?.Timeline);
         resources = previous?.resources ?? new();
         pending = previous?.pending ?? [];
         sessionProcesses = previous?.sessionProcesses ?? new(ReferenceEqualityComparer.Instance);
@@ -46,25 +47,49 @@ public sealed partial class Interpreter
         => new Interpreter(module, options, cancellationToken).ExecuteAsync(cancellationToken);
     public async ValueTask<Value> ExecuteAsync(CancellationToken cancellationToken = default)
     {
-        try { return await ResolveResultAsync(await RunFunctionAsync(module.EntryPoint, [], [], cancellationToken)); }
+        RuntimeFrameTrace? trace = context.Timeline is { } timeline ? new(timeline) : null;
+        try
+        {
+            var result = ResolveResultAsync(await RunFunctionAsync(module.EntryPoint, [], [], cancellationToken));
+            return await (trace?.Observe(result, "final_result") ?? result);
+        }
         finally
         {
             try
             {
-                await DrainAsync();
-                foreach (var iterator in iterators) await iterator.DisposeAsync();
+                var drain = DrainAsync();
+                await (trace?.Observe(drain, "execution_drain") ?? drain);
+                foreach (var iterator in iterators)
+                {
+                    var dispose = iterator.DisposeAsync();
+                    await (trace?.Observe(dispose, "iterator_cleanup") ?? dispose);
+                }
             }
-            finally { await DisposePlanResourcesAsync(); }
+            finally
+            {
+                var dispose = DisposePlanResourcesAsync();
+                await (trace?.Observe(dispose, "plan_resources") ?? dispose);
+            }
         }
     }
     internal async ValueTask<Value> ExecuteEntryAsync(Value[] locals, int startInstruction, CancellationToken cancellationToken)
     {
-        try { return await ResolveAsync(await RunCodeAsync(module.EntryPoint, locals, startInstruction, cancellationToken)); }
+        RuntimeFrameTrace? trace = context.Timeline is { } timeline ? new(timeline) : null;
+        try
+        {
+            var result = ResolveAsync(await RunCodeAsync(module.EntryPoint, locals, startInstruction, cancellationToken));
+            return await (trace?.Observe(result, "submission_result") ?? result);
+        }
         finally
         {
-            await JoinTransfersAsync(includeProcessFlows: false);
+            var joined = JoinTransfersAsync(includeProcessFlows: false);
+            await (trace?.Observe(joined, "submission_join") ?? joined);
             RetireSessionWork();
-            foreach (var iterator in iterators) await iterator.DisposeAsync();
+            foreach (var iterator in iterators)
+            {
+                var dispose = iterator.DisposeAsync();
+                await (trace?.Observe(dispose, "iterator_cleanup") ?? dispose);
+            }
             iterators.Clear();
         }
     }
@@ -102,9 +127,52 @@ public sealed partial class Interpreter
             locals[i] = Value.Null;
         return locals;
     }
-    private async ValueTask<Value> RunCodeAsync(int functionIndex, Value[] locals, int startInstruction,
+    private ValueTask<Value> RunCodeAsync(int functionIndex, Value[] locals, int startInstruction,
         CancellationToken cancellationToken, IReadOnlyList<Value>? captures = null, IReadOnlyList<Value>? arguments = null,
-        ArraySegment<Value?> callerArguments = default)
+        ArraySegment<Value?> callerArguments = default) =>
+        context.Timeline is { } timeline
+            ? RunObservedCodeAsync(timeline, functionIndex, locals, startInstruction, cancellationToken, captures, arguments, callerArguments)
+            : RunCodeCoreAsync(functionIndex, locals, startInstruction, cancellationToken, captures, arguments, callerArguments);
+
+    private async ValueTask<Value> RunObservedCodeAsync(RuntimeTimeline timeline, int functionIndex, Value[] locals,
+        int startInstruction, CancellationToken cancellationToken, IReadOnlyList<Value>? captures,
+        IReadOnlyList<Value>? arguments, ArraySegment<Value?> callerArguments)
+    {
+        using var span = BeginFrame(timeline, functionIndex, startInstruction, locals.Length);
+        RuntimeFrameTrace trace = new(timeline);
+        try
+        {
+            Value value = await RunCodeCoreAsync(functionIndex, locals, startInstruction, cancellationToken, captures, arguments, callerArguments, trace);
+            span.SetAttribute("frame.exit", "return");
+            return value;
+        }
+        catch (Exception error) { span.Fail(error); throw; }
+        finally { span.SetMetric("suspensions", trace.Suspensions); }
+    }
+
+    private RuntimeTimelineScope BeginFrame(RuntimeTimeline timeline, int functionIndex, int startInstruction, int locals)
+    {
+        Module image = module;
+        var function = image.Functions[functionIndex];
+        var span = timeline.Begin("vm.frame");
+        span.SetAttribute("function.id", functionIndex.ToString(CultureInfo.InvariantCulture));
+        span.SetAttribute("function.name", function.Name);
+        if (profile is { } recorder) span.SetAttribute("image.id", recorder.ImageId(image).ToString(CultureInfo.InvariantCulture));
+        span.SetAttribute("artifact.stage", image.Stage.ToString());
+        span.SetAttribute("optimization.level", image.OptimizationLevel.ToString(CultureInfo.InvariantCulture));
+        span.SetAttribute("duration.kind", "inclusive");
+        span.SetMetric("entry.pc", startInstruction);
+        span.SetMetric("frame.locals", locals);
+        span.SetMetric("frame.parameters", function.ParameterCount);
+        span.SetMetric("frame.captures", function.CaptureCount);
+        if (function.Instructions is Instruction[] code && (uint)startInstruction < (uint)code.Length)
+            span.SetSource(code[startInstruction].Span);
+        return span;
+    }
+
+    private async ValueTask<Value> RunCodeCoreAsync(int functionIndex, Value[] locals, int startInstruction,
+        CancellationToken cancellationToken, IReadOnlyList<Value>? captures, IReadOnlyList<Value>? arguments,
+        ArraySegment<Value?> callerArguments, RuntimeFrameTrace? trace = null)
     {
         var active = sessionImage?.ActiveInterpreter;
         var outer = active is not null && !ReferenceEquals(active, this) ? active : null;
@@ -117,7 +185,7 @@ public sealed partial class Interpreter
         Value? result = null;
         try
         {
-            result = await RunOwnedCodeAsync(functionIndex, locals, startInstruction, cancellationToken);
+            result = await RunOwnedCodeAsync(functionIndex, locals, startInstruction, cancellationToken, trace);
             return result;
         }
         finally
@@ -132,7 +200,8 @@ public sealed partial class Interpreter
                     if (callerArguments.Count != 0 && currentOwner.Processes is { Count: > 0 })
                         arguments = MaterializeArgumentRoots(callerArguments);
                     PromoteReturnedProcesses(result, roots, locals, captures, arguments, ref caller, hasCaller);
-                    await JoinOwnerAsync(currentOwner);
+                    var joined = JoinOwnerAsync(currentOwner);
+                    await (trace?.Observe(joined, "ownership_join") ?? joined);
                 }
             }
             finally
