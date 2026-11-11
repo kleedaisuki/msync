@@ -254,3 +254,70 @@ component measurements. Whole-CLI source/object/executable journeys are a
 separate question (`tests/Performance/scheduler.py --stage ...`); native Windows
 behavior is accepted by the delivery owner, not inferred from this Linux run.
 No benchmark threshold is a CI quality gate.
+
+## C# selected native operands and sparse runtime frontiers (0.8.6)
+
+The runtime now consumes the native signature's per-operand Path access
+rather than assigning the operation's strongest effect to every Path.
+`fs.copy_file` and `fs.copy_symlink` read their source and write their
+destination; `fs.copy` does not treat its String payload as a source path.
+The source can share an outstanding read, but not a write; the destination
+still conflicts with both reads and writes. Ordering fences, namespace
+publication and existing physical path projection remain in place.
+
+A real gated child differentiates these cases. Its stdout publication blocks
+another transfer from a common source to the same held destination. An
+independent native copy from that source now publishes before gate release
+in all three source/object/executable routes. Before the change the frozen
+Native CLI failed this discriminator. Reading the held destination or
+writing it remains blocked in all three routes. The gate is a causal
+control, not a timing threshold; every expected byte is checked after
+release. The executed bound fixtures have no contextual plan nodes.
+
+The ResourceIndex retains the same prefix overlap and task-completion
+semantics. A trie node represents zero or one child directly and promotes
+to a dictionary at a real branch. The path scanner uses span keys and
+allocates segment text only on insertion. An access set represents zero or
+one task inline and promotes only for genuinely shared active tasks. Both
+representations demote on removal. Faulted and canceled tasks remain visible;
+retiring an old registration cannot erase a newly allocated same-name node.
+Prepared batches union dependencies directly into their existing target set.
+If historic pending bookkeeping remains but the index has no registrations,
+there is no external frontier to query. Serialized predecessors and the
+ordering fence are independent of this decision.
+
+This is an application of adaptive trie representation, not the byte-level
+layout of [Leis et al.'s ART](https://db.in.tum.de/~leis/papers/ART.pdf).
+The high-fan-out representation uses the .NET 10
+[span alternate dictionary lookup](https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.dictionary-2.getalternatelookup?view=net-10.0);
+it preserves ordinal local/remote matching and Windows ordinal-ignore-case
+matching for local paths.
+
+Linux x86-64 Native AOT, CPU 9, AB/BA, 18 samples per image, exact footprint
+vectors from the accepted contextual I/O graph receipts. This component
+replays one held task per transfer; timing includes dependency queries,
+registration and retirement, not decoding, filesystem I/O or full batch
+submission. All dependency counts match, including 4,262 overlapping task
+instances in the directory trace.
+
+| Exact graph | Baseline → candidate median | Allocated bytes per replay |
+| --- | ---: | ---: |
+| One ordinary copy | 8.29 → 2.27 μs | 7,752 → 1,856 |
+| 1,024 independent paths | 7.86 → 3.76 ms | 3,386,856 → 566,288 |
+| 1,024 selected paths | 8.20 → 2.96 ms | 3,354,072 → 566,280 |
+| Directory, 1,092 nodes | 11.41 → 3.93 ms | 4,257,984 → 769,384 |
+
+The real-transfer controls separately check schedule behavior, aliases, mixed
+observed/discarded failures and cancellation. Raw observations, fixture hashes
+and the component source are in
+`artifacts/benchmarks/library-matrix-v086/scheduler-deep/`.
+
+In the separate Native component that copies real bytes after all admissions,
+the final isolated scheduler build uses 5.75 → 4.01 MB for 1,024 gated
+literal writes and 9.79 → 7.02 MB for 1,024 gated shared-source copies.
+Their median admission times are 36.57 → 29.98 ms and 60.88 → 51.17 ms;
+whole execution is 956.98 → 957.46 ms and 792.42 → 668.80 ms respectively.
+Each arm has nine checked observations across three alternating batches.
+Small and tail timings are mixed; an earlier intermediate-build run also
+had slower literal admissions despite lower allocation. These receipts do
+not establish a stable P95 improvement or a storage-throughput claim.
