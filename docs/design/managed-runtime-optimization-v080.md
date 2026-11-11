@@ -259,3 +259,42 @@ semantics and stable Cell captures remain the contract.
 
 Raw comparison files, hashes, and focused Process-ownership results:
 `artifacts/benchmarks/library-matrix-v086/vm-call-frames/`.
+
+## Production boundaries for the execution-cost ablations
+
+The [release-head ablations](performance-assumption-audit-v086.md#current-vm-cost-fewer-interpreter-actions-before-a-different-dispatcher)
+support independent changes, not a new wire format or a second interpreter:
+
+- Fetch from a fixed `Instruction[]` using its length and direct indexing.
+  A public `FunctionCode` may contain another `IReadOnlyList<Instruction>`;
+  retain its generic access contract and do not copy it in each callee.
+  Keep the captured module/function pair across awaits and session refreshes,
+  including the Transfer/Pop lookahead, cancellation, and instruction spans.
+- Extract the deferred native completion and the capturing range adapters to
+  helpers whose arguments are supplied on the selected branch. Keep the
+  existing closure read timing: the public NativeRegistry admits
+  `IReadOnlyList<Value>`; an adapter that used to read `args[1]` during
+  producer invocation should not instead snapshot it at range construction.
+  Existing lazy, deferred, retained-root, callback error, and cancellation
+  tests cover different sides of this boundary. Microsoft documents the
+  [display-class and delegate allocations](https://devblogs.microsoft.com/dotnet/understanding-the-cost-of-csharp-delegates/);
+  for this change the matched Native AOT allocation data, not the upstream
+  explanation alone, establishes the benefit.
+- The same allocation mechanism also exists in `MapValue` and
+  `CombineValues`: in the pre-change matrix image, `RhpNewFast` at
+  `0xa65a3` and `0xa6696` respectively precedes the deferred type test.
+  Immediate Bool Not and path expressions can reach these helpers, whereas
+  the raw numeric arithmetic path does not. This is machine-code evidence of
+  extra work, not a measured workload share; measure those scalar sites
+  independently before drawing conclusions about the numeric loop.
+
+For namespace publication, the old scan matches *exact local entries* after
+resolving each ancestor's parent, not arbitrary subtree conflicts. Keep the
+reverse task-to-roots relation used by scalar transfer/cohort admission and
+index the same forward entries. It must share the live work state's REPL
+lifetime and retire only the matching task, including when several producers
+or several plan roots share a spelling. Namespace filtering excludes every
+completed task; ordinary resource dependencies deliberately retain faulted
+or canceled tasks until observed. Do not merge those completion policies.
+The [frontier probe and alias controls](performance-scheduler.md#residual-native-observations-scan-unrelated-namespace-producers-2026-11-11)
+cover the scale and ordering obligations separately.
