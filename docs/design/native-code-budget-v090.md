@@ -35,3 +35,9 @@ portable/bound artifacts, REPL/editor behavior, builtin representations, alias
 identity, source diagnostics, deferred work and real I/O/resource lifetimes.
 Validate coherent batches with real journeys and destructive properties; do not
 run a new full matrix for every line edit or substitute a test count for behavior.
+
+Measure a checkpoint with `python3 packaging/code_budget.py --report-only
+--output .temp/code-budget-CHECKPOINT.json`. Without `--report-only`, the command
+fails until both numeric targets are met; it never overwrites a prior receipt.
+The measurement uses development tool `cloc`, not a product dependency. A numeric
+pass still requires the semantic and no-hiding-code audit above.
