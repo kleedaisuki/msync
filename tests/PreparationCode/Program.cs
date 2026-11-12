@@ -60,10 +60,21 @@ var iterator = PreparationCode.Rewrite(branches, new Dictionary<int, Instruction
 Check(iterator.Instructions[3] is { Op: OpCode.IteratorNext, A: 7, B: 6, Text: "iterator" },
     "IteratorNext must remap B while retaining its local-slot A and text");
 
-Instruction ordinary = new(OpCode.GetMember, A: 2, B: 19, Text: ".codex\0成员", Span: new("source-猫.msync", 17, 9));
+Instruction ordinary = new(OpCode.StoreStaticField, A: 2, B: 19, Span: new("source-猫.msync", 17, 9));
 Compare([ordinary], new Dictionary<int, Instruction[]>());
 Check(ReferenceEquals(PreparationCode.Rewrite([ordinary], new Dictionary<int, Instruction[]>()).Instructions[0], ordinary),
     "an unchanged non-control instruction was copied or altered");
+
+Instruction[] staticBranch =
+[
+    new(OpCode.JumpIfStaticReady, A: 3, B: 7, Span: new("static.msync", 1, 5)),
+    new(OpCode.Nop), new(OpCode.PublishStatic, A: 7), new(OpCode.LoadStaticField, A: 7, B: 19)
+];
+Compare(staticBranch, new Dictionary<int, Instruction[]>());
+var staticRewrite = PreparationCode.Rewrite(staticBranch, new Dictionary<int, Instruction[]>());
+Check(staticRewrite.Instructions[0] is { Op: OpCode.JumpIfStaticReady, A: 2, B: 7 }
+    && staticRewrite.Instructions[2] is { Op: OpCode.LoadStaticField, A: 7, B: 19 },
+    "Static readiness remaps its PC only, preserving the declaration slot and the field ordinal");
 
 Random random = new(0x5A17);
 for (int sample = 0; sample < 1500; sample++)
@@ -86,19 +97,21 @@ static Instruction Generate(Random random, int length, int index, int offset = 0
 {
     SourceSpan? span = random.Next(4) == 0 ? null : new("generated-λ.msync", index * 16 + offset, random.Next(1, 5));
     int target = random.Next(length + 1);
-    return random.Next(12) switch
+    return random.Next(14) switch
     {
         0 => new(OpCode.Nop, Span: span),
         1 => new(OpCode.Jump, A: target, Span: span),
         2 => new(OpCode.JumpIfTrue, A: target, Span: span),
         3 => new(OpCode.JumpIfFalse, A: target, Span: span),
         4 => new(OpCode.IteratorNext, A: random.Next(8), B: target, Text: "iterator", Span: span),
-        5 => new(OpCode.GetMember, A: random.Next(8), B: index, Text: ".codex", Span: span),
-        6 => new(OpCode.MakeScope, A: 2, B: index, Text: "first\0成员", Span: span),
+        5 => new(OpCode.LoadField, A: random.Next(8), Span: span),
+        6 => new(OpCode.NewScope, A: 2, B: index, Span: span),
         7 => new(OpCode.Constant, A: random.Next(8), Span: span),
         8 => new(OpCode.LoadLocal, A: random.Next(8), Span: span),
         9 => new(OpCode.True, Span: span),
         10 => new(OpCode.Return, Span: span),
+        11 => new(OpCode.JumpIfStaticReady, A: target, B: random.Next(8), Span: span),
+        12 => new(OpCode.LoadStaticField, A: random.Next(8), B: index, Span: span),
         _ => new(OpCode.Null, Span: span)
     };
 }
@@ -125,7 +138,7 @@ static (int[] Targets, List<Instruction> Instructions, List<int> Sources) Origin
         Instruction instruction = output[index];
         output[index] = instruction.Op switch
         {
-            OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue => instruction with { A = positions[instruction.A] },
+            OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.JumpIfStaticReady => instruction with { A = positions[instruction.A] },
             OpCode.IteratorNext => instruction with { B = positions[instruction.B] },
             _ => instruction
         };

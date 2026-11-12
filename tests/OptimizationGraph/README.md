@@ -19,8 +19,10 @@ The filesystem test binds and serializes while a path is absent, then creates
 and deletes it between executions. Executable contextualization may freeze
 path resolution, not the filesystem observation.
 
-Invalid-member and invalid-regex modules intentionally discard the resulting
-value: the selected operation must still produce its diagnostic. Numeric
+An opaque-field producer in the same-successor cases and an invalid regex in
+the semantic cases must still produce their selected runtime diagnostics.
+Duplicate layout fields are rejected at intake rather than executed as
+malformed constructors; that boundary is covered by ScopeLayout. Numeric
 zero division follows the runtime's current IEEE-754 result, not a fabricated
 integer division exception.
 
@@ -28,7 +30,7 @@ Value-numbering checks retain runtime-unknown inputs from actual filesystem and
 environment reads. Repeated Bool negation, numeric negation and String concat
 must leave one residual operation; intervening object/captured-cell writes and
 filesystem publication must invalidate stale facts. Raw-cell alias bytecode,
-escaped field storage, legacy empty-stack returns and the distinct signs of
+escaped field storage, empty-stack returns and the distinct signs of
 IEEE-754 zero are compared with explicit level-0 execution and independent
 expected results.
 

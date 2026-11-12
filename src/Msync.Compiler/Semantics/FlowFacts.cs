@@ -144,12 +144,18 @@ internal sealed class FlowFacts
         {
             TypeKind kind = value.Type.Kind & domain.StorageType.Kind;
             if (kind != TypeKind.Never)
-                value = types?.Constrain(value, domain) ?? value with
-                { Type = new(kind, domain.StorageType.Element ?? value.Type.Element), SemanticType = domain.StorageSemanticType };
+                value = Constrain(value, domain);
         }
         var next = value == Default(location) ? values.Remove(location) : values.SetItem(location, value);
         return ReferenceEquals(next, values) ? this : new(domains, next, true, types);
     }
+
+    public FlowFact Constrain(FlowFact value, FlowLocationDomain domain) =>
+        types?.Constrain(value, domain) ?? value with
+        {
+            Type = new(value.Type.Kind & domain.StorageType.Kind, domain.StorageType.Element ?? value.Type.Element),
+            SemanticType = domain.StorageSemanticType
+        };
 
     public FlowFacts Refine(HirLocationId location, TypeRef tested, bool positive)
     {

@@ -1,71 +1,41 @@
 using Msync.Core;
+using Msync.Optimization;
+using Msync.Optimization.Execution;
 
 namespace Msync.Runtime;
 
 public sealed partial class Interpreter
 {
-    private Dictionary<string, ScopeLayout>? scopeLayouts;
     private ScopeAllocator? scopeAllocator;
+    private BoundScopePlaces? scopePlaces;
+    private BoundScopePlaces CurrentPlaces => scopePlaces ??= BoundScopePlaces.For(module);
 
-    private ScopeValue MakeScope<TFrame>(Instruction instruction, ref OperandStack<TFrame> stack)
-        where TFrame : struct, RuntimeProfile.IFrame
-    {
-        var spelling = instruction.Text ?? "";
-        var layouts = scopeLayouts ??= new(StringComparer.Ordinal);
-        if (!layouts.TryGetValue(spelling, out var layout))
-            layouts.Add(spelling, layout = ScopeLayout.Parse(spelling));
-        return stack.PopScope(scopeAllocator ??= new(), layout, instruction.A, instruction.B);
-    }
-    private static Value ReadLocal(Value[] locals, int slot) =>
-        locals[slot] is CellValue cell ? cell.Data : locals[slot];
+    private BoundScopePlaces Places(Module image, ref BoundScopePlaces? places) =>
+        places ??= ReferenceEquals(image, module) ? CurrentPlaces : BoundScopePlaces.For(image);
 
-    private static void WriteLocal(Value[] locals, int slot, Value value)
+    private void LoadScopeStorage<TFrame>(Module image, int function, int pc, int slot, ref FrameSlots slots,
+        ref OperandStack<TFrame> stack, ref TFrame frame) where TFrame : struct, RuntimeProfile.IFrame
     {
-        if (locals[slot] is CellValue cell) cell.Data = value;
-        else locals[slot] = value;
-    }
-
-    private static Value CaptureLocal(Value[] locals, int slot)
-    {
-        if (locals[slot] is CellValue cell) return cell;
-        return locals[slot] = new CellValue(locals[slot]);
-    }
-
-    private static Value StoreMember(Value receiver, string name, Value value, int hint = 0)
-    {
-        if (receiver is not ScopeValue scope) throw new MsyncException($"Cannot assign a field on {receiver.Type}");
-        scope.SetField(ScopeOffset(scope, name, hint), value);
-        return Value.Null;
-    }
-
-    private static void StoreNumberMember(Value receiver, string name, double value, int hint)
-    {
-        if (receiver is not ScopeValue scope) throw new MsyncException($"Cannot assign a field on {receiver.Type}");
-        scope.SetNumber(ScopeOffset(scope, name, hint), value);
-    }
-
-    private void LoadMember<TFrame>(ref OperandStack<TFrame> stack, string name, int hint)
-        where TFrame : struct, RuntimeProfile.IFrame
-    {
-        Value receiver = stack.Pop();
-        if (receiver is not ScopeValue scope)
+        if (slots.Peek<FrameSlots.Raw>(slot) is { } value)
         {
-            stack.Add(Member(receiver, name, hint));
+            stack.Add(value);
             return;
         }
-        var value = scope.GetOperandField(ScopeOffset(scope, name, hint), out double number);
-        if (value is null) stack.AddNumber(number);
-        else stack.Add(value);
+        var targets = ReferenceEquals(image, module) ? executionTargets : ExecutionTargets.For(image);
+        if (targets.UsesScopeStorage(image, function, pc))
+        {
+            stack.AddNumber(slots.RawNumber(slot));
+            frame.RawScopeStorageLoad();
+        }
+        else stack.Add(slots.Materialize(slot, ref frame));
     }
 
-    private static Value ScopeMember(ScopeValue scope, string name, int hint)
-        => scope.GetField(ScopeOffset(scope, name, hint));
-
-    private static int ScopeOffset(ScopeValue scope, string name, int hint)
+    private static void LoadFieldPlace<TFrame>(ref OperandStack<TFrame> stack, ScopeValue scope, int offset)
+        where TFrame : struct, RuntimeProfile.IFrame
     {
-        if (hint > 0 && scope.IsField(hint - 1, name)) return hint - 1;
-        if (scope.TryGetFieldOffset(name, out int offset)) return offset;
-        throw new MsyncException($"Scope has no member '{name}'");
+        var value = scope.GetOperandField(offset, out double number);
+        if (value is null) stack.AddNumber(number);
+        else stack.Add(value);
     }
 
     private Value CaptureConstant(Value value) => value switch
@@ -73,7 +43,7 @@ public sealed partial class Interpreter
         ScopeValue scope => scope.MapFields(CaptureConstant),
         RangeValue { SnapshotValues: { } values } range =>
             new RangeValue(values.Select(CaptureConstant).ToArray(), range.ItemType),
-        FunctionValue { Captures: not null } function => function with { Captures = function.Captures.Select(CaptureConstant).ToArray() },
+        FunctionValue { Captures: not null } function => function with { Captures = ClosureCaptures.Own(function.Captures.Select(CaptureConstant).ToArray()) },
         _ => Capture(value)
     };
 }

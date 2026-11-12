@@ -7,11 +7,8 @@ namespace Msync.Compiler.Semantics;
 internal sealed partial class SemanticAnalyzer
 {
     private string InstanceKey(HirTemplateId id, IReadOnlyList<SemanticValue> arguments,
-        IReadOnlyList<SemanticValue> captures, SemanticContext caller) =>
-        InstanceKey(id, arguments, captures, caller, readOnlyInput: true);
-
-    private string InstanceKey(HirTemplateId id, IReadOnlyList<SemanticValue> arguments,
-        IReadOnlyList<SemanticValue> captures, SemanticContext caller, bool readOnlyInput, bool recursive = false)
+        IReadOnlyList<SemanticValue> captures, SemanticContext caller, ref SemanticInputSchema? schema,
+        bool recursive = false)
     {
         StringBuilder key = new();
         key.Append(id.Value).Append(caller.DeferredReads ? 'd' : 'i').Append(':');
@@ -23,10 +20,12 @@ internal sealed partial class SemanticAnalyzer
             return key.ToString();
         }
         int prefix = key.Length;
-        if (readOnlyInput && AppendInputKey(key, id, arguments, captures, caller, new(readOnlyInput: true, recursive: recursive)))
+        if (AppendInputKey(key, id, arguments, captures, caller, new(readOnlyInput: true, recursive: recursive)))
             return key.ToString();
         key.Length = prefix;
-        SemanticInputSchema schema = CodeSchema(arguments, captures, caller);
+        // The recursive key can omit write-only inputs, but its formal input
+        // graph is the same snapshot until the invocation starts.
+        schema ??= CodeSchema(arguments, captures, caller);
         AppendInputKey(key, id, schema.Arguments, schema.Captures, schema.Context, new(recursive: recursive));
         return key.ToString();
 
@@ -37,7 +36,9 @@ internal sealed partial class SemanticAnalyzer
     private bool AppendInputKey(StringBuilder key, HirTemplateId template, IReadOnlyList<SemanticValue> arguments,
         IReadOnlyList<SemanticValue> captures, SemanticContext context, KeyProvenance provenance)
     {
-        HashSet<SemanticValue> active = new(ReferenceEqualityComparer.Instance);
+        // The direct projection cuts cycles at concrete scope, indexed-resource,
+        // and cell references. The fallback also admits structural Scope views.
+        HashSet<SemanticValue>? active = provenance.ReadOnlyInput ? null : new(ReferenceEqualityComparer.Instance);
         for (int index = 0; index < arguments.Count && provenance.Supported; index++)
         {
             AppendValueKey(key, arguments[index], context, active, provenance);
@@ -47,10 +48,14 @@ internal sealed partial class SemanticAnalyzer
         for (int index = 0; index < captures.Count && provenance.Supported; index++)
         {
             if (!provenance.Recursive || ReadsCapture(template, index)) AppendValueKey(key, captures[index], context, active, provenance);
-            else key.Append(captures[index].Type.Value);
+            else
+            {
+                provenance.Skip(captures[index]);
+                key.Append(captures[index].Type.Value);
+            }
             key.Append(';');
         }
-        return provenance.Supported;
+        return provenance.Supported && provenance.HasCompleteDetachedCells;
     }
 
     private readonly Dictionary<HirTemplateId, HashSet<HirLocationId>> captureReads = [];
@@ -97,24 +102,29 @@ internal sealed partial class SemanticAnalyzer
     }
 
     private void AppendValueKey(StringBuilder key, SemanticValue value, SemanticContext? context,
-        HashSet<SemanticValue> active, KeyProvenance provenance)
+        HashSet<SemanticValue>? active, KeyProvenance provenance)
     {
         if (!provenance.Supported) return;
-        if (provenance.ReadOnlyInput && (value.IndexedRegion is not null
-            || !value.IndexedAliases.IsDefaultOrEmpty || !value.DeferredEffects.IsDefaultOrEmpty))
+        SemanticIndexed? indexed = value.IndexedRegion is { } resource ? context?.Indexed.GetValueOrDefault(resource) : null;
+        if (provenance.ReadOnlyInput && ((value.IndexedRegion is not null && indexed is null)
+            || !value.IndexedAliases.IsDefaultOrEmpty || !value.DeferredEffects.IsDefaultOrEmpty
+            || !value.OpenSessionCalls.IsDefaultOrEmpty))
         {
             provenance.Supported = false;
             return;
         }
         key.Append(value.Type.Value).Append(value.EagerRange ? '!' : '.');
         if (value.DenotedType is { } denoted) key.Append('T').Append(denoted.Value);
-        if (!active.Add(value))
+        if (active?.Add(value) == false)
         {
-            if (provenance.ReadOnlyInput) provenance.Supported = false;
-            else key.Append('^');
+            key.Append('^');
             return;
         }
-        AppendCallableKey(key, Choices(value), context, active, provenance);
+        if (!value.Callables.IsDefaultOrEmpty)
+        {
+            if (provenance.ReadOnlyInput && value.Callables.Length > 1) provenance.MaySkipCells = true;
+            AppendCallableKey(key, Choices(value), context, active, provenance);
+        }
         if (!provenance.Supported) return;
         if (value.FutureCallableDomain is { } future)
         {
@@ -130,7 +140,7 @@ internal sealed partial class SemanticAnalyzer
             AppendScopeKey(key, context?.Objects.GetValueOrDefault(scope.Region, scope) ?? scope, context, active, provenance);
         if (!provenance.Supported) return;
         if (value.Element is { } element) { key.Append('['); AppendValueKey(key, element, context, active, provenance); key.Append(']'); }
-        if (value.IndexedRegion is { } region && context?.Indexed.TryGetValue(region, out var indexed) == true)
+        if (value.IndexedRegion is { } region && indexed is not null)
         {
             key.Append('I').Append(provenance.Region(region)).Append(':').Append(indexed.FixedCarrier?.Value ?? -1);
             if (!indexed.CarrierConstraints.IsDefaultOrEmpty)
@@ -159,11 +169,11 @@ internal sealed partial class SemanticAnalyzer
                     ? provenance.Location(write.Location) : provenance.Region(write.Region));
                 AppendValueKey(key, write.After, context, active, provenance);
             }
-        active.Remove(value);
+        active?.Remove(value);
     }
 
     private void AppendCallableKey(StringBuilder key, IEnumerable<SemanticCallable> choices,
-        SemanticContext? context, HashSet<SemanticValue> active, KeyProvenance provenance)
+        SemanticContext? context, HashSet<SemanticValue>? active, KeyProvenance provenance)
     {
         foreach (var callable in choices)
         {
@@ -172,8 +182,9 @@ internal sealed partial class SemanticAnalyzer
                 for (int index = 0; index < callable.Captures.Length; index++)
                 {
                     var capture = callable.Captures[index];
-                    if (provenance.ReadOnlyInput && (capture.Mode != HirCaptureMode.Location || context is null
-                        || StorageOwner(capture.Source, context) != capture.Source || !context.Values.ContainsKey(capture.Source)))
+                    SemanticValue? live = context?.Values.GetValueOrDefault(capture.Source);
+                    if (provenance.ReadOnlyInput && (capture.Mode != HirCaptureMode.Location
+                        || (live is null && !provenance.RecordUnbound(capture.Source, capture.Value))))
                     {
                         provenance.Supported = false;
                         return;
@@ -181,12 +192,13 @@ internal sealed partial class SemanticAnalyzer
                     key.Append('C').Append(provenance.Location(capture.Source));
                     if (provenance.Recursive && callable.Template is { } template && !ReadsCapture(template, index))
                     {
+                        provenance.Skip(live ?? capture.Value);
                         key.Append(':').Append(capture.Value.Type.Value);
                         continue;
                     }
-                    if (context is not null && context.Values.TryGetValue(capture.Source, out var captured))
+                    if (live is not null || provenance.ReadOnlyInput)
                     {
-                        if (provenance.DefineLocation(capture.Source)) AppendValueKey(key, captured, context, active, provenance);
+                        if (provenance.DefineLocation(capture.Source)) AppendValueKey(key, live ?? capture.Value, context, active, provenance);
                         else key.Append('^');
                     }
                     else AppendValueKey(key, capture.Value, context, active, provenance);
@@ -197,9 +209,9 @@ internal sealed partial class SemanticAnalyzer
     }
 
     private void AppendScopeKey(StringBuilder key, SemanticScope scope, SemanticContext? context,
-        HashSet<SemanticValue> active, KeyProvenance provenance)
+        HashSet<SemanticValue>? active, KeyProvenance provenance)
     {
-        if (provenance.ReadOnlyInput && (scope.Region < 0 || scope.Dynamic || !scope.Aliases.IsDefaultOrEmpty))
+        if (provenance.ReadOnlyInput && (scope.Region < 0 || !scope.Aliases.IsDefaultOrEmpty))
         {
             provenance.Supported = false;
             return;
@@ -240,6 +252,9 @@ internal sealed partial class SemanticAnalyzer
         public bool ReadOnlyInput { get; } = readOnlyInput;
         public bool Recursive { get; } = recursive;
         public bool Supported { get; set; } = true;
+        public bool MaySkipCells { get; set; }
+        public bool HasCompleteDetachedCells => !MaySkipCells || unbound is null;
+        private Dictionary<HirLocationId, SemanticValue>? unbound;
         private Dictionary<int, int>? regions;
         private Dictionary<HirLocationId, int>? locations;
         private HashSet<int>? definedScopes;
@@ -247,6 +262,26 @@ internal sealed partial class SemanticAnalyzer
         private HashSet<HirLocationId>? definedLocations;
         private Dictionary<SemanticScope, int>? structural;
         private HashSet<SemanticScope>? definedStructural;
+
+        // Distinct callable alternatives and write-only captures can omit
+        // nested occurrences which still contribute to formal cell fallback.
+        public void Skip(SemanticValue value)
+        {
+            if (ReadOnlyInput && !IsScalarSchema(value)) MaySkipCells = true;
+        }
+
+        public bool RecordUnbound(HirLocationId location, SemanticValue value)
+        {
+            unbound ??= [];
+            if (unbound.TryAdd(location, value)) return true;
+            var previous = unbound[location];
+            // A formal cell can be visited through several detached closures.
+            // Its fallback is independent of traversal order only if they agree.
+            return ReferenceEquals(previous, value) || (previous.Type == value.Type
+                && previous.DenotedType == value.DenotedType && previous.EagerRange == value.EagerRange
+                && IsScalarSchema(previous) && IsScalarSchema(value)
+                && previous.OpenSessionCalls.IsDefaultOrEmpty && value.OpenSessionCalls.IsDefaultOrEmpty);
+        }
         public bool DefineScope(SemanticScope scope) => scope.Region >= 0
             ? (definedScopes ??= []).Add(scope.Region)
             : (definedStructural ??= new(ReferenceEqualityComparer.Instance)).Add(scope);

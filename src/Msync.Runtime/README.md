@@ -27,9 +27,9 @@ the interpreter implementation.
 the interpreter. `NamespaceProducerIndex` instead matches exact local entries
 after projecting the selected ancestors: it does not treat a path below an
 observed entry as an entry publication. Both retain admission ownership across
-REPL interpreter replacement. `IndexedStorageOperations` and
-`TextBuilderOperations` likewise own their self-contained backing-store/chunk
-algorithms. `NativeRegistry` keeps
+REPL interpreter replacement. `SetArena`, `DenseVectorValue`, and the stable
+slot owner manage collection storage without exposing mutable Range carriers.
+`TextBuilderOperations` owns chunk storage. `NativeRegistry` keeps
 the finite static dispatch boundary; no runtime reflection or extra interface
 dispatch is needed to select those implementations.
 

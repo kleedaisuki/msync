@@ -16,6 +16,10 @@ public sealed class ScopeAllocator
 
     /// <summary>Materialize operands whose count was established by the bytecode producer or reader.</summary>
     public ScopeValue CreateFromOperands(ScopeLayout layout, ReadOnlySpan<Value?> values,
+        ReadOnlySpan<double> numbers, int allocationSite) =>
+        new(layout, CreatePayload(layout, values, numbers, allocationSite), allocationSite);
+
+    internal ScopePayload CreatePayload(ScopeLayout layout, ReadOnlySpan<Value?> values,
         ReadOnlySpan<double> numbers, int allocationSite)
     {
         int numericCount = 0;
@@ -27,7 +31,7 @@ public sealed class ScopeAllocator
             hash = (hash ^ (uint)(index + 1)) * 1099511628211;
         }
         if (numericCount < 2)
-            return Plain(layout, values, numbers, allocationSite);
+            return Plain(values, numbers);
 
         shapes ??= [];
         var key = (layout, allocationSite);
@@ -37,21 +41,20 @@ public sealed class ScopeAllocator
         {
             if (!candidate.Matches(values, out bool shared)) continue;
             // Repeated immutable references already share their numeric payload.
-            return shared ? Plain(layout, values, numbers, allocationSite)
-                : candidate.Allocate(layout, allocationSite, values, numbers);
+            return shared ? Plain(values, numbers)
+                : candidate.Allocate(values, numbers);
         }
         var shape = new NumericScopePool(values, numericCount);
         candidates.Add(shape);
-        return shape.Allocate(layout, allocationSite, values, numbers);
+        return shape.Allocate(values, numbers);
     }
 
-    private static ScopeValue Plain(ScopeLayout layout, ReadOnlySpan<Value?> values,
-        ReadOnlySpan<double> numbers, int allocationSite)
+    private static ScopePayload Plain(ReadOnlySpan<Value?> values, ReadOnlySpan<double> numbers)
     {
         Value[] fields = values.Length == 0 ? [] : new Value[values.Length];
         for (int index = 0; index < fields.Length; index++)
             fields[index] = values[index] ?? new NumberValue(numbers[index]);
-        return ScopeValue.FromOwnedFields(layout, fields, allocationSite);
+        return new(fields);
     }
 }
 
@@ -106,7 +109,7 @@ internal sealed class NumericScopePool
         return true;
     }
 
-    internal ScopeValue Allocate(ScopeLayout layout, int site, ReadOnlySpan<Value?> values, ReadOnlySpan<double> numbers)
+    internal ScopePayload Allocate(ReadOnlySpan<Value?> values, ReadOnlySpan<double> numbers)
     {
         if (page is null || used == page.Length)
         {
@@ -126,7 +129,7 @@ internal sealed class NumericScopePool
                 page[offset + index] = value is null ? numbers[index] : value.Data;
                 previousNumbers[index] = value;
             }
-            return new(layout, numericPage, offset) { AllocationSite = site };
+            return new(numericPage, offset);
         }
 
         var references = new Value[referenceCount];
@@ -140,12 +143,25 @@ internal sealed class NumericScopePool
             }
             else references[-slot - 1] = values[index]!;
         }
-        return new(layout, new PackedScopeStorage(shape, page, references), offset) { AllocationSite = site };
+        return new(new PackedScopeStorage(shape, page, references), offset);
     }
 }
 
-internal sealed class PackedScopeStorage(NumericScopeShape shape, double[] page, Value[] references)
+internal sealed class PackedScopeStorage
 {
+    private readonly NumericScopeShape shape;
+    private readonly double[] page;
+    private readonly Value[] references;
+
+    internal PackedScopeStorage(NumericScopeShape shape, double[] page, Value[] references)
+    {
+        this.shape = shape;
+        this.page = page;
+        this.references = references;
+    }
+
+    internal ReadOnlySpan<Value?> RetainedReferences => references;
+
     internal Value? GetOperandField(int offset, int field, out double number)
     {
         int slot = shape.Slot(field);

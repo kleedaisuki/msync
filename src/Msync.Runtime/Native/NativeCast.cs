@@ -37,19 +37,44 @@ public static partial class NativeRegistry
     private static NumberValue CastNumber(Value value)
     {
         if (value is BoolValue boolean) return new(boolean.Data ? 1 : 0);
-        if (value is StringValue or PathValue
-            && TryNumberText(Text(value), out double number)) return new(number);
-        throw CastFailure(value, TypeRef.Number, "Use invariant numeric text, such as '12.5' or '1e3'.");
+        if (value is StringValue or PathValue) return CastNumberText(value);
+        throw NumberCastFailure(value);
     }
+
+    internal static NumberValue CastNumberText(Value value) => TryNumberText(Text(value), out double number)
+        ? new(number) : throw NumberCastFailure(value);
+
+    private static MsyncException NumberCastFailure(Value value) =>
+        CastFailure(value, TypeRef.Number, "Use invariant numeric text, such as '12.5' or '1e3'.");
 
     private static bool TryNumberText(string text, out double number)
     {
+        if (TryShortDecimal(text, out number)) return true;
         if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out number)) return true;
         string literal = text.Trim();
         bool negative = literal.StartsWith('-');
         if (literal.StartsWith('+') || negative) literal = literal[1..];
         if (!NumberSyntax.TryParse(literal, out number)) return false;
         if (negative) number = -number;
+        return true;
+    }
+
+    private static bool TryShortDecimal(ReadOnlySpan<char> text, out double number)
+    {
+        number = 0;
+        if (text.IsEmpty) return false;
+        bool negative = text[0] == '-';
+        if (negative || text[0] == '+') text = text[1..];
+        // Nine digits fit both the accumulator and binary64 exactly.
+        if ((uint)(text.Length - 1) >= 9) return false;
+        uint value = 0;
+        foreach (char c in text)
+        {
+            uint digit = (uint)(c - '0');
+            if (digit > 9) return false;
+            value = value * 10 + digit;
+        }
+        number = negative ? -(double)value : value;
         return true;
     }
 

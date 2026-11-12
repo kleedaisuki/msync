@@ -90,7 +90,7 @@ internal static class ExecutableLayout
 
     private static int? Target(Instruction instruction) => instruction.Op switch
     {
-        OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse => instruction.A,
+        OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady => instruction.A,
         OpCode.IteratorNext => instruction.B,
         _ => null
     };

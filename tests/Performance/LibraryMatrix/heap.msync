@@ -7,8 +7,7 @@ for _ in $std::ranges::iota(0, SIZE) {
 };
 let score = 0;
 for expected in [HEAP_EXPECTED] {
-    let value = $std::storage::Buffer::get(queue::buffer, 0);
-    if value == expected { score = score + 1; };
-    Heap::pop(queue);
+    let value? = Heap::pop(queue);
+    if value is not null { if value == expected { score = score + 1; }; };
 };
 score

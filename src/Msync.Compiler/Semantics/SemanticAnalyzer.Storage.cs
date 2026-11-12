@@ -65,7 +65,10 @@ internal sealed partial class SemanticAnalyzer
                 scope = scope with { Named = true };
                 context.Objects[scope.Region] = scope;
                 if (context.Publish) projectedSingletons[scope.Region] = scope;
-                return value with { Scope = scope, Type = hir.Type(new HirType(TypeRef.Scope, Shape: scope.Layout)) };
+                return value with { Scope = scope, Type = hir.Type(new HirType(TypeRef.Scope, Shape: scope.Layout)
+                {
+                    ScopeDomain = hir.Types[value.Type.Value].ScopeDomain
+                }) };
             }
             if (value is not null) return value;
         }

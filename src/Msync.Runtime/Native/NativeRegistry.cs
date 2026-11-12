@@ -57,6 +57,10 @@ public static partial class NativeRegistry
             "fs" => await FileSystemAsync(operation, arguments, context, cancellationToken, signature.Effect),
             "io" => await IOOperationAsync(operation, arguments, context, cancellationToken),
             "math" => MathOperation(operation, arguments),
+            "arena" => SetArenaOperations.Invoke(signature.Arena, arguments, context),
+            "slots" => SlotArenaOperations.Invoke(operation, arguments, context),
+            "bits" => new NumberValue(Word32.Evaluate(signature.Numeric,
+                MathNumber(arguments[0]), arguments.Count == 2 ? MathNumber(arguments[1]) : 0)),
             "meta" => MetaOperation(operation, arguments),
             "string" => await StringOperationAsync(operation, arguments, cancellationToken),
             "bool" => BooleanOperation(operation, arguments),
@@ -66,7 +70,7 @@ public static partial class NativeRegistry
             "environment" => EnvironmentOperation(operation, arguments, context),
             "regex" => RegexOperation(operation, arguments),
             "text" => await TextBuilderOperations.InvokeAsync(operation, arguments, cancellationToken),
-            "storage" => await IndexedStorageOperations.InvokeAsync(operation, arguments, context, cancellationToken),
+            "storage" => await VectorStorageOperations.InvokeAsync(operation, arguments, context, cancellationToken),
             "shell" => ShellOperation(operation, arguments, context, cancellationToken),
             _ => throw new MsyncException($"Native namespace '{native.Group}' is not registered")
         };

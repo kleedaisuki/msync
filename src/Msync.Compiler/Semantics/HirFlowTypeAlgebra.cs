@@ -36,7 +36,10 @@ internal sealed class HirFlowTypeAlgebra(SemanticArena hir) : IFlowTypeAlgebra
             TypeKind kind = positive ? value.Type.Kind & tested.Kind : value.Type.Kind & ~tested.Kind;
             if (denotations is null || !denotations.Types.IsEmpty) kind |= TypeKind.Type;
             else kind &= ~TypeKind.Type;
-            HirTypeId represented = hir.Type(new TypeRef(kind, value.Type.Element));
+            HirTypeId represented = hir.Type(new HirType(new TypeRef(kind, value.Type.Element))
+            {
+                ScopeDomain = value.SemanticType is { } semantic ? hir.Types[semantic.Value].ScopeDomain : default
+            });
             return value with { Type = hir.Types[represented.Value].RuntimeType, SemanticType = represented, Denotations = denotations };
         }
         HirTypeId source = value.SemanticType ?? hir.Type(value.Type);
@@ -53,6 +56,7 @@ internal sealed class HirFlowTypeAlgebra(SemanticArena hir) : IFlowTypeAlgebra
         if (left.RuntimeType.Kind == TypeKind.Never) return second;
         if (right.RuntimeType.Kind == TypeKind.Never) return first;
         TypeRef runtime = TypeRef.Union(left.RuntimeType, right.RuntimeType);
+        var scopeDomain = HirScopeDomain.Join(left, right);
         HirTypeId result;
         if (left.RuntimeType == TypeRef.Null || right.RuntimeType == TypeRef.Null)
         {
@@ -62,11 +66,11 @@ internal sealed class HirFlowTypeAlgebra(SemanticArena hir) : IFlowTypeAlgebra
         else if (left.Shape == right.Shape && left.Signature == right.Signature
             && left.Element == right.Element && left.TypeParameter == right.TypeParameter
             && left.Concept == right.Concept && left.Alternatives.IsDefaultOrEmpty && right.Alternatives.IsDefaultOrEmpty)
-            result = hir.Type(left with { RuntimeType = runtime, Nullable = runtime.Nullable });
+            result = hir.Type(left with { RuntimeType = runtime, Nullable = runtime.Nullable, ScopeDomain = scopeDomain });
         else
         {
             var alternatives = Alternatives(first).Concat(Alternatives(second)).Distinct().OrderBy(item => item.Value).ToImmutableArray();
-            result = hir.Type(new HirType(runtime, Alternatives: alternatives));
+            result = hir.Type(new HirType(runtime, Alternatives: alternatives) { ScopeDomain = scopeDomain });
         }
         joins[(first, second)] = result;
         return result;

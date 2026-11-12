@@ -1,0 +1,12 @@
+let Heap = $std::containers::Heap;
+let io = $std::io;
+let queue = Heap::new([5, 1, 2]);
+for _ in $std::ranges::iota(0, 96) { Heap::sift_down(queue, 0); };
+let index_text? = io::read_line();
+if index_text? {
+    io::println("missing");
+} else {
+    io::println("selected");
+    Heap::sift_down(queue, index_text as Number);
+    io::println("after");
+};

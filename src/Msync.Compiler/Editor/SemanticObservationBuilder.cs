@@ -287,9 +287,9 @@ internal sealed partial class SemanticObservationBuilder
         SemanticPathView? path = KnownPath(value, context);
         BoundNativeSignature? nativeSignature = native is not null
             ? program.NativeSignatures.GetValueOrDefault(native) : null;
-        SemanticValueId? element = Element(value, context);
-        TypeRef? currentType = IndexedResourceCount(value) == 0 ? null
-            : program.Hir.Types[value.Type.Value].RuntimeType with { Element = RuntimeType(element!.Value) };
+        SemanticValueId? element = Element(value, context, out var carrier);
+        TypeRef? currentType = carrier is null ? null
+            : program.Hir.Types[value.Type.Value].RuntimeType with { Element = carrier };
         values[id.Value] = new(value.Type, Template: template, TypeValue: value.DenotedType,
             NativeName: native, IsNamedScope: scope?.Named == true, IsUnknown: unknown,
             Members: fields,
@@ -330,24 +330,42 @@ internal sealed partial class SemanticObservationBuilder
 
     private static int IndexedResourceAt(SemanticValue value, int index) => value.IndexedRegion ?? value.IndexedAliases[index];
 
-    private SemanticValueId? Element(SemanticValue value, SemanticContext context)
+    private SemanticValueId? Element(SemanticValue value, SemanticContext context, out TypeRef? carrier)
     {
+        carrier = null;
         int count = IndexedResourceCount(value);
         if (count == 0) return value.Element is null ? null : Value(value.Element, context);
-        SemanticValueId first = Value(context.Indexed[IndexedResourceAt(value, 0)].Element, context);
+        var firstStorage = context.Indexed[IndexedResourceAt(value, 0)];
+        SemanticValueId first = Value(firstStorage.Element, context);
+        TypeRef type = RuntimeType(first);
+        carrier = Carrier(firstStorage, type);
         if (count == 1) return first;
         var alternatives = ImmutableArray.CreateBuilder<SemanticValueId>(count);
         alternatives.Add(first);
-        TypeRef type = RuntimeType(first);
         for (int index = 1; index < count; index++)
         {
-            var element = Value(context.Indexed[IndexedResourceAt(value, index)].Element, context);
+            var storage = context.Indexed[IndexedResourceAt(value, index)];
+            var element = Value(storage.Element, context);
             alternatives.Add(element);
-            type = TypeRef.Union(type, RuntimeType(element));
+            TypeRef elementType = RuntimeType(element);
+            type = TypeRef.Union(type, elementType);
+            carrier = TypeRef.Union(carrier, Carrier(storage, elementType));
         }
         SemanticValueId joined = new(values.Count);
         values.Add(new(values[first.Value].Type, Alternatives: alternatives.MoveToImmutable(), CurrentType: type));
         return joined;
+    }
+
+    private TypeRef Carrier(SemanticIndexed storage, TypeRef fallback)
+    {
+        if (storage.FixedCarrier is { } fixedCarrier)
+            return program.Hir.Types[fixedCarrier.Value].RuntimeType;
+        var constraints = storage.CarrierConstraints;
+        if (constraints.IsDefaultOrEmpty) return fallback;
+        TypeRef type = program.Hir.Types[constraints[0].Value].RuntimeType;
+        for (int index = 1; index < constraints.Length; index++)
+            type = TypeRef.Union(type, program.Hir.Types[constraints[index].Value].RuntimeType);
+        return type;
     }
 
     private TypeRef RuntimeType(SemanticValueId value) => values[value.Value].CurrentType

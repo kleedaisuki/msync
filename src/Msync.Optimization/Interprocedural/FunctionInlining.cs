@@ -17,7 +17,7 @@ internal static class FunctionInlining
         for (var index = 0; index < functions.Length; index++)
         {
             next[index] = module.PreserveLocals && index == module.EntryPoint ? functions[index]
-                : InlineFunction(functions[index], targets[index], calls.RawArguments(index), functions, recursive, uses, eligible, level);
+                : InlineFunction(module, functions[index], targets[index], calls.RawArguments(index), functions, recursive, uses, eligible, level);
             changed |= !ReferenceEquals(next[index], functions[index]);
         }
         // The module driver folds and removes dead values between expansion
@@ -25,13 +25,13 @@ internal static class FunctionInlining
         return changed ? module with { Functions = next } : module;
     }
 
-    private static FunctionCode InlineFunction(FunctionCode function, Dictionary<int, int> targets,
+    private static FunctionCode InlineFunction(Module module, FunctionCode function, Dictionary<int, int> targets,
         IReadOnlySet<int>? rawArguments, FunctionCode[] functions, bool[] recursive, int[] uses, bool?[] eligible, int level)
     {
         int budget = level == 1 ? 32 : level == 2 ? 128 : 512;
         var inline = targets.Where(pair => !recursive[pair.Value]
             && (uses[pair.Value] == 1 || functions[pair.Value].Instructions.Count <= budget)
-            && (eligible[pair.Value] ??= CanInline(functions[pair.Value])))
+            && (eligible[pair.Value] ??= CanInline(module, functions[pair.Value])))
             .ToDictionary();
         if (inline.Count == 0) return function;
         var code = new List<Instruction>();
@@ -44,7 +44,7 @@ internal static class FunctionInlining
             var instruction = function.Instructions[pc];
             if (!inline.TryGetValue(pc, out var target))
             {
-                if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.IteratorNext)
+                if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.JumpIfStaticReady or OpCode.IteratorNext)
                     originalBranches.Add(code.Count);
                 code.Add(instruction); continue;
             }
@@ -73,7 +73,7 @@ internal static class FunctionInlining
                 code.Add(body.Op switch
                 {
                     OpCode.LoadLocal or OpCode.StoreLocal or OpCode.InitializeLocal or OpCode.LoadCell or OpCode.LoadStorage => body with { A = offset + body.A },
-                    OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue => body with { A = start + body.A },
+                    OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.JumpIfStaticReady => body with { A = start + body.A },
                     OpCode.IteratorNext => body with { A = offset + body.A, B = start + body.B },
                     OpCode.Return => new(OpCode.Jump, start + callee.Instructions.Count, Span: body.Span),
                     _ => body
@@ -90,11 +90,12 @@ internal static class FunctionInlining
         return function with { Instructions = code, LocalCount = locals };
     }
 
-    private static bool CanInline(FunctionCode function)
+    private static bool CanInline(Module module, FunctionCode function)
     {
         // Admission and return own scheduled work. An ordinary stack splice must
         // not erase that lifetime boundary; scalar/cell operations have no jobs.
-        if (function.Instructions.Any(instruction => (InstructionEffects.Effects(instruction)
+        if (function.Instructions.Any(instruction => instruction.Op is not (OpCode.LoadField or OpCode.LoadStaticScope or OpCode.LoadStaticField or OpCode.JumpIfStaticReady)
+            && (InstructionEffects.Effects(instruction)
             & (InstructionEffect.Read | InstructionEffect.Invoke | InstructionEffect.Control)) != 0)) return false;
         var heights = new int?[function.Instructions.Count + 1];
         var work = new Queue<int>(); heights[0] = 0; work.Enqueue(0);
@@ -103,32 +104,24 @@ internal static class FunctionInlining
             if (pc == function.Instructions.Count) return false;
             var instruction = function.Instructions[pc];
             var height = heights[pc]!.Value;
-            if (instruction.Op == OpCode.Return) { if (height == 0) return false; continue; }
+            if (instruction.Op == OpCode.Return) { if (height != 1) return false; continue; }
             void Next(int target, int count)
             {
                 if (heights[target] is not null) return;
                 heights[target] = count; work.Enqueue(target);
             }
             if (instruction.Op == OpCode.Jump) { Next(instruction.A, height); continue; }
-            var delta = instruction.Op switch
-            {
-                OpCode.Constant or OpCode.Null or OpCode.True or OpCode.False or OpCode.LoadLocal or OpCode.LoadCell or OpCode.LoadStorage or OpCode.LoadBuiltin or OpCode.GetSingleton or OpCode.Dup => 1,
-                OpCode.StoreLocal or OpCode.InitializeLocal or OpCode.Pop or OpCode.JumpIfTrue or OpCode.JumpIfFalse => -1,
-                OpCode.MakeClosure => 1 - instruction.B,
-                OpCode.MakeScope or OpCode.MakeRange or OpCode.MakeLazyRange or OpCode.NativeCall => 1 - instruction.A,
-                OpCode.Nop or OpCode.SetSingleton or OpCode.SpecializeClosure or OpCode.GetMember or OpCode.GetCapture or OpCode.Not or OpCode.IsNull or OpCode.Negate
-                    or OpCode.Convert or OpCode.SelectPath or OpCode.DeferRange => 0,
-                OpCode.RegexMatch => instruction.Text is null ? -1 : 0,
-                _ => -1
-            };
-            height += delta;
-            if (instruction.Op is OpCode.JumpIfTrue or OpCode.JumpIfFalse) Next(instruction.A, height);
+            if (!ExecutionStackEffect.TryGet(module, instruction, height, out var effect)
+                || height < effect.Inputs) return false;
+            height += instruction.Op == OpCode.Dup ? 1 : (effect.ProducesValue ? 1 : 0) - effect.Inputs;
+            if (instruction.Op is OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady)
+                Next(instruction.A, height);
             Next(pc + 1, height);
         }
         return true;
     }
 
-    internal static Dictionary<int, int> Targets(FunctionCode function, IReadOnlyList<Value> constants, bool requireKnownCallee = false,
+    internal static Dictionary<int, int> Targets(Module module, FunctionCode function, IReadOnlyList<Value> constants, bool requireKnownCallee = false,
         IReadOnlyList<FunctionCode>? layouts = null, ISet<int>? knownClosures = null)
-        => CallTargets.Analyze(function, constants, requireKnownCallee, layouts, knownClosures).Targets;
+        => CallTargets.Analyze(module, function, constants, requireKnownCallee, layouts, knownClosures).Targets;
 }

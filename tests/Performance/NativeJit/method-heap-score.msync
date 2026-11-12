@@ -1,0 +1,15 @@
+let Heap = $std::containers::Heap;
+let queue = Heap::new(Number);
+let key = 0;
+for _ in $std::ranges::iota(0, 8192) {
+    key = (key + 40503) % 65536;
+    Heap::push(queue, 2 * key);
+};
+let score = 0;
+for expected in [EXPECTED_KEYS] {
+    let value? = Heap::pop(queue);
+    if value is not null {
+        if value == expected { score = score + 1; };
+    };
+};
+$std::io::println(score as String);

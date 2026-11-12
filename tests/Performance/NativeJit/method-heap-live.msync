@@ -1,0 +1,39 @@
+let Heap = $std::containers::Heap;
+let io = $std::io;
+let queue = Heap::new(Number);
+let positions = $std::ranges::iota(0, 1024);
+let key = 0;
+for _ in positions {
+    key = (key + 40503) % 65536;
+    Heap::push(queue, key * 2);
+};
+let alias = queue;
+let before = Heap::snapshot(alias);
+let switch_text? = io::read_line();
+if switch_text? {
+    io::println("missing");
+} else {
+    let switch_at = switch_text as Number;
+    let order = queue::order;
+    let comparisons = 0;
+    for i in positions {
+        if i == switch_at {
+            order::less = fn(left?, right?) -> Bool {
+                comparisons = comparisons + 1;
+                if left is null { right is not null } else {
+                    if right is null { false } else {
+                        left < right or (left == left and right != right)
+                    }
+                }
+            };
+        };
+        let value? = Heap::pop(alias);
+        if value is not null { io::println(value as String); }
+        else { io::println("missing key"); };
+    };
+    io::println("snapshot");
+    for key in before { io::println(key as String); };
+    io::println("summary");
+    io::println(Heap::size(queue) as String);
+    io::println(comparisons as String);
+};

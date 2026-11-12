@@ -9,22 +9,20 @@ internal sealed partial class SemanticAnalyzer
     private SemanticValue Call(HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext context, bool allowDeferral = true)
     {
         if (TryMetaCall(node, children, context, out SemanticValue metadata)) return metadata;
-        ReturnShape? shape = allowDeferral ? CallShape(node, children, context) : null;
-        if (shape is { Fact.Type.Kind: TypeKind.Range, Eager: false })
-            return DeferredCall(node, children, context);
-        var call = hir.Calls[node.Data];
-        if (call.Kind == HirCallKind.Native)
+        ReturnShape? shape = null;
+        if (allowDeferral && !HasImmediateResult(node, children[0], context))
         {
-            SemanticValue nativeCallee = Analyze(children[0], context);
-            if (TryMetaCall(nativeCallee, node, children, context, out SemanticValue nativeMetadata)) return nativeMetadata;
-            SemanticValue[] arguments = new SemanticValue[children.Length - 1];
-            for (int index = 0; index < arguments.Length; index++) arguments[index] = Analyze(children[index + 1], context);
-            return InvokeNative(call.NativeName!, arguments, node.Source, context, nativeCallee);
+            var locations = CallLocations(children);
+            shape = CallShape(node, children, context, locations.Read);
+            if (shape is { Fact.Type.Kind: TypeKind.Range, Eager: false })
+                return DeferredCall(node, children, context, locations);
         }
         SemanticValue callee = Analyze(children[0], context);
         if (TryMetaCall(callee, node, children, context, out SemanticValue computedMetadata)) return computedMetadata;
         SemanticValue[] inputs = new SemanticValue[children.Length - 1];
         for (int index = 0; index < inputs.Length; index++) inputs[index] = Analyze(children[index + 1], context);
+        if (hir.Calls[node.Data] is { Kind: HirCallKind.Native } native)
+            return InvokeNative(native.NativeName!, inputs, node.Source, context, callee);
         HirTypeId? resultDomain = shape is { } projected && !projected.Eager
             && projected.Fact.Type.WithoutNull != TypeRef.Any.WithoutNull
             && (projected.Fact.Type.Kind & TypeKind.Range) != 0
@@ -78,6 +76,16 @@ internal sealed partial class SemanticAnalyzer
             call = call with { SessionSlot = slot };
             result = FutureRead(result, result.Type, context) with
             { OpenSessionCalls = AddSessionCall(result.OpenSessionCalls, SessionBinding(slot, callee, arguments, context)) };
+        }
+        else if (context.Publish && call.Kind == HirCallKind.Function
+            && choices[0].Captures.IsDefaultOrEmpty && !callee.Node.IsNone
+            && IsInertCalleeProjection(callee.Node))
+        {
+            // A closed symbol has no environment to fetch. Keep the original
+            // projection for computed, captured and session-open callees.
+            int symbol = context.Output!.AddClosure(new(call.Function, []));
+            callee = callee with
+            { Node = context.Output.Add(HirKind.Closure, callee.Type, source, data: symbol) };
         }
         SemanticValue emitted = result! with
         {

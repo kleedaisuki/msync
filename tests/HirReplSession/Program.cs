@@ -166,6 +166,10 @@ try
             "a prior named Scope retains its own singleton allocation site");
         Check(await Submit("SecondSite::value") is StringValue { Data: "second" },
             "a later named Scope does not reuse another generation's compacted constructor index");
+        await Submit("let retained_site = FirstSite; fn read_site(seed) { retained_site::value + seed };");
+        await Submit("let different_layout = scope { tag: true, text: \"layout\" }; FirstSite::value = 22;");
+        Check(await Submit("read_site(3)") is NumberValue { Data: 25 },
+            "a later specialization retains the escaped static identity and the original capture contract");
 
         await Submit("let saved = ./value;");
         execution.ChangeWorkingDirectory(next);

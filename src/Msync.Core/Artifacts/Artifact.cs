@@ -5,7 +5,7 @@ namespace Msync.Core;
 public static partial class Artifact
 {
     private static readonly byte[] Magic = "MSYNCBC\0"u8.ToArray();
-    public const ushort FormatVersion = 5;
+    public const ushort FormatVersion = 6;
     public const string LanguageVersion = "0.8.0";
     public static Module Read(string path) => Read(path, formBlocks: true);
 
@@ -33,12 +33,14 @@ public static partial class Artifact
         var optimization = reader.ReadInt32();
         var entry = reader.ReadInt32();
         BindingContext? context = reader.ReadBoolean() ? new(reader.ReadString(), reader.ReadString(), ReadOptional(reader)) : null;
-        var constants = ReadArray(reader, ReadValue);
+        var code = ReadScopeCode(reader);
+        var constants = ReadArray(reader, value => ReadValue(value, code.Layouts));
         var functions = ReadArray(reader, r =>
         {
-            var name = r.ReadString(); var parameters = r.ReadInt32(); var locals = r.ReadInt32(); var captures = r.ReadInt32();
-            var result = ReadType(r);
-            var parameterTypes = r.ReadBoolean() ? ReadArray(r, ReadType) : null;
+            var name = r.ReadString(); var locals = r.ReadInt32();
+            var signature = ReadCodeSignature(r);
+            var result = RuntimeCodeType(signature.Result, code.RuntimeTypes);
+            var parameterTypes = signature.Parameters.Select(id => RuntimeCodeType(id, code.RuntimeTypes)).ToArray();
             var instructions = ReadArray(r, ir =>
             {
                 var op = (OpCode)ir.ReadByte();
@@ -47,12 +49,16 @@ public static partial class Artifact
                 SourceSpan? span = ir.ReadBoolean() ? new(ir.ReadString(), ir.ReadInt32(), ir.ReadInt32()) : null;
                 return new Instruction(op, a, b, text, span);
             });
-            return new FunctionCode(name, parameters, locals, instructions, result, captures, parameterTypes);
+            return new FunctionCode(name, signature.Parameters.Count, locals, instructions, result,
+                signature.Captures.Count, parameterTypes) { CodeSignature = signature };
         });
         var plans = ReadArray(reader, ReadExecutionPlan);
         var module = new Module(constants, functions, entry, stage, context, optimization, Semantics: semantics)
-        { ExecutionPlans = plans.Length == 0 ? null : plans };
-        Validate(module);
+        {
+            CodeTypes = code.Types, ScopeLayouts = code.Layouts, StaticScopes = code.Statics,
+            FieldProjections = code.Projections, ExecutionPlans = plans.Length == 0 ? null : plans
+        };
+        Validate(module, code.RuntimeTypes);
         return formBlocks ? BlockBuilder.Form(module) : module;
     }
     public static void Write(Module module, string path)
@@ -106,13 +112,16 @@ public static partial class Artifact
         writer.Write(module.OptimizationLevel); writer.Write(module.EntryPoint);
         writer.Write(module.Context is not null);
         if (module.Context is { } context) { writer.Write(context.WorkingDirectory); writer.Write(context.HomeDirectory); WriteOptional(writer, context.SourceFile); }
-        WriteArray(writer, module.Constants, WriteValue);
+        WriteScopeCode(writer, module);
+        WriteArray(writer, module.Constants, (w, value) => WriteValue(w, value, module.ScopeLayouts));
         WriteArray(writer, module.Functions, (w, f) =>
         {
-            w.Write(f.Name); w.Write(f.ParameterCount); w.Write(f.LocalCount); w.Write(f.CaptureCount); WriteType(w, f.ReturnType);
-            w.Write(f.ParameterTypes is not null); if (f.ParameterTypes is not null) WriteArray(w, f.ParameterTypes, WriteType);
+            w.Write(f.Name); w.Write(f.LocalCount);
+            WriteCodeSignature(w, f.CodeSignature ?? throw new MsyncException($"Function '{f.Name}' has no portable code signature"));
             WriteArray(w, f.Instructions, (iw, instruction) =>
             {
+                if (Unrepresentable(instruction.Op))
+                    throw new MsyncException($"Opcode {instruction.Op} does not belong to the portable layout format", instruction.Span);
                 iw.Write((byte)instruction.Op); iw.Write(instruction.A); iw.Write(instruction.B); WriteOptional(iw, instruction.Text);
                 iw.Write(instruction.Span.HasValue);
                 if (instruction.Span is { } span) { iw.Write(span.Source); iw.Write(span.Start); iw.Write(span.Length); }
@@ -120,11 +129,14 @@ public static partial class Artifact
         });
         WriteArray(writer, module.ExecutionPlans ?? [], WriteExecutionPlan);
     }
-    public static void Validate(Module module)
+    public static void Validate(Module module) => Validate(module, RuntimeCodeTypes(module.CodeTypes));
+
+    private static void Validate(Module module, TypeRef[] runtimeTypes)
     {
         if (module.Semantics != ModuleSemantics.Current) throw new MsyncException($"Unsupported bytecode execution semantics {module.Semantics}; only the current execution contract is supported");
         if (module.EntryPoint < 0 || module.EntryPoint >= module.Functions.Count) throw new MsyncException("Bytecode entrypoint does not identify a function");
         if ((module.Stage == ArtifactStage.Executable) != (module.Context is not null)) throw new MsyncException("Bytecode stage and binding context disagree");
+        ValidateScopeCode(module, runtimeTypes);
         ValidateSessionDispatches(module);
         ValidateExecutionPlans(module);
         foreach (var constant in module.Constants) ValidateConstant(constant, module);
@@ -137,6 +149,7 @@ public static partial class Artifact
                 throw new MsyncException($"Parameter type table disagrees with function '{function.Name}'");
             foreach (var instruction in function.Instructions)
             {
+                ValidateScopeInstruction(instruction, module);
                 if (instruction.Op is OpCode.LoadLocal or OpCode.LoadCell or OpCode.LoadStorage or OpCode.StoreLocal or OpCode.InitializeLocal or OpCode.IteratorNext && (instruction.A < 0 || instruction.A >= function.LocalCount))
                     throw new MsyncException($"Invalid local index {instruction.A} in '{function.Name}'", instruction.Span);
                 if (instruction.Op == OpCode.Constant && (instruction.A < 0 || instruction.A >= module.Constants.Count))
@@ -150,7 +163,8 @@ public static partial class Artifact
                 if ((instruction.Op == OpCode.MakeClosure || instruction.Op == OpCode.SpecializeClosure && instruction.A >= 0)
                     && (instruction.A < 0 || instruction.A >= module.Functions.Count))
                     throw new MsyncException($"Invalid function index {instruction.A}", instruction.Span);
-                if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue && (instruction.A < 0 || instruction.A > function.Instructions.Count))
+                if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.JumpIfStaticReady
+                    && (instruction.A < 0 || instruction.A > function.Instructions.Count))
                     throw new MsyncException($"Invalid jump target {instruction.A}", instruction.Span);
                 if (instruction.Op == OpCode.IteratorNext && (instruction.B < 0 || instruction.B > function.Instructions.Count))
                     throw new MsyncException($"Invalid iterator target {instruction.B}", instruction.Span);
@@ -162,7 +176,7 @@ public static partial class Artifact
                     throw new MsyncException("Open callback signature requires its active session dispatch table", instruction.Span);
                 if (instruction.Op is OpCode.Call or OpCode.SpecializeClosure && instruction.Text is not null)
                 {
-                    foreach (var (source, target) in FunctionDispatch.Parse(instruction.Text))
+                    foreach (var (source, target) in FunctionDispatch.Targets(instruction.Text))
                     {
                         if (source < 0 || source >= module.Functions.Count || target < 0 || target >= module.Functions.Count)
                             throw new MsyncException("Compiled dispatch table refers to a missing function", instruction.Span);
@@ -174,7 +188,7 @@ public static partial class Artifact
                 }
             }
         }
-        BytecodeValidation.Validate(module);
+        BytecodeValidation.Validate(module, runtimeTypes);
     }
     private static void ValidateSessionDispatches(Module module)
     {
@@ -233,7 +247,8 @@ public static partial class Artifact
     { var kind = (TypeKind)reader.ReadUInt16(); return new(kind, reader.ReadBoolean() ? ReadType(reader) : null); }
     private static void WriteType(BinaryWriter writer, TypeRef type)
     { writer.Write((ushort)type.Kind); writer.Write(type.Element is not null); if (type.Element is not null) WriteType(writer, type.Element); }
-    private static Value ReadValue(BinaryReader reader) => reader.ReadByte() switch
+    private static Value ReadValue(BinaryReader reader) => ReadValue(reader, []);
+    private static Value ReadValue(BinaryReader reader, IReadOnlyList<CodeLayout> layouts) => reader.ReadByte() switch
     {
         0 => Value.Null,
         1 => new BoolValue(reader.ReadBoolean()),
@@ -242,18 +257,20 @@ public static partial class Artifact
         4 => new PathValue(reader.ReadString(), ReadOptional(reader), reader.ReadBoolean() ? ReadConnection(reader) : null, ReadOptional(reader), ReadOptional(reader)),
         5 => ReadConnection(reader),
         6 => new TypeValue(ReadType(reader)),
-        7 => new FunctionValue(reader.ReadInt32(), ReadArray(reader, ReadValue), ReadOptional(reader)),
-        8 => new ScopeValue(ReadArray(reader, r => KeyValuePair.Create(r.ReadString(), ReadValue(r))).ToDictionary()),
-        9 => ReadRangeSnapshot(reader),
+        7 => new FunctionValue(reader.ReadInt32(), ReadArray(reader, value => ReadValue(value, layouts)), ReadOptional(reader)),
+        8 => ReadScopeConstant(reader, layouts),
+        9 => ReadRangeSnapshot(reader, layouts),
+        10 => new FunctionValue(reader.ReadInt32(), NativeName: ReadOptional(reader)),
         var tag => throw new MsyncException($"Unknown bytecode constant kind {tag}")
     };
-    private static RangeValue ReadRangeSnapshot(BinaryReader reader)
+    private static RangeValue ReadRangeSnapshot(BinaryReader reader, IReadOnlyList<CodeLayout> layouts)
     {
         TypeRef itemType = ReadType(reader);
-        return new(ReadArray(reader, ReadValue), itemType);
+        return new(ReadArray(reader, value => ReadValue(value, layouts)), itemType);
     }
     private static ConnectionValue ReadConnection(BinaryReader reader) => new((ConnectionKind)reader.ReadByte(), reader.ReadString());
-    private static void WriteValue(BinaryWriter writer, Value value)
+    private static void WriteValue(BinaryWriter writer, Value value) => WriteValue(writer, value, []);
+    private static void WriteValue(BinaryWriter writer, Value value, IReadOnlyList<CodeLayout> layouts)
     {
         switch (value)
         {
@@ -266,10 +283,16 @@ public static partial class Artifact
                 if (p.Connection is not null) WriteConnection(writer, p.Connection); WriteOptional(writer, p.HomeDirectory); WriteOptional(writer, p.LocalSpelling); break;
             case ConnectionValue c: writer.Write((byte)5); WriteConnection(writer, c); break;
             case TypeValue t: writer.Write((byte)6); WriteType(writer, t.Data); break;
-            case FunctionValue f: writer.Write((byte)7); writer.Write(f.Function); WriteArray(writer, f.Captures ?? [], WriteValue); WriteOptional(writer, f.NativeName); break;
-            case ScopeValue s: writer.Write((byte)8); WriteArray(writer, s.Members.ToArray(), (w, pair) => { w.Write(pair.Key); WriteValue(w, pair.Value); }); break;
+            case FunctionValue { Captures: null } symbol:
+                writer.Write((byte)10); writer.Write(symbol.Function); WriteOptional(writer, symbol.NativeName); break;
+            case FunctionValue f:
+                writer.Write((byte)7); writer.Write(f.Function);
+                WriteArray(writer, f.Captures!, (w, capture) => WriteValue(w, capture, layouts));
+                WriteOptional(writer, f.NativeName); break;
+            case ScopeValue s: writer.Write((byte)8); WriteScopeConstant(writer, s, layouts); break;
             case RangeValue { SnapshotValues: { } snapshot, Resolve: null, Selection: null } range:
-                writer.Write((byte)9); WriteType(writer, range.ItemType); WriteArray(writer, snapshot, WriteValue); break;
+                writer.Write((byte)9); WriteType(writer, range.ItemType);
+                WriteArray(writer, snapshot, (w, item) => WriteValue(w, item, layouts)); break;
             default: throw new MsyncException($"Runtime-owned {value.Type} values cannot be embedded in a bytecode constant table");
         }
     }

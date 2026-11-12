@@ -26,9 +26,18 @@ public static class PathSemantics
     private static string JoinText(string left, string right, bool windows) => windows
         ? left.TrimEnd('/', '\\') + '\\' + right.TrimStart('/', '\\')
         : left.TrimEnd('/') + '/' + right.TrimStart('/');
-    public static string FileName(PathValue path)
+    public static string FileName(PathValue path) => FileNameSpan(path).ToString();
+
+    // Selection ignores trailing separators; fs.filename intentionally does not.
+    public static ReadOnlySpan<char> FileNameSpan(PathValue path)
     {
-        var raw = UsesWindowsPaths(path) ? path.Raw.Replace('\\', '/') : path.Raw;
-        return raw.TrimEnd('/').Split('/')[^1];
+        ReadOnlySpan<char> raw = path.Raw;
+        if (UsesWindowsPaths(path))
+        {
+            raw = raw.TrimEnd("/\\");
+            return raw[(raw.LastIndexOfAny('/', '\\') + 1)..];
+        }
+        raw = raw.TrimEnd('/');
+        return raw[(raw.LastIndexOf('/') + 1)..];
     }
 }

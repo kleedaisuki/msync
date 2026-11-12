@@ -1,0 +1,28 @@
+let r = $std::ranges;
+let invocations = 0;
+fn make_tail() {
+    global invocations;
+    invocations = invocations + 1;
+    scope { x: invocations, label: "tail" }
+};
+let rows = [scope { x: 1, label: "literal" }, make_tail()];
+let first = r::front(rows);
+let alias = first;
+first::x = 9;
+let fresh = r::front(rows);
+let before_tail = invocations;
+let tail = r::at(rows, 1);
+let after_tail = invocations;
+let next_tail = r::at(rows, 1);
+$std::io::println(alias::x as String);
+$std::io::println(fresh::x as String);
+$std::io::println(fresh::label);
+$std::io::println(before_tail as String);
+$std::io::println(tail::x as String);
+$std::io::println(after_tail as String);
+$std::io::println(next_tail::x as String);
+$std::io::println(invocations as String);
+scope {
+    first: first, alias: alias, fresh: fresh, tail: tail, next_tail: next_tail,
+    before_tail: before_tail, after_tail: after_tail, calls: invocations
+}

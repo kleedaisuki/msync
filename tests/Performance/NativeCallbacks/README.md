@@ -2,7 +2,7 @@
 
 `NativeRegistry` receives the interpreter's invocation callback even for native
 operations that never call user functions. This probe measures an actual native
-Buffer with 1,024 indexed reads, initialization and a size query. The bytecode
+vector owner with 1,024 indexed reads, initialization and a size query. The bytecode
 uses ordinary storage primitives and is serialized/bound before timing. It also
 measures a literal with no native calls, distinguishing the added interpreter
 field from lazily allocated delegates.

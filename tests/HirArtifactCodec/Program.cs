@@ -29,6 +29,25 @@ HirModule read = Decode(encoded);
 Check(encoded.AsSpan().SequenceEqual(Encode(read)), "All semantic tables roundtrip deterministically");
 Check(read.Types[10].TypeParameter == 0 && read.Types[11].Concept == 0, "Open and constrained types");
 Check(read.Types[12].Nullable && read.Types[12].Alternatives.SequenceEqual([new HirTypeId(10), new HirTypeId(3)]), "Generic nullable alternatives");
+var exact = HirType.ConstructedScope(0);
+var finite = exact with { ScopeDomain = HirScopeDomain.Join(HirType.ConstructedScope(1), exact) };
+var withDomains = read with { ScopeLayouts = read.ScopeLayouts.Add(read.ScopeLayouts[0]), Types = read.Types.Add(exact).Add(finite) };
+var domains = Decode(Encode(withDomains));
+Check(domains.Types[^2].ScopeDomain is { Count: 1 } one && one[0] == 0
+    && domains.Types[^1].ScopeDomain is { Count: 2 } both && both[0] == 0 && both[1] == 1,
+    "Exact and joined construction layout domains roundtrip independently of the semantic shape.");
+RejectLayoutModule(withDomains with { ScopeLayouts = read.ScopeLayouts }, "Dangling construction layout reference rejected.");
+RejectLayoutModule(withDomains with { Types = read.Types.Add(exact with { RuntimeType = TypeRef.Number }) },
+    "A Number cannot advertise Scope layouts.");
+RejectLayoutModule(withDomains with
+{
+    Types = withDomains.Types.Add(HirType.ConstructedScope(1)),
+    Nodes = withDomains.Nodes.Add(withDomains.Nodes[0] with
+    {
+        Kind = HirKind.Scope, Type = new(withDomains.Types.Length), Data = 0, Children = new(withDomains.Edges.Length, 1)
+    }),
+    Edges = withDomains.Edges.Add(new(0))
+}, "A Scope constructor cannot claim a different actual layout.");
 Check(read.Locations[5].TemplateOwner == new HirTemplateId(0), "Template-owned location");
 Check(read.Functions[2].Captures.Select(capture => capture.Mode).SequenceEqual([HirCaptureMode.Location, HirCaptureMode.Value]), "Capture modes remain distinct");
 Check(read.Templates[0].ResultAnnotation == new HirTypeId(10) && read.Templates[0].TypeParameterTypes[0] == new HirTypeId(10), "Bound generic annotations survive");
@@ -136,6 +155,7 @@ byte[] tiny = Encode(Scalar(42));
 for (int length = 0; length < tiny.Length; length++) Reject(tiny[..length], "Truncation rejected");
 byte[] badMagic = (byte[])tiny.Clone(); badMagic[0] ^= 0xff; Reject(badMagic, "Bad magic rejected");
 byte[] badVersion = (byte[])tiny.Clone(); badVersion[8] = 255; Reject(badVersion, "Unknown container version rejected");
+byte[] oldVersion = (byte[])tiny.Clone(); oldVersion[8] = 1; Reject(oldVersion, "Superseded HIR encoding rejected");
 byte[] badLanguage = (byte[])tiny.Clone(); badLanguage[11] = (byte)'9'; Reject(badLanguage, "Unknown semantic version rejected");
 byte[] badCount = (byte[])tiny.Clone();
 int sourceCount = 8 + sizeof(ushort) + 1 + HirArtifact.LanguageVersion.Length + sizeof(int) + 1;
@@ -203,6 +223,14 @@ void RejectModule(HirModule module, string message)
     try { _ = Encode(module); }
     catch (MsyncException) { checks++; return; }
     throw new InvalidOperationException(message);
+}
+
+void RejectLayoutModule(HirModule module, string message)
+{
+    RejectModule(module, message);
+    using MemoryStream stream = new();
+    HirArtifact.WriteProduced(module, stream);
+    Reject(stream.ToArray(), message);
 }
 
 byte[] Encode(HirModule module)

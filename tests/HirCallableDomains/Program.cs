@@ -19,7 +19,7 @@ await Number("unreachable-write", first + "let operation = fn { [1] }; let pendi
 await Number("uncalled-writer", first + "let operation = fn { [1] }; fn unused() { operation = fn { 1 + true }; }; let pending = operation(); first(pending)", 1);
 await Number("query-only-writer", first + "let operation = fn { [1] }; fn writer() { operation = fn { 1 + true }; 0 }; let query = decltype(writer()); let pending = operation(); first(pending)", 1);
 await Number("future-type-denotation", first + "let type = Number; fn select(type: Type) { if type is Number { [1] } else { [2] } }; let pending = select(type); type = String; first(pending)", 2);
-await Number("native-identity", "native fn buffer_new(initial: Range) -> Range; native fn buffer_size(items: Range) -> Number; let policy = scope { size: buffer_size }; fn forward(policy) { policy::size }; let selected = if exists ./__missing_native_identity__ { forward(policy) } else { policy::size }; selected(buffer_new([1]))", 1);
+await Number("native-identity", "let policy = scope { size: $std::storage::vector_size }; fn forward(policy) { policy::size }; let selected = if exists ./__missing_native_identity__ { forward(policy) } else { policy::size }; selected($std::storage::vector_new([1]))", 1);
 await Number("eager-variable-policy", first + "native fn materialize(values: Range) -> Range; let source = 1; let input = materialize([source]); fn identity(value) { value }; let selected = identity(input); source = 2; input = [source]; first(selected)", 1);
 await Number("future-eager-callable-policy", first + "native fn materialize(values: Range) -> Range; let operation = fn { [1] }; let pending = operation(); operation = fn { materialize([2]) }; first(pending)", 2);
 await Number("scope-bool-policy", first + "native fn materialize(values: Range) -> Range; let state = scope { flag: false }; let source = 1; fn choose(value: Number) { if state::flag { materialize([value]) } else { [value] } }; let pending = choose(source); source = 2; first(pending)", 2);
@@ -33,24 +33,19 @@ Reject("fixed-captured-signature", first + "fn maker(value) { fn { [value] } }; 
 await Text("path-string-contract", "let operation = fn { \"before\" }; operation(); operation = fn { ./after }; operation()", "./after");
 await Number("contract-query-isolation", first + "let state = scope { writes: 0 }; let operation = fn { [1] }; let pending = operation(); operation = fn { state::writes = state::writes + 10; [2] }; if state::writes == 0 { first(pending); if state::writes == 10 { 1 } else { 0 } } else { -1 }", 1);
 await Number("resource-return-eager", """
-    native fn buffer_new(initial: Range) -> Range;
-    native fn buffer_get(items: Range, index: Number) -> Scope;
-    native fn buffer_push(items: Range, value: Number) -> Number;
-    native fn buffer_size(items: Range) -> Number;
     let state = scope { changed: false };
-    let rows = buffer_new([scope { children: buffer_new([1]) }]);
+    let rows = $std::storage::vector_new([scope { children: $std::storage::vector_new([1]) }]);
     fn choose(rows, index: Number) {
         state::changed = true;
-        buffer_get(rows, index)::children
+        $std::storage::vector_get(rows, index)::children
     };
     let selected = choose(rows, 0);
-    if state::changed { buffer_push(selected, 2); buffer_size(selected) } else { 0 }
+    if state::changed { $std::storage::vector_push(selected, 2); $std::storage::vector_size(selected) } else { 0 }
     """, 2);
 await Number("nested-resource-policy-cache", """
-    native fn buffer_new(initial: Range) -> Range;
     let state = scope { changed: false };
     fn select(row) { state::changed = true; row::items };
-    let eager = scope { items: buffer_new([1]) };
+    let eager = scope { items: $std::storage::vector_snapshot($std::storage::vector_new([1])) };
     let lazy = scope { items: [2] };
     let first = select(eager);
     state::changed = false;

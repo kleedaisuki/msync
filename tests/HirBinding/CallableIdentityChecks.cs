@@ -20,9 +20,9 @@ internal static class CallableIdentityChecks
         Check(!comparer.Equals(Closure(7, one, HirCaptureMode.Value), Closure(7, two, HirCaptureMode.Value)),
             "By-value snapshots retain distinct values.");
         Check(comparer.Equals(new(new(1)), new(new(1), Captures: [])), "Default and empty captures are equivalent.");
-        Check(comparer.Equals(new(NativeName: "storage.buffer_size"),
-            new(NativeName: "storage.buffer_size", Captures: [])), "Native identity does not depend on empty storage.");
-        Check(!comparer.Equals(new(NativeName: "storage.buffer_size"), new(NativeName: "storage.buffer_get")),
+        Check(comparer.Equals(new(NativeName: "storage.vector_size"),
+            new(NativeName: "storage.vector_size", Captures: [])), "Native identity does not depend on empty storage.");
+        Check(!comparer.Equals(new(NativeName: "storage.vector_size"), new(NativeName: "storage.vector_get")),
             "Different registered natives remain different.");
         SemanticCallable[] repeated = Enumerable.Range(0, 384).Select(index => Closure(7, index % 2 == 0 ? one : two)).ToArray();
         Check(repeated.Distinct(comparer).Count() == 1, "Repeated joins are idempotent for one live closure environment.");

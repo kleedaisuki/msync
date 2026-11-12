@@ -5,8 +5,8 @@ dotnet run --project tests/ArtifactCurrent/Msync.ArtifactCurrent.Tests.csproj
 ```
 
 This direct Core/Runtime journey round-trips the current format and captured path
-projection, rejects formats 1/2/3/4 with recompilation guidance, and rejects
-obsolete execution modes. Format 5 preserves contextual transfer kinds, resource
+projection, rejects formats 1 through 5 with recompilation guidance, and rejects
+obsolete execution modes. Format 6 preserves contextual transfer kinds, resource
 footprints, dependencies, batches, observed results and source origins. Its codec
 rejects a cyclic predecessor reference during intake; the VM has no environment
 freshness check.
@@ -27,3 +27,8 @@ output bytes, then removes the selected input and executes the same artifact
 again. That submission reports the concrete missing-file operation rather than
 classifying the plan as stale or rebuilding it. Temporary input/output belongs
 to the journey under `.temp`.
+
+A bound executable also round-trips a static Scope layout and accesses its
+typed field without constructing a Scope value. Repeated execution in one
+interpreter observes its prior store; a different interpreter starts with
+independent static storage.

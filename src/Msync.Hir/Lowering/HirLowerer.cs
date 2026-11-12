@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Globalization;
 using Msync.Core;
 
@@ -26,15 +27,18 @@ public static class HirLowerer
     {
         private readonly List<Value> constants = [];
         private readonly Dictionary<Value, int> constantIndices = new(ValueRepresentation.Comparer);
-        private readonly Dictionary<HirFunctionId, FunctionCode> functions = [];
         private readonly List<HirLocationId>?[] locations = new List<HirLocationId>?[hir.Functions.Length];
-        private readonly StorageLayout?[] scopeLayouts = new StorageLayout?[hir.ScopeLayouts.Length];
+        private readonly HirPlaceLowering places = new(hir, layout);
         private readonly HashSet<HirLocationId>? sessionRoots = hir.IsSession
             ? hir.Exports.Select(export => export.Location).ToHashSet() : null;
+        private readonly HashSet<HirNodeId>? erasedNamespaces = hir.IsSession || options.PreserveLocals
+            ? null : HirNamespaceErasure.Find(hir);
 
         internal HirLoweringResult Run()
         {
+            bool extendsLayout = layout.NextCallable != 0;
             ReserveCallables();
+            FunctionCode[] code = new FunctionCode[layout.NextCallable];
             for (int index = 0; index < hir.Locations.Length; index++)
             {
                 var location = hir.Locations[index];
@@ -44,20 +48,22 @@ public static class HirLowerer
             for (int index = 0; index < hir.Functions.Length; index++)
             {
                 HirFunctionId id = new(index);
-                functions.Add(id, new FunctionLowering(this, id, hir.Functions[index]).Run());
+                code[Function(id)] = new FunctionLowering(this, id, hir.Functions[index]).Run();
             }
-            FunctionCode[] code = new FunctionCode[layout.NextCallable];
-            foreach (var (id, function) in functions) code[layout.Functions[id]] = function;
             for (int index = 0; index < hir.Templates.Length; index++)
             {
                 HirTemplateId id = new(index);
                 var template = hir.Templates[index];
+                ImmutableArray<HirCapture> captures = template.Captures.IsDefault ? [] : template.Captures;
                 code[layout.Templates[id]] = new(template.Name, template.Parameters.Length,
-                    template.Parameters.Length + (template.Captures.IsDefault ? 0 : template.Captures.Length),
-                    [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null,
-                    template.Captures.IsDefault ? 0 : template.Captures.Length);
+                    template.Parameters.Length + captures.Length,
+                    [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, captures.Length,
+                    template.Parameters.Select(RuntimeLocationType).ToArray())
+                {
+                    CodeSignature = Signature(template.Parameters, places.Type(TypeRef.Null), captures) with { IsTemplate = true }
+                };
             }
-            if (code.Any(function => function is null))
+            if (extendsLayout && code.Any(function => function is null))
                 throw new InvalidOperationException("A persistent HIR module must retain its prior callable definitions.");
             var result = new Module(constants.ToArray(), code, layout.Functions[hir.Entry],
                 OptimizationLevel: options.OptimizationLevel, PreserveLocals: hir.IsSession || options.PreserveLocals)
@@ -67,7 +73,7 @@ public static class HirLowerer
                     new SessionDispatchTable(dispatch.Slot, dispatch.Targets.ToDictionary(
                         target => Callable(target.Identity), target => Function(target.Target)))).ToArray()
             };
-            return new(result, options.RetainLayout ? layout.Layout : HirLoweringLayout.Empty);
+            return new(places.Finish(result), options.RetainLayout ? layout.Layout : HirLoweringLayout.Empty);
         }
 
         private void ReserveCallables()
@@ -98,6 +104,8 @@ public static class HirLowerer
         internal int Function(HirFunctionId id) => layout.Functions[id];
         internal int Slot(HirFunctionId function, HirLocationId location) => layout.Locations[new(function, location)];
         internal bool SessionRoot(HirLocationId location) => sessionRoots?.Contains(location) == true;
+        internal bool ErasesNamespace(HirNodeId declaration) => erasedNamespaces?.Contains(declaration) == true;
+        internal bool CanEraseNamespaceValues => !hir.IsSession && !options.PreserveLocals;
         internal bool SharedEntryImport(HirLocationId location)
         {
             var definition = hir.Locations[location.Value];
@@ -120,43 +128,23 @@ public static class HirLowerer
         internal Core.SourceSpan? Source(HirSourceRange range) => range.Source.Value < 0 ? null
             : new(hir.Sources[range.Source.Value].Name, range.Start, range.Length);
         internal TypeRef Type(HirTypeId id) => hir.RuntimeType(id);
-        internal StorageLayout ScopeLayout(int shape) =>
-            scopeLayouts[shape] ??= StorageLayout.Create(hir.ScopeLayouts[shape]);
-
-        internal int MemberHint(HirNode node, HirNodeId receiver)
+        internal TypeRef RuntimeLocationType(HirLocationId id)
         {
-            if (node.Data < 0) return 0;
-            int shape = hir.Types[hir.Node(receiver).Type.Value].Shape;
-            if (shape < 0) return node.Data + 1;
-            var fields = hir.ScopeLayouts[shape].Fields;
-            if ((uint)node.Data >= (uint)fields.Length || fields[node.Data].Name != node.Text)
-                return node.Data + 1;
-            return ScopeLayout(shape).PhysicalSlot(node.Data) + 1;
+            var location = hir.Locations[id.Value];
+            var type = Type(location.StorageType);
+            return location.AdmitsNull ? type.WithNull : type;
         }
+        internal HirPlaceLowering Places => places;
+        internal CodeSignature Signature(IEnumerable<HirLocationId> parameters, int result,
+            IEnumerable<HirCapture> captures, ImmutableArray<HirTypeId> entryTypes = default) =>
+            new(entryTypes.IsDefaultOrEmpty ? parameters.Select(places.LocationType).ToArray()
+                    : entryTypes.Select(type => places.Type(type)).ToArray(), result,
+                captures.Select(capture => capture.Mode == HirCaptureMode.Location
+                    ? new CodeCapture(places.CellType(capture.Target), true)
+                    : new CodeCapture(places.LocationType(capture.Target), false)).ToArray());
         internal HirModule Hir => hir;
         internal HirLoweringSession Layout => layout;
         internal IReadOnlyList<HirLocationId> Locations(HirFunctionId function) => locations[function.Value] ?? (IReadOnlyList<HirLocationId>)Array.Empty<HirLocationId>();
-    }
-
-    private sealed record StorageLayout(string Names, int[]? StorageToHir, int[]? HirToStorage)
-    {
-        internal int PhysicalSlot(int field) => HirToStorage is null ? field : HirToStorage[field];
-        internal int HirSlot(int offset) => StorageToHir is null ? offset : StorageToHir[offset];
-
-        internal static StorageLayout Create(HirScopeLayout shape)
-        {
-            var fields = shape.Fields;
-            for (int index = 1; index < fields.Length; index++)
-            {
-                if (string.CompareOrdinal(fields[index - 1].Name, fields[index].Name) <= 0) continue;
-                var order = Enumerable.Range(0, fields.Length).ToArray();
-                Array.Sort(order, (left, right) => string.CompareOrdinal(fields[left].Name, fields[right].Name));
-                int[] reverse = new int[order.Length];
-                for (int slot = 0; slot < order.Length; slot++) reverse[order[slot]] = slot;
-                return new(string.Join('\0', order.Select(field => fields[field].Name)), order, reverse);
-            }
-            return new(string.Join('\0', fields.Select(field => field.Name)), null, null);
-        }
     }
 
     private sealed class FunctionLowering(Lowering owner, HirFunctionId id, HirFunction function)
@@ -166,6 +154,10 @@ public static class HirLowerer
         private readonly List<int> iterators = [];
         private readonly List<string> acquireRegions = [];
         private readonly List<HirLocationId> newSharedImports = [];
+        private readonly HashSet<HirLocationId>? rawCaptures = function.Captures.IsDefaultOrEmpty ? null : function.Captures
+            .Where(capture => capture.Mode == HirCaptureMode.Location).Select(capture => capture.Target).ToHashSet();
+        private readonly HirStaticNamespaces? staticNamespaces = owner.CanEraseNamespaceValues
+            ? HirStaticNamespaces.Find(owner.Hir, function.Body) : null;
         private int locals;
         private int nextRegion;
         private HirModule Hir => owner.Hir;
@@ -188,8 +180,13 @@ public static class HirLowerer
             Emit(function.Body);
             Add(OpCode.Return);
             owner.Layout.LocalCounts[id] = locals;
+            var entry = function.ParameterEntryTypes;
             return new(function.Name, function.Parameters.Length, locals, code.ToArray(), owner.Type(function.Result),
-                function.Captures.Length, function.Parameters.Select(parameter => owner.Type(Hir.Locations[parameter.Value].StorageType)).ToArray());
+                function.Captures.Length, entry.IsDefaultOrEmpty ? function.Parameters.Select(owner.RuntimeLocationType).ToArray()
+                    : entry.Select(owner.Type).ToArray())
+            {
+                CodeSignature = owner.Signature(function.Parameters, owner.Places.Type(function.Result), function.Captures, entry)
+            };
         }
 
         private void PrepareLocations()
@@ -236,9 +233,17 @@ public static class HirLowerer
                 case HirKind.TypeValue: Add(OpCode.Constant, owner.Constant(new TypeValue(owner.Type(new(node.Data)))), source: node.Source); break;
                 case HirKind.NativeFunction: Add(OpCode.Constant, owner.Constant(new FunctionValue(-1, NativeName: node.Text!)), source: node.Source); break;
                 case HirKind.Builtin: Add(OpCode.LoadBuiltin, text: node.Text, source: node.Source); break;
-                case HirKind.ReadLocation: Add(OpCode.LoadLocal, Slot(node.Data), source: node.Source); break;
+                case HirKind.ReadLocation: ReadLocation(node); break;
                 case HirKind.ReadStorage: Add(OpCode.LoadStorage, Slot(node.Data), source: node.Source); break;
-                case HirKind.Declare: Declare(node); break;
+                case HirKind.Declare:
+                    if (owner.ErasesNamespace(expression)) Add(OpCode.Null, source: node.Source);
+                    else if (staticNamespaces?.ContainsDeclaration(expression) == true)
+                    {
+                        Scope(Hir.Node(Child(node, 0)), expose: false);
+                        Add(OpCode.Null, source: node.Source);
+                    }
+                    else Declare(node);
+                    break;
                 case HirKind.Assign: Emit(Child(node, 0)); Add(OpCode.StoreLocal, Slot(node.Data), source: node.Source); Add(OpCode.Null); break;
                 case HirKind.Discard: Emit(Child(node, 0)); Add(OpCode.Pop); Add(OpCode.Null); break;
                 case HirKind.Block: Block(node); break;
@@ -263,8 +268,8 @@ public static class HirLowerer
                 case HirKind.TemplateClosure: TemplateClosure(Hir.TemplateClosures[node.Data], node.Source); break;
                 case HirKind.AdaptFunction: Adapt(node); break;
                 case HirKind.Scope: Scope(node); break;
-                case HirKind.MemberRead: Emit(Child(node, 0)); Add(OpCode.GetMember, owner.MemberHint(node, Child(node, 0)), text: node.Text, source: node.Source); break;
-                case HirKind.MemberAssign: AllChildren(node); Add(OpCode.SetMember, owner.MemberHint(node, Child(node, 0)), text: node.Text, source: node.Source); break;
+                case HirKind.MemberRead: Field(node, write: false); break;
+                case HirKind.MemberAssign: Field(node, write: true); break;
                 case HirKind.Range: AllChildren(node); Add(OpCode.MakeRange, node.Children.Count, source: node.Source); break;
                 case HirKind.LazyRange: LazyRange(node); break;
                 case HirKind.DeferRange: Emit(Child(node, 0)); Add(OpCode.DeferRange, source: node.Source); break;
@@ -295,6 +300,31 @@ public static class HirLowerer
             };
             Add(OpCode.Constant, owner.Constant(value), source: source);
         }
+        private void ReadLocation(HirNode node)
+        {
+            Add(OpCode.LoadLocal, Slot(node.Data), source: node.Source);
+            if (!owner.Places.HasScopeDomain(node.Type)) return;
+            HirLocationId id = new(node.Data);
+            var location = Hir.Locations[node.Data];
+            if (owner.SessionRoot(id) || rawCaptures?.Contains(id) == true || owner.Places.HasOpaqueScopeSource(id)
+                || location.Kind == HirLocationKind.Import
+                    && !owner.Places.ProvesScope(node.Type, location.StorageType, location.AdmitsNull)
+                || IsOpaqueParameter(id, location))
+                Admit(node.Type, node.Source);
+        }
+
+        private bool IsOpaqueParameter(HirLocationId id, HirLocation location)
+        {
+            if (location.Kind != HirLocationKind.Parameter) return false;
+            int parameter = function.Parameters.IndexOf(id);
+            if (parameter < 0) return false;
+            var input = function.ParameterEntryTypes.IsDefaultOrEmpty
+                ? location.StorageType : function.ParameterEntryTypes[parameter];
+            return !owner.Places.HasScopeLayouts(input);
+        }
+
+        private void Admit(HirTypeId type, HirSourceRange source) =>
+            Add(OpCode.AdmitScope, owner.Places.Type(type), source: source);
         private void Declare(HirNode node)
         {
             // Session roots already own uninitialized storage. Capturing it is legal,
@@ -363,8 +393,23 @@ public static class HirLowerer
         private void Call(HirNode node)
         {
             var call = Hir.Calls[node.Data];
-            Emit(Child(node, 0));
-            if (call.Kind == HirCallKind.Native && call.SessionSlot < 0) Add(OpCode.Pop);
+            bool directNative = call.Kind == HirCallKind.Native && call.SessionSlot < 0;
+            var callee = Child(node, 0);
+            var selected = Hir.Node(callee);
+            if (call is { Kind: HirCallKind.Function, SessionSlot: < 0 }
+                && selected.Kind == HirKind.Closure
+                && Hir.Closures[selected.Data] is { Captures.IsEmpty: true } symbol
+                && symbol.Function == call.Function)
+            {
+                // Format 5 already represents a closed code symbol as a
+                // function constant. Only its immediate Call consumes it.
+                Add(OpCode.Constant, owner.Constant(new FunctionValue(owner.Function(call.Function))), source: selected.Source);
+            }
+            else if (!directNative || selected.Kind != HirKind.NativeFunction)
+            {
+                Emit(callee);
+                if (directNative) Add(OpCode.Pop);
+            }
             for (int index = 1; index < node.Children.Count; index++) Emit(Child(node, index));
             int count = node.Children.Count - 1;
             if (call.SessionSlot >= 0) Add(OpCode.Call, count, -call.SessionSlot - 1, source: node.Source);
@@ -372,13 +417,22 @@ public static class HirLowerer
             else if (call.Kind == HirCallKind.Path) Add(OpCode.ProcessCall, count, call.Scheduling, source: node.Source);
             else Add(OpCode.Call, count, call.Kind == HirCallKind.Function ? owner.Function(call.Function) + 1 : 0,
                 text: call.Targets.IsDefaultOrEmpty ? null : Dispatch(call.Targets), source: node.Source);
+            if (owner.Places.HasScopeDomain(node.Type) && !CallProvesScope(call, node.Type)) Admit(node.Type, node.Source);
         }
+        private bool CallProvesScope(HirCall call, HirTypeId required) => call.SessionSlot < 0 && (call.Kind switch
+        {
+            HirCallKind.Function => owner.Places.ProvesScope(required, Hir.Functions[call.Function.Value].Result),
+            HirCallKind.Dynamic => !call.Targets.IsDefaultOrEmpty && call.Targets.All(target =>
+                owner.Places.ProvesScope(required, Hir.Functions[target.Target.Value].Result)),
+            _ => false
+        });
         private string Dispatch(System.Collections.Immutable.ImmutableArray<HirDispatchTarget> targets) =>
-            string.Join(';', targets.Select(target => owner.Callable(target.Identity).ToString(CultureInfo.InvariantCulture)
-                + ":" + owner.Function(target.Target).ToString(CultureInfo.InvariantCulture)));
+            FunctionDispatch.Encode(targets.Select(target =>
+                KeyValuePair.Create(owner.Callable(target.Identity), owner.Function(target.Target))));
         private void Capture(HirCapture capture)
         {
-            if (capture.Mode == HirCaptureMode.Location) Add(OpCode.LoadCell, Slot(capture.SourceLocation.Value));
+            if (capture.Mode == HirCaptureMode.Location)
+                Add(OpCode.LoadCell, Slot(capture.SourceLocation.Value), owner.Places.CellType(capture.SourceLocation) + 1);
             else Emit(capture.SourceValue);
         }
         private void Closure(HirClosure closure, HirSourceRange source)
@@ -400,25 +454,52 @@ public static class HirLowerer
             if (targets.Length == 1) Add(OpCode.SpecializeClosure, owner.Function(targets[0].Target), source: node.Source);
             else Add(OpCode.SpecializeClosure, text: Dispatch(targets), source: node.Source);
         }
-        private void Scope(HirNode node)
+        private void Scope(HirNode node, bool expose = true)
         {
             var scope = Hir.Scopes[node.Data]; int site = owner.Site(node.Data);
-            if (scope.Self is { } self && !owner.SessionRoot(self) && !owner.SharedEntryImport(self))
+            if (expose && scope.Self is { } self && !owner.SessionRoot(self) && !owner.SharedEntryImport(self))
             { Add(OpCode.Null); Add(OpCode.InitializeLocal, Slot(self.Value)); }
-            int initialized = -1;
-            if (scope.Singleton >= 0)
-            {
-                Add(OpCode.GetSingleton, site, source: node.Source); Add(OpCode.Dup); Add(OpCode.IsNull);
-                initialized = Add(OpCode.JumpIfFalse); Add(OpCode.Pop);
-            }
+            int declaration = scope.Singleton >= 0 ? owner.Places.Static(site, scope.Layout) : -1;
+            int initialized = declaration >= 0 ? Add(OpCode.JumpIfStaticReady, b: declaration, source: node.Source) : -1;
             foreach (var initializer in Hir.Children(node)) { Emit(initializer); Add(OpCode.Pop); }
-            // Initialization order belongs to the expressions above, not to storage.
-            var storage = owner.ScopeLayout(scope.Layout);
-            for (int offset = 0; offset < scope.Fields.Length; offset++)
-                Add(OpCode.LoadStorage, Slot(scope.Fields[storage.HirSlot(offset)].Value));
-            Add(OpCode.MakeScope, scope.Fields.Length, site, storage.Names, node.Source);
-            if (scope.Singleton >= 0) { Add(OpCode.SetSingleton, site, source: node.Source); Patch(initialized, code.Count); }
-            if (scope.Self is { } target) { Add(OpCode.Dup); Add(OpCode.StoreLocal, Slot(target.Value)); }
+            foreach (var field in scope.Fields) Add(OpCode.LoadStorage, Slot(field.Value));
+            if (declaration >= 0)
+            {
+                Add(OpCode.PublishStatic, declaration, source: node.Source);
+                Patch(initialized, code.Count);
+                if (expose) Add(OpCode.LoadStaticScope, declaration, source: node.Source);
+            }
+            else Add(OpCode.NewScope, owner.Places.Layout(scope.Layout), site, source: node.Source);
+            if (expose && scope.Self is { } target) { Add(OpCode.Dup); Add(OpCode.StoreLocal, Slot(target.Value)); }
+        }
+        private void Field(HirNode node, bool write)
+        {
+            var receiver = Child(node, 0);
+            if (Hir.Node(receiver) is { Kind: HirKind.ReadLocation, Data: var location }
+                && staticNamespaces?.TryGetReceiver(location, out int construction) == true)
+            {
+                var scope = Hir.Scopes[construction];
+                int declaration = owner.Places.Static(owner.Site(construction), scope.Layout);
+                int field = owner.Places.Field(scope.Layout, node.Text!, node.Data);
+                if (write) Emit(Child(node, 1));
+                Add(write ? OpCode.StoreStaticField : OpCode.LoadStaticField, declaration, field, source: node.Source);
+                var storage = Hir.ScopeLayouts[scope.Layout].Fields[field];
+                if (!write && owner.Places.HasScopeDomain(node.Type)
+                    && !owner.Places.ProvesScope(node.Type, storage.StorageType, storage.AdmitsNull))
+                    Admit(node.Type, node.Source);
+                return;
+            }
+            Emit(receiver);
+            if (owner.Type(Hir.Node(receiver).Type) == TypeRef.Process)
+            {
+                Add(OpCode.NativeCall, 1, text: "process." + node.Text, source: node.Source);
+                return;
+            }
+            if (write) Emit(Child(node, 1));
+            int projection = owner.Places.Projection(node, receiver);
+            Add(write ? OpCode.StoreField : OpCode.LoadField, projection, source: node.Source);
+            if (!write && owner.Places.HasScopeDomain(node.Type) && !owner.Places.FieldProvesScope(node.Type, projection))
+                Admit(node.Type, node.Source);
         }
         private void LazyRange(HirNode node)
         {
@@ -441,9 +522,20 @@ public static class HirLowerer
             int begin = code.Count; int next = Add(OpCode.IteratorNext, iterator, source: node.Source);
             var context = new LoopState(loop.Loop, true, iterators.Count, acquireRegions.Count);
             loops.Add(context); iterators.Add(iterator);
+            var item = Hir.Locations[loop.Item.Value].StorageType;
+            var producer = Hir.Node(Child(node, 0));
+            if (owner.Places.HasScopeDomain(item) && (producer.Kind != HirKind.Range
+                || !EveryElementProvesScope(producer, item)))
+                Admit(item, node.Source);
             Add(OpCode.InitializeLocal, Slot(loop.Item.Value)); Emit(Child(node, 1)); Add(OpCode.Pop); Add(OpCode.Jump, begin);
             int end = code.Count; code[next] = code[next] with { B = end };
             FinishLoop(context, end); Add(OpCode.Null, source: node.Source);
+        }
+        private bool EveryElementProvesScope(HirNode producer, HirTypeId item)
+        {
+            foreach (var child in Hir.Children(producer))
+                if (!owner.Places.ProvesScope(item, Hir.Node(child).Type)) return false;
+            return true;
         }
         private void Loop(HirNode node)
         {

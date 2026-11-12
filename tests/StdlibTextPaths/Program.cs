@@ -1,5 +1,6 @@
 using Msync.Optimization;
 using System.Globalization;
+using System.Text;
 using Msync.Core;
 using Msync.Runtime;
 using Frontend = Msync.Compiler.Compiler;
@@ -43,6 +44,8 @@ Equal("Number:8", await Native("utf8_size", text), "UTF-8 byte length");
 Equal("Bool:false", await Native("is_ascii", text), "ASCII classification");
 Equal("Bool:true", await Native("is_ascii", new StringValue("A\0z")), "ASCII control characters");
 await RangeEqual(["A", "😀", "e", "\u0301"], await Native("chars", text), "Unicode scalar iteration");
+await RangeEqual(["\uFFFD", "A", "\uFFFD", "\uFFFD"], await Native("chars", new StringValue("\uD800A\uDC00\uD800")),
+    "Invalid UTF-16 retains rune replacement semantics");
 Equal("String:😀e", await Native("substring", text, new NumberValue(1), new NumberValue(2)), "Scalar substring");
 Equal("String:e\u0301", await Native("substring", text, new NumberValue(2), new NumberValue(1e30)), "Huge count clamps without a quota");
 Equal("String:", await Native("substring", text, new NumberValue(4), new NumberValue(1)), "Substring at end");
@@ -56,6 +59,8 @@ Equal("String:ababab", await Native("repeat", new StringValue("ab"), new NumberV
 Equal("String:", await Native("repeat", new StringValue(""), new NumberValue(1e30)), "Empty repetition does not allocate count slots");
 await RangeEqual([], await Native("lines", new StringValue("")), "Empty text has no lines");
 await RangeEqual(["", "A", "B"], await Native("lines", new StringValue("\r\nA\nB\r")), "Portable line endings");
+await RangeEqual(["A\u2028B\u0085C", ""], await Native("lines", new StringValue("A\u2028B\u0085C\r\n\n")),
+    "Line splitting recognizes only CR and LF and retains internal empties");
 await RangeEqual(["A", "😀", "e\u0301"], await Native("split_whitespace", new StringValue(" \tA\u2003😀\ne\u0301 ")), "Unicode whitespace");
 Equal("String:A|😀|e|\u0301", await Native("join", await Native("chars", text), new StringValue("|")), "Streaming string join");
 foreach (double invalid in new[] { -1.0, 0.5, double.NaN, double.PositiveInfinity })
@@ -77,6 +82,30 @@ for (int sample = 0; sample < 30; sample++)
     Equal("String:" + string.Concat(scalars.Skip(start).Take(count)),
         await Native("substring", new StringValue(value), new NumberValue(start), new NumberValue(count)), "Generated scalar substring");
 }
+
+string[] splitAlphabet = ["a", "aa", "汉", "😀", ":", "\uD800", "\uDC00", "\r\n"];
+foreach (string separator in new[] { "", ":", "aa", "😀", "\uD800" })
+{
+    for (int sample = 0; sample < 8; sample++)
+    {
+        string input = string.Concat(Enumerable.Range(0, sample * 3)
+            .Select(_ => splitAlphabet[random.Next(splitAlphabet.Length)]));
+        string[] expected = separator.Length == 0
+            ? ["", .. input.EnumerateRunes().Select(rune => rune.ToString()), ""]
+            : input.Split(separator, StringSplitOptions.None);
+        var parts = await Native("split", new StringValue(input), new StringValue(separator));
+        await RangeEqual(expected, parts, "Generated ordinal split");
+        Equal("String:" + string.Join('|', expected), await Native("join", parts, new StringValue("|")),
+            "Joined borrowed slices preserve exact UTF-16");
+    }
+}
+
+var borrowed = await Native("split", new StringValue("🙂<>e\u0301"), new StringValue("<>"));
+RangeValue owned = (RangeValue)await NativeRegistry.InvokeAsync("ranges.materialize", [borrowed], context,
+    (_, _, _) => throw new InvalidOperationException("Snapshot unexpectedly invoked a callback"));
+Require(owned is { RetainedValues: null, OwnedSnapshot.Count: 2 },
+    "A String snapshot owns strings rather than guest Value roots");
+await RangeEqual(["🙂", "e\u0301"], owned, "Raw String snapshot compatibility projection");
 
 if (args.Contains("--native-only", StringComparer.Ordinal))
 {

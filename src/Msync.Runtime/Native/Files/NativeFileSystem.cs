@@ -27,8 +27,15 @@ public static partial class NativeRegistry
 
     private static Value? LexicalOperation(string name, IReadOnlyList<Value> args, PathValue path, RuntimeContext context)
     {
-        bool projected = path.Connection is null && LocalWindows(path);
-        NativePath value = new(path.Raw, LocalWindows(path), projected ? '/' : null);
+        switch (name)
+        {
+            case "filename": return MaterializeLexicalComponent(path, NativePathComponent.Filename, OperatingSystem.IsWindows());
+            case "stem": return MaterializeLexicalComponent(path, NativePathComponent.Stem, OperatingSystem.IsWindows());
+            case "extension": return MaterializeLexicalComponent(path, NativePathComponent.Extension, OperatingSystem.IsWindows());
+        }
+        bool windows = LocalWindows(path);
+        bool projected = path.Connection is null && windows;
+        NativePath value = new(path.Raw, windows, projected ? '/' : null);
         bool binaryText = name is "concat" or "append" or "replace_filename" or "replace_extension";
         string? rawArgument = binaryText ? args[1] is PathValue argumentPath ? argumentPath.Raw : Text(args[1]) : null;
         string? nativeArgument = projected && binaryText ? Text(args[1]) : rawArgument;
@@ -49,14 +56,14 @@ public static partial class NativeRegistry
             return new StringValue(name == "generic_string" && value.Windows ? path.Raw.Replace('\\', '/') : name == "generic_string" ? path.Raw : path.NativeText);
         bool? result = name switch
         {
-            "has_root_name" => value.RootName.Length > 0,
+            "has_root_name" => !value.RootNameSpan.IsEmpty,
             "has_root_directory" => value.RootDirectory,
-            "has_root_path" => value.Root.Length > 0,
-            "has_relative_path" => value.Relative.Length > 0,
+            "has_root_path" => value.RootDirectory || !value.RootNameSpan.IsEmpty,
+            "has_relative_path" => !value.RelativeSpan.IsEmpty,
             "has_parent_path" => value.Parent.Length > 0,
-            "has_filename" => value.Filename.Length > 0,
-            "has_stem" => NativePath.SplitExtension(value.Filename).Stem.Length > 0,
-            "has_extension" => NativePath.SplitExtension(value.Filename).Extension.Length > 0,
+            "has_filename" => !value.FilenameSpan.IsEmpty,
+            "has_stem" => !value.StemSpan.IsEmpty,
+            "has_extension" => !value.ExtensionSpan.IsEmpty,
             "is_absolute" => value.IsAbsolute,
             "is_relative" => !value.IsAbsolute,
             "path_empty" => path.Raw.Length == 0,
@@ -72,20 +79,22 @@ public static partial class NativeRegistry
         "root_path" => value.Root,
         "relative_path" => value.Relative,
         "parent_path" => value.Parent,
-        "filename" => value.Filename,
-        "stem" => NativePath.SplitExtension(value.Filename).Stem,
-        "extension" => NativePath.SplitExtension(value.Filename).Extension,
         "lexically_normal" => value.Normal(),
         "remove_filename" => value.RemoveFilename,
         "make_preferred" => value.Preferred,
         "concat" => value.Source + argument,
         "append" => value.Append(argument!),
         "replace_filename" => new NativePath(value.RemoveFilename, value.Windows, value.Separator).Append(argument!),
-        "replace_extension" => value.Source[..(value.Source.Length - NativePath.SplitExtension(value.Filename).Extension.Length)] + Extension(argument!),
+        "replace_extension" => ReplaceExtension(value, argument!),
         _ => null
     };
 
-    private static string Extension(string extension) => extension.Length == 0 || extension.StartsWith('.') ? extension : "." + extension;
+    private static string ReplaceExtension(NativePath path, string extension)
+    {
+        var prefix = path.Source.AsSpan(0, path.Source.Length - path.ExtensionSpan.Length);
+        return extension.Length == 0 || extension[0] == '.' ? string.Concat(prefix, extension)
+            : string.Concat(prefix, ".", extension);
+    }
 
     private static Value LocalFileSystem(string name, IReadOnlyList<Value> args, PathValue path, string local, RuntimeContext context)
     {
@@ -294,18 +303,47 @@ public static partial class NativeRegistry
     {
         string[] entries = Directory.GetFileSystemEntries(local);
         Array.Sort(entries, TextSemantics.Ordinal);
+        bool windows = LocalWindows(path);
+        bool projected = path.Connection is null && windows;
+        NativePath rawParent = new(path.Raw, windows, projected ? '/' : null);
+        NativePath localParent = projected ? new(path.NativeText, true) : default;
         foreach (string entry in entries)
         {
             token.ThrowIfCancellationRequested();
-            string name = Path.GetFileName(entry);
-            bool projected = path.Connection is null && LocalWindows(path);
-            string raw = new NativePath(path.Raw, LocalWindows(path), projected ? '/' : null).Append(name);
-            PathValue child = path.WithRaw(raw, projected ? new NativePath(path.NativeText, true).Append(name) : null);
+            var name = Path.GetFileName(entry.AsSpan());
+            string raw = rawParent.Append(name);
+            PathValue child = path.WithRaw(raw, projected ? localParent.Append(name) : null);
             yield return child;
             FileAttributes attributes = File.GetAttributes(entry);
             if (!recursive || (attributes & FileAttributes.Directory) == 0 || NativeFileMetadata.IsLink(entry, attributes)) continue;
             await foreach (Value value in EnumerateDirectory(child, entry, true, token)) yield return value;
         }
     }
-    private static bool LocalWindows(PathValue path) => OperatingSystem.IsWindows() && path.Connection?.Kind is not (ConnectionKind.Ssh or ConnectionKind.Wsl);
+    internal static PathValue MaterializeLexicalComponent(PathValue path, NativePathComponent component, bool windowsHost)
+    {
+        bool windows = LocalWindows(path, windowsHost);
+        string raw = new NativePath(path.Raw, windows).MaterializeComponent(component);
+        string? local = null;
+        if (windows && path.Connection is null && path.LocalSpelling is { } spelling)
+        {
+            var projection = new NativePath(spelling, true).BorrowComponent(component);
+            if (!projection.SequenceEqual(raw)) local = projection.ToString();
+        }
+        return path.WithRaw(raw, local);
+    }
+
+    internal static PathValue MaterializeLexicalComponent(StringValue text, NativePathComponent component, RuntimeContext context, bool windowsHost) =>
+        new(new NativePath(text.Data, windowsHost).MaterializeComponent(component), context.WorkingDirectory, HomeDirectory: context.HomeDirectory);
+
+    internal static NativePath LexicalTextProjection(PathValue path, bool windowsHost)
+    {
+        bool windows = LocalWindows(path, windowsHost);
+        // Path-returning lexical operations emit a second spelling only on an
+        // unqualified Windows path; their String consumers see that spelling.
+        return new(windows && path.Connection is null ? path.NativeText : path.Raw, windows);
+    }
+
+    private static bool LocalWindows(PathValue path) => LocalWindows(path, OperatingSystem.IsWindows());
+    private static bool LocalWindows(PathValue path, bool windowsHost) =>
+        windowsHost && path.Connection?.Kind is not (ConnectionKind.Ssh or ConnectionKind.Wsl);
 }

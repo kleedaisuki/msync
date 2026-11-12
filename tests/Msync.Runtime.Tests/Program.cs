@@ -21,13 +21,20 @@ if (args.Contains("--mutable-state", StringComparer.Ordinal))
 }
 
 int assertions = 0;
+const int any = 0, boolean = 1, stringType = 2, nil = 3, path = 4, pathRange = 5;
+CodeType[] types =
+[
+    new(TypeKind.Any), new(TypeKind.Bool), new(TypeKind.String), new(TypeKind.Null),
+    new(TypeKind.Path), new(TypeKind.Range, Element: path)
+];
 void Check(bool condition, string message)
 {
     assertions++;
     if (!condition) throw new InvalidOperationException(message);
 }
 Module Program(IReadOnlyList<Value> constants, params Instruction[] instructions) => new(constants,
-    [new("main", 0, 2, instructions, TypeRef.Any)]);
+    [new FunctionCode("main", 0, 2, instructions, TypeRef.Any) { CodeSignature = new([], any, []) }])
+{ CodeTypes = types };
 async Task<Value> Run(Module module, ExecutionOptions? options = null) => await Interpreter.ExecuteAsync(module, options);
 void Reject(Module module, string expected)
 {
@@ -38,22 +45,21 @@ Reject(Program([], new(OpCode.Pop), new(OpCode.Return)), "stack underflow");
 Reject(Program([], new(OpCode.LoadLocal, 0), new(OpCode.Return)), "not defined");
 Reject(Program([], new(OpCode.True), new(OpCode.GetIterator), new(OpCode.Return)), "expected Range");
 Reject(Program([], new(OpCode.Null), new(OpCode.Not), new(OpCode.Return)), "expected Bool");
-Reject(new Module([], [new FunctionCode("main", 1, 2, [new(OpCode.LoadLocal, 0), new(OpCode.JumpIfFalse, 4), new(OpCode.True), new(OpCode.Jump, 5), new(OpCode.Nop), new(OpCode.Return)], TypeRef.Any, ParameterTypes: [TypeRef.Bool])]), "stack heights disagree");
+Reject(new Module([], [new FunctionCode("main", 1, 2, [new(OpCode.LoadLocal, 0), new(OpCode.JumpIfFalse, 4), new(OpCode.True), new(OpCode.Jump, 5), new(OpCode.Nop), new(OpCode.Return)], TypeRef.Any, ParameterTypes: [TypeRef.Bool])
+    { CodeSignature = new([boolean], any, []) }]) { CodeTypes = types }, "stack heights disagree");
 Check(PathSemantics.Join(new PathValue("left\\", Connection: new(ConnectionKind.Ssh, "host")), "leaf") == "left\\/leaf", "Remote path join erased a POSIX backslash");
-var emptyScope = Program([], new(OpCode.MakeScope, 0, Text: ""), new(OpCode.Return));
-Artifact.Validate(emptyScope);
-Check(await Run(emptyScope) is ScopeValue { Members.Count: 0 }, "Empty lexical scope gained an empty-name member");
+var emptyScope = Program([], new(OpCode.NewScope, 0), new(OpCode.Return)) with { ScopeLayouts = [new([])] };
+Check(await Run(Reload(emptyScope)) is ScopeValue { Members.Count: 0 }, "Empty lexical scope gained an empty-name member");
 Check(await Run(Program([], new(OpCode.Null), new(OpCode.RegexMatch, Text: ".+"), new(OpCode.Return))) is BoolValue { Data: false }, "Regex partial pattern matched Null");
 Check(await Run(Program([], new(OpCode.True), new(OpCode.RegexMatch, Text: ".+"), new(OpCode.Return))) is BoolValue { Data: false }, "Regex partial pattern stringified Bool");
 var dispatch = new Module([new StringValue("argument")],
-    [new("main", 0, 0, [new(OpCode.MakeClosure, 1), new(OpCode.Constant, 0), new(OpCode.Call, 1, Text: "1:2"), new(OpCode.Return)], TypeRef.String),
-     new("template", 1, 1, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null),
-     new("specialized", 1, 1, [new(OpCode.LoadLocal, 0), new(OpCode.Return)], TypeRef.String)]);
-using (var dispatchStream = new MemoryStream())
-{
-    Artifact.Write(dispatch, dispatchStream); dispatchStream.Position = 0;
-    Check(await Run(Artifact.Read(dispatchStream)) is StringValue { Data: "argument" }, "Compiled first-class dispatch lost selected signature or argument");
-}
+    [new FunctionCode("main", 0, 0, [new(OpCode.MakeClosure, 1), new(OpCode.Constant, 0), new(OpCode.Call, 1, Text: "1:2"), new(OpCode.Return)], TypeRef.String)
+     { CodeSignature = new([], stringType, []) },
+     new FunctionCode("template", 1, 1, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null)
+     { CodeSignature = new([any], nil, []) { IsTemplate = true } },
+     new FunctionCode("specialized", 1, 1, [new(OpCode.LoadLocal, 0), new(OpCode.Return)], TypeRef.String)
+     { CodeSignature = new([stringType], stringType, []) }]) { CodeTypes = types };
+Check(await Run(Reload(dispatch)) is StringValue { Data: "argument" }, "Compiled first-class dispatch lost selected signature or argument");
 Check(await Run(Program([new StringValue("\U00010000"), new StringValue("\uE000")], new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Greater), new(OpCode.Return))) is BoolValue { Data: true }, "String order changed from Unicode scalar order to UTF-16 code-unit order");
 Check(await Run(Program([new PathValue("\U00010000"), new PathValue("\uE000")], new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Greater), new(OpCode.Return))) is BoolValue { Data: true }, "Path lexical order differs from native string conversion order");
 var random = new Random(413);
@@ -94,15 +100,19 @@ try
     await Run(writes, new(WorkingDirectory: other));
     Check(File.Exists(Path.Combine(other, "c")), "Relocatable module failed to bind current cwd");
     var lazyConstants = new Value[] { new StringValue("lazy"), new PathValue("lazy-flag"), new NumberValue(0) };
-    var thunk = new FunctionCode("lazy-item", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Transfer), new(OpCode.Pop), new(OpCode.Constant, 1), new(OpCode.Return)], TypeRef.Path);
-    var lazy = new Module(lazyConstants, [new("main", 0, 1, [new(OpCode.MakeClosure, 1), new(OpCode.MakeLazyRange, 1, Text: "1"), new(OpCode.Constant, 2), new(OpCode.NativeCall, 2, Text: "ranges.take"), new(OpCode.NativeCall, 1, Text: "ranges.empty"), new(OpCode.Return)], TypeRef.Bool), thunk]);
-    Check(await Run(lazy, new(WorkingDirectory: root)) is BoolValue { Data: true }, "Lazy take(0) did not produce empty Range");
+    var thunk = new FunctionCode("lazy-item", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Transfer), new(OpCode.Pop), new(OpCode.Constant, 1), new(OpCode.Return)], TypeRef.Path)
+    { CodeSignature = new([], path, []) };
+    var lazy = new Module(lazyConstants, [new FunctionCode("main", 0, 1, [new(OpCode.MakeClosure, 1), new(OpCode.MakeLazyRange, 1, Text: "1"), new(OpCode.Constant, 2), new(OpCode.NativeCall, 2, Text: "ranges.take"), new(OpCode.NativeCall, 1, Text: "ranges.empty"), new(OpCode.Return)], TypeRef.Bool)
+        { CodeSignature = new([], boolean, []) }, thunk]) { CodeTypes = types };
+    Check(await Run(Reload(lazy), new(WorkingDirectory: root)) is BoolValue { Data: true }, "Lazy take(0) did not produce empty Range");
     Check(!File.Exists(Path.Combine(root, "lazy-flag")), "Lazy item executed before first demand");
     var session = new ExecutionSession(new(WorkingDirectory: root));
-    var firstSubmission = new Module(lazyConstants, [new("main", 0, 1, [new(OpCode.MakeClosure, 1), new(OpCode.MakeLazyRange, 1, Text: "1"), new(OpCode.StoreLocal, 0), new(OpCode.Null), new(OpCode.Return)], TypeRef.Null), thunk]);
+    var firstSubmission = new Module(lazyConstants, [new FunctionCode("main", 0, 1, [new(OpCode.MakeClosure, 1), new(OpCode.MakeLazyRange, 1, Text: "1"), new(OpCode.StoreLocal, 0), new(OpCode.Null), new(OpCode.Return)], TypeRef.Null)
+        { CodeSignature = new([], nil, []) }, thunk]) { CodeTypes = types };
     await session.ExecuteAsync(firstSubmission);
     Check(!File.Exists(Path.Combine(root, "lazy-flag")), "Stored REPL range evaluated eagerly");
-    var secondSubmission = new Module(lazyConstants, [new("main", 0, 1, [new(OpCode.LoadLocal, 0), new(OpCode.NativeCall, 1, Text: "ranges.first"), new(OpCode.Return)], TypeRef.Path), thunk]);
+    var secondSubmission = new Module(lazyConstants, [new FunctionCode("main", 0, 1, [new(OpCode.LoadLocal, 0), new(OpCode.NativeCall, 1, Text: "ranges.first"), new(OpCode.Return)], TypeRef.Path)
+        { CodeSignature = new([], path, []) }, thunk]) { CodeTypes = types };
     Check(await session.ExecuteAsync(secondSubmission) is PathValue { Raw: "lazy-flag" }, "Escaping lazy range lost originating module/callback");
     Check(await File.ReadAllTextAsync(Path.Combine(root, "lazy-flag")) == "lazy", "Escaping lazy range could not perform selected callback I/O");
     var previousPath = Environment.GetEnvironmentVariable("PATH");
@@ -131,7 +141,7 @@ try
         }]
     };
     using var callbackErrors = new StringWriter();
-    var reporting = new Interpreter(attributedMissing, new(WorkingDirectory: root, Error: callbackErrors) { ReportError = reports.Add });
+    var reporting = new Interpreter(Reload(attributedMissing), new(WorkingDirectory: root, Error: callbackErrors) { ReportError = reports.Add });
     Check(await reporting.ExecuteAsync() is BoolValue { Data: false }, "Reporting a transfer changed its false result");
     Check(reporting.FailedTransfers == 1 && reports.Count == 1, "Structured transfer reporting lost failure accounting");
     Check(reports[0].Span == origin && reports[0].InnerException is IOException, "Structured transfer reporting lost operand provenance or native cause");
@@ -149,9 +159,11 @@ try
         var process = Program([new PathValue("/bin/sh"), new StringValue("-c"), new StringValue("printf hello")], new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Constant, 2), new(OpCode.Call, 2), new(OpCode.Return));
         Check(await Run(process) is ProcessValue { ExitCode: 0, StandardOutput: "hello" }, "Path process call lost output");
         var deferred = new Module([new PathValue("/bin/sh"), new StringValue("-c"), new StringValue("printf x >> deferred-calls"), new PathValue("item")],
-            [new("main", 0, 1, [new(OpCode.MakeClosure, 1), new(OpCode.DeferRange), new(OpCode.StoreLocal, 0), new(OpCode.LoadLocal, 0), new(OpCode.NativeCall, 1, Text: "ranges.first"), new(OpCode.Pop), new(OpCode.LoadLocal, 0), new(OpCode.NativeCall, 1, Text: "ranges.first"), new(OpCode.Return)], TypeRef.Path),
-             new("range-call", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Constant, 2), new(OpCode.Call, 2), new(OpCode.Pop), new(OpCode.Constant, 3), new(OpCode.MakeRange, 1), new(OpCode.Return)], new(TypeKind.Range, TypeRef.Path))]);
-        await Run(deferred, new(WorkingDirectory: root));
+            [new FunctionCode("main", 0, 1, [new(OpCode.MakeClosure, 1), new(OpCode.DeferRange), new(OpCode.StoreLocal, 0), new(OpCode.LoadLocal, 0), new(OpCode.NativeCall, 1, Text: "ranges.first"), new(OpCode.Pop), new(OpCode.LoadLocal, 0), new(OpCode.NativeCall, 1, Text: "ranges.first"), new(OpCode.Return)], TypeRef.Path)
+             { CodeSignature = new([], path, []) },
+             new FunctionCode("range-call", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Constant, 2), new(OpCode.Call, 2), new(OpCode.Pop), new(OpCode.Constant, 3), new(OpCode.MakeRange, 1), new(OpCode.Return)], new(TypeKind.Range, TypeRef.Path))
+             { CodeSignature = new([], pathRange, []) }]) { CodeTypes = types };
+        await Run(Reload(deferred), new(WorkingDirectory: root));
         Check(await File.ReadAllTextAsync(Path.Combine(root, "deferred-calls")) == "x", "Deferred range call reevaluated arguments/body across demands");
         try { await Run(process, new(SpoolLimit: 3)); Check(false, "Configured spool limit had no effect"); }
         catch (MsyncException error) { Check(error.ToString().Contains("spool limit", StringComparison.Ordinal), "Spool failure lost its native cause"); }
@@ -160,3 +172,11 @@ try
 finally { Directory.Delete(root, recursive: true); }
 Console.WriteLine($"Runtime bytecode/user journeys passed {assertions} assertions.");
 ValidationProperties.Run();
+
+static Module Reload(Module module)
+{
+    using MemoryStream bytes = new();
+    Artifact.Write(module, bytes);
+    bytes.Position = 0;
+    return Artifact.Read(bytes);
+}

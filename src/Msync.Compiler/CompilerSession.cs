@@ -1,5 +1,6 @@
 using Msync.Core;
 using Msync.Compiler.Semantics;
+using Msync.Compiler.Session;
 using Msync.Compiler.Syntax;
 
 namespace Msync.Compiler;

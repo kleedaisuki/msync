@@ -6,7 +6,13 @@ namespace Msync.Hir;
 public sealed record HirSource(string Name, string? Text = null);
 public sealed record HirType(TypeRef RuntimeType, int Shape = -1, int Signature = -1,
     int Element = -1, int TypeParameter = -1, int Concept = -1,
-    bool Nullable = false, ImmutableArray<HirTypeId> Alternatives = default);
+    bool Nullable = false, ImmutableArray<HirTypeId> Alternatives = default)
+{
+    public HirScopeDomain ScopeDomain { get; init; }
+
+    public static HirType ConstructedScope(int layout) =>
+        new(TypeRef.Scope, Shape: layout) { ScopeDomain = HirScopeDomain.Exact(layout) };
+}
 public enum HirLocationKind : byte { Local, Parameter, Field, Temporary, Import }
 public sealed record HirLocation(string Name, HirTypeId StorageType,
     HirSourceRange Source, HirFunctionId Owner, HirLocationKind Kind = HirLocationKind.Local,
@@ -52,7 +58,12 @@ public readonly record struct HirLiteral(HirLiteralKind Kind, string? Text = nul
 
 public sealed record HirFunction(string Name, ImmutableArray<HirLocationId> Parameters,
     ImmutableArray<HirCapture> Captures, HirTypeId Result, HirNodeId Body,
-    HirTemplateId? Template = null, bool IsOpen = false);
+    HirTemplateId? Template = null, bool IsOpen = false)
+{
+    // Entry values may have a narrower layout than the local's fixed
+    // structural write constraint. A call binds the former, not the latter.
+    public ImmutableArray<HirTypeId> ParameterEntryTypes { get; init; } = [];
+}
 public sealed record HirTemplate(string Name, ImmutableArray<string> TypeParameters,
     ImmutableArray<HirLocationId> Parameters, HirNodeId Body, HirSourceRange Source,
     ImmutableArray<HirCapture> Captures = default, HirTypeId? ResultAnnotation = null,

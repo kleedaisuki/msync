@@ -1,0 +1,32 @@
+let io = $std::io;
+let arena = $std::arena;
+fn locate(rows, threshold: Number) -> Number {
+    let index = arena::root(rows);
+    loop {
+        if index == 0 { return 0; };
+        let cost = arena::key(rows, index);
+        if cost >= threshold { return index; };
+        index = arena::child(rows, index, true);
+    }
+};
+let rows = arena::new(Number);
+for index in $std::ranges::iota(1, 257) {
+    let parent = index - 1;
+    let row = arena::allocate(rows, index * 23 % 127, parent);
+    if parent != 0 { arena::set_child(rows, parent, true, row); }
+    else { arena::set_root(rows, row); };
+};
+let hits = 0;
+let checksum = 0;
+for line in io::stdin_lines() {
+    let threshold = line as Number;
+    if threshold == -1000 {
+        arena::set_child(rows, arena::root(rows), true, 0);
+    } else {
+        let selected = locate(rows, threshold);
+        if selected != 0 { hits = hits + 1; };
+        checksum = (checksum * 31 + selected) % 1000003;
+    };
+};
+io::println(hits as String);
+io::println(checksum as String);

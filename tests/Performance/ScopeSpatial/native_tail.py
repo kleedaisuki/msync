@@ -17,14 +17,6 @@ from time import perf_counter_ns
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_BASELINE = ROOT / (
-    "artifacts/candidates/contextual-io/746f6b9/native-linux/"
-    "msync-0.8.1-linux-x86_64/bin/msync"
-)
-DEFAULT_CANDIDATE = ROOT / (
-    "artifacts/candidates/spatial-layout/a0cebdf/native-linux/"
-    "msync-0.8.1-linux-x86_64/bin/msync"
-)
 
 
 def digest(path: Path) -> str:
@@ -95,14 +87,16 @@ def program(case: str, rows: int) -> str:
     if case.startswith("manifest"):
         return """let seed = $std::io::read_text(./seed.txt) as Number;
 fn build(values: Range, directory: Path, endpoint: Connection) {
-    let records = $std::storage::Buffer::new([]);
+    let records = $std::storage::vector_empty(decltype(scope {
+        name: "", path: directory, enabled: true, endpoint: endpoint,
+    }));
     for value in values {
         let name = $std::string::concat("file-", value as String);
-        $std::storage::Buffer::push(records, scope {
+        $std::storage::vector_push(records, scope {
             name: name, path: directory/name, enabled: true, endpoint: endpoint,
         });
     };
-    $std::storage::Buffer::snapshot(records)
+    $std::storage::vector_take(records)
 };
 let endpoint = $local;
 let directory = endpoint @ ./files/;
@@ -123,12 +117,15 @@ $std::string::concat(total as String,
         return '"scalar-control" -> ./result.txt;\n'
     source = """let seed = $std::io::read_text(./seed.txt) as Number;
 fn build(values: Range) {
-    let records = $std::storage::Buffer::new([]);
+    let records = $std::storage::vector_empty(decltype({
+        let value = 0;
+        scope { label: "kept", path: ./fixed, flag: true }
+    }));
     for value in values {
-        $std::storage::Buffer::push(records,
+        $std::storage::vector_push(records,
             scope { label: "kept", path: ./fixed, flag: true });
     };
-    $std::storage::Buffer::snapshot(records)
+    $std::storage::vector_take(records)
 };
 let values = $std::ranges::materialize($std::ranges::iota(seed, seed + 512));
 let rows = build(values);
@@ -156,8 +153,10 @@ def prepare(
     for case in cases:
         directory = work / case
         directory.mkdir(parents=True, exist_ok=True)
+        text = program(case, rows)
         source = directory / "program.msync"
-        source.write_text(program(case, rows), encoding="utf-8", newline="\n")
+        source.write_text(text, encoding="utf-8", newline="\n")
+        source_sha256 = digest(source)
         (directory / "seed.txt").write_text("11", encoding="utf-8")
         commands: dict[str, list[str]] = {}
         artifacts: dict[str, Any] = {}
@@ -181,14 +180,17 @@ def prepare(
                     "mso_sha256": digest(portable),
                     "mexe_sha256": digest(executable),
                 }
+                portable.unlink()
             else:
                 command = [*prefix, "run", str(source), "-O2"]
             commands[label] = command
+        if case.endswith("mexe"):
+            source.unlink()
         fixtures[case] = {
             "directory": str(directory),
             "rows": rows,
-            "source": source.read_text(),
-            "source_sha256": digest(source),
+            "source": text,
+            "source_sha256": source_sha256,
             "commands": commands,
             "artifacts": artifacts,
         }
@@ -268,8 +270,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Blocked fresh-process Native tail probe"
     )
-    parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
-    parser.add_argument("--candidate", type=Path, default=DEFAULT_CANDIDATE)
+    parser.add_argument("--baseline", type=Path, required=True)
+    parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--work", type=Path, default=ROOT / ".temp/native-tail")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--pairs", type=int, default=1000)

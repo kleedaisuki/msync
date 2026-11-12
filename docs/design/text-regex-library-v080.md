@@ -89,6 +89,74 @@ contracts after migration to `as` and `Path @ Connection` syntax.
 Range operations. The latter two normalize line boundaries to LF and do not
 retain a final input line terminator, following `string.lines`.
 
+## Native String Range transport
+
+`string.split`, `lines`, `split_whitespace`, and `chars` can publish a native
+text source instead of a sequence of guest `StringValue` boxes. Each borrowed
+element is a managed owner reference plus a UTF-16 offset and length, not a
+managed interior pointer. `regex.split` keeps the regex engine's eager parsing
+and matching and wraps its already-owned strings in the same lane. Persistent
+builder chunks retain the actual immutable `string` references. The same
+carrier also has an asynchronous producer form for `io.read_lines`: lines are
+owned Strings, not borrowed buffers. The interpreter's existing dependency
+and endpoint-session wrapper forwards this payload directly and does not
+replicate path interpretation, stream acquisition, or disposal policy. None
+of these cases adds a slot or tag to the ordinary VM frame.
+
+The terminal consumer chooses a representation once after a transparent lazy
+producer is demanded. Join appends each span directly through
+[`StringBuilder.Append(ReadOnlySpan<char>)`](https://source.dot.net/System.Private.CoreLib/src/runtime/src/libraries/System.Private.CoreLib/src/System/Text/StringBuilder.cs.html);
+it allocates neither guest wrappers nor substrings for a split/join round trip.
+Size can count slices, and ordinal selection materializes only the selected
+String. Explicit materialization takes ownership of the text in a vector of
+managed String references; a short slice copied into a snapshot does not pin
+the original large input. Rematerialization publishes a fresh descriptor over
+immutable storage. Generic callbacks, `for`, arbitrary asynchronous sources,
+and artifact constant serialization still use the ordinary boxed projection.
+The compatibility cursor delegates advancement and disposal to the typed
+source, boxing the current element when observed; it does not insert another
+async iterator state machine into an ordinary file loop.
+
+Borrowing does not change lexical semantics: nonempty separators use exact
+ordinal matching and preserve empty pieces; an empty separator retains the
+leading/trailing empty pieces and splits into Unicode scalars. Invalid UTF-16
+still uses the `Rune` replacement behavior for scalar enumeration. Text lines
+match the [.NET StringReader contract](https://source.dot.net/System.Private.CoreLib/src/runtime/src/libraries/System.Private.CoreLib/src/System/IO/StringReader.cs.html):
+CR, LF, and CRLF are delimiters, without an extra line for a final delimiter.
+Path carriers still require raw spelling, endpoint and origin; they are not
+flattened into this text-only representation.
+
+`tests/Msync.EndToEnd/native_string_range_journey.py` reads real UTF-8 files,
+builds both artifacts on the prior host, deletes the artifact route's source,
+and checks every output byte through source, `.mso`, and `.mexe`. The
+Linux x64 Native AOT cases use 120,000 generated segments, with guest JIT off
+and nine alternating, telemetry-disabled same-artifact wall pairs. Allocations
+come from a separate execution profile:
+
+| Workflow | Bound wall median | Managed execution bytes |
+| --- | ---: | ---: |
+| Ordinal split and Unicode-delimiter join | 64.22 → 44.16 ms | 13,478,360 → 5,067,336 |
+| Mixed-terminator lines, snapshot, rematerialize, join and lookup | 77.64 → 52.76 ms | 15,336,024 → 10,372,408 |
+| Actual asynchronous file lines, early lookup then full replay | 81.50 → 69.96 ms | 17,672,568 → 14,791,784 |
+| Ordinary boxed file loop, no typed terminal consumer | 134.01 → 139.01 ms | 22,009,456 → 21,998,056 |
+
+The [receipt](../../artifacts/benchmarks/tiered-execution-v086/native-string-range.json)
+records the exact host hashes and paired samples. The small boxed control was
+noisy; an [isolated 750,000-line repeat](../../artifacts/benchmarks/tiered-execution-v086/native-string-range-generic-control.json)
+on the same two hosts measured 731.87 → 732.27 ms over eleven alternating
+pairs (five wins, +1.87% paired median), with unchanged execution allocation.
+That does not establish a coherent boxed-loop regression or speedup.
+
+The focused native Unicode
+suite passed 221 contracts, including generated overlapping separators,
+malformed UTF-16, supplementary scalars, and retained empty pieces. The
+complete builder/regex suite passed 207 source and serialized artifact
+contracts. The 25 I/O/process checks and six native reusable-lines and
+byte-roundtrip stages also pass, covering reopening after file replacement
+and preserving the existing Number-byte route. The larger TextPaths source
+matrix still fails at the same preexisting `string.msync:99:18` unresolved
+callable on both exact source baselines; it is not part of this acceptance.
+
 ## Invariant brace formatting (0.8.6)
 
 Use `$std::text::format(template, ...values)` for positional arguments or
@@ -202,3 +270,86 @@ match. No arbitrary input quota or timeout is added by this library.
 primitives. Native signatures carry MayFail for pattern-taking operations;
 `escape` is pure and cannot fail on a String input. Compiler record inference
 exposes all Match and Group fields to function specialization and editor tools.
+
+## Borrowed lexical Path projections (0.8.6)
+
+A host lexical path view holds the original managed string, a root boundary
+and the endpoint's grammar. Filename, stem and extension scans now return
+spans internally. Lexical predicates consume them directly, and operations
+which return an owned Path materialize the resulting components without
+first allocating a relative-path substring or splitting every segment.
+Local directory iteration borrows each entry's basename and reuses parsed
+parent views; it does not change ordering, filesystem observations or which
+entries are materialized. Regex selection matches a span of the original
+raw spelling. Its basename trims trailing separators, unlike
+`fs.filename`, whose trailing filename component is empty.
+
+A synchronous VM target can additionally consume a lexical
+`filename`/`stem`/`extension` result directly in a terminal String
+comparison against a literal. The recognized instructions are the existing
+format-5 native operation, either String conversion spelling, the literal
+and comparison; bytecode and its portable fallback are unchanged. Only an
+immediate Path or String enters this path. The result is a Bool, so neither
+the Path result nor its String wrapper is published. Deferred and
+unrecognized operands still use ordinary dispatch. Scope and storage
+representation do not change.
+
+The view uses the same lexical parser for both the optimized and ordinary
+routes. On Windows an unqualified path can have separate raw and native
+spellings; a String consumer observes the local projection of the derived
+value. Explicit endpoint paths use that endpoint's raw spelling and
+grammar. Unicode ordinal comparison keeps scalar rather than UTF-16 code
+unit ordering. No borrowed view crosses an await, callback or escaping
+storage boundary. The distinction follows the [.NET span lifetime
+guidance](https://learn.microsoft.com/en-us/dotnet/standard/memory-and-spans/memory-t-usage-guidelines);
+the [producer/consumer fusion model](https://www.vldb.org/pvldb/vol4/p539-neumann.pdf)
+motivates eliminating intermediate allocation rather than introducing
+another public value type.
+
+Profile mode still records both original native operations (when the
+conversion is an explicit cast), and instruction mode retains every
+original instruction site. Fast native counts identify this target
+without counting synthesized opcodes as guest instructions.
+
+The focused acceptance compares the same O2 artifact over 300,000 streamed
+path spellings. On Linux x86-64 Native AOT, fresh CLI median went from
+1,210.95 to 725.03 ms, 7/7 alternating pairs faster. In a separate 40,000-row
+profile, managed allocation went from 36.45 to 13.08 MB with exactly the same
+1,071,185 logical instructions. A Path-only standard Unicode corpus run had
+no fused-tail hits but showed lower managed allocation (160.92 to 95.63 MB);
+its fresh wall-time pairs were mixed. The
+[receipts](../../artifacts/benchmarks/path-text-layout-v086/README.md)
+separate the focused filter from the broader workload and include independent
+historical parser and exact-artifact parity checks.
+
+### Owned lexical result target
+
+When a literal comparison does not consume the component in place, the same
+ready-native target publishes an ordinary `PathValue` without a generic
+native argument array. It uses the same span parser and materializer as the
+normal lexical implementation. A String input constructs only the resulting
+Path, capturing the active working directory and home at that instruction.
+A Path input retains the operand's anchor and endpoint. On an unqualified
+Windows path, distinct raw/native component spellings are both retained; an
+equal native component needs no second string. Deferred, Cell and invalid
+operands use the ordinary dispatch and failure behavior. Diagnostics
+distinguish `native.path_result=owned` from `borrowed`; either is a fast
+native call while preserving the logical operation and instruction counts.
+
+In a same-artifact comparison against the preceding integrated Native AOT
+CLI, the standard Unicode manifest exercised 195,000 owned component
+operations per seed. For seeds 17 and 503 respectively, fresh CLI medians
+changed 831.58 to 702.75 ms and 818.35 to 728.94 ms. All 14 alternating pairs
+were faster; paired median changes were -16.96% and -9.01%. Both seeds
+reduced profiled allocation from about 95.63 MB to 84.70 MB with unchanged
+logical instruction and native call counts. The local-copy control has no
+eligible lexical calls. The initially slower seed changed from +38.05%
+to -7.16% paired on an 11-pair repeat without any code changes; neither
+direction is attributed to this path. [Owned-result receipts](../../artifacts/benchmarks/path-text-layout-v086/owned/README.md)
+include exact output checks, diagnostics and anchor/endpoint parity.
+
+A separate opportunity is direct String publication when the next
+operation is a proved lexical Path-to-String conversion but later consumers
+need the String to escape. That route would avoid materializing the Path
+without making a borrowed view escape, and should be measured separately
+from this owned Path result target.

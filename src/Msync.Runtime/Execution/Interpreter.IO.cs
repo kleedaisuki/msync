@@ -10,12 +10,17 @@ public sealed partial class Interpreter
 {
     private RangeValue ReadIORange(string name, IReadOnlyList<Value> arguments, CancellationToken token)
     {
-        var type = name == "io.read_lines" ? TypeRef.String : TypeRef.Number;
-        return new(ReadIOItems(name, arguments, context.CaptureDirectory(), token), type)
-        { RetainedValues = arguments };
+        RuntimeContext origin = context.CaptureDirectory();
+        var range = name == "io.read_lines"
+            ? new RangeValue(new StringRangeItems.Async(ReadIOItems(name, arguments, origin,
+                static values => ((StringRangeItems.Async)values.Items).Read, token)), TypeRef.String)
+            : new RangeValue(ReadIOItems(name, arguments, origin, static values => values.Items, token), TypeRef.Number);
+        range.RetainedValues = arguments;
+        return range;
     }
 
-    private async IAsyncEnumerable<Value> ReadIOItems(string name, IReadOnlyList<Value> arguments, RuntimeContext origin,
+    private async IAsyncEnumerable<T> ReadIOItems<T>(string name, IReadOnlyList<Value> arguments, RuntimeContext origin,
+        Func<RangeValue, IAsyncEnumerable<T>> select,
         [EnumeratorCancellation] CancellationToken token)
     {
         var resolved = await ResolveArgumentsAsync(arguments);
@@ -23,7 +28,7 @@ public sealed partial class Interpreter
         await AwaitNativeDependenciesAsync(NativeSignatures.Get("io.read_text"), paths, token);
         using var selectedSession = EnterPathSession(paths, token);
         var values = (RangeValue)await NativeRegistry.InvokeAsync(name, paths, origin, NativeCallback, token);
-        await foreach (var value in values.Items.WithCancellation(token)) yield return value;
+        await foreach (T value in select(values).WithCancellation(token)) yield return value;
     }
     private async IAsyncEnumerable<Value> SelectAsync(PathValue directory, string pattern, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
@@ -32,7 +37,8 @@ public sealed partial class Interpreter
         var values = await NativeRegistry.InvokeAsync("fs.directory_iterator", [directory], context, NativeCallback, cancellationToken) as RangeValue ?? throw new MsyncException("Directory iterator did not return a Range");
         var regex = new Regex(pattern, RegexOptions.CultureInvariant);
         await foreach (var item in values.Items.WithCancellation(cancellationToken))
-            if (regex.IsMatch(item is PathValue itemPath ? PathSemantics.FileName(itemPath) : Path.GetFileName(Text(item)))) yield return item;
+            if (item is PathValue itemPath ? regex.IsMatch(PathSemantics.FileNameSpan(itemPath))
+                : regex.IsMatch(Path.GetFileName(Text(item).AsSpan()))) yield return item;
     }
     private async Task<bool> TransferAsync(Value source, Value destination, SourceSpan? span, bool local, RuntimeContext context, CancellationToken cancellationToken)
     {

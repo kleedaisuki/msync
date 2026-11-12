@@ -3,21 +3,45 @@
 Run `dotnet run --project tests/ScopeLayout`. The source/object/executable
 journeys compare O0, O2 and O3 with actual results, aliases, nullable fields,
 closure-shared cells, loop-created instances and constructor-local storage.
-Manual typed bytecode also checks name-only access, matching/mismatching
-offset hints, Connection/Process dispatch and selected duplicate-field errors.
+Manual format-6 bytecode checks finite layout projections, opaque named
+access, exact member diagnostics and shared captured locations. The reader
+rejects invalid layout metadata before execution. Connection qualification
+and Process members use their own operations rather than Scope fields.
 `tests/Msync.Runtime.Tests --mutable-state` independently exercises current live
 captures, obsolete-format rejection and fresh nested Scope constant instances.
 
-`--duplicate-only` selects 18 actual VM/filesystem journeys for hand-authored O0
-typed IR, including source-span ownership and pure initial entry. Duplicate
-fields are selected or skipped directly and inside a called function, with a
-preceding small text transfer when applicable. Direct modules, portable artifact
-round trips and explicitly prepared executable round trips must retain the
-concrete `ArgumentException` inside the instruction-owned `MsyncException`.
-Preparation must perform no writes; selected failure preserves earlier admitted
-work and suppresses later work, while an unselected failure leaves both writes
-intact. Source parsing is deliberately not involved: its earlier rejection of a
-duplicate declaration would not exercise backend/VM effect ordering.
+`--field-places-only` checks common and differing ordinals at branch and loop
+joins, legal opaque fields, captured layout-changing assignment versus copied
+receiver identity, and rejection of an omitted incoming layout. Observations
+must retain the original `LoadField`/`StoreField` PCs. `--namespace-only`
+checks unused namespace erasure and live callable environments through source,
+detached HIR, portable object and bound artifact.
+
+`--member-dispatch-only` exercises the executable LoadLocal/LoadField pair.
+The fixture enters at either original PC, rebinds a captured receiver to a
+different field layout, verifies the exact missing-field span and verifies
+that a Process member remains deferred until consumption. Instruction
+profiling follows the canonical PCs rather than exposing the synthetic tag.
+
+`--guarded-scope-only` tests the short Scope comparison region.
+It covers an incoming interior PC, exact signed-zero and NaN payloads,
+raw and boxed stores, a different runtime layout, a writable Cell alias,
+a missing-field span and an unresolved Process result. Aggregate counters
+record region hits and misses without changing the logical opcode counts;
+detailed observation sees the original PCs.
+Both conditional opcodes run taken and fallthrough cases where one
+numeric destination is overwritten and the other is live. Each
+aggregate run commits exactly one slot and retains the lower operand;
+detailed traces still report the original conditional and successor PC.
+
+`--duplicate-only` first checks that the reader rejects duplicate field names
+in a layout whether or not its constructor is selected. It then uses legal
+typed code containing an opaque receiver lookup to test actual runtime effect
+ordering. Across 18 direct, portable and prepared executable journeys, the
+selected missing-field failure retains its exact source span and concrete
+diagnostic. Preparation does no writes; selected failure preserves earlier
+admitted work and suppresses later work, while an unselected failure leaves
+both writes intact.
 
 `--call-preparation-only` verifies that execution selects the actual static or
 table-dispatched target exactly once. It covers opaque native I/O, mutable
@@ -65,7 +89,7 @@ be collectable. This discriminator fails the first packed prototype, in which
 row storage retained a mutable shape/pool and its unrelated current page; the
 split immutable-mapping/current-pool implementation passes.
 
-`--spatial-vm-only` constructs actual rows through compiler/VM Buffer programs,
+`--spatial-vm-only` constructs actual rows through compiler/VM dense-vector programs,
 rather than only calling an allocator in a microbenchmark. Computed rows must
 use numeric storage; shared-literal and small mixed/reference-tail rows report
 their representation without forcing a policy that could make them slower.
@@ -100,13 +124,11 @@ public dictionary constructor snapshots member values. `Members` retains its
 itself, without allocating a per-instance member-view object. A field containing
 `CellValue` still loads and stores through that exact shared location.
 
-The interpreter lazily caches successfully constructed layouts by their exact
-member spelling. It never builds a selected-error table on an unselected path.
-The cache remains valid when a REPL image changes: shapes contain no live cells,
-source bindings, endpoint observations or caller path context. Programs without
-Scope construction do not allocate the cache. Runtime constant cloning shares
-the layout, transforms visible field values into fresh slots and retains
-allocation-site provenance.
+Portable code carries typed layout, field projection and static-slot tables.
+An executable resolves its layout IDs to immutable descriptors; descriptors
+contain no live cells, source bindings, endpoint observations or caller path
+context. Runtime constant cloning shares the descriptor, transforms visible
+field values into fresh slots and retains allocation-site provenance.
 
 Scope equality and hashing use stable instance identity. Neither a shared
 layout nor a shared empty storage array makes two independently constructed
@@ -131,12 +153,10 @@ are known.
 The approach follows the shared descriptor/property-array separation used by
 [V8 fast properties](https://v8.dev/blog/fast-properties). Unlike JavaScript,
 Scope membership does not dynamically change, so no HiddenClass transition
-tree is needed. The guarded field hint uses the lookup-avoidance principle of
-[Self inline caches](https://bibliography.selflanguage.org/pics.html), but is a
-compile-time offset plus a name guard, not a runtime PIC or adaptive compiler.
-The original member name remains authoritative. Hint zero is the old encoding;
-a wrong offset falls back to ordinary named access, and older readers can
-ignore the hint without changing behavior.
+tree is needed. Finite portable projections carry a layout ID and ordinal for
+every reachable receiver layout; this is verified bytecode, not a field-name
+hint or adaptive inline cache. A genuinely opaque Scope still needs a named
+lookup because its layout is not known to the producer.
 
 ## Focused representation measurement
 
@@ -158,7 +178,17 @@ ownership and does not charge its old temporary PopMany/name-split arrays.
 | 500,000 direct indexed reads | 4.397 ms | 0 B |
 | 500,000 guarded indexed reads | 14.227 ms | 0 B |
 
-The measured per-instance storage fell from 280 to 88 bytes. Direct indexing
-isolates available layout benefit; actual bytecode uses the guard to preserve
-named semantics when mutable bindings hold a differently ordered shape. These
-are component observations, not a whole-product throughput claim.
+The measured per-instance storage fell from 280 to 88 bytes. This historical
+component table predates the format-6 place representation. Direct indexing
+isolates the layout benefit; it is not a whole-product throughput claim.
+
+## Guarded crossing continuation
+
+`dotnet run --project tests/ScopeLayout -c Release -- --scope-crossing-only`
+checks the whole crossing arm through format-6 object and bound images.
+Each route executes unprofiled, with aggregate counters, and with
+instruction-site observations. Both directions and their nonempty Bool
+join retain the canonical opcode counts. The fixtures include signed zero,
+NaN, permuted layouts, a live-out local, a real Cell alias and alternate entry.
+Run the same check with
+`MSYNC_JIT=off` to verify this worker does not rely on the guest JIT.

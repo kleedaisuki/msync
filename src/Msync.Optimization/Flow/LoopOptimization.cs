@@ -57,7 +57,7 @@ internal static class LoopOptimization
     {
         var instruction = code[pc];
         if (instruction.Op == OpCode.Return) yield break;
-        if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse)
+        if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady)
         {
             yield return instruction.A;
             if (instruction.Op == OpCode.Jump) yield break;
@@ -173,7 +173,7 @@ internal static class LoopOptimization
         var types = LocalTypes(function, constants);
         var entries = code.SelectMany(instruction => instruction.Op switch
         {
-            OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse => new[] { instruction.A },
+            OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady => new[] { instruction.A },
             OpCode.IteratorNext => new[] { instruction.B },
             _ => []
         }).ToHashSet();
@@ -304,7 +304,7 @@ internal static class LoopOptimization
         return TypeKind.Never;
     }
 
-    private static bool IsBranch(Instruction instruction) => instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.IteratorNext;
+    private static bool IsBranch(Instruction instruction) => instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady or OpCode.IteratorNext;
     private static Instruction RewriteTarget(Instruction instruction, Func<int, int> target) => instruction.Op == OpCode.IteratorNext
         ? instruction with { B = target(instruction.B) } : instruction with { A = target(instruction.A) };
 }

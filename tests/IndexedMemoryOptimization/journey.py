@@ -12,20 +12,20 @@ HERE: Path = Path(__file__).resolve().parent
 ROOT: Path = HERE.parents[1]
 
 SELECTED: str = """
-let Buffer = $std::storage::Buffer;
-let buffer = Buffer::new([10, 20]);
-let alias = buffer;
+let storage = $std::storage;
+let values = storage::vector_new([10, 20]);
+let alias = values;
 let line? = $std::io::read_line();
 let index = 0;
 let before = if line? {
-    let first = Buffer::get(buffer, index);
+    let first = storage::vector_get(values, index);
     MUTATION
     first
 } else {
     index = 1;
-    Buffer::get(buffer, index)
+    storage::vector_get(values, index)
 };
-let after = Buffer::get(buffer, index);
+let after = storage::vector_get(values, index);
 $std::io::println((before + after) as String);
 """
 
@@ -60,17 +60,18 @@ def verify(binary: Path, directory: Path, journey: Journey, level: int) -> None:
     for artifact in (portable, executable):
         text: str = cli(binary, directory, "disassemble", str(artifact))
         expected_gets: int = 3 if level == 0 else journey.optimized_gets
-        assert text.count('NativeCall "storage.buffer_get"') == expected_gets, (
+        assert text.count('NativeCall "storage.vector_get"') == expected_gets, (
             journey.name,
             level,
             artifact,
         )
-    for input_text, expected in journey.observations:
-        for route in (source, portable, executable):
+    for route in (source, portable, executable):
+        for input_text, expected in journey.observations:
             assert (
                 cli(binary, directory, "run", f"-O{level}", str(route), text=input_text)
                 == f"{expected}\n"
             ), (journey.name, level, route)
+        route.unlink()
 
 
 def main() -> None:
@@ -87,7 +88,7 @@ def main() -> None:
         ),
         Journey(
             "alias-write",
-            SELECTED.replace("MUTATION", "Buffer::set(alias, index, 99);"),
+            SELECTED.replace("MUTATION", "storage::vector_set(alias, index, 99);"),
             (("", "109"), ("right\n", "40")),
             3,
         ),

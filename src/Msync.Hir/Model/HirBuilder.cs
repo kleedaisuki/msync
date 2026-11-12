@@ -38,12 +38,14 @@ public sealed partial class HirBuilder
             && first.Shape == second.Shape && first.Signature == second.Signature
             && first.Element == second.Element && first.TypeParameter == second.TypeParameter
             && first.Concept == second.Concept && first.Nullable == second.Nullable
+            && first.ScopeDomain.Equals(second.ScopeDomain)
             && first.Alternatives.AsSpan().SequenceEqual(second.Alternatives.AsSpan());
         public int GetHashCode(HirType type)
         {
             HashCode hash = new();
             hash.Add(type.RuntimeType); hash.Add(type.Shape); hash.Add(type.Signature);
             hash.Add(type.Element); hash.Add(type.TypeParameter); hash.Add(type.Concept); hash.Add(type.Nullable);
+            hash.Add(type.ScopeDomain);
             foreach (var alternative in type.Alternatives.AsSpan()) hash.Add(alternative);
             return hash.ToHashCode();
         }
@@ -52,6 +54,8 @@ public sealed partial class HirBuilder
     public HirTypeId Type(TypeRef type) => Type(new HirType(type));
     public HirTypeId Type(HirType type)
     {
+        if ((type.RuntimeType.Kind & TypeKind.Scope) == 0 && type.ScopeDomain.Count != 0)
+            type = type with { ScopeDomain = default };
         if (types.TryGetValue(type, out var existing)) return existing;
         HirTypeId id = new(Types.Count);
         Types.Add(type); types.Add(type, id); return id;

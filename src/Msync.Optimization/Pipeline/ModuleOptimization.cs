@@ -31,7 +31,7 @@ internal static class ModuleOptimization
                 if (instruction.Op == OpCode.MakeClosure || instruction.Op == OpCode.SpecializeClosure && instruction.Text is null) Function(instruction.A);
                 if (instruction.Op == OpCode.Call && instruction.B > 0) Function(instruction.B - 1);
                 if (instruction.Op is OpCode.Call or OpCode.SpecializeClosure && instruction.Text is not null)
-                    foreach (var pair in FunctionDispatch.Parse(instruction.Text)) { Function(pair.Key); Function(pair.Value); }
+                    foreach (var pair in FunctionDispatch.Targets(instruction.Text)) { Function(pair.Key); Function(pair.Value); }
             }
         }
         if (functions.Count == module.Functions.Count && constants.Count == module.Constants.Count) return module;
@@ -55,7 +55,8 @@ internal static class ModuleOptimization
                 _ => instruction
             };
             if (instruction.Op is OpCode.Call or OpCode.SpecializeClosure && instruction.Text is not null)
-                result = result with { Text = string.Join(';', FunctionDispatch.Parse(instruction.Text).Select(pair => $"{functionIds[pair.Key]}:{functionIds[pair.Value]}")) };
+                result = result with { Text = FunctionDispatch.Encode(FunctionDispatch.Targets(instruction.Text)
+                    .Select(pair => KeyValuePair.Create(functionIds[pair.Key], functionIds[pair.Value]))) };
             return result;
         }
         return module with

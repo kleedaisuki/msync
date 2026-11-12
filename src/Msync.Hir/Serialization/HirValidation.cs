@@ -15,15 +15,28 @@ public static class HirValidation
     private static void Check(HirModule module)
     {
         Id(module.Entry.Value, module.Functions.Length, "entry function");
-        foreach (var type in module.Types)
+        for (int typeIndex = 0; typeIndex < module.Types.Length; typeIndex++)
         {
+            var type = module.Types[typeIndex];
             RuntimeType(type.RuntimeType);
             Optional(type.Shape, module.ScopeLayouts.Length, "type shape");
             Optional(type.Signature, module.Signatures.Length, "type signature");
             Optional(type.Element, module.Types.Length, "type element");
+            if (type.Element >= typeIndex) Fail("type element must precede its parent");
             Optional(type.Concept, module.Concepts.Length, "type concept");
             foreach (var alternative in type.Alternatives.OrEmpty()) Id(alternative.Value, module.Types.Length, "type alternative");
             if (type.TypeParameter < -1) Fail("type parameter identity is negative");
+            var domain = type.ScopeDomain;
+            if (domain.Count != 0 && (type.RuntimeType.Kind & TypeKind.Scope) == 0)
+                Fail("scope construction layouts require a Scope value");
+            int previous = -1;
+            for (int index = 0; index < domain.Count; index++)
+            {
+                int layout = domain[index];
+                Id(layout, module.ScopeLayouts.Length, "scope construction layout");
+                if (layout <= previous) Fail("scope construction layouts must be sorted and unique");
+                previous = layout;
+            }
         }
         foreach (var location in module.Locations)
         {
@@ -39,6 +52,10 @@ public static class HirValidation
             Id(function.Result.Value, module.Types.Length, "function result type");
             Id(function.Body.Value, module.Nodes.Length, "function body");
             foreach (var parameter in function.Parameters) Id(parameter.Value, module.Locations.Length, "function parameter");
+            var entryTypes = function.ParameterEntryTypes.OrEmpty();
+            if (entryTypes.Length != 0 && entryTypes.Length != function.Parameters.Length)
+                Fail("function parameter entry types disagree with its parameters");
+            foreach (var type in entryTypes) Id(type.Value, module.Types.Length, "function parameter entry type");
             Captures(module, function.Captures);
             if (function.Template is { } template) Id(template.Value, module.Templates.Length, "function template");
         }
@@ -195,7 +212,11 @@ public static class HirValidation
             case HirKind.AdaptFunction: Id(node.Data, module.Adaptations.Length, "function adaptation"); Arity(count, 1, 1); break;
             case HirKind.Scope:
                 Id(node.Data, module.Scopes.Length, "scope node");
-                int fields = module.Scopes[node.Data].Fields.Length; Arity(count, fields, fields + 1); break;
+                var scope = module.Scopes[node.Data];
+                var domain = module.Types[node.Type.Value].ScopeDomain;
+                if (domain.Count != 0 && (domain.Count != 1 || domain[0] != scope.Layout))
+                    Fail("scope node construction layout disagrees with its type");
+                int fields = scope.Fields.Length; Arity(count, fields, fields + 1); break;
             case HirKind.MemberRead: if (node.Text is null) Fail("member name is missing"); Arity(count, 1, 1); break;
             case HirKind.MemberAssign: if (node.Text is null) Fail("member name is missing"); Arity(count, 2, 2); break;
             case HirKind.Range or HirKind.LazyRange:
@@ -246,7 +267,7 @@ public static class HirValidation
     private static void RuntimeType(TypeRef type)
     {
         for (TypeRef? current = type; current is not null; current = current.Element)
-            if ((current.Kind & ~TypeKind.Any) != 0) Fail("unknown runtime type flags");
+            if ((current.Kind & ~TypeKind.Runtime) != 0) Fail("unknown runtime type flags");
     }
 
     private static void Arity(int actual, int minimum, int maximum)

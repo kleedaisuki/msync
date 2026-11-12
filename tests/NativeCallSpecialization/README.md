@@ -3,7 +3,7 @@
 Run `dotnet run --project tests/NativeCallSpecialization -c Release`.
 
 The 77 checks cover O0/O2/O3 source, relocatable roundtrips and executable
-roundtrips. They consume the public Buffer API, captured native declarations,
+roundtrips. They consume dense vector primitives, captured native declarations,
 Native-to-Native and Native-to-source replacement, nested callee/argument effects,
 REPL relinking and the original user call site's native error span.
 
@@ -21,14 +21,13 @@ reach artifacts. No argument spill slots or new bytecodes are needed, and no
 function-owned scheduling boundary is removed: the original call already selected
 a native function, not a source function frame.
 
-Buffer is an owned Range, not a Scope containing one Range. Its named family
-holds native function values for primitive operations. This removes a wrapper
-Scope and fields array per buffer and a source method frame per primitive access,
-while keeping `Buffer::get(buffer, index)` and the fixed element schema.
-`Buffer::new` and `empty` remain eager. Snapshots freeze membership while keeping
-the ordinary identity of retained elements.
+The dense vector is an opaque, noniterable storage owner. Its native primitives
+operate on fixed element storage directly, with no source method frame per
+primitive access. Construction from a Range consumes that input eagerly.
+An explicit snapshot returns a Range and freezes membership while keeping the
+ordinary identity of retained elements.
 
-The public Buffer program has two same-index gets separated by a different-index
+The vector owner program has two same-index gets separated by a different-index
 store, and two size reads separated by a value-only store. Its O2/O3 entry has one
 get, one size read and both stores. The indexed-memory pass's separate tests own
 alias, CFG and first-failure proofs; this test closes the real source-family path.

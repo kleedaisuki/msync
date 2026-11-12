@@ -4,8 +4,9 @@ The [tail-latency investigation](../../../../docs/design/performance-tail-v081.m
 separates the Native/process/session boundaries and shared-host interpretation.
 
 This managed execution probe separates scalable VM/preparation work from CLI
-startup and source compilation. It builds 8,192 fresh escaping records in native
-Buffer storage, then scans the frozen membership four times. The `references`
+startup and source compilation. It builds 8,192 fresh escaping records in an
+opaque vector owner, moves the membership to a Range, and scans it four times.
+The `references`
 case retains String/Path/Bool fields and therefore does not use numeric-page
 storage. Those payloads are deliberately shared constants: this is a
 reference-only bookkeeping/packing control, not a full manifest distribution.
@@ -20,6 +21,8 @@ startup. The source, residual construction/member sites, probe and five product
 assembly hashes are retained in every report.
 
 ## Root cause and fix
+
+The historical measurements in this section used the prior storage API.
 
 Function-wide contextual applicability did not imply applicability at every
 continuation. `Preparation.Run` always stops before a backward-edge target,

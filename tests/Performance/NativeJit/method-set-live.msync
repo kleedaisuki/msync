@@ -1,0 +1,32 @@
+let Set = $std::containers::Set;
+let io = $std::io;
+let tree = Set::new(Number);
+let indices = $std::ranges::iota(0, 128);
+let seed = 0;
+let inserted = 0;
+for _ in indices {
+    seed = (seed + 40503) % 65536;
+    if Set::insert(tree, 2 * seed) { inserted = inserted + 1; };
+};
+let switch_text? = io::read_line();
+let query_text? = io::read_line();
+if switch_text? or query_text? {
+    io::println("missing");
+} else {
+    let switch_at = switch_text as Number;
+    let queries = query_text as Number;
+    let policy = tree::order;
+    let replacement_calls = 0;
+    let matches = 0;
+    for i in $std::ranges::iota(0, queries) {
+        if i == switch_at {
+            policy::less = fn(left?, right?) {
+                replacement_calls = replacement_calls + 1;
+                false
+            };
+        };
+        if Set::contains(tree, (i % 128) * 2 + 1) { matches = matches + 1; };
+    };
+    io::println(matches as String);
+    io::println(replacement_calls as String);
+};

@@ -35,6 +35,10 @@ public sealed class HirLoweringSession
     internal Dictionary<HirLocationSlot, int> Locations { get; } = [];
     internal Dictionary<HirAllocationSiteId, int> AllocationSites { get; } = [];
     internal Dictionary<int, int> SingletonSites { get; } = [];
+    internal Dictionary<int, int> CodeLayoutSlots { get; } = [];
+    internal List<int> CodeLayoutOrder { get; } = [];
+    internal Dictionary<int, int> CodeStaticSlots { get; } = [];
+    internal List<CodeStaticScope> CodeStaticScopes { get; } = [];
     internal Dictionary<HirFunctionId, int> LocalCounts { get; } = [];
     internal int NextCallable;
     internal int NextAllocation = 1;

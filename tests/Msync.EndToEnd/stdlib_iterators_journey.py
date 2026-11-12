@@ -28,7 +28,6 @@ let Map = $std::containers::Map;
 let List = $std::containers::List;
 let BTree = $std::containers::BTree;
 let BPlusTree = $std::containers::BPlusTree;
-let Buffer = $std::storage::Buffer;
 let set = Set::new(Number);
 (Set::size(set) as String) -> ./empty.txt;
 Set::insert(set, 2);
@@ -64,9 +63,9 @@ let legacy = BPlusTree::new(7, "legacy");
 BPlusTree::insert(legacy, 8, "value");
 ($std::ranges::matches(legacy::value_prototype, "legacy") as String)
     -> ./legacy.txt;
-let items = Buffer::of_type(decltype(scope { label: "" }));
-Buffer::push(items, scope { label: "shape" });
-Buffer::get(items, 0)::label -> ./shape.txt;
+let items = $std::storage::vector_empty(decltype(scope { label: "" }));
+$std::storage::vector_push(items, scope { label: "shape" });
+$std::storage::vector_get(items, 0)::label -> ./shape.txt;
 let types = List::empty(Number);
 List::push(types, String);
 (List::get_or(types, 0, Number) as String) -> ./prototype.txt;
@@ -277,9 +276,11 @@ def journey(binary: Path, work: Path, case: Journey, level: int) -> None:
     invoke(binary, work, "compile", source.name, "--emit", "hir", "-o", "journey.mhir")
     source.unlink()
     invoke(binary, work, "compile", "journey.mhir", f"-O{level}", "-o", "journey.mso")
+    (work / "journey.mhir").unlink()
     invoke(binary, work, "run-ir", "journey.mso")
     verify(work, case.expected)
     invoke(binary, work, "bind-ir", "journey.mso", "-o", "journey.mexe")
+    (work / "journey.mso").unlink()
     invoke(binary, work, "run-ir", "journey.mexe")
     verify(work, case.expected)
 

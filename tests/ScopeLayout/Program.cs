@@ -4,6 +4,36 @@ using Msync.Core;
 using Msync.Runtime;
 using Module = Msync.Core.Module;
 
+if (args.Contains("--scope-crossing-only", StringComparer.Ordinal))
+{
+    await ScopeCrossingArmChecks.Run();
+    return;
+}
+
+if (args.Contains("--member-dispatch-only", StringComparer.Ordinal))
+{
+    await MemberDispatchChecks.Run();
+    return;
+}
+
+if (args.Contains("--guarded-scope-only", StringComparer.Ordinal))
+{
+    await GuardedScopeChecks.Run();
+    return;
+}
+
+if (args.Contains("--field-places-only", StringComparer.Ordinal))
+{
+    await FieldPlaceChecks.Run();
+    return;
+}
+
+if (args.Contains("--namespace-only", StringComparer.Ordinal))
+{
+    await NamespaceErasureChecks.Run();
+    return;
+}
+
 if (args.Contains("--call-preparation-only", StringComparer.Ordinal))
 {
     await CallPreparationChecks.Run();
@@ -36,6 +66,10 @@ if (args.Contains("--spatial-only", StringComparer.Ordinal)
 }
 
 int assertions = 0;
+await MemberDispatchChecks.Run();
+await FieldPlaceChecks.Run();
+await GuardedScopeChecks.Run();
+await ScopeCrossingArmChecks.Run();
 void Check(bool condition, string message)
 {
     assertions++;
@@ -46,7 +80,6 @@ ScopeLayout layout = new(new[] { "first", ".codex", "cell" });
 CellValue cell = new(new StringValue("before"));
 ScopeValue value = new(layout, [Value.True, new NumberValue(3), cell]) { AllocationSite = 17 };
 Check(ReferenceEquals(value.Members, value), "Scope allocated a separate member-view object");
-Check(value.IsField(1, ".codex") && !value.IsField(-1, ".codex") && !value.IsField(1, "cell"), "Offset/name guard changed");
 Check(value.TryGetFieldOffset("cell", out int offset) && offset == 2, "Field offset lookup changed");
 Check(value.GetField(2) is StringValue { Data: "before" }, "Indexed read did not dereference shared storage");
 value.SetField(2, new StringValue("indexed"));
@@ -89,9 +122,14 @@ Check(!value.Equals(mapped) && !emptyFirst.Equals(emptySecond) && emptyFirst.Equ
 
 Module Factory() => new([new StringValue("original")],
 [
-    new("main", 0, 0,
-        [new(OpCode.Constant, 0), new(OpCode.MakeScope, 1, 39, "field"), new(OpCode.Return)], TypeRef.Scope)
-], OptimizationLevel: 0);
+    new FunctionCode("main", 0, 0,
+        [new(OpCode.Constant, 0), new(OpCode.NewScope, 0, 39), new(OpCode.Return)], TypeRef.Scope)
+    { CodeSignature = new([], 1, []) }
+], OptimizationLevel: 0)
+{
+    CodeTypes = [new(TypeKind.String), new(TypeKind.Scope, ScopeLayouts: [0])],
+    ScopeLayouts = [new([new("field", 0)])]
+};
 Module factory = Factory();
 ExecutionSession session = new();
 ScopeValue first = (ScopeValue)await session.ExecuteAsync(factory);
@@ -99,7 +137,7 @@ ScopeValue second = (ScopeValue)await session.ExecuteAsync(factory);
 Check(!ReferenceEquals(first, second), "Repeated execution reused an instance");
 first.SetMember("field", new StringValue("changed"));
 Check(second.Members["field"] is StringValue { Data: "original" }, "Repeated execution shared field payload storage");
-Check(second.AllocationSite == 39, "MakeScope lost allocation-site provenance");
+Check(second.AllocationSite == 39, "NewScope lost allocation-site provenance");
 
 string root = Path.Combine(Environment.CurrentDirectory, ".temp", "scope-layout-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
@@ -149,8 +187,11 @@ try
     {
         ScopeValue result = (ScopeValue)await Interpreter.ExecuteAsync(image, new(WorkingDirectory: root));
         ScopeValue firstRow = (ScopeValue)result["left"], secondRow = (ScopeValue)result["right"];
-        Check(ReferenceEquals(firstRow.Layout, secondRow.Layout) && !firstRow.Equals(secondRow),
-            "Permuted field declarations did not share one layout with independent instances");
+        Check(!firstRow.Equals(secondRow)
+            && firstRow.Keys.ToHashSet(StringComparer.Ordinal).SetEquals(secondRow.Keys)
+            && firstRow.Layout.Names.SequenceEqual(image.ScopeLayouts[firstRow.Layout.CodeLayoutId].Fields.Select(field => field.Name))
+            && secondRow.Layout.Names.SequenceEqual(image.ScopeLayouts[secondRow.Layout.CodeLayoutId].Fields.Select(field => field.Name)),
+            "Permuted declarations changed named membership, physical ordinals or independent instances");
         Check(result["trace"] is NumberValue { Data: 1234 }, "Physical layout changed initializer evaluation order");
         Check(firstRow["a"] is NumberValue { Data: 99 } && firstRow["z"] is NumberValue { Data: 1 }
             && secondRow["a"] is NumberValue { Data: 3 } && secondRow["z"] is NumberValue { Data: 4 },
@@ -162,58 +203,33 @@ try
         "fn take_field(n: Number) { let row = scope { x: n }; row::x }; take_field(37)");
     Check(privateFrames.Functions.Where(function => function.Name == "take_field"
         && function.ReturnType == TypeRef.Number).ToArray() is [var privateFrame]
-        && privateFrame.Instructions.All(instruction => instruction.Op != OpCode.MakeScope),
+        && privateFrame.Instructions.All(instruction => instruction.Op != OpCode.NewScope),
         "Stable REPL entry slots blocked scalar replacement in a private callable");
     Check(await new ExecutionSession().ExecuteAsync(privateFrames) is NumberValue { Data: 37 },
         "Private frame optimization changed the REPL result");
-    Module sourceHints = Compiler.Compile("let object = scope { field: \"before\" }; object::field = \"after\"; object::field", "source-hints", 0);
-    Instruction[] fieldAccesses = sourceHints.Functions.SelectMany(function => function.Instructions)
-        .Where(instruction => instruction.Op is OpCode.GetMember or OpCode.SetMember).ToArray();
-    Check(fieldAccesses.Length == 2 && fieldAccesses.All(instruction => instruction.A > 0), "Known field layout did not provide compiler offset hints");
-    Check(RoundTrip(sourceHints).Functions[0].Instructions.SequenceEqual(sourceHints.Functions[0].Instructions), "Binary serialization changed field hints");
-    Module ignoredHints = sourceHints with
-    {
-        Functions = sourceHints.Functions.Select(function => function with
-        {
-            Instructions = function.Instructions.Select(instruction => instruction.Op is OpCode.GetMember or OpCode.SetMember
-                ? instruction with { A = 0 } : instruction).ToArray()
-        }).ToArray()
-    };
-    Check(await Interpreter.ExecuteAsync(ignoredHints, new(WorkingDirectory: root)) is StringValue { Data: "after" }, "Ignoring offset hints changed named access semantics");
-    foreach (int hint in new[] { 0, 1, 2, 19, -4 })
-    {
-        Module hinted = new([new StringValue("left"), new StringValue("right"), new StringValue("changed")],
-            [new("main", 0, 1,
-            [new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.MakeScope, 2, Text: "first\0second"), new(OpCode.StoreLocal, 0),
-             new(OpCode.LoadLocal, 0), new(OpCode.Constant, 2), new(OpCode.SetMember, hint, Text: "second"), new(OpCode.Pop),
-             new(OpCode.LoadLocal, 0), new(OpCode.GetMember, hint, Text: "second"), new(OpCode.Return)], TypeRef.String)], OptimizationLevel: 0);
-        foreach (Module program in new[] { hinted, RoundTrip(hinted), RoundTrip(Binding.Bind(hinted, new(root, root))) })
-            Check(await Interpreter.ExecuteAsync(program, new(WorkingDirectory: root)) is StringValue { Data: "changed" }, $"Offset hint {hint} bypassed named-field semantics");
-    }
-    Module endpoint = new([new ConnectionValue(ConnectionKind.Local)],
-        [new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.GetMember, 99, Text: "field"), new(OpCode.Return)], TypeRef.Path)], OptimizationLevel: 0);
-    Check(await Interpreter.ExecuteAsync(RoundTrip(endpoint), new(WorkingDirectory: root)) is PathValue { Raw: "field" }, "A field hint changed Connection qualification");
+    Module places = Compiler.Compile("let object = scope { field: \"before\" }; object::field = \"after\"; object::field", "source-places", 0);
+    Instruction[] fieldAccesses = places.Functions.SelectMany(function => function.Instructions)
+        .Where(instruction => instruction.Op is OpCode.LoadField or OpCode.StoreField).ToArray();
+    Check(fieldAccesses is [{ Op: OpCode.StoreField } write, { Op: OpCode.LoadField } read] && write.A == read.A,
+        "A write and read of the same known field did not share their portable projection");
+    Module restored = RoundTrip(places);
+    var projection = restored.FieldProjections[fieldAccesses[0].A];
+    Check(projection is { Name: "field", Cases: [{ Ordinal: 0 }] }
+        && restored.ScopeLayouts[projection.Cases[0].Layout].Fields[0].Name == "field",
+        "Binary serialization changed a known layout's physical ordinal");
+    Check(await Interpreter.ExecuteAsync(restored, new(WorkingDirectory: root)) is StringValue { Data: "after" },
+        "Restored typed field place did not observe the write");
+    Module endpoint = Compiler.Compile("$local @ ./field", "endpoint-qualification", 0);
+    Check(await Interpreter.ExecuteAsync(RoundTrip(endpoint), new(WorkingDirectory: root)) is PathValue { Raw: "./field" },
+        "Connection qualification changed across portable code serialization");
     Module process = new([new ProcessValue(0, "output", "error")],
-        [new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.GetMember, 99, Text: "stdout"), new(OpCode.Return)], TypeRef.String)],
-        Stage: ArtifactStage.Executable, Context: new(root, root), OptimizationLevel: 0);
-    Check(await Interpreter.ExecuteAsync(process, new(WorkingDirectory: root)) is StringValue { Data: "output" }, "A field hint changed Process member selection");
-    const string lazyDuplicate = "a\0a";
-    foreach (bool selected in new[] { false, true })
-    {
-        Module duplicate = new([], [new("main", 0, 0,
-            [new(selected ? OpCode.True : OpCode.False), new(OpCode.JumpIfFalse, 7), new(OpCode.True), new(OpCode.False),
-             new(OpCode.MakeScope, 2, Text: lazyDuplicate), new(OpCode.Pop), new(OpCode.Jump, 7), new(OpCode.Null), new(OpCode.Return)], TypeRef.Null)], OptimizationLevel: 0);
-        try
-        {
-            _ = await Interpreter.ExecuteAsync(duplicate, new(WorkingDirectory: root));
-            Check(!selected, "A selected duplicate field constructor succeeded");
-        }
-        catch (MsyncException error)
-        {
-            Check(selected && error.InnerException is ArgumentException cause && cause.Message.Contains("same key", StringComparison.Ordinal),
-                $"Duplicate selection {selected}: {error}");
-        }
-    }
+        [new FunctionCode("main", 0, 0, [new(OpCode.Constant, 0),
+            new(OpCode.NativeCall, 1, Text: "process.stdout"), new(OpCode.Return)], TypeRef.String)
+        { CodeSignature = new([], 0, []) }],
+        Stage: ArtifactStage.Executable, Context: new(root, root), OptimizationLevel: 0)
+    { CodeTypes = [new(TypeKind.String)] };
+    Check(await Interpreter.ExecuteAsync(process, new(WorkingDirectory: root)) is StringValue { Data: "output" },
+        "A Process member lowered as a native operation did not observe stdout");
 }
 finally { Directory.Delete(root, recursive: true); }
 

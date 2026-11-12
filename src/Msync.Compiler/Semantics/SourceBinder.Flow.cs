@@ -29,7 +29,7 @@ internal sealed partial class SourceBinder
             var item = Declare("<iteration>", loop.Pattern.Span, DeclarationKind.Loop, itemType);
             var current = Node(HirKind.ReadLocation, itemType, loop.Pattern.Span, data: item.Value,
                 effects: HirEffects.ReadLocation);
-            var pattern = BindPattern(loop.Pattern, current, false, itemType, null, DeclarationKind.Loop);
+            var pattern = BindPattern(loop.Pattern, current, loop.Nullable, itemType, null, DeclarationKind.Loop);
             var body = Block(loop.Body);
             var block = Node(HirKind.Block, program.Node(body).Type, loop.Body.Span, [pattern, body]);
             int descriptor = hir.Fors.Count;

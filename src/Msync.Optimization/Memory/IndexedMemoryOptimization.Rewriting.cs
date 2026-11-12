@@ -26,7 +26,7 @@ internal static partial class IndexedMemoryOptimization
                 }
                 else
                 {
-                    if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.IteratorNext)
+                    if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.JumpIfStaticReady or OpCode.IteratorNext)
                         EmitBranch(pc, instruction);
                     else output.Add(instruction);
                     if (retained.TryGetValue(pc, out var saves))
@@ -89,9 +89,9 @@ internal static partial class IndexedMemoryOptimization
                     return;
                 }
                 int fork = output.Count;
-                if (instruction.Op == OpCode.IteratorNext)
+                if (instruction.Op is OpCode.IteratorNext or OpCode.JumpIfStaticReady)
                 {
-                    output.Add(instruction with { B = fork + 2 });
+                    output.Add(WithTarget(instruction, fork + 2));
                     output.Add(new(OpCode.Jump, Span: instruction.Span));
                     fork++;
                 }

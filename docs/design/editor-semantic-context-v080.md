@@ -839,3 +839,59 @@ The server's cancel/edit/close/shutdown and refresh lifecycle controls
 pass independently. Receipts: `.temp/editor-next/same-image/`,
 `.temp/editor-next/final-host/telemetry-results.json`, and
 `.temp/editor-next/lsp-lifecycle.log`.
+
+## Interactive analysis demand across documents
+
+A single editor compiler worker preserves mutable session ownership, but one
+global FIFO used to block an interactive query behind unrelated document
+analysis. The worker now selects a pending revision demanded by hover,
+completion, or definition before ordinary background revisions. Highlighting
+and outline requests can still wait for that same revision; they do not make
+unrelated background work non-interruptible. The event loop queues only the
+latest revision per URI and asks for an exact server generation, never a
+document's recycled client version.
+
+If a demanded revision is ready while unrelated background work is running,
+cooperative cancellation can displace that background attempt once. The
+retry follows already queued demands and precedes later ones. It cannot be
+displaced again, and editing or closing that URI can still supersede it.
+Only one worker touches the session; the cancelled attempt cannot publish,
+and a surviving retry must pass the ordinary current-generation gate.
+Running work already demanded by an interactive request is not interrupted.
+This applies [clangd's distinction between request latency and unrelated
+analysis](https://clangd.llvm.org/design/threads) without introducing one
+compiler thread per open document or returning a stale result.
+
+The real LSP comparison opened a new background document, requested its
+semantic tokens, applied an actual range edit to a warm short document,
+and requested hover. Every iteration verified the edited declaration's type,
+the background token stream length, and a background hover. Matched Linux
+Native AOT runs on CPU 9, three alternating process pairs with five iterations
+each, had the following median wall times. The right column includes both
+documents, not just latency until the foreground reply.
+
+| Background size | Edited-document hover RTT, before → after | Both documents checked, before → after |
+| --- | ---: | ---: |
+| 16 lines | 1.406 → 1.442 ms | 1.923 → 1.865 ms |
+| 4,000 lines | 282.868 → 6.620 ms | 284.602 → 274.506 ms |
+
+Telemetry was off for timed pairs. In a separate baseline attribution run,
+the small document's analysis took 0.25–2.37 ms while its queue waited
+206–528 ms behind the other document. Separate traced candidate checks
+observe cancelled attempts and successful retries for the exact same
+background generations. The result changes which document waits; it does
+not speed up a large document's own compiler analysis or guarantee a VS Code
+repaint latency.
+
+```sh
+python3 tests/Msync.EndToEnd/lsp_analysis_demand.py \
+  --baseline /absolute/path/to/stock/msync --candidate /absolute/path/to/new/msync \
+  --work .temp/editor-demand/compare --cpu 9
+```
+
+The [paired samples and lifecycle receipts](../../artifacts/benchmarks/editor-demand-v086/)
+are retained with the performance artifacts; disposable traces remain under
+`.temp/editor-demand/paired/`. The joint Native AOT build also passed the
+[foreground/background completion structure](../../artifacts/benchmarks/scope-storage-consumers-v086/combined/lsp-structure.json).
+Use the checked [LSP lifecycle journey](../../tests/Msync.EndToEnd/lsp_analysis_journey.py)
+for generation/cancellation and refresh controls independently.

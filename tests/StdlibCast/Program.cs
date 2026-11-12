@@ -115,6 +115,7 @@ try
     EditorAnalysis preview = compiler.AnalyzeEditor("target = Number;", execution.GetLocalValue);
     Check(preview.Diagnostic is null, "An unrelated Type-value mutation changed a static cast");
     Check(await Submit("$std::ranges::first(values)") is StringValue { Data: "12" }, "Editor preview changed a static cast result or captured cells");
+    assertions += await NumberTextCastChecks.Run(root);
     Console.WriteLine($"PASS: {assertions} typed cast, metadata, identity, IEEE, null, lazy range and artifact contracts");
 }
 finally { Directory.Delete(root, recursive: true); }

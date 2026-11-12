@@ -21,14 +21,15 @@ variants, allocation policies, key boxing and heap arities are not held
 constant. Do not extrapolate the timings to every language workload.
 
 SHA-256 padding and decoding to big-endian words are done once in Python.
-The host reads the same words before timing. msync uses exact binary64
-integers and initializes its typed buffers from embedded constants, instead
-of native 32-bit bitwise instructions. Each sample checks all 256 result bits
-against an independent hashlib oracle outside timing. Both `abc` and a
+The host reads the same words before timing. The msync fixtures own dense
+Number vectors initialized from embedded constants. They retain the original
+binary64 software-word algorithms rather than calling the native
+`$std::bits` API, so the two AND controls remain comparable. Each sample checks
+all 256 result bits against an independent hashlib oracle outside timing. Both `abc` and a
 56-byte message that forces a second padding block are checked first.
 The no-lookup control changes only the AND implementation: test/subtract
 powers of two from most to least significant bit. XOR is `a+b-2*and(a,b)` in
-both variants. This removes the bit lookup table, not the SHA schedule buffer.
+both variants. This removes the bit lookup table, not the SHA schedule vector.
 
 Run with Python 3, .NET 10 SDK, GCC and a JDK:
 
@@ -52,6 +53,9 @@ References: [SHA-256 definition, FIPS 180-4](https://csrc.nist.gov/pubs/fips/180
 and [.NET's quaternary heap](https://github.com/dotnet/runtime/blob/main/src/libraries/System.Collections/src/System/Collections/Generic/PriorityQueue.cs).
 
 ## Observed on the 0.8.6 Linux candidate
+
+This historical measurement predates the migration of the source fixtures
+to collection-owned storage.
 
 GCC 14.2, .NET 10.0.14, OpenJDK 25.0.5 and CPython 3.15.2 ran on the same
 KVM Linux x86-64 host. All values below are medians in milliseconds per

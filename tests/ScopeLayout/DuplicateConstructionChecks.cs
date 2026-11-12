@@ -1,29 +1,51 @@
 using Msync.Core;
 using Msync.Optimization;
 using Msync.Runtime;
-using Module = Msync.Core.Module;
 
 internal static class DuplicateConstructionChecks
 {
+    private const int Null = 0, Bool = 1, Any = 2, Scope = 3;
+    private static readonly CodeType[] Types = [new(TypeKind.Null), new(TypeKind.Bool), new(TypeKind.Any), new(TypeKind.Scope)];
+
     internal static async Task Run()
     {
-        int checks = 0;
-        int cases = 0;
-        string root = Path.GetFullPath(".temp/duplicate-construction-" + Guid.NewGuid().ToString("N"));
+        int checks = 0, journeys = 0;
+        string root = Path.GetFullPath(".temp/scope-selected-effects-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         try
         {
-            foreach (string scenario in new[] { "pure-entry", "prior-transfer", "called" })
-                foreach (bool selected in new[] { false, true })
+            foreach (bool selected in new[] { false, true })
+            {
+                RejectDuplicate(selected);
+                foreach (string scenario in new[] { "pure-entry", "prior-transfer", "called" })
                     foreach (string route in new[] { "module", "object", "executable" })
                         await RunCase(scenario, selected, route);
+            }
         }
         finally { Directory.Delete(root, recursive: true); }
-        Console.WriteLine($"Duplicate construction: {cases} selected-effect journeys, {checks} diagnostic/order contracts passed.");
+        Console.WriteLine($"PASS duplicate layout intake and {journeys} selected-effect journeys, {checks} contracts");
+
+        void RejectDuplicate(bool selected)
+        {
+            var module = Build("pure-entry", selected, new("duplicate-layout.msync", 41, 23)) with
+            {
+                ScopeLayouts = [new([new("other", Bool), new("other", Bool)])]
+            };
+            using MemoryStream malformed = new();
+            Artifact.WriteProduced(module, malformed);
+            malformed.Position = 0;
+            try { _ = Artifact.Read(malformed); }
+            catch (MsyncException error) when (error.Message.Contains("duplicate field name", StringComparison.Ordinal))
+            {
+                checks++;
+                return;
+            }
+            throw new InvalidOperationException($"The reader admitted duplicate field names (selected={selected}).");
+        }
 
         async Task RunCase(string scenario, bool selected, string route)
         {
-            cases++;
+            journeys++;
             string name = $"{scenario}-{selected}-{route}";
             string work = Path.Combine(root, name);
             Directory.CreateDirectory(work);
@@ -35,35 +57,31 @@ internal static class DuplicateConstructionChecks
                 Module bound = Binding.Bind(program, new(work, work));
                 program = RoundTrip(ContextualBackend.Prepare(bound, new(WorkingDirectory: work)));
             }
-            Check(!File.Exists(Path.Combine(work, "before.txt")) && !File.Exists(Path.Combine(work, "after.txt")),
-                name + ": preparation executed an output transfer");
+
+            string before = Path.Combine(work, "before.txt"), after = Path.Combine(work, "after.txt");
+            Check(!File.Exists(before) && !File.Exists(after), name + ": preparation executed an output transfer");
             MsyncException? failure = null;
             try
             {
                 Value result = await Interpreter.ExecuteAsync(program, new(WorkingDirectory: work));
-                Check(result is NullValue, name + ": unselected constructor changed the program result");
+                Check(result is NullValue, name + ": unselected field failure changed the program result");
             }
             catch (MsyncException error) { failure = error; }
-            Check((failure is not null) == selected, name + ": duplicate constructor did not follow the selected control-flow edge");
+            Check((failure is not null) == selected, name + ": opaque field failure did not follow the selected edge");
             if (failure is not null)
             {
-                Check(failure.Span == scopeSpan, name + ": concrete constructor error lost its owning source span");
-                Check(failure.InnerException is ArgumentException argument && argument.Message.Contains("same key", StringComparison.Ordinal),
-                    name + ": constructor failure escaped without the concrete duplicate-field cause");
+                Check(failure.Span == scopeSpan, name + ": selected error lost its field source span");
+                Check(failure.Message.Contains("Scope has no member 'item'", StringComparison.Ordinal),
+                    name + ": dynamic lookup lost its concrete diagnostic");
             }
-            bool hasTransfers = scenario != "pure-entry";
-            if (hasTransfers)
-            {
-                Check(File.ReadAllText(Path.Combine(work, "before.txt")) == "before",
-                    name + ": selected failure discarded or never admitted its preceding transfer");
-                if (selected)
-                    Check(!File.Exists(Path.Combine(work, "after.txt")), name + ": an operation after the selected failure executed");
-                else
-                    Check(File.ReadAllText(Path.Combine(work, "after.txt")) == "after", name + ": unselected failure suppressed later work");
-            }
+            if (scenario == "pure-entry")
+                Check(!File.Exists(before) && !File.Exists(after), name + ": pure entry acquired output effects");
             else
-                Check(!File.Exists(Path.Combine(work, "before.txt")) && !File.Exists(Path.Combine(work, "after.txt")),
-                    name + ": pure entry acquired output effects");
+            {
+                Check(File.ReadAllText(before) == "before", name + ": earlier selected transfer was lost");
+                if (selected) Check(!File.Exists(after), name + ": an operation after the failure executed");
+                else Check(File.ReadAllText(after) == "after", name + ": an unselected failure suppressed later work");
+            }
         }
 
         void Check(bool condition, string message)
@@ -73,37 +91,50 @@ internal static class DuplicateConstructionChecks
         }
     }
 
-    private static Module Build(string scenario, bool selected, SourceSpan scopeSpan)
+    private static Module Build(string scenario, bool selected, SourceSpan fieldSpan)
     {
         Instruction condition = new(selected ? OpCode.True : OpCode.False);
-        Instruction duplicate = new(OpCode.MakeScope, A: 2, Text: "item\0item", Span: scopeSpan);
-        Instruction[] pure = [condition, new(OpCode.JumpIfFalse, 7), new(OpCode.True), new(OpCode.False),
-            duplicate, new(OpCode.Pop), new(OpCode.Jump, 7), new(OpCode.Null), new(OpCode.Return)];
-        if (scenario == "pure-entry")
-            return new([], [new("main", 0, 0, pure, TypeRef.Null)], OptimizationLevel: 0);
-
-        Value[] constants = [new StringValue("before"), new PathValue("./before.txt"),
-            new StringValue("after"), new PathValue("./after.txt")];
-        List<Instruction> code = [new(OpCode.Constant, 0), new(OpCode.Constant, 1),
-            new(OpCode.Transfer), new(OpCode.Pop)];
+        FunctionCode read = new("read opaque member", 1, 1,
+            [new(OpCode.LoadLocal, 0), new(OpCode.LoadField, Span: fieldSpan), new(OpCode.Return)], TypeRef.Any,
+            ParameterTypes: [TypeRef.Scope]) { CodeSignature = new([Scope], Any, []) };
+        var code = new List<Instruction>();
+        if (scenario != "pure-entry")
+            code.AddRange([new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Transfer), new(OpCode.Pop)]);
         if (scenario == "called")
-        {
-            code.AddRange([new(OpCode.MakeClosure, 1), condition, new(OpCode.Call, A: 1, B: 2), new(OpCode.Pop)]);
-        }
+            code.AddRange([new(OpCode.MakeClosure, 2), condition, new(OpCode.Call, 1, 3), new(OpCode.Pop)]);
         else
-        {
-            code.AddRange([condition, new(OpCode.JumpIfFalse, 11), new(OpCode.True), new(OpCode.False),
-                duplicate, new(OpCode.Pop), new(OpCode.Jump, 11)]);
-        }
-        code.AddRange([new(OpCode.Constant, 2), new(OpCode.Constant, 3), new(OpCode.Transfer), new(OpCode.Pop),
-            new(OpCode.Null), new(OpCode.Return)]);
-        List<FunctionCode> functions = [new("main", 0, 0, code, TypeRef.Null)];
+            AppendChoice(code, condition);
+        if (scenario != "pure-entry")
+            code.AddRange([new(OpCode.Constant, 2), new(OpCode.Constant, 3), new(OpCode.Transfer), new(OpCode.Pop)]);
+        code.AddRange([new(OpCode.Null), new(OpCode.Return)]);
+
+        List<FunctionCode> functions =
+        [
+            new FunctionCode("main", 0, 0, code, TypeRef.Null) { CodeSignature = new([], Null, []) }, read
+        ];
         if (scenario == "called")
-            functions.Add(new("construct", 1, 1,
-                [new(OpCode.LoadLocal, 0), new(OpCode.JumpIfFalse, 7), new(OpCode.True), new(OpCode.False),
-                 duplicate, new(OpCode.Pop), new(OpCode.Jump, 7), new(OpCode.Null), new(OpCode.Return)],
-                TypeRef.Null, ParameterTypes: [TypeRef.Bool]));
-        return new(constants, functions, OptimizationLevel: 0);
+        {
+            List<Instruction> body = [];
+            AppendChoice(body, new(OpCode.LoadLocal, 0));
+            body.AddRange([new(OpCode.Null), new(OpCode.Return)]);
+            functions.Add(new("selected construction and read", 1, 1, body, TypeRef.Null, ParameterTypes: [TypeRef.Bool])
+            { CodeSignature = new([Bool], Null, []) });
+        }
+        Value[] constants = scenario == "pure-entry" ? [] : [new StringValue("before"), new PathValue("./before.txt"),
+            new StringValue("after"), new PathValue("./after.txt")];
+        return new(constants, functions, OptimizationLevel: 0)
+        {
+            CodeTypes = Types, ScopeLayouts = [new([new("other", Bool)])], FieldProjections = [new("item", [])]
+        };
+    }
+
+    private static void AppendChoice(List<Instruction> code, Instruction condition)
+    {
+        code.Add(condition);
+        int jump = code.Count;
+        code.AddRange([new(OpCode.JumpIfFalse), new(OpCode.MakeClosure, 1), new(OpCode.True),
+            new(OpCode.NewScope), new(OpCode.Call, 1, 2), new(OpCode.Pop)]);
+        code[jump] = code[jump] with { A = code.Count };
     }
 
     private static Module RoundTrip(Module module)

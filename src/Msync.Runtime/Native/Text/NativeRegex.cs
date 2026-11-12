@@ -21,8 +21,8 @@ public static partial class NativeRegistry
                 "find" => RegexFind(text, pattern),
                 "matches" => new RangeValue(RegexMatches(text, Regex.Matches(text, pattern, RegexOptions.CultureInvariant)), TypeRef.Scope),
                 "replace" => new StringValue(Regex.Replace(text, pattern, Text(args[2]), RegexOptions.CultureInvariant)),
-                "split" => new RangeValue(Regex.Split(text, pattern, RegexOptions.CultureInvariant)
-                    .Select(value => (Value)new StringValue(value)), TypeRef.String),
+                "split" => RangeValue.TextSlices(Regex.Split(text, pattern, RegexOptions.CultureInvariant)
+                    .Select(value => new TextSlice(value))),
                 _ => throw new MsyncException($"Unknown regex native '{operation}'")
             };
         }

@@ -27,7 +27,7 @@ public static partial class ContextualBackend
             calls |= instruction.Op == OpCode.Call && instruction.B >= 0;
             direct |= instruction.Op is OpCode.Transfer or OpCode.LocalTransfer or OpCode.SelectPath
                 || instruction.Op == OpCode.NativeCall && IsMetadata(instruction.Text);
-            if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse && instruction.A <= index)
+            if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady && instruction.A <= index)
                 (headers ??= []).Add(instruction.A);
         }
         return new(direct, calls, headers);
@@ -223,23 +223,28 @@ public static partial class ContextualBackend
                                 inputs.Aggregate(new TypeRef(TypeKind.Never), (type, item) => TypeRef.Union(type, item.Value!.Type))) : null;
                         return PushComputed(result, inputs);
                     }
-                case OpCode.MakeScope: return KnownScope(instruction);
-                case OpCode.GetMember:
+                case OpCode.NewScope: return KnownScope(instruction);
+                case OpCode.AdmitScope:
+                    return Peek().Value is ScopeValue admitted && BoundScopePlaces.For(module).IsAdmitted(admitted, instruction.A) || Stop();
+                case OpCode.LoadField:
                     {
                         KnownValue receiver = Pop();
-                        Value? value = receiver.Value is ScopeValue scope ? ReadKnownMember(scope, instruction.Text!) : null;
+                        Value? value = receiver.Value is ScopeValue scope
+                            && BoundScopePlaces.For(module).TryField(scope, instruction.A, out int offset)
+                                ? ReadKnownMember(scope, scope.Layout.Names[offset]) : null;
                         return PushComputed(value, [receiver]);
                     }
-                case OpCode.SetMember:
+                case OpCode.StoreField:
                     {
                         KnownValue value = Pop(), receiver = Pop();
-                        if (receiver.Value is not ScopeValue scope) return Stop();
-                        if (scope.TryGetFieldOffset(instruction.Text!, out int offset) && scope.TryGetFieldCell(offset, out var cell))
+                        if (receiver.Value is not ScopeValue scope || value.Value is null
+                            || !BoundScopePlaces.For(module).TryWriteField(scope, instruction.A, value.Value, out int offset)) return Stop();
+                        if (scope.TryGetFieldCell(offset, out var cell))
                             SetKnownCell(cell, value.Value);
                         else
                         {
                             if (!fields.TryGetValue(scope, out var current)) fields.Add(scope, current = new(StringComparer.Ordinal));
-                            current[instruction.Text!] = value.Value;
+                            current[scope.Layout.Names[offset]] = value.Value;
                         }
                         Push(new(Value.Null)); return true;
                     }
@@ -324,13 +329,10 @@ public static partial class ContextualBackend
 
         private bool KnownScope(Instruction instruction)
         {
-            KnownValue[] inputs = PopMany(instruction.A);
+            ScopeLayout layout = BoundScopePlaces.For(module).Layout(instruction.A);
+            KnownValue[] inputs = PopMany(layout.Count);
             if (inputs.Any(value => !value.Known)) { Push(KnownValue.Unknown); return true; }
-            string[] names = (instruction.Text ?? "").Split('\0');
-            Dictionary<string, Value> members = new(StringComparer.Ordinal);
-            for (int index = 0; index < names.Length && index < inputs.Length; index++)
-                if (!members.TryAdd(names[index], inputs[index].Value!)) return Stop();
-            Push(new(new ScopeValue(members)));
+            Push(new(ScopeValue.FromOwnedFields(layout, inputs.Select(value => value.Value!).ToArray(), instruction.B)));
             return true;
         }
 

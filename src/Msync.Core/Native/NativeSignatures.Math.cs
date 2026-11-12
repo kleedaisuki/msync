@@ -15,5 +15,13 @@ public static partial class NativeSignatures
         Add("divide fmin fmax pow atan2 hypot fmod remainder copysign nextafter", TypeRef.Number, NativeBehavior.None, TypeRef.Number, TypeRef.Number);
         Add("fma", TypeRef.Number, NativeBehavior.None, TypeRef.Number, TypeRef.Number, TypeRef.Number);
         Add("clamp", TypeRef.Number, NativeBehavior.MayFail, TypeRef.Number, TypeRef.Number, TypeRef.Number);
+        Mark("floor", NumericIntrinsic.Floor);
+        Mark("pow", NumericIntrinsic.Power);
+
+        void Mark(string member, NumericIntrinsic operation)
+        {
+            string name = "math." + member;
+            result[name] = result[name] with { Numeric = operation };
+        }
     }
 }

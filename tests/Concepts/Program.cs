@@ -20,6 +20,12 @@ const string contracts = """
     fn apply(algebra: Monoid) -> Monoid { algebra };
     """;
 int checks = 0;
+if (args.Contains("--metadata-only", StringComparer.Ordinal))
+{
+    foreach (int level in new[] { 0, 2, 3 }) await VerifyMetadataOnly(level);
+    Console.WriteLine($"PASS {checks} source-free concept metadata contracts");
+    return;
+}
 foreach (int level in new[] { 0, 2, 3 })
 {
     Module module = Compiler.Compile(contracts + "apply(Addition)::combine(2, 3)", "concepts.msync", level);
@@ -70,9 +76,7 @@ foreach (int level in new[] { 0, 2, 3 })
     executableBytes.Position = 0;
     foreach (Module image in new[] { qualified, Artifact.Read(standardBytes), Artifact.Read(executableBytes) })
         Require(await Interpreter.ExecuteAsync(image) is BoolValue { Data: true }, "Qualified concept across source and binary stages");
-    var metadataOnly = Compiler.Compile("concept Local { $std::concepts::Equality, };", "concept-metadata.msync", level);
-    Require(!metadataOnly.Functions.SelectMany(function => function.Instructions).Any(instruction => instruction.Op == OpCode.MakeScope),
-        "A concept annotation allocated a runtime standard module");
+    await VerifyMetadataOnly(level);
     var conceptRange = Compiler.Compile(standard + "fn count(values: Range<$std::concepts::Equality>) { $std::ranges::size(values) }; count([Operations])", "qualified-range.msync", level);
     Require(await Interpreter.ExecuteAsync(conceptRange) is NumberValue { Data: 1 }, "Qualified Range element concept");
     var conceptUnion = Compiler.Compile(standard + "fn either(value: $std::concepts::Equality | String) { true }; either(Operations)", "qualified-union.msync", level);
@@ -160,6 +164,28 @@ catch (CompileException error) { Require(error.Diagnostic.Code == "E0214", "Sess
 session.Compile("checked = scope { item: 4 }; checked::item");
 Require(true, "Successful submission after concept failure");
 Console.WriteLine($"PASS {checks} concept contracts");
+
+async Task VerifyMetadataOnly(int level)
+{
+    var portable = Compiler.Compile("concept Local { $std::concepts::Equality, };", "concept-metadata.msync", level);
+    string cwd = Environment.CurrentDirectory;
+    foreach (Module image in new[] { portable, Reload(portable), Reload(Binding.Bind(portable, new(cwd, cwd))) })
+    {
+        Require(!image.Functions.SelectMany(function => function.Instructions)
+            .Any(instruction => instruction.Op is OpCode.NewScope or OpCode.PublishStatic),
+            "A concept annotation allocated a Scope or initialized a static standard module");
+        Require(await Interpreter.ExecuteAsync(image) is NullValue,
+            "Metadata-only concept source must remain effect-free after encoding or binding");
+    }
+}
+
+static Module Reload(Module image)
+{
+    using MemoryStream bytes = new();
+    Artifact.Write(image, bytes);
+    bytes.Position = 0;
+    return Artifact.Read(bytes);
+}
 
 void Require(bool condition, string message)
 {

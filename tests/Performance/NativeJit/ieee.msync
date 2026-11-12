@@ -1,0 +1,55 @@
+fn scan(count: Number, initial: Number, numerator: Number, denominator: Number) {
+    let i = 0;
+    let zero = initial;
+    let quotient = 0;
+    let score = 0;
+    loop {
+        if i >= count {
+            break;
+        };
+        quotient = numerator/denominator;
+        if quotient < zero {
+            score = score + 1;
+        };
+        if quotient <= zero {
+            score = score + 2;
+        };
+        if quotient > zero {
+            score = score + 4;
+        };
+        if quotient >= zero {
+            score = score + 8;
+        };
+        if quotient == zero {
+            score = score + 16;
+        };
+        if zero != quotient {
+            score = score + 32;
+        };
+        zero = -zero;
+        i = i + 1;
+    };
+    scope {
+        zero: zero,
+        quotient: quotient,
+        score: score
+    }
+};
+
+let count? = $std::io::read_line();
+let initial? = $std::io::read_line();
+let numerator? = $std::io::read_line();
+let denominator? = $std::io::read_line();
+if count? or initial? or numerator? or denominator? {
+    $std::io::println("missing inputs");
+} else {
+    let result = scan(
+        count as Number,
+        initial as Number,
+        numerator as Number,
+        denominator as Number,
+    );
+    $std::io::println(result::zero as String);
+    $std::io::println(result::quotient as String);
+    $std::io::println(result::score as String);
+};

@@ -38,9 +38,10 @@ writes. Native callable identity is its registered name, independent of the
 empty-array representation of its nonexistent captures. Source captures retain
 their normal identity.
 
-Buffer-returning helpers remain eager, including resource fields reached through
-Range item selection. Their policy schema retains nested eagerness but not live
-resource IDs. Fresh semantic graph descriptions escaping a lazy body are
+Helpers returning owners are immediate, including resource fields reached through
+indexed item selection. A vector snapshot stays eager when nested in a record,
+without placing live resource IDs in the policy schema. Fresh semantic graph
+descriptions escaping a lazy body are
 published to its caller without applying deferred writes to borrowed state.
 
 Pure return schemes and control-flow projections preserve dependent native

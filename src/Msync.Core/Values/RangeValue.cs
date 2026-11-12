@@ -1,27 +1,12 @@
 namespace Msync.Core;
 
-public interface IRangeTypeOrigin
-{
-    TypeRef InitialItemType { get; }
-}
-
 public sealed record RangeValue(IAsyncEnumerable<Value> Items, TypeRef ItemType, PathSelection? Selection = null,
     Func<CancellationToken, ValueTask<RangeValue>>? Resolve = null) : Value
 {
-    private TypeRef itemType = ItemType;
-    public TypeRef ItemType { get => itemType; init => itemType = value; }
-
-    public void InferItemType(Value value)
-    {
-        if (itemType.Kind == TypeKind.Never) itemType = value.Type;
-    }
-
-    // A first-write carrier solution must not move a live Range between hash buckets.
-    private TypeRef IdentityItemType => Items is IRangeTypeOrigin origin ? origin.InitialItemType : ItemType;
     public bool Equals(RangeValue? other) => ReferenceEquals(this, other) || other is not null
         && EqualityComparer<IAsyncEnumerable<Value>>.Default.Equals(Items, other.Items)
-        && IdentityItemType == other.IdentityItemType && Selection == other.Selection && Resolve == other.Resolve;
-    public override int GetHashCode() => HashCode.Combine(typeof(RangeValue), Items, IdentityItemType, Selection, Resolve);
+        && ItemType == other.ItemType && Selection == other.Selection && Resolve == other.Resolve;
+    public override int GetHashCode() => HashCode.Combine(typeof(RangeValue), Items, ItemType, Selection, Resolve);
 
     // Roots already retained by storage or a lazy producer; ownership never
     // enumerates a Range or keeps discarded snapshot inputs alive.
@@ -37,6 +22,41 @@ public sealed record RangeValue(IAsyncEnumerable<Value> Items, TypeRef ItemType,
     private RangeValue(List<Value> items, TypeRef itemType) : this((IEnumerable<Value>)items, itemType)
         => snapshotProducer = Items;
 
+    private RangeValue(SingletonSnapshot item) : this((IAsyncEnumerable<Value>)item, item.Value.Type)
+    {
+        RetainedValues = SnapshotValues = item;
+        snapshotProducer = item;
+    }
+
+    internal static RangeValue NumberSequence(double start, double stop, double step, CancellationToken producerToken) =>
+        new(new NumberRangeItems.Sequence(start, stop, step, producerToken), TypeRef.Number);
+
+    internal static RangeValue OwnNumberSnapshot(List<double> items, TypeRef itemType) =>
+        OwnScalarSnapshot(new NumberRangeItems.Snapshot(items), itemType);
+
+    internal static RangeValue CopyNumberSnapshot(NumberRangeItems.Snapshot items, TypeRef itemType) =>
+        OwnScalarSnapshot(items.CopyView(), itemType);
+
+    internal static RangeValue TextSlices(IEnumerable<TextSlice> items) =>
+        new(StringRangeItems.From(items), TypeRef.String);
+
+    internal static RangeValue OwnTextSnapshot(List<string> items, TypeRef itemType) =>
+        OwnScalarSnapshot(new StringRangeItems.Snapshot(items), itemType);
+
+    internal static RangeValue CopyTextSnapshot(StringRangeItems.Snapshot items, TypeRef itemType) =>
+        OwnScalarSnapshot(items.CopyView(), itemType);
+
+    private RangeValue(IAsyncEnumerable<Value> producer, IReadOnlyList<Value> snapshot, TypeRef itemType) : this(producer, itemType)
+    {
+        SnapshotValues = snapshot;
+        snapshotProducer = producer;
+    }
+
+    private static RangeValue OwnScalarSnapshot<T>(T items, TypeRef itemType)
+        where T : IAsyncEnumerable<Value>, IReadOnlyList<Value> => new(items, items, itemType);
+
+    internal static RangeValue OwnSingleton(Value value) => new(new SingletonSnapshot(value));
+
     /// <summary>Publish a private list that the caller will no longer mutate.</summary>
     public static RangeValue TakeSnapshotOwnership(List<Value> items, TypeRef itemType) => new(items, itemType);
 
@@ -49,4 +69,23 @@ public sealed record RangeValue(IAsyncEnumerable<Value> Items, TypeRef ItemType,
     }
     public override TypeRef Type => new(TypeKind.Range, ItemType);
     public override string ToString() => $"Range<{ItemType}>";
+
+    private sealed class SingletonSnapshot(Value value) : IAsyncEnumerable<Value>, IReadOnlyList<Value>
+    {
+        internal Value Value => value;
+        public int Count => 1;
+        public Value this[int index] => index == 0 ? value : throw new ArgumentOutOfRangeException(nameof(index));
+
+        public IEnumerator<Value> GetEnumerator()
+        {
+            yield return value;
+        }
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+
+        public async IAsyncEnumerator<Value> GetAsyncEnumerator(CancellationToken cancellationToken = default)
+        {
+            yield return value;
+            await Task.CompletedTask;
+        }
+    }
 }

@@ -46,7 +46,8 @@ try
     // unknown until invocation, so the pass cannot replace this by literal unrolling.
     var invariant = DynamicLoop();
     var invariantConstants = invariant.Constants.ToList();
-    var hoisted = invariant with { Functions = invariant.Functions.Select(function => Rewrite(invariant, function, invariantConstants)).ToArray() };
+    var hoisted = invariant with { Functions = invariant.Functions.Select(function => Rewrite(invariant, function, invariantConstants)).ToArray(),
+        Constants = invariantConstants };
     Artifact.Validate(hoisted);
     var body = hoisted.Functions[1].Instructions;
     var header = body.ToList().FindIndex(instruction => instruction.Op == OpCode.IteratorNext);
@@ -56,7 +57,8 @@ try
     Require(await Outcome(hoisted) == "9", "LICM result did not use the invariant value");
     var empty = DynamicLoop(true);
     var emptyConstants = empty.Constants.ToList();
-    var emptyHoisted = empty with { Functions = empty.Functions.Select(function => Rewrite(empty, function, emptyConstants)).ToArray() };
+    var emptyHoisted = empty with { Functions = empty.Functions.Select(function => Rewrite(empty, function, emptyConstants)).ToArray(),
+        Constants = emptyConstants };
     Require(await Outcome(emptyHoisted) == "3", "LICM hoisted the per-iteration store across an empty range");
     var changing = invariant with
     {
@@ -67,25 +69,41 @@ try
     }]
     };
     var changingConstants = changing.Constants.ToList();
-    var notHoisted = changing with { Functions = changing.Functions.Select(function => Rewrite(changing, function, changingConstants)).ToArray() };
+    var notHoisted = changing with { Functions = changing.Functions.Select(function => Rewrite(changing, function, changingConstants)).ToArray(),
+        Constants = changingConstants };
     Require(notHoisted.Functions[1].Instructions.Skip(6).Any(instruction => instruction.Op == OpCode.Add), "Loop-carried write treated as invariant");
     Require(await Outcome(notHoisted) == "11", "Loop-carried write order changed");
 
     var many = Compiler.Compile("let total = 0; for item in [" + string.Join(',', Enumerable.Range(1, 200)) + "] { total = total + item; }; total", "large-literal", 0);
     var manyConstants = many.Constants.ToList();
-    var kept = many with { Functions = many.Functions.Select(function => Rewrite(many, function, manyConstants)).ToArray() };
+    var kept = many with { Functions = many.Functions.Select(function => Rewrite(many, function, manyConstants)).ToArray(),
+        Constants = manyConstants };
     Require(kept.Functions.Any(function => function.Instructions.Any(instruction => instruction.Op == OpCode.IteratorNext)), "Code-size policy expanded a large table disproportionately");
     Require(await Outcome(many) == await Outcome(kept), "Retained large loop changed result");
 
-    // A potentially failing field read must remain conditional on iteration.
-    var trap = new Module([new NumberValue(17)], [new("dead-trap", 0, 2,
-        [new(OpCode.MakeRange, 0), new(OpCode.GetIterator), new(OpCode.StoreLocal, 0), new(OpCode.IteratorNext, 0, 9),
-         new(OpCode.InitializeLocal, 1), new(OpCode.MakeScope, 0, Text: ""), new(OpCode.GetMember, Text: "missing"),
-         new(OpCode.Pop), new(OpCode.Jump, 3), new(OpCode.Nop), new(OpCode.Constant, 0), new(OpCode.Return)], TypeRef.Number)], OptimizationLevel: 0);
-    var trapConstants = trap.Constants.ToList();
-    var noTrap = trap with { Functions = trap.Functions.Select(function => Rewrite(trap, function, trapConstants)).ToArray() };
-    Require(await Outcome(noTrap) == "17", "Empty loop speculated a selected error");
-    Require(noTrap.Functions.All(function => function.Instructions.All(instruction => instruction.Op != OpCode.GetMember)), "Known empty loop retained dead field read");
+    // A genuine opaque Scope can fail at its selected projection. An invalid
+    // finite layout would fail artifact admission, not execution of the loop.
+    foreach (bool selected in new[] { false, true })
+    {
+        var trap = FieldTrap(selected);
+        var trapConstants = trap.Constants.ToList();
+        var rewritten = trap with { Functions = trap.Functions.Select(function => Rewrite(trap, function, trapConstants)).ToArray(),
+            Constants = trapConstants };
+        Require(rewritten.Functions.Any(function => function.Instructions.Any(instruction => instruction.Op == OpCode.LoadField)) == selected,
+            "Literal expansion changed which field projection is reachable");
+        foreach (var image in new[] { RoundTrip(trap), RoundTrip(rewritten), RoundTrip(Binding.Bind(rewritten, new(root, root))) })
+        {
+            try
+            {
+                Require(await Outcome(image) == "17" && !selected, "Empty loop speculated an error or selected loop lost its projection");
+            }
+            catch (MsyncException error) when (selected)
+            {
+                Require(error.Message == "Scope has no member 'missing'" && error.Span == new SourceSpan("field-trap", 0, 7),
+                    "Loop optimization changed the selected projection's diagnostic");
+            }
+        }
+    }
     assertions += await NaturalLoops.VerifyAsync(root);
     Console.WriteLine($"Loop optimization: {assertions} contracts passed.");
     if (args.Contains("--performance", StringComparer.Ordinal)) await LoopPerformance.RunAsync();
@@ -118,10 +136,37 @@ Module DynamicLoop(bool empty = false) => new([new NumberValue(2), new NumberVal
 [
     new("main", 0, 0,
     empty ? [new(OpCode.Constant, 3), new(OpCode.MakeRange, 0), new(OpCode.Constant, 2), new(OpCode.Call, 2, 2), new(OpCode.Return)]
-        : [new(OpCode.Constant, 3), new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.MakeRange, 2), new(OpCode.Constant, 2), new(OpCode.Call, 2, 2), new(OpCode.Return)], TypeRef.Number),
+        : [new(OpCode.Constant, 3), new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.MakeRange, 2), new(OpCode.Constant, 2), new(OpCode.Call, 2, 2), new(OpCode.Return)], TypeRef.Number)
+        { CodeSignature = new([], 0, []) },
     new("invariant", 2, 5,
     [new(OpCode.Constant, 1), new(OpCode.InitializeLocal, 4), new(OpCode.LoadLocal, 0), new(OpCode.GetIterator), new(OpCode.StoreLocal, 2), new(OpCode.IteratorNext, 2, 16),
      new(OpCode.InitializeLocal, 3), new(OpCode.LoadLocal, 1), new(OpCode.Constant, 0), new(OpCode.Add), new(OpCode.StoreLocal, 4),
      new(OpCode.LoadLocal, 4), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Pop), new(OpCode.Jump, 5), new(OpCode.LoadLocal, 4), new(OpCode.Return)],
      TypeRef.Number, ParameterTypes: [new(TypeKind.Range, TypeRef.Number), TypeRef.Number])
-], OptimizationLevel: 0);
+     { CodeSignature = new([1, 0], 0, []) }
+], OptimizationLevel: 0)
+{ CodeTypes = [new(TypeKind.Number), new(TypeKind.Range, Element: 0)] };
+
+Module FieldTrap(bool selected)
+{
+    const int number = 0, scope = 1;
+    Instruction[] items = selected ? [new(OpCode.Constant, 0)] : [];
+    int header = items.Length + 3;
+    return new([new NumberValue(17)],
+    [
+        new("main", 0, 0,
+            [new(OpCode.MakeClosure, 1), new(OpCode.NewScope, 0), new(OpCode.Call, 1, 2), new(OpCode.Return)],
+            TypeRef.Number) { CodeSignature = new([], number, []) },
+        new("field-trap", 1, 3,
+            [.. items, new(OpCode.MakeRange, items.Length), new(OpCode.GetIterator), new(OpCode.StoreLocal, 1),
+             new(OpCode.IteratorNext, 1, header + 6), new(OpCode.InitializeLocal, 2), new(OpCode.LoadLocal, 0),
+             new(OpCode.LoadField, 0, Span: new("field-trap", 0, 7)), new(OpCode.Pop), new(OpCode.Jump, header),
+             new(OpCode.Constant, 0), new(OpCode.Return)], TypeRef.Number, ParameterTypes: [TypeRef.Scope])
+            { CodeSignature = new([scope], number, []) }
+    ], OptimizationLevel: 0)
+    {
+        CodeTypes = [new(TypeKind.Number), new(TypeKind.Scope)],
+        ScopeLayouts = [new([])],
+        FieldProjections = [new("missing", [])]
+    };
+}

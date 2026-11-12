@@ -263,6 +263,8 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
         {
             NativeBehavior behavior = signature.Behavior.GetValueOrDefault();
             bool eager = (behavior & NativeBehavior.EagerRange) != 0;
+            if (arguments.Length != 0 && ProjectStorage(IndexedNative.Classify(native), arguments[0]) is { } storage)
+                return storage;
             if (arguments.Length != 0 && HirNativeResultTypes.IsStructuralRange(signature.ResultRule))
             {
                 var first = arguments[0];
@@ -303,6 +305,27 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
         }
         if (call.Kind == HirCallKind.Path) return Fact(hir.Type(TypeRef.Process));
         return Fact(Resolve(node.Type));
+    }
+
+    private FlowFact? ProjectStorage(IndexedNativeOperation operation, FlowFact input)
+    {
+        if (operation is not (IndexedNativeOperation.Vector or IndexedNativeOperation.Typed
+            or IndexedNativeOperation.EmptyLike or IndexedNativeOperation.Element or IndexedNativeOperation.Snapshot)) return null;
+        HirTypeId source = input.SemanticType ?? hir.Type(input.Type);
+        HirTypeId element = operation == IndexedNativeOperation.Typed
+            ? input.Denotations is { Types.Length: 1 } denoted ? denoted.Types[0] : hir.Type(TypeRef.Any)
+            : types.Element(source);
+        return operation switch
+        {
+            IndexedNativeOperation.Vector or IndexedNativeOperation.Typed or IndexedNativeOperation.EmptyLike =>
+                Fact(Owner(TypeKind.Storage)),
+            IndexedNativeOperation.Element => Fact(element),
+            IndexedNativeOperation.Snapshot => Fact(Owner(TypeKind.Range)) with { Eager = true },
+            _ => null
+        };
+
+        HirTypeId Owner(TypeKind kind) =>
+            hir.Type(new HirType(new(kind, hir.Types[element.Value].RuntimeType), Element: element.Value));
     }
 
     private SemanticValue? Value(HirNodeId id)

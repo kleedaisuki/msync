@@ -98,6 +98,8 @@ try
     Equal("folder", parent.Raw, "Lexical parent changed symbolic spelling");
     if (!OperatingSystem.IsWindows()) Equal<string?>(null, parent.LocalSpelling, "Derived POSIX parent retained stale projection");
 
+    assertions += await BorrowedPathChecks.Run(root);
+
     string source = "let file = ~/.codex; let remote = ssh://unused; let text: String = remote @ file; text";
     Module portable = Compiler.Compile(source, "projection-test", 0);
     foreach (Module module in new[] { portable, Binding.Bind(portable, new(root, root)) })

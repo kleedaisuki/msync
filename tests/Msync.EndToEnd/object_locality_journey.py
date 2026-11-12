@@ -21,11 +21,11 @@ fn make(index: Number) {
         tag: index as String, path: ./seed.txt,
     }
 };
-let rows = $std::storage::Buffer::new([]);
+let rows = $std::storage::vector_empty(decltype(make(0)));
 for index in $std::ranges::iota(0, 64) {
-    $std::storage::Buffer::push(rows, make(index));
+    $std::storage::vector_push(rows, make(index));
 };
-let view = $std::storage::Buffer::snapshot(rows);
+let view = $std::storage::vector_snapshot(rows);
 let total = 0;
 for row in view {
     let alias = row;
@@ -34,11 +34,11 @@ for row in view {
 };
 (total as String) -> ./scan.txt;
 let first = $std::ranges::first(view);
-$std::storage::Buffer::clear(rows);
-$std::storage::Buffer::push(rows, make(999));
+$std::storage::vector_clear(rows);
+$std::storage::vector_push(rows, make(999));
 first::x = first::x + 100;
 if $std::ranges::size(view) == 64
-    and $std::storage::Buffer::size(rows) == 1
+    and $std::storage::vector_size(rows) == 1
     and $std::ranges::first(view)::x == 108 {
     "snapshot-keeps-instances" -> ./snapshot.txt;
 };
@@ -67,7 +67,7 @@ let observed = observe(seed);
 if observed::direct == 23 and observed::captured == 23 {
     "active-frame-location" -> ./capture-frame.txt;
 };
-let wide_rows = $std::storage::Buffer::new([
+let wide_rows = $std::storage::vector_new([
     scope {
         x: seed + 1, y: seed + 2,
         a: "a", b: "b", c: "c", d: "d", e: "e", f: "f",
@@ -75,7 +75,7 @@ let wide_rows = $std::storage::Buffer::new([
         m: "m", n: "n", o: "o", p: "p", path: ./seed.txt,
     }
 ]);
-let wide = $std::storage::Buffer::get(wide_rows, 0);
+let wide = $std::storage::vector_get(wide_rows, 0);
 if wide::x == 8 and wide::y == 9 and wide::p == "p" {
     "numeric-prefix-reference-tail" -> ./mixed-depth.txt;
 };
@@ -103,13 +103,22 @@ for value in [unit * 10000000000000000, unit, -unit * 10000000000000000] {
     reduction = reduction + value;
 };
 (reduction as String) -> ./ordered-reduction.txt;
+let initializations = 0;
+fn initialize(value: Number) {
+    global initializations;
+    initializations = initializations + 1;
+    value
+};
 fn named(value: Number) {
-    scope Named { x: value, y: value + 1, z: value + 2 };
+    scope Named { x: initialize(value), y: value + 1, z: value + 2 };
     Named
 };
+let before_initialization = initializations;
 let singleton = named(seed);
 singleton::x = 31;
-if named(999)::x == 31 { "singleton" -> ./singleton.txt; };
+if named(999)::x == 31 and before_initialization == 0 and initializations == 1 {
+    "singleton" -> ./singleton.txt;
+};
 let left = make(0);
 let right = make(0);
 left::x = 101;
@@ -171,6 +180,7 @@ def run_case(binary: Path, work: Path, route: str, level: int) -> dict[str, obje
         if route == "mexe":
             executable: Path = work / "objects.mexe"
             execute(binary, work, ["bind-ir", str(artifact), "-o", str(executable)])
+            artifact.unlink()
             artifact = executable
         assert not any((work / name).exists() for name in OUTPUTS), (
             "Preparation performed output writes."

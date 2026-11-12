@@ -1,0 +1,31 @@
+let io = $std::io;
+let storage = $std::storage;
+fn locate(links, threshold: Number) -> Number {
+    let index = 1;
+    loop {
+        if index == 0 { return index; };
+        if index * 23 % 127 >= threshold { return index; };
+        index = storage::vector_get(links, index);
+    }
+};
+let links = storage::vector_new([0]);
+for index in $std::ranges::iota(1, 257) {
+    storage::vector_push(links, if index < 256 { index + 1 } else { 0 });
+};
+let hits = 0;
+let checksum = 0;
+let negative_zeros = 0;
+for line in io::stdin_lines() {
+    let threshold = line as Number;
+    if threshold == -1000 {
+        storage::vector_set(links, 1, -0);
+    } else {
+        let selected = locate(links, threshold);
+        if selected != 0 { hits = hits + 1; };
+        if selected == 0 and 1 / selected < 0 { negative_zeros = negative_zeros + 1; };
+        checksum = (checksum * 31 + selected) % 1000003;
+    };
+};
+io::println(hits as String);
+io::println(checksum as String);
+io::println(negative_zeros as String);

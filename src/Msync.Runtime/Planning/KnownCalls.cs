@@ -75,7 +75,7 @@ internal sealed class KnownCalls(Module module, RuntimeContext context, PlanFile
         if (function.NativeName is not null) return null;
         if (instruction.B < 0) return null;
         if (instruction.Text is not null)
-            return FunctionDispatch.Parse(instruction.Text).TryGetValue(function.Function, out int target) ? target : null;
+            return FunctionDispatch.Targets(instruction.Text).TryGetValue(function.Function, out int target) ? target : null;
         return instruction.B > 0 ? instruction.B - 1 : function.Function;
     }
 
@@ -133,8 +133,12 @@ internal sealed class KnownCalls(Module module, RuntimeContext context, PlanFile
                         return left is PathValue or StringValue && right is PathValue or StringValue
                             && Push(PathSemantics.JoinValue(owner.runtime.AsPath(left), right));
                     }
-                case OpCode.GetMember:
-                    return Pop() is ScopeValue scope && Push(owner.members(scope, instruction.Text!));
+                case OpCode.AdmitScope:
+                    return stack[^1] is ScopeValue selected && BoundScopePlaces.For(owner.image).IsAdmitted(selected, instruction.A);
+                case OpCode.LoadField:
+                    return Pop() is ScopeValue scope
+                        && BoundScopePlaces.For(owner.image).TryField(scope, instruction.A, out int field)
+                        && Push(owner.members(scope, scope.Layout.Names[field]));
                 case OpCode.GetCapture:
                     return Pop() is FunctionValue { Captures: { } captures }
                         && instruction.A < captures.Count && Push(owner.resolver(captures[instruction.A]));
@@ -145,15 +149,12 @@ internal sealed class KnownCalls(Module module, RuntimeContext context, PlanFile
                             && Push(new RangeValue(values.Select(value => value!).ToArray(),
                                 values.Aggregate(new TypeRef(TypeKind.Never), (type, value) => TypeRef.Union(type, value!.Type))));
                     }
-                case OpCode.MakeScope:
+                case OpCode.NewScope:
                     {
-                        Value?[] values = PopMany(instruction.A);
+                        var layout = BoundScopePlaces.For(owner.image).Layout(instruction.A);
+                        Value?[] values = PopMany(layout.Count);
                         if (values.Any(value => value is null or KnownCopyResult)) return false;
-                        string[] names = (instruction.Text ?? "").Split('\0');
-                        Dictionary<string, Value> members = new(StringComparer.Ordinal);
-                        for (int index = 0; index < names.Length && index < values.Length; index++)
-                            if (!members.TryAdd(names[index], values[index]!)) return false;
-                        return Push(new ScopeValue(members));
+                        return Push(ScopeValue.FromOwnedFields(layout, values.Select(value => value!).ToArray(), instruction.B));
                     }
                 case OpCode.MakeClosure:
                     {
@@ -165,7 +166,7 @@ internal sealed class KnownCalls(Module module, RuntimeContext context, PlanFile
                     {
                         if (Pop() is not FunctionValue closure || instruction.A < 0) return false;
                         int target = instruction.Text is null ? instruction.A
-                            : FunctionDispatch.Parse(instruction.Text).GetValueOrDefault(closure.Function, -1);
+                            : FunctionDispatch.Targets(instruction.Text).GetValueOrDefault(closure.Function, -1);
                         return target >= 0 && Push(closure with { Function = target });
                     }
                 case OpCode.Call: return Call(instruction);

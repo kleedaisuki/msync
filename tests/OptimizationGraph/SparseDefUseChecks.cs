@@ -17,7 +17,9 @@ internal static class SparseDefUseChecks
         }
 
         var contextType = typeof(Optimizer).Assembly.GetType("Msync.Optimization.FunctionAnalysisContext", true)!;
-        object context = Activator.CreateInstance(contextType, nonPublic: true)!;
+        var module = new Msync.Core.Module([new NumberValue(0), new NumberValue(1)], []);
+        object context = Activator.CreateInstance(contextType, Internal | BindingFlags.Public,
+            binder: null, args: [module], culture: null)!;
         object Analyze(FunctionCode function) => contextType.GetMethod("DefUse", Internal)!.Invoke(context, [function])!;
         object Invoke(object graph, string method, params object[] arguments) =>
             graph.GetType().GetMethod(method, Internal)!.Invoke(graph, arguments)!;

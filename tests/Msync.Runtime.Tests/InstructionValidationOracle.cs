@@ -1,6 +1,6 @@
 namespace Msync.Core;
 
-// Slow instruction-level oracle retained only to compare CFG propagation semantics.
+// Slow instruction-level oracle for the generated scalar CFG corpus.
 // Production verification snapshots state at control-flow boundaries instead.
 
 internal static class InstructionValidationOracle
@@ -107,10 +107,6 @@ internal static class InstructionValidationOracle
                     if (instruction.B != 0 && (instruction.B < 0 || instruction.B > module.Constants.Count || module.Constants[instruction.B - 1] is not TypeValue)) throw Error("lazy range item type does not identify a Type constant");
                     Push(new(TypeKind.Range)); break;
                 case OpCode.DeferRange: Require(Pop(), TypeKind.Function); Push(new(TypeKind.Range)); break;
-                case OpCode.MakeScope:
-                    if ((instruction.Text is null ? 0 : instruction.Text.Split('\0', StringSplitOptions.RemoveEmptyEntries).Length) != instruction.A) throw Error("scope member names disagree with value count");
-                    PopMany(instruction.A); Push(TypeRef.Scope); break;
-                case OpCode.GetMember: Require(Pop(), TypeKind.Scope | TypeKind.Connection | TypeKind.Process); Push(TypeRef.Any); break;
                 case OpCode.Qualify: Require(Pop(), TypeKind.String | TypeKind.Path); Require(Pop(), TypeKind.Connection | TypeKind.Scope); Push(TypeRef.Path); break;
                 case OpCode.PathJoin: Require(Pop(), TypeKind.String | TypeKind.Path); Require(Pop(), TypeKind.String | TypeKind.Path); Push(TypeRef.Path); break;
                 case OpCode.SelectPath: Require(Pop(), TypeKind.String | TypeKind.Path); Push(new(TypeKind.Range, TypeRef.Path)); break;

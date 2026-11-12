@@ -30,7 +30,7 @@ internal static partial class CrossBlockMemoryOptimization
         private Reference StoredValue(Reference reference)
         {
             if (!reference.Cell) return reference;
-            if (reference.CellSlot == 0) return new(default, Opaque: true, Kinds: TypeKind.Any);
+            if (reference.CellSlot == 0) return Reference.UnknownValue();
             Reference result = default;
             var pending = new Stack<int>(); var seen = new HashSet<int>(); pending.Push(reference.CellSlot - 1);
             while (pending.TryPop(out var slot))
@@ -39,21 +39,21 @@ internal static partial class CrossBlockMemoryOptimization
                 if (stored.TryGetValue(slot, out var value)) result = result.Union(value with { Cell = false, CellSlot = 0 });
                 if (cellAliases.TryGetValue(slot, out var aliases)) foreach (var alias in aliases) pending.Push(alias);
             }
-            return result.Kinds == TypeKind.Never ? new(default, Opaque: true, Kinds: TypeKind.Any) : result;
+            return result.Kinds == TypeKind.Never ? Reference.UnknownValue() : result;
         }
 
         private void InvalidateBindings(State state, int except = -1)
         {
             foreach (var slot in cellSlots)
                 if (slot != except && state.Locals[slot].Cell)
-                    state.Locals[slot] = state.Locals[slot] with { Opaque = true, Closure = 0, Kinds = TypeKind.Any, Eager = false };
+                    state.Locals[slot] = state.Locals[slot] with { UnknownKinds = TypeKind.Any, Closure = 0, Kinds = TypeKind.Any, Eager = false };
         }
 
         private Reference Capture(Reference callee, int index)
         {
             if (callee.Closure > 0 && closures.TryGetValue(callee.Closure, out var captures) && index < captures.Length)
                 return StoredValue(captures[index]);
-            return new(default, Opaque: true, Kinds: TypeKind.Any);
+            return Reference.UnknownValue();
         }
 
         private Reference Map(MemoryAccess access, Reference[] arguments)
@@ -62,7 +62,7 @@ internal static partial class CrossBlockMemoryOptimization
             {
                 MemoryRootKind.Parameter when access.Root.Index + 1 < arguments.Length => arguments[access.Root.Index + 1],
                 MemoryRootKind.Capture when arguments.Length > 0 => Capture(arguments[0], access.Root.Index),
-                _ => new Reference(default, Opaque: true, Kinds: TypeKind.Any)
+                _ => Reference.UnknownValue()
             };
             foreach (var field in access.Fields) value = Child(value, field);
             return value;
@@ -70,39 +70,39 @@ internal static partial class CrossBlockMemoryOptimization
 
         private Reference Child(Reference parent, string field)
         {
-            if (parent.Opaque) return new(parent.Origins, Opaque: true, Kinds: TypeKind.Any);
+            if (parent.Opaque) return Reference.UnknownValue(origins: parent.Origins);
             Reference result = default;
             foreach (var origin in parent.Origins)
             {
                 if (!allocations.TryGetValue(origin, out var owner) || !owner.Contents.TryGetValue(field, out var value))
-                    return new(default, Opaque: true, Kinds: TypeKind.Any);
-                result = result.Union(value.Cell ? new(value.Origins, Opaque: true, Kinds: TypeKind.Any) : value);
+                    return Reference.UnknownValue();
+                result = result.Union(value.Cell ? Reference.UnknownValue(origins: value.Origins) : value);
             }
-            return result.Kinds == TypeKind.Never ? new(default, Opaque: true, Kinds: TypeKind.Any) : result;
+            return result.Kinds == TypeKind.Never ? Reference.UnknownValue() : result;
         }
 
         private Reference CallResult(int pc, Reference[] arguments)
         {
             if (code[pc].Op == OpCode.Call && code[pc].B < 0)
-                return new(default, Opaque: true, Kinds: TypeKind.Any);
+                return Reference.UnknownValue();
             if (NativeName(arguments[0]) is { } name && NativeSignatures.TryGet(name, out var native))
-                return new(default, Opaque: true, Kinds: native.Result.Kind,
-                    Eager: EagerNative(name, native, arguments.Skip(1).ToArray()));
-            if (!Target(pc, arguments, out var target)) return new(default, Opaque: true, Kinds: TypeKind.Any);
+                return Reference.UnknownValue(native.Result.Kind,
+                    eager: EagerNative(name, native, arguments.Skip(1).ToArray()));
+            if (!Target(pc, arguments, out var target)) return Reference.UnknownValue();
             var type = module.Functions[target].ReturnType.Kind;
-            if (summaries is null || summaries[target].UnknownReturnAlias) return new(default, Opaque: true, Kinds: type);
+            if (summaries is null || summaries[target].UnknownReturnAlias) return Reference.UnknownValue(type);
             Reference result = default;
             foreach (var alias in summaries[target].ReturnAliases)
             {
-                if (alias.Root.Kind == MemoryRootKind.Allocation) return new(default, Opaque: true, Kinds: type);
+                if (alias.Root.Kind == MemoryRootKind.Allocation) return Reference.UnknownValue(type);
                 result = result.Union(Map(alias, arguments));
             }
             return result.Kinds == TypeKind.Never
-                ? new(default, Opaque: true, Kinds: type, Eager: summaries[target].ReturnsCallbackFreeRange)
+                ? Reference.UnknownValue(type, eager: summaries[target].ReturnsCallbackFreeRange)
                 : result with
                 {
                     Kinds = result.Kinds | type,
-                    Opaque = result.Opaque || (type & ~TypeKind.Scope) != 0,
+                    UnknownKinds = result.UnknownKinds | (type & ~TypeKind.Scope),
                     Eager = result.Eager || summaries[target].ReturnsCallbackFreeRange
                 };
         }
@@ -131,7 +131,7 @@ internal static partial class CrossBlockMemoryOptimization
             if (callee.Closure < 0 && module.Constants[-callee.Closure - 1] is FunctionValue { NativeName: not null }) return false;
             var instruction = code[pc];
             target = instruction.B > 0 ? instruction.B - 1 : instruction.Text is { } dispatch
-                ? FunctionDispatch.Parse(dispatch).GetValueOrDefault(callee.Function, callee.Function) : callee.Function;
+                ? FunctionDispatch.Targets(dispatch).GetValueOrDefault(callee.Function, callee.Function) : callee.Function;
             return true;
         }
 
@@ -186,18 +186,19 @@ internal static partial class CrossBlockMemoryOptimization
                     if (receivers.TryGetValue(pc, out var receiver))
                     {
                         if (!allocations.TryGetValue(receiver.Single, out var owner) || owner.SharedFields
-                            || !owner.Fields.TryGetValue(instruction.Text!, out var field))
+                            || ScopeOperands.Ordinal(module, instruction, owner.Layout) is not (>= 0 and var field))
                         {
-                            if (instruction.Op == OpCode.SetMember) known = known.Except(escaped);
+                            if (instruction.Op == OpCode.StoreField) known = known.Except(escaped);
                             continue;
                         }
                         var key = new FieldKey(owner.Position, field);
-                        if (instruction.Op == OpCode.SetMember) known = known.Add(key);
+                        if (instruction.Op == OpCode.StoreField) known = NeedsStorageCheck(instruction) ? known.Remove(key) : known.Add(key);
                         else validReads[pc] = known.Contains(key) && (!validReads.TryGetValue(pc, out var previous) || previous);
                         continue;
                     }
                     if (instruction.Op == OpCode.Call && calls.TryGetValue(pc, out var arguments))
                         known = Clobber(pc, arguments, known, escaped);
+                    else if (instruction.Op == OpCode.StoreStaticField) known = known.Except(escaped);
                     else if (instruction.Op == OpCode.NativeCall && calls.TryGetValue(pc, out var nativeArguments)
                         && NativeInvokes(instruction.Text, nativeArguments)) known = known.Except(escaped);
                     else if (instruction.Op == OpCode.ProcessCall && calls.TryGetValue(pc, out var processArguments)
@@ -223,7 +224,10 @@ internal static partial class CrossBlockMemoryOptimization
                 if (access.Root.Kind == MemoryRootKind.Capture && access.Fields.Count == 0 && !access.Descendants) continue;
                 var parent = access.Fields.Count == 0 ? access : new MemoryAccess(access.Root, access.Fields.Take(access.Fields.Count - 1).ToArray());
                 var receiver = Map(parent, arguments);
-                if (receiver.Opaque) { known = known.Except(escaped); continue; }
+                // A scalar alternative of a captured location cannot alias the
+                // receiver of a successful Scope field write.
+                var unknown = access.Fields.Count == 0 ? receiver.UnknownKinds : receiver.UnknownKinds & TypeKind.Scope;
+                if (unknown != TypeKind.Never) { known = known.Except(escaped); continue; }
                 foreach (var origin in receiver.Origins)
                 {
                     if (!allocations.TryGetValue(origin, out var owner)) continue;

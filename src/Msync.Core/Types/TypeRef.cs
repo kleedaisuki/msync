@@ -14,6 +14,7 @@ public sealed record TypeRef(TypeKind Kind, TypeRef? Element = null)
     public static readonly TypeRef Connection = new(TypeKind.Connection);
     public static readonly TypeRef Type = new(TypeKind.Type);
     public static readonly TypeRef Number = new(TypeKind.Number);
+    public static readonly TypeRef Storage = new(TypeKind.Storage);
     public static readonly TypeRef Any = new(TypeKind.Any);
     public bool Nullable => (Kind & TypeKind.Null) != 0;
     public TypeRef WithoutNull => Nullable ? new(Kind & ~TypeKind.Null, Element) : this;
@@ -57,13 +58,15 @@ public sealed record TypeRef(TypeKind Kind, TypeRef? Element = null)
         if (scalar is not null) return scalar;
         if ((Kind & ~TypeKind.Null) == TypeKind.Range)
             return Element is null ? Nullable ? "Range?" : "Range" : $"Range<{Element}>{(Nullable ? "?" : "")}";
+        if ((Kind & ~TypeKind.Null) == TypeKind.Storage)
+            return Element is null ? Nullable ? "Storage?" : "Storage" : $"Storage<{Element}>{(Nullable ? "?" : "")}";
         return UnionText();
     }
 
     private string UnionText()
     {
         StringBuilder text = new();
-        for (TypeKind bit = TypeKind.Bool; bit <= TypeKind.Number; bit = (TypeKind)((ushort)bit << 1))
+        for (TypeKind bit = TypeKind.Bool; bit <= TypeKind.Storage; bit = (TypeKind)((ushort)bit << 1))
         {
             if ((Kind & bit) == 0) continue;
             if (text.Length != 0) text.Append(" | ");
@@ -79,6 +82,7 @@ public sealed record TypeRef(TypeKind Kind, TypeRef? Element = null)
                 TypeKind.Process => "Process",
                 TypeKind.Connection => "Connection",
                 TypeKind.Type => "Type",
+                TypeKind.Storage => "Storage",
                 _ => "Number"
             });
         }

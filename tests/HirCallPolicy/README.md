@@ -15,12 +15,17 @@ Covered contracts:
 - A writable Range/String identity cannot promise a Range to an enumerator.
 - Pure unknown return projections cannot erase actual specialized callable types.
 - Standard source/native metadata can determine laziness before module execution.
+- The immediate result proof accounts for explicit returns, loop break values,
+  and fixed local storage; it does not evaluate an unevaluated `decltype`.
 
 The return-shape projection reads already bound semantic nodes. It has no
 executable-output capability, does not call generic instantiation, and does not
 apply a function's effects. Its cache retains canonical type/callable signatures,
 not caller object graphs. Actual argument and callee expressions are analyzed
 once into either an ordinary call or a whole-call deferred function.
+Calls whose known targets prove an immediate result skip that projection.
+The current and future projections and the eventual thunk use one
+call-site lexical location walk when a projection is needed.
 
 Run with `dotnet run --project tests/HirCallPolicy -c Release`. A frozen assembly
 set can be supplied with `-p:FrozenAssemblies=/absolute/path` for incremental

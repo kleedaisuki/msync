@@ -14,6 +14,7 @@ public sealed partial class Interpreter
         if (result is not null) CollectReturnedProcesses(result, visited, escaped);
         if (roots is not null)
             foreach (int slot in roots) CollectReturnedProcesses(locals[slot], visited, escaped);
+        staticScopes.VisitRoots(value => CollectReturnedProcesses(value, visited, escaped));
         if (owned is { Count: > 0 })
         {
             HashSet<ProcessValue> stored = new(ReferenceEqualityComparer.Instance);
@@ -95,10 +96,14 @@ public sealed partial class Interpreter
                 CollectReturnedProcesses(cell.Data, visited, processes);
                 break;
             case ScopeValue scope:
-                foreach (var field in scope) CollectReturnedProcesses(field.Value, visited, processes);
+                foreach (var field in scope.RetainedReferences)
+                    if (field is not null) CollectReturnedProcesses(field, visited, processes);
                 break;
             case FunctionValue { Captures: { } captures }:
                 foreach (var capture in captures) CollectReturnedProcesses(capture, visited, processes);
+                break;
+            case StorageValue storage:
+                foreach (var item in storage.RetainedReferences()) CollectReturnedProcesses(item, visited, processes);
                 break;
             case RangeValue { RetainedValues: { } values }:
                 foreach (var item in values) CollectReturnedProcesses(item, visited, processes);

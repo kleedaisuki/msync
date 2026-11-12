@@ -31,10 +31,10 @@ foreach (string scenario in Option("--cases", "computed,literals,mixed,reference
     };
     Module symbolic = Compiler.Compile(source, "spatial-" + scenario + ".msync", optimization);
     Module module = Binding.Bind(symbolic, new(root, root));
-    int makeScopes = module.Functions.Sum(function => function.Instructions.Count(instruction => instruction.Op == OpCode.MakeScope));
-    int fieldReads = module.Functions.Sum(function => function.Instructions.Count(instruction => instruction.Op == OpCode.GetMember));
-    if (makeScopes == 0 || fieldReads == 0)
-        throw new InvalidOperationException($"{scenario}: workload lost its physical object/field sites ({makeScopes}/{fieldReads}).");
+    int constructors = module.Functions.Sum(function => function.Instructions.Count(instruction => instruction.Op == OpCode.NewScope));
+    int fieldReads = module.Functions.Sum(function => function.Instructions.Count(instruction => instruction.Op == OpCode.LoadField));
+    if (constructors == 0 || fieldReads == 0)
+        throw new InvalidOperationException($"{scenario}: workload lost its physical object/field sites ({constructors}/{fieldReads}).");
     using MemoryStream encoded = new();
     Artifact.Write(module, encoded);
     string artifact = Convert.ToHexStringLower(SHA256.HashData(encoded.ToArray()));
@@ -51,7 +51,7 @@ foreach (string scenario in Option("--cases", "computed,literals,mixed,reference
         Verify(result, expected, scenario);
     }
     observations.Add(new(scenario, size, optimization, Convert.ToHexStringLower(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(source))),
-        artifact, makeScopes, fieldReads, module.Functions.Sum(function => function.Instructions.Count), milliseconds, allocations));
+        artifact, constructors, fieldReads, module.Functions.Sum(function => function.Instructions.Count), milliseconds, allocations));
 
     Value Run() => Interpreter.ExecuteAsync(module, options).GetAwaiter().GetResult();
 }
@@ -94,11 +94,14 @@ static string Source(string scenario, int size)
     string values = string.Join(',', Enumerable.Range(1, size));
     return $$"""
         fn build(values: Range) {
-            let records = $std::storage::Buffer::new([]);
+            let records = $std::storage::vector_empty(decltype({
+                let value = 0;
+                scope { {{fields}} }
+            }));
             for value in values {
-                $std::storage::Buffer::push(records, scope { {{fields}} });
+                $std::storage::vector_push(records, scope { {{fields}} });
             };
-            $std::storage::Buffer::snapshot(records)
+            $std::storage::vector_take(records)
         };
         let rows = build([{{values}}]);
         let total = 0;
@@ -115,7 +118,7 @@ static void Verify(Value value, double expected, string scenario)
 }
 
 internal sealed record Observation(string Scenario, int Size, int Optimization, string SourceSha256,
-    string ArtifactSha256, int MakeScopeSites, int FieldReadSites, int Instructions,
+    string ArtifactSha256, int ScopeConstructorSites, int FieldReadSites, int Instructions,
     double[] Milliseconds, long[] AllocatedBytes);
 internal sealed record Report(string Framework, string? TieredCompilation,
     Dictionary<string, string> Assemblies, Observation[] Observations);

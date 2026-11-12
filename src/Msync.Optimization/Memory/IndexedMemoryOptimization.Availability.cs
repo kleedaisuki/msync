@@ -52,9 +52,9 @@ internal static partial class IndexedMemoryOptimization
 
         private bool MayClobber(Access access, Clobber write)
         {
-            if (access.Operation == "storage.buffer_size" && (write.Region & IndexedRegion.Length) == 0) return false;
-            if (access.Buffer != write.Buffer && freshBuffers is not null
-                && freshBuffers.Contains(access.Buffer) && freshBuffers.Contains(write.Buffer)) return false;
+            if (access.Operation == IndexedReadKind.Count && (write.Region & IndexedRegion.Length) == 0) return false;
+            if (access.Owner != write.Owner && freshOwners is not null
+                && freshOwners.Contains(access.Owner) && freshOwners.Contains(write.Owner)) return false;
             return (write.Region & IndexedRegion.Length) != 0 || !access.Index.Known
                 || write.Index is not int exact || access.Index.Constant == exact;
         }
@@ -81,8 +81,8 @@ internal static partial class IndexedMemoryOptimization
                 var edge = join.Edges[index];
                 var projected = access with
                 {
-                    Buffer = Translate(join, edge, access.Buffer),
-                    Index = access.Operation == "storage.buffer_get" && !access.Index.Known
+                    Owner = Translate(join, edge, access.Owner),
+                    Index = access.Operation == IndexedReadKind.Element && !access.Index.Known
                         ? Subscript(new(Translate(join, edge, access.Index.Number))) : access.Index
                 };
                 if (Available(edge.State, projected) is not { } read) return null;

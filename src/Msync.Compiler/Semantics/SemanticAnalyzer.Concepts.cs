@@ -37,15 +37,19 @@ internal sealed partial class SemanticAnalyzer
                 if (shape.Fields.TryGetValue(name, out var witness) && witness.DenotedType is { } type)
                     associated[parameter] = type;
 
+        List<(HirTypeId Type, SemanticValue Value)>? nullOnly = null;
         foreach (var (_, member) in ConceptRequirements(conceptId))
         {
             var actual = RequiredMember(shape, member, conceptId, source, context);
-            if (member.Signature < 0) InferAssociated(member.Type, actual, associated, includeNull: false);
-            else InferOperationParameters(member, actual, associated);
+            if (member.Signature >= 0) InferOperationParameters(member, actual, associated);
+            else if (InferAssociated(member.Type, actual, associated, includeNull: false) is { } candidate)
+                (nullOnly ??= []).Add(candidate);
         }
-        foreach (var (_, member) in ConceptRequirements(conceptId))
-            if (member.Signature < 0)
-                InferAssociated(member.Type, RequiredMember(shape, member, conceptId, source, context), associated, includeNull: true);
+        // Null-only evidence is a fallback, after fields and operation
+        // parameters have both contributed their non-null evidence.
+        if (nullOnly is not null)
+            foreach (var (type, evidence) in nullOnly)
+                InferAssociated(type, evidence, associated, includeNull: true);
 
         var substitutions = associated.ToImmutable();
         foreach (var (owner, member) in ConceptRequirements(conceptId))
@@ -154,23 +158,23 @@ internal sealed partial class SemanticAnalyzer
         return true;
     }
 
-    private void InferAssociated(HirTypeId requirement, SemanticValue actual,
+    private (HirTypeId Type, SemanticValue Value)? InferAssociated(HirTypeId requirement, SemanticValue actual,
         ImmutableDictionary<HirTypeId, HirTypeId>.Builder associated, bool includeNull)
     {
         var type = hir.Types[requirement.Value];
-        if (hir.Types[actual.Type.Value].TypeParameter >= 0) return;
+        if (hir.Types[actual.Type.Value].TypeParameter >= 0) return null;
         if (type.TypeParameter >= 0)
         {
-            if (!includeNull && Runtime(actual).WithoutNull.Kind == TypeKind.Never) return;
-            var resolved = Runtime(actual) == TypeRef.Null ? actual.Type
-                : type.Nullable || type.RuntimeType.Nullable ? NonNullable(actual.Type) : actual.Type;
             foreach (var candidate in associated.Keys)
-                if (hir.Types[candidate.Value].TypeParameter == type.TypeParameter) return;
-            associated[requirement] = resolved;
-            return;
+                if (hir.Types[candidate.Value].TypeParameter == type.TypeParameter) return null;
+            var runtime = Runtime(actual);
+            if (!includeNull && runtime.WithoutNull.Kind == TypeKind.Never) return (requirement, actual);
+            associated[requirement] = runtime != TypeRef.Null && (type.Nullable || type.RuntimeType.Nullable)
+                ? NonNullable(actual.Type) : actual.Type;
+            return null;
         }
-        if (type.Element >= 0 && actual.Element is { } element)
-            InferAssociated(new(type.Element), element, associated, includeNull);
+        return type.Element >= 0 && actual.Element is { } element
+            ? InferAssociated(new(type.Element), element, associated, includeNull) : null;
     }
 
     private void InferOperationParameters(HirConceptMember member, SemanticValue actual,
@@ -240,7 +244,7 @@ internal sealed partial class SemanticAnalyzer
                 if (alias != scope.Region) yield return alias;
     }
 
-    private void InvalidateScopeAliases(SemanticScope written, SemanticContext context)
+    private void InvalidateScopeAliases(SemanticScope written, string field, SemanticValue assigned, SemanticContext context)
     {
         if (!written.Dynamic && written.Aliases.IsDefaultOrEmpty && !context.AliasViews.ContainsKey(written.Region)) return;
         var aliases = ScopeAliases(written).ToHashSet();
@@ -257,7 +261,8 @@ internal sealed partial class SemanticAnalyzer
             {
                 int offset = FieldOffset(candidate.Layout, pair.Key);
                 var type = hir.ScopeLayouts[candidate.Layout].Fields[offset];
-                return pair.Value with { Type = type.AdmitsNull ? Nullable(type.StorageType) : type.StorageType, Literal = null, DenotedType = null };
+                var value = pair.Key == field ? Join(pair.Value, assigned) : pair.Value;
+                return value with { Type = type.AdmitsNull ? Nullable(type.StorageType) : type.StorageType, Literal = null, DenotedType = null };
             }, StringComparer.Ordinal);
             context.Objects[region] = candidate with { Fields = fields };
             foreach (var (name, location) in candidate.Locations)

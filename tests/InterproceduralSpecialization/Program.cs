@@ -4,6 +4,7 @@ using Msync.Compiler;
 using Msync.Core;
 using Msync.Runtime;
 using Module = Msync.Core.Module;
+using static PortableCallFixture;
 
 var pass = typeof(Optimizer).Assembly.GetType("Msync.Optimization.InterproceduralSpecialization")!
     .GetMethod("Optimize", BindingFlags.NonPublic | BindingFlags.Static)!;
@@ -22,7 +23,7 @@ try
     await Captures();
     await MutableParameter();
     await NativeIdentity();
-    await CaptureLayoutMismatch();
+    CaptureLayoutMismatch();
     await DynamicTypeFailure();
     await ScopeMutation();
     await RawCaptureMutation();
@@ -103,21 +104,30 @@ async Task ControlAndArgumentEffects()
 
 async Task UnusedArgumentFailure()
 {
-    FunctionCode callee = new("ignore", 1, 1, [new(OpCode.Constant, 0), new(OpCode.Return)], TypeRef.Number, ParameterTypes: [TypeRef.Any]);
-    Module source = new([new NumberValue(7)], [new("main", 0, 0,
-        [new(OpCode.MakeClosure, 1), new(OpCode.MakeScope, 0), new(OpCode.GetMember, Text: "missing"), new(OpCode.Call, 1, 2), new(OpCode.Return)], TypeRef.Number), callee], OptimizationLevel: 0);
+    FunctionCode callee = new("ignore", 1, 1, [new(OpCode.Constant, 0), new(OpCode.Return)], TypeRef.Number,
+        ParameterTypes: [TypeRef.Any]) { CodeSignature = new([Any], Number, []) };
+    Module source = Image([new NumberValue(7), new StringValue("not a number"), new TypeValue(TypeRef.Number)],
+    [
+        new("main", 0, 0, [new(OpCode.MakeClosure, 1), new(OpCode.Constant, 1), new(OpCode.Constant, 2),
+            new(OpCode.NativeCall, 2, Text: "cast", Span: new("argument-cast", 17, 12)),
+            new(OpCode.Call, 1, 2), new(OpCode.Return)], TypeRef.Number) { CodeSignature = new([], Number, []) },
+        callee
+    ]);
     var changed = Specialize(source);
     Require(changed.Functions[^1].ParameterCount == 0, "Unused formal should disappear");
-    Require((await Check("argument-failure", source, changed)).StartsWith("error:", StringComparison.Ordinal), "Argument failure remains selected");
+    string outcome = await Check("argument-failure", source, changed);
+    Require(outcome.StartsWith("error:", StringComparison.Ordinal) && outcome.Contains("argument-cast", StringComparison.Ordinal),
+        "Removing the formal must still evaluate its failing cast at the original source span");
 }
 
 async Task Captures()
 {
     FunctionCode callee = new("captured", 2, 3,
         [new(OpCode.LoadLocal, 1), new(OpCode.JumpIfFalse, 4), new(OpCode.LoadLocal, 0), new(OpCode.Return), new(OpCode.Null), new(OpCode.Return)], TypeRef.Any,
-        CaptureCount: 1, ParameterTypes: [TypeRef.Bool, TypeRef.Number]);
-    Module source = new([new NumberValue(29), new NumberValue(99)], [new("main", 0, 0,
-        [new(OpCode.Constant, 0), new(OpCode.MakeClosure, 1, 1), new(OpCode.True), new(OpCode.Constant, 1), new(OpCode.Call, 2, 2), new(OpCode.Return)], TypeRef.Any), callee], OptimizationLevel: 0);
+        CaptureCount: 1, ParameterTypes: [TypeRef.Bool, TypeRef.Number]) { CodeSignature = new([BoolCode, Number], Any, [new(Number, false)]) };
+    Module source = Image([new NumberValue(29), new NumberValue(99)], [new("main", 0, 0,
+        [new(OpCode.Constant, 0), new(OpCode.MakeClosure, 1, 1), new(OpCode.True), new(OpCode.Constant, 1), new(OpCode.Call, 2, 2), new(OpCode.Return)],
+        TypeRef.Any) { CodeSignature = new([], Any, []) }, callee]);
     var changed = Specialize(source);
     Require(changed.Functions[^1].CaptureCount == 1 && changed.Functions[^1].ParameterCount == 0, "Capture prefix survives formal pruning");
     Require(await Check("capture-layout", source, changed) == "Number:403d000000000000|", "Actual closure capture is retained");
@@ -133,12 +143,24 @@ async Task MutableParameter()
 
 async Task NativeIdentity()
 {
-    FunctionCode callee = new("unused-argument", 1, 1, [new(OpCode.True), new(OpCode.Return)], TypeRef.Bool, ParameterTypes: [TypeRef.Any]);
-    Module source = new([new FunctionValue(-1, NativeName: "fs.exists"), new PathValue("./absent")],
-        [new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Call, 1, 2), new(OpCode.Return)], TypeRef.Bool), callee], OptimizationLevel: 0);
+    FunctionCode callee = new("unused-argument", 1, 1, [new(OpCode.True), new(OpCode.Return)], TypeRef.Bool,
+        ParameterTypes: [TypeRef.Any]) { CodeSignature = new([Any], BoolCode, []) };
+    Module source = Image([new FunctionValue(-1, NativeName: "fs.exists"), new PathValue("./absent")],
+        [new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Call, 1, 2), new(OpCode.Return)], TypeRef.Bool)
+        { CodeSignature = new([], BoolCode, []) }, callee]);
     var changed = Specialize(source);
-    Require(ReferenceEquals(source, changed), "Call.B must not override a native callee identity");
-    Require(await Check("native-identity", source, changed) == "Bool:false|", "Native operation remains actual target");
+    Require(ReferenceEquals(source, changed), "A source specialization cannot clone a native callee");
+    Require((await Check("native-source-target", source, changed))
+        .StartsWith("error:A direct specialization requires a source Function.", StringComparison.Ordinal),
+        "An explicit source target cannot dispatch a native value or invoke the unrelated source body");
+    var entry = source.Functions[0];
+    var ordinary = source with
+    {
+        Functions = [entry with { Instructions = entry.Instructions.Select(instruction =>
+            instruction.Op == OpCode.Call ? instruction with { B = 0 } : instruction).ToArray() }, callee]
+    };
+    Require(await Check("native-identity", ordinary, Specialize(ordinary)) == "Bool:false|",
+        "Ordinary callable dispatch retains the native operation");
 }
 
 async Task ScopeMutation()
@@ -151,24 +173,26 @@ async Task DynamicTypeFailure()
 {
     FunctionCode callee = new("dynamic-not", 1, 1,
         [new(OpCode.LoadLocal, 0), new(OpCode.Not), new(OpCode.JumpIfFalse, 5), new(OpCode.True), new(OpCode.Return), new(OpCode.False), new(OpCode.Return)],
-        TypeRef.Bool, ParameterTypes: [TypeRef.Any]);
-    Module source = new([new NumberValue(7)], [new("main", 0, 0,
-        [new(OpCode.MakeClosure, 1), new(OpCode.Constant, 0), new(OpCode.Call, 1, 2), new(OpCode.Return)], TypeRef.Bool), callee], OptimizationLevel: 0);
+        TypeRef.Bool, ParameterTypes: [TypeRef.Any]) { CodeSignature = new([Any], BoolCode, []) };
+    Module source = Image([new NumberValue(7)], [new("main", 0, 0,
+        [new(OpCode.MakeClosure, 1), new(OpCode.Constant, 0), new(OpCode.Call, 1, 2), new(OpCode.Return)], TypeRef.Bool)
+        { CodeSignature = new([], BoolCode, []) }, callee]);
     var changed = Specialize(source);
     Require(ReferenceEquals(source, changed), "Unknown storage types cannot become an invalid literal-typed body");
     Require((await Check("dynamic-type-failure", source, changed)).StartsWith("error:", StringComparison.Ordinal), "Runtime type error remains selected rather than moving to artifact validation");
 }
 
-async Task CaptureLayoutMismatch()
+void CaptureLayoutMismatch()
 {
-    FunctionCode callee = new("ignore", 1, 1, [new(OpCode.True), new(OpCode.Return)], TypeRef.Bool, ParameterTypes: [TypeRef.Bool]);
-    FunctionCode carrier = new("carrier", 0, 1, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, CaptureCount: 1);
-    Module source = new([], [new("main", 0, 0,
-        [new(OpCode.False), new(OpCode.MakeClosure, 2, 1), new(OpCode.True), new(OpCode.Call, 1, 2), new(OpCode.Return)], TypeRef.Bool), callee, carrier],
-        OptimizationLevel: 0);
-    var changed = Specialize(source);
-    Require(ReferenceEquals(source, changed), "Direct-B capture layout mismatch keeps original frame semantics");
-    Require(await Check("capture-layout-mismatch", source, changed) == "Bool:true|", "Extra actual captures are overwritten by original argument slot");
+    FunctionCode callee = new("ignore", 1, 1, [new(OpCode.True), new(OpCode.Return)], TypeRef.Bool,
+        ParameterTypes: [TypeRef.Bool]) { CodeSignature = new([BoolCode], BoolCode, []) };
+    FunctionCode carrier = new("carrier", 0, 1, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null,
+        CaptureCount: 1) { CodeSignature = new([], Null, [new(BoolCode, false)]) };
+    Module source = Image([], [new("main", 0, 0,
+        [new(OpCode.False), new(OpCode.MakeClosure, 2, 1), new(OpCode.True), new(OpCode.Call, 1, 2), new(OpCode.Return)],
+        TypeRef.Bool) { CodeSignature = new([], BoolCode, []) }, callee, carrier]);
+    Require(Rejects(source, "specialization changes the capture count"),
+        "A closure carrying extra captures cannot enter a direct specialization's smaller frame");
 }
 
 async Task SignedZero()
@@ -176,16 +200,26 @@ async Task SignedZero()
     var source = Source("fn keep(value: Number) { if value == 0 { value } else { 1 } }; keep(- 0)");
     var changed = Specialize(source);
     Require(await Check("signed-zero", source, changed) == "Number:8000000000000000|", "Constant cloning preserves signed zero representation");
-    foreach (var bits in new[] { long.MinValue, 0x7ff8000000000011L })
+    const long NaNBits = 0x7ff8000000000011L;
+    foreach (var (bits, equalReturnsInput, expected) in new[]
+    {
+        (long.MinValue, true, long.MinValue),
+        (NaNBits, true, 0L),
+        (NaNBits, false, NaNBits)
+    })
     {
         FunctionCode function = new("keep", 1, 1,
-            [new(OpCode.LoadLocal, 0), new(OpCode.LoadLocal, 0), new(OpCode.Equal), new(OpCode.JumpIfFalse, 6), new(OpCode.LoadLocal, 0), new(OpCode.Return), new(OpCode.Constant, 0), new(OpCode.Return)],
-            TypeRef.Number, ParameterTypes: [TypeRef.Number]);
-        Module original = new([new NumberValue(0), new NumberValue(BitConverter.Int64BitsToDouble(bits))],
-            [new("main", 0, 0, [new(OpCode.MakeClosure, 1), new(OpCode.Constant, 1), new(OpCode.Call, 1, 2), new(OpCode.Return)], TypeRef.Number), function], OptimizationLevel: 0);
+            [new(OpCode.LoadLocal, 0), new(OpCode.LoadLocal, 0), new(OpCode.Equal), new(OpCode.JumpIfFalse, 6),
+             new(equalReturnsInput ? OpCode.LoadLocal : OpCode.Constant, 0), new(OpCode.Return),
+             new(equalReturnsInput ? OpCode.Constant : OpCode.LoadLocal, 0), new(OpCode.Return)],
+            TypeRef.Number, ParameterTypes: [TypeRef.Number]) { CodeSignature = new([Number], Number, []) };
+        Module original = Image([new NumberValue(0), new NumberValue(BitConverter.Int64BitsToDouble(bits))],
+            [new("main", 0, 0, [new(OpCode.MakeClosure, 1), new(OpCode.Constant, 1), new(OpCode.Call, 1, 2), new(OpCode.Return)],
+            TypeRef.Number) { CodeSignature = new([], Number, []) }, function]);
         var specialized = Specialize(original);
         Require(specialized.Functions[^1].ParameterCount == 0, "Exact primitive representation is actually specialized");
-        Require(await Check("representation-" + bits.ToString("x16"), original, specialized) == $"Number:{bits:x16}|", "Value cloning preserves every Number payload bit");
+        Require(await Check($"representation-{bits:x16}-{equalReturnsInput}", original, specialized) == $"Number:{expected:x16}|",
+            "Cloning preserves both IEEE branch selection and the exact Number payload on the selected path");
     }
 }
 
@@ -201,14 +235,15 @@ async Task RawCaptureMutation()
 {
     FunctionCode Choose(string name, int literal) => new(name, 1, 1,
         [new(OpCode.LoadLocal, 0), new(OpCode.JumpIfFalse, 4), new(OpCode.Constant, literal), new(OpCode.Return), new(OpCode.Constant, literal), new(OpCode.Return)],
-        TypeRef.String, ParameterTypes: [TypeRef.Bool]);
-    Module source = new([new StringValue("old"), new StringValue("new")],
+        TypeRef.String, ParameterTypes: [TypeRef.Bool]) { CodeSignature = new([BoolCode], TextCode, []) };
+    Module source = Image([new StringValue("old"), new StringValue("new")],
         [new("main", 0, 3,
-            [new(OpCode.MakeClosure, 1), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0), new(OpCode.MakeClosure, 3, 1), new(OpCode.InitializeLocal, 1),
+            [new(OpCode.MakeClosure, 1), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0, Callable + 1), new(OpCode.MakeClosure, 3, 1), new(OpCode.InitializeLocal, 1),
              new(OpCode.LoadLocal, 1), new(OpCode.GetCapture, 0), new(OpCode.InitializeLocal, 2), new(OpCode.MakeClosure, 2), new(OpCode.StoreLocal, 2),
-             new(OpCode.LoadLocal, 0), new(OpCode.True), new(OpCode.Call, 1), new(OpCode.Return)], TypeRef.String),
-         Choose("old", 0), Choose("new", 1), new("carrier", 0, 1, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, CaptureCount: 1)],
-        OptimizationLevel: 0);
+             new(OpCode.LoadLocal, 0), new(OpCode.True), new(OpCode.Call, 1), new(OpCode.Return)], TypeRef.String)
+             { CodeSignature = new([], TextCode, []) },
+         Choose("old", 0), Choose("new", 1), new("carrier", 0, 1, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, CaptureCount: 1)
+         { CodeSignature = new([], Null, [new(Callable, true)]) }]);
     var changed = Specialize(source);
     Require(await Check("raw-capture-mutation", source, changed) == "String:new|", "GetCapture alias mutation invalidates the original callable binding");
 }

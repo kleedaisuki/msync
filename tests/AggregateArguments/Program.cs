@@ -64,8 +64,10 @@ try
 
     Module copy = await Compare("copy", "fn copy(doc, destination: Path) { doc::file -> destination; }; let doc = scope { file: \"payload\", unused: 7 }; copy(doc, ./output); exists ./output", true);
     FunctionCode specialized = copy.Functions.First(function => function.Name.Contains("$sra", StringComparison.Ordinal));
-    Check(!specialized.Instructions.Any(instruction => instruction.Op == OpCode.GetMember), "Aggregate member lookup survived in clone");
-    Check(specialized.ParameterTypes![0] == TypeRef.Any, "Clone input is still an aggregate");
+    Check(!specialized.Instructions.Any(instruction => instruction.Op == OpCode.LoadField), "Aggregate member lookup survived in clone");
+    Check(specialized.ParameterTypes![0] == TypeRef.String
+        && specialized.CodeSignature is { } typed && copy.CodeTypes[typed.Parameters[0]].Kind == TypeKind.String,
+        "Clone input did not become the field's portable String payload");
     Check(specialized.Instructions.Any(instruction => instruction.Op == OpCode.Return), "Invocation owner return was removed");
     await Compare("path-copy", "fn copy(doc, destination: Path) { doc::file -> destination; }; let doc = scope { file: ../source-input }; copy(doc, ./output);", true);
     Check(File.ReadAllBytes(Path.Combine(root, "path-copy", "output")).AsSpan().SequenceEqual(payload), "Path field lost actual file bytes");
@@ -83,22 +85,43 @@ try
     await Compare("deferred-mutation", "fn read(doc, stream) { let before = doc::value; for item in stream { }; doc::value }; let doc = scope { value: \"before\" }; let stream = $std::ranges::transform([1], fn(item) { doc::value = \"after\"; item }); read(doc, stream) -> ./result;", false);
     await Compare("aliased-write", "fn read(doc, alias) { alias::value = \"after\"; doc::value }; let doc = scope { value: \"before\" }; read(doc, doc) -> ./result;", false);
 
-    Module missing = new([new ScopeValue(new Dictionary<string, Value> { ["other"] = new StringValue("unused") }), new StringValue("started"), new PathValue("log")],
+    const int Any = 0, Scope = 1, String = 2, PathType = 3;
+    Module missing = new([new ScopeValue(new ScopeLayout(["other"], 0), [new StringValue("unused")]),
+        new StringValue("started"), new PathValue("log")],
     [
-        new("main", 0, 0, [new(OpCode.MakeClosure, 1), new(OpCode.Constant, 0), new(OpCode.Call, 1, 2), new(OpCode.Return)], TypeRef.Any),
-        new("read", 1, 1, [new(OpCode.Constant, 1), new(OpCode.Constant, 2), new(OpCode.Transfer), new(OpCode.Pop), new(OpCode.LoadLocal, 0), new(OpCode.GetMember, Text: "missing"), new(OpCode.Return)], TypeRef.Any, ParameterTypes: [TypeRef.Scope])
-    ], OptimizationLevel: 0);
+        new FunctionCode("main", 0, 0, [new(OpCode.MakeClosure, 1), new(OpCode.Constant, 0), new(OpCode.Call, 1, 2),
+            new(OpCode.Return)], TypeRef.Any) { CodeSignature = new([], Any, []) },
+        new FunctionCode("read", 1, 1, [new(OpCode.Constant, 1), new(OpCode.Constant, 2), new(OpCode.Transfer),
+            new(OpCode.Pop), new(OpCode.LoadLocal, 0), new(OpCode.LoadField), new(OpCode.Return)], TypeRef.Any,
+            ParameterTypes: [TypeRef.Scope]) { CodeSignature = new([Scope], Any, []) }
+    ], OptimizationLevel: 0)
+    {
+        CodeTypes = [new(TypeKind.Any), new(TypeKind.Scope), new(TypeKind.String), new(TypeKind.Path)],
+        ScopeLayouts = [new([new("other", String)])],
+        FieldProjections = [new("missing", [])]
+    };
     await CompareModule("missing-after-write", missing, false);
     Module native = missing with
     {
-        Constants = [new ScopeValue(new Dictionary<string, Value> { ["missing"] = new PathValue("file") }), new FunctionValue(-1, NativeName: "fs.exists")],
+        Constants = [new ScopeValue(new ScopeLayout(["missing"], 0), [new PathValue("file")]),
+            new FunctionValue(-1, NativeName: "ranges.single")],
+        ScopeLayouts = [new([new("missing", PathType)])],
         Functions =
         [
-            missing.Functions[0] with { Instructions = [new(OpCode.Constant, 1), new(OpCode.Constant, 0), new(OpCode.Call, 1, 2), new(OpCode.Return)] },
-            missing.Functions[1] with { Instructions = [new(OpCode.LoadLocal, 0), new(OpCode.GetMember, Text: "missing"), new(OpCode.Return)] }
+            missing.Functions[0] with { Instructions = [new(OpCode.Constant, 1), new(OpCode.Constant, 0), new(OpCode.Call, 1, 2),
+                new(OpCode.NativeCall, 1, Text: "ranges.front"), new(OpCode.Return)] },
+            missing.Functions[1] with { Instructions = [new(OpCode.LoadLocal, 0), new(OpCode.LoadField), new(OpCode.Return)] }
         ]
     };
     await CompareModule("native-identity", native, false);
+    Check((await Run(native, root)).StartsWith("error:A direct specialization requires a source Function", StringComparison.Ordinal),
+        "A known native callable cannot use the unrelated direct source target");
+    var nativeCode = native.Functions[0].Instructions.ToArray();
+    nativeCode[2] = nativeCode[2] with { B = 0 };
+    var ordinaryNative = native with { Functions = [native.Functions[0] with { Instructions = nativeCode }, native.Functions[1]] };
+    await CompareModule("ordinary-native", ordinaryNative, false);
+    Check(await Interpreter.ExecuteAsync(ordinaryNative) is ScopeValue nativeValue && nativeValue["missing"] is PathValue { Raw: "file" },
+        "A native call kept its actual Scope argument rather than the projected source callee's field");
 
     Module control = Source("fn copy(doc) { doc::file -> ./out; }; let doc = scope { file: \"plain\" }; copy(doc);");
     Check(ReferenceEquals(Apply(control, 1), control), "O1 enables aggregate specialization");
@@ -108,15 +131,21 @@ try
     Check(twice.Functions.Count == once.Functions.Count, "Repeated optimization keeps cloning the same call");
     Module product = Compiler.Compile("fn copy(doc, destination: Path) { doc::file -> destination; }; copy(scope { file: \"product\" }, ./output);", "aggregate-product", 2);
     Check(product.Functions.Any(function => function.Name.Contains("$sra", StringComparison.Ordinal)), "Public O2 compiler did not integrate aggregate specialization");
-    Check(!product.Functions.SelectMany(function => function.Instructions).Any(instruction => instruction.Op == OpCode.MakeScope), "Public O2 compiler retained private aggregate construction");
+    Check(!product.Functions.SelectMany(function => function.Instructions).Any(instruction => instruction.Op == OpCode.NewScope), "Public O2 compiler retained private aggregate construction");
     string productRoot = Path.Combine(root, "product"); Directory.CreateDirectory(productRoot);
     await Run(product, productRoot);
     Check(await File.ReadAllTextAsync(Path.Combine(productRoot, "output")) == "product", "Public O2 compiler changed effectful helper bytes");
     Module escaped = Compiler.Compile("fn copy(doc) { doc::file -> ./output; }; copy(scope { file: \"escaped\" }); scope { callback: copy }", "aggregate-escaping", 2);
-    Check(escaped.Functions.Any(function => function.ParameterTypes?.Contains(TypeRef.Scope) == true), "Original escaping callback signature was removed");
     string escapedRoot = Path.Combine(root, "escaped-product"); Directory.CreateDirectory(escapedRoot);
-    await Run(escaped, escapedRoot);
-    Check(await File.ReadAllTextAsync(Path.Combine(escapedRoot, "output")) == "escaped", "Public O2 escaped callback output changed");
+    foreach (var image in new[] { escaped, RoundTrip(escaped), RoundTrip(Binding.Bind(escaped, new(escapedRoot, escapedRoot))) })
+    {
+        Value returned = await Interpreter.ExecuteAsync(image, new(WorkingDirectory: escapedRoot));
+        Check(returned is ScopeValue scope && scope["callback"] is FunctionValue { NativeName: null } callback
+            && image.Functions[callback.Function] is { Name: "copy", ParameterCount: 1, CodeSignature.IsTemplate: true },
+            "The escaping closure lost its original generic ABI or exposed the projected clone");
+        Check(await File.ReadAllTextAsync(Path.Combine(escapedRoot, "output")) == "escaped", "Public O2 escaped callback output changed");
+        File.Delete(Path.Combine(escapedRoot, "output"));
+    }
     Console.WriteLine($"PASS: {assertions} aggregate argument, owner, effect, alias and binary contracts");
 }
 finally { Directory.Delete(root, recursive: true); }

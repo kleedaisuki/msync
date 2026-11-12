@@ -23,6 +23,7 @@ public sealed partial class Interpreter
         WaitNanoseconds = Interlocked.Read(ref waitNanoseconds)
     };
     private readonly List<PendingWork> pending;
+    private int guestTransferWork;
     private readonly HashSet<ProcessValue> sessionProcesses;
     private readonly Dictionary<Task, IReadOnlyList<ProcessValue>> processDependencies;
     private readonly NamespaceProducerIndex namespaceProducers;
@@ -177,7 +178,7 @@ public sealed partial class Interpreter
             try { return await TransferAsync(value, actualTarget, span, local, origin, cancellationToken); }
             finally { slots.Release(); }
         }
-        var completion = Run();
+        var completion = TransferCanRunGuest(source) ? TrackGuestTransferAsync(Run) : Run();
         if (admission is not null)
         {
             bool ready = completion.IsCompleted;
@@ -210,6 +211,20 @@ public sealed partial class Interpreter
         pending.Add(work);
         (currentOwner.Tasks ??= []).Add(work);
         return completion;
+    }
+
+    private static bool TransferCanRunGuest(Value source) =>
+        source is DeferredValue deferred && (deferred.Type.Kind & TypeKind.Range) != 0
+        || source is RangeValue range && (range.Resolve is not null || range.Selection is not null
+            || range.OwnedSnapshot is null);
+
+    private async Task<bool> TrackGuestTransferAsync(Func<Task<bool>> run)
+    {
+        // A lazy transfer can pull a range callback on its asynchronous task,
+        // unlike a byte-transfer worker over admitted paths.
+        Interlocked.Increment(ref guestTransferWork);
+        try { return await run(); }
+        finally { Interlocked.Decrement(ref guestTransferWork); }
     }
     private static bool DescendsFrom(ResourceKey child, ResourceKey parent)
     {

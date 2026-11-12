@@ -18,15 +18,16 @@ Report = dict[str, object]
 
 BUILD: str = """
 let count = $std::io::read_text(./count.txt) as Number;
+fn record(index: Number) {
+    let path = $std::string::concat("./item-", index as String) as Path;
+    scope { index: index, path: path, label: "kept", flag: true }
+};
 fn build(length: Number) {
-    let records = $std::storage::Buffer::new([]);
+    let records = $std::storage::vector_empty(decltype(record(0)));
     for index in $std::ranges::iota(0, length) {
-        let path = $std::string::concat("./item-", index as String) as Path;
-        $std::storage::Buffer::push(records, scope {
-            index: index, path: path, label: "kept", flag: true,
-        });
+        $std::storage::vector_push(records, record(index));
     };
-    $std::storage::Buffer::snapshot(records)
+    $std::storage::vector_take(records)
 };
 let rows = build(count);
 """
@@ -120,6 +121,7 @@ def prepare(binary: Path, work: Path, source: str, route: str) -> list[str]:
     if route == "mexe":
         executable: Path = work / "loop.mexe"
         checked(binary, work, ["bind-ir", str(artifact), "-o", str(executable)])
+        artifact.unlink()
         artifact = executable
     script.unlink()
     return ["run-ir", str(artifact)]

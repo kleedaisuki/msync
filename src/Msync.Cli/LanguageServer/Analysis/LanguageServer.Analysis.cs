@@ -13,14 +13,12 @@ internal sealed partial class LanguageServer
     private sealed record InputClosed : ServerEvent;
     private sealed record InputError(Exception Error) : ServerEvent;
     private sealed record AnalysisEvent(string Uri, EditorDocument Document, EditorAnalysis Analysis) : ServerEvent;
-    private sealed record AnalysisWork(string Uri, EditorDocument Document, CancellationTokenSource Cancellation, string? Parent, long Queued);
+    private sealed record AnalysisWork(string Uri, EditorDocument Document, CancellationTokenSource Cancellation,
+        string? Parent, long Queued, bool Retried = false);
     private sealed record PendingInsight(string Uri, long Generation, JsonNode Id, string Method, JsonElement Parameters);
 
     private readonly Channel<ServerEvent> events = Channel.CreateUnbounded<ServerEvent>(new() { SingleReader = true });
-    private readonly Channel<string> analysisReady = Channel.CreateUnbounded<string>(new() { SingleReader = true, SingleWriter = true });
-    private readonly Dictionary<string, AnalysisWork> pendingAnalysis = new(StringComparer.Ordinal);
-    private readonly object analysisGate = new();
-    private AnalysisWork? activeAnalysis;
+    private readonly AnalysisQueue analyses = new();
     private readonly List<PendingInsight> pendingInsights = [];
     private long generation;
     private bool shuttingDown;
@@ -119,7 +117,10 @@ internal sealed partial class LanguageServer
                 && documents.TryGetValue(descriptor.GetProperty("uri").GetString()!, out var document)
                 && document.Analysis is null)
             {
-                pendingInsights.Add(new(descriptor.GetProperty("uri").GetString()!, document.Generation, id, method, parameters.Clone()));
+                string uri = descriptor.GetProperty("uri").GetString()!;
+                pendingInsights.Add(new(uri, document.Generation, id, method, parameters.Clone()));
+                if (method is "textDocument/hover" or "textDocument/completion" or "textDocument/definition")
+                    analyses.Demand(uri, document.Generation);
                 return false;
             }
             if (id is not null && method == "textDocument/completion"
@@ -170,11 +171,7 @@ internal sealed partial class LanguageServer
             CancelCompletions(uri);
             CompleteInsights(uri);
             documents.Remove(uri);
-            lock (analysisGate)
-            {
-                if (pendingAnalysis.Remove(uri, out var pending)) pending.Cancellation.Dispose();
-                if (activeAnalysis?.Uri == uri) activeAnalysis.Cancellation.Cancel();
-            }
+            analyses.Close(uri);
             PublishDiagnostics(uri, null, []);
             return;
         }
@@ -193,13 +190,7 @@ internal sealed partial class LanguageServer
                 : null,
         };
         documents[uri] = current;
-        lock (analysisGate)
-        {
-            if (pendingAnalysis.TryGetValue(uri, out var pending)) pending.Cancellation.Dispose();
-            else analysisReady.Writer.TryWrite(uri);
-            if (activeAnalysis?.Uri == uri) activeAnalysis.Cancellation.Cancel();
-            pendingAnalysis[uri] = new(uri, current, new(), parent, observation is null ? 0 : Stopwatch.GetTimestamp());
-        }
+        analyses.Schedule(new(uri, current, new(), parent, observation is null ? 0 : Stopwatch.GetTimestamp()));
     }
 
     private static SourceText ApplyChanges(SourceText source, JsonElement parameters)
@@ -217,31 +208,31 @@ internal sealed partial class LanguageServer
 
     private async Task AnalyzeAsync()
     {
-        await foreach (string uri in analysisReady.Reader.ReadAllAsync())
+        while (await analyses.WaitAsync())
+            while (analyses.Take() is { } work) Analyze(work);
+    }
+
+    private void Analyze(AnalysisWork work)
+    {
+        CancellationToken cancellation = work.Cancellation.Token;
+        using var measured = observation?.BeginWork("lsp.analysis", work.Parent, work.Uri, work.Queued, work.Document);
+        if (work.Retried) measured?.SetAttribute("analysis.retry", "preempted");
+        EditorAnalysis? result = null;
+        try
         {
-            AnalysisWork? work;
-            lock (analysisGate)
+            result = work.Document.AnalysisSession!.Analyze(work.Document.Source.Text, cancellation, measured?.CompilerTrace);
+            if (result.Diagnostic is { } diagnostic) measured?.SetAttribute("diagnostic.code", diagnostic.Code);
+        }
+        catch (OperationCanceledException error) when (cancellation.IsCancellationRequested) { measured?.Fail(error); }
+        finally
+        {
+            analyses.Finish(work, result, events.Writer);
+            if (result is not null)
             {
-                if (!pendingAnalysis.Remove(uri, out work)) continue;
-                activeAnalysis = work;
+                if (cancellation.IsCancellationRequested) measured?.Fail(new OperationCanceledException(cancellation));
+                else measured?.Complete();
             }
-            CancellationToken cancellation = work.Cancellation.Token;
-            using var measured = observation?.BeginWork("lsp.analysis", work.Parent, uri, work.Queued, work.Document);
-            try
-            {
-                EditorAnalysis analysis = work.Document.AnalysisSession!.Analyze(work.Document.Source.Text, cancellation, measured?.CompilerTrace);
-                cancellation.ThrowIfCancellationRequested();
-                if (analysis.Diagnostic is { } diagnostic) measured?.SetAttribute("diagnostic.code", diagnostic.Code);
-                measured?.Complete();
-                if (!cancellation.IsCancellationRequested)
-                    events.Writer.TryWrite(new AnalysisEvent(uri, work.Document, analysis));
-            }
-            catch (OperationCanceledException error) when (cancellation.IsCancellationRequested) { measured?.Fail(error); }
-            finally
-            {
-                lock (analysisGate) activeAnalysis = null;
-                work.Cancellation.Dispose();
-            }
+            work.Cancellation.Dispose();
         }
     }
 
@@ -309,13 +300,7 @@ internal sealed partial class LanguageServer
         foreach (var request in pendingInsights)
             Reply(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = request.Id, ["result"] = null }, "shutdown");
         pendingInsights.Clear();
-        lock (analysisGate)
-        {
-            activeAnalysis?.Cancellation.Cancel();
-            foreach (var work in pendingAnalysis.Values) work.Cancellation.Dispose();
-            pendingAnalysis.Clear();
-        }
-        analysisReady.Writer.TryComplete();
+        analyses.Stop();
     }
 
     private void CompleteInsights(string uri, EditorDocument? document = null)

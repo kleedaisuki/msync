@@ -1,0 +1,24 @@
+fn accumulate(count: Number, initial: Number) {
+    let i = 0;
+    let value = initial;
+    loop {
+        if i >= count {
+            break;
+        };
+        value = value + (if value < 2 {
+            0.125
+        } else {
+            -0.6875
+        });
+        i = i + 1;
+    };
+    value
+};
+
+let count? = $std::io::read_line();
+let initial? = $std::io::read_line();
+if count? or initial? {
+    $std::io::println("missing inputs");
+} else {
+    $std::io::println(accumulate(count as Number, initial as Number) as String);
+};

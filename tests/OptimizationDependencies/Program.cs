@@ -107,43 +107,49 @@ static Module ObservableCall(bool selected)
 {
     Instruction[] code = [selected ? new(OpCode.True) : new(OpCode.False), new(OpCode.JumpIfFalse, 5), new(OpCode.Constant, 0),
         new(OpCode.NativeCall, 1, Text: "fs.exists"), new(OpCode.Pop), new(OpCode.Constant, 1), new(OpCode.Return)];
-    return new Module([new PathValue("./.temp/optimization-dependencies/not-created"), new NumberValue(7)],
-        [new("entry", 0, 0, [new(OpCode.Constant, 2), new(OpCode.Call, 0, 2), new(OpCode.Return)], TypeRef.Number),
-         new("conditional-read", 0, 0, code, TypeRef.Number)]) with
-    { Constants = [new PathValue("./.temp/optimization-dependencies/not-created"), new NumberValue(7), new FunctionValue(1)], OptimizationLevel = 0 };
+    return new Module([new PathValue("./.temp/optimization-dependencies/not-created"), new NumberValue(7), new FunctionValue(1)],
+        [new FunctionCode("entry", 0, 0, [new(OpCode.Constant, 2), new(OpCode.Call, 0, 2), new(OpCode.Return)], TypeRef.Number)
+            { CodeSignature = new([], 0, []) },
+         new FunctionCode("conditional-read", 0, 0, code, TypeRef.Number) { CodeSignature = new([], 0, []) }],
+        OptimizationLevel: 0) { CodeTypes = [new(TypeKind.Number)] };
 }
 static Module Library(int stableCount, int chainLength, bool changing = true)
 {
+    const int Scope = 0, Function = 1, Bool = 2, PathType = 3;
     List<Value> constants = [new PathValue("./never-observed")];
     List<FunctionCode> functions = [];
     List<Instruction> entry = [];
     string[] names = new string[changing ? stableCount + chainLength + 1 : stableCount];
-    functions.Add(new("entry", 0, 0, entry, TypeRef.Scope));
+    functions.Add(new("entry", 0, 0, entry, TypeRef.Scope) { CodeSignature = new([], Scope, []) });
     for (int i = 0; i < stableCount; i++)
     {
         int id = functions.Count;
         functions.Add(new("stable" + i, 1, 1, [new(OpCode.LoadLocal, 0), new(OpCode.NativeCall, 1, Text: "fs.exists"), new(OpCode.Return)],
-            TypeRef.Bool, ParameterTypes: [TypeRef.Path]));
+            TypeRef.Bool, ParameterTypes: [TypeRef.Path]) { CodeSignature = new([PathType], Bool, []) });
         entry.Add(new(OpCode.MakeClosure, id)); names[i] = "stable" + i;
     }
-    if (!changing)
+    if (changing)
     {
-        entry.Add(new(OpCode.MakeScope, names.Length, Text: string.Join('\0', names))); entry.Add(new(OpCode.Return));
-        return new(constants, functions, OptimizationLevel: 0);
+        int leaf = functions.Count;
+        functions.Add(new("changing0", 0, 0,
+            [new(OpCode.False), new(OpCode.JumpIfFalse, 6), new(OpCode.Constant, 0), new(OpCode.NativeCall, 1, Text: "fs.exists"),
+             new(OpCode.Pop), new(OpCode.Nop), new(OpCode.False), new(OpCode.Return)], TypeRef.Bool)
+            { CodeSignature = new([], Bool, []) });
+        entry.Add(new(OpCode.MakeClosure, leaf)); names[stableCount] = "changing0";
+        for (int i = 1; i <= chainLength; i++)
+        {
+            int id = functions.Count;
+            int constant = constants.Count; constants.Add(new FunctionValue(id - 1));
+            functions.Add(new("changing" + i, 0, 0,
+                [new(OpCode.Constant, constant), new(OpCode.Call, 0, id), new(OpCode.Pop), new(OpCode.False), new(OpCode.Return)], TypeRef.Bool)
+                { CodeSignature = new([], Bool, []) });
+            entry.Add(new(OpCode.MakeClosure, id)); names[stableCount + i] = "changing" + i;
+        }
     }
-    int leaf = functions.Count;
-    functions.Add(new("changing0", 0, 0,
-        [new(OpCode.False), new(OpCode.JumpIfFalse, 6), new(OpCode.Constant, 0), new(OpCode.NativeCall, 1, Text: "fs.exists"),
-         new(OpCode.Pop), new(OpCode.Nop), new(OpCode.False), new(OpCode.Return)], TypeRef.Bool));
-    entry.Add(new(OpCode.MakeClosure, leaf)); names[stableCount] = "changing0";
-    for (int i = 1; i <= chainLength; i++)
+    entry.Add(new(OpCode.NewScope)); entry.Add(new(OpCode.Return));
+    return new(constants, functions, OptimizationLevel: 0)
     {
-        int id = functions.Count;
-        int constant = constants.Count; constants.Add(new FunctionValue(id - 1));
-        functions.Add(new("changing" + i, 0, 0,
-            [new(OpCode.Constant, constant), new(OpCode.Call, 0, id), new(OpCode.Pop), new(OpCode.False), new(OpCode.Return)], TypeRef.Bool));
-        entry.Add(new(OpCode.MakeClosure, id)); names[stableCount + i] = "changing" + i;
-    }
-    entry.Add(new(OpCode.MakeScope, names.Length, Text: string.Join('\0', names))); entry.Add(new(OpCode.Return));
-    return new(constants, functions, OptimizationLevel: 0);
+        CodeTypes = [new(TypeKind.Scope, ScopeLayouts: [0]), new(TypeKind.Function), new(TypeKind.Bool), new(TypeKind.Path)],
+        ScopeLayouts = [new(names.Select(name => new CodeField(name, Function)).ToArray())]
+    };
 }

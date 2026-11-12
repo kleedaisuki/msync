@@ -202,17 +202,27 @@ if nan_value is not null {
 };
 let churn = Tree::new(0, 0);
 for key in $std::ranges::iota(0, 64) { Tree::insert(churn, key, key); };
-let pages = $std::storage::Buffer::snapshot(churn::nodes);
-let capacity = $std::storage::Buffer::size(churn::nodes);
+let pages = Tree::page_count(churn);
 for key in $std::ranges::iota(0, 64) { Tree::remove(churn, key); };
+let shrank = Tree::page_count(churn) == 1 and Tree::validate(churn);
 for key in $std::ranges::iota(0, 64) { Tree::insert(churn, key, key * 2); };
-let reused = 0;
-for page in pages {
-    if $std::storage::Buffer::size(page::keys) > 0 { reused = reused + 1; };
+let last? = Tree::get(churn, 63);
+if last is not null {
+    ((shrank and pages == Tree::page_count(churn)
+        and last::value == 126 and Tree::validate(churn)) as String) -> ./reused.txt;
 };
-((reused == Tree::page_count(churn)
-    and capacity == $std::storage::Buffer::size(churn::nodes)
-    and Tree::validate(churn)) as String) -> ./reused.txt;
+let slots = $std::slots::new(Number);
+let first = $std::slots::allocate(slots, 11);
+let second = $std::slots::allocate(slots, 22);
+$std::slots::release(slots, first);
+let recycled = $std::slots::allocate(slots, 33);
+let live = $std::slots::count(slots);
+let good = first == 0 and second == 1 and recycled == first
+    and $std::slots::get(slots, recycled) == 33
+    and $std::slots::get(slots, second) == 22 and live == 2;
+let root = $std::slots::reset(slots, 44);
+((good and root == 0 and $std::slots::count(slots) == 1
+    and $std::slots::get(slots, root) == 44) as String) -> ./slot-lifecycle.txt;
 """
     )
     entries: str = ",".join(f"{key}:{model[key]}" for key in sorted(model))
@@ -231,6 +241,7 @@ for page in pages {
         "record-policy.txt": b"true",
         "ieee-policy.txt": b"true",
         "reused.txt": b"true",
+        "slot-lifecycle.txt": b"true",
     }
     return program, outputs
 
@@ -278,6 +289,13 @@ def execute(
                 "bind",
             )
             artifact = executable
+        disassembly = invoke(binary, directory, "disassemble", str(artifact))
+        accept(disassembly, "disassemble")
+        assert all(
+            operation in disassembly.stdout
+            for operation in ("slots.allocate", "slots.release", "storage.vector_insert")
+        ), (artifact, "expected page allocation and vector mutation operations")
+        assert "storage.buffer_" not in disassembly.stdout, (artifact, "obsolete Buffer operation")
         source.unlink()
         launch: Path = (
             directory / "different launch" if stage == "executable" else directory
@@ -347,7 +365,7 @@ def main() -> None:
         },
         "runs": runs,
         "mutations_per_run": len(trace()[0]),
-        "checks": "map model, occupancy, leaf depth, global ordering, leaf chain, page reuse, snapshots",
+        "checks": "map model, occupancy, leaf depth, global ordering, leaf chain, page reuse, snapshots, opaque storage",
     }
     rendered: str = json.dumps(report, indent=2) + "\n"
     if arguments.output:

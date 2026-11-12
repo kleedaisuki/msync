@@ -19,7 +19,7 @@ internal static class Measurements
     internal static async Task Run()
     {
         List<Observation> observations = [];
-        foreach (string name in new[] { "repeated", "size_set", "unique", "no_buffer" })
+        foreach (string name in new[] { "repeated", "size_set", "unique", "no_storage" })
         {
             Module raw = Build(name);
             Module optimized = Optimizer.Optimize(raw, 2);
@@ -46,7 +46,7 @@ internal static class Measurements
             double executeBytes = (GC.GetTotalAllocatedBytes(true) - allocated) / 8.0;
             using MemoryStream bytes = new(); Artifact.Write(optimized, bytes);
             observations.Add(new(name, optimized.Functions.Sum(function => function.Instructions.Count(instruction =>
-                instruction.Op == OpCode.NativeCall && instruction.Text is "storage.buffer_get" or "storage.buffer_size")),
+                instruction.Op == OpCode.NativeCall && instruction.Text is "storage.vector_get" or "storage.vector_size")),
                 Convert.ToHexStringLower(SHA256.HashData(bytes.ToArray())), optimize, optimizeBytes, execute, executeBytes));
         }
         Report report = new(Hash(typeof(Optimizer).Assembly.Location), Hash(typeof(Interpreter).Assembly.Location), observations.ToArray());
@@ -59,7 +59,7 @@ internal static class Measurements
     private static Module Build(string name)
     {
         Code code = new();
-        if (name != "no_buffer") code.Buffer(10, 20);
+        if (name != "no_storage") code.Vector(10, 20);
         code.Number(0); code.Emit(OpCode.InitializeLocal, 1);
         code.Number(0); code.Emit(OpCode.InitializeLocal, 2);
         int header = code.Count;
@@ -75,7 +75,7 @@ internal static class Measurements
             int reads = name == "unique" ? 2 : 16;
             for (int index = 0; index < reads; index++)
             {
-                if (name == "no_buffer") code.Number(1); else code.Get(name == "unique" ? index : 0);
+                if (name == "no_storage") code.Number(1); else code.Get(name == "unique" ? index : 0);
                 code.Emit(OpCode.Add);
             }
         }
@@ -83,7 +83,7 @@ internal static class Measurements
         code.Emit(OpCode.LoadLocal, 1); code.Number(1); code.Emit(OpCode.Add); code.Emit(OpCode.StoreLocal, 1);
         code.Emit(OpCode.Jump, header); code.Target(end);
         code.Emit(OpCode.LoadLocal, 2); code.Emit(OpCode.Return);
-        return new(code.Constants, [code.Function()], Stage: ArtifactStage.Executable,
-            Context: new(Environment.CurrentDirectory, Environment.CurrentDirectory), OptimizationLevel: 0);
+        return code.Image() with { Stage = ArtifactStage.Executable,
+            Context = new(Environment.CurrentDirectory, Environment.CurrentDirectory) };
     }
 }

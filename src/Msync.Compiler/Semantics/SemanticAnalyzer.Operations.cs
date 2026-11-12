@@ -35,7 +35,7 @@ internal sealed partial class SemanticAnalyzer
                 {
                     var receiver = Analyze(children[0], context);
                     var value = Analyze(children[1], context);
-                    return MemberAssign(node, receiver, value, context, program.Node(children[1]).Source);
+                    return MemberAssign(node, children[0], receiver, value, context, program.Node(children[1]).Source);
                 }
             case HirKind.IsType:
                 {
@@ -226,15 +226,26 @@ internal sealed partial class SemanticAnalyzer
         if (location is { } fieldLocation && context.Values.TryGetValue(fieldLocation, out var actual)) value = actual;
         if (location is { } flowLocation) value = FlowRead(id, flowLocation, value, context);
         value = RefreshIndexed(value, context);
+        if (hir.Types[receiver.Type.Value].ScopeDomain.Count == 0)
+            value = WithoutLayoutFacts(value);
         return value with { Node = Add(node with { Data = offset }, value.Type, [receiver.Node], context), Location = location };
     }
 
-    private SemanticValue MemberAssign(HirNode node, SemanticValue receiver, SemanticValue value, SemanticContext context,
-        HirSourceRange valueSource)
+    private SemanticValue MemberAssign(HirNode node, HirNodeId receiverExpression, SemanticValue receiver, SemanticValue value,
+        SemanticContext context, HirSourceRange valueSource)
     {
         if (Runtime(receiver).Nullable || Runtime(receiver) != TypeRef.Scope || receiver.Scope is not { } scope)
             throw Error(node.Source, "Member assignment requires a non-null Scope.", "E0206");
-        if (context.Objects.TryGetValue(scope.Region, out var latest)) scope = latest;
+        if (scope.Region < 0)
+        {
+            // A summary describes a possible receiver, not an object-table
+            // entry. Give this write its own alias view.
+            var view = DynamicElement(receiver, context).Scope!;
+            if (Subject(receiverExpression, context) is { } current && ReferenceEquals(current.Scope, scope))
+                SetSubject(receiverExpression, current with { Scope = view }, context);
+            scope = view;
+        }
+        else if (context.Objects.TryGetValue(scope.Region, out var latest)) scope = latest;
         int offset = FieldOffset(scope.Layout, node.Text!);
         if (offset < 0) throw SemanticDiagnosticFactory.MissingMember(hir.Sources[node.Source.Source.Value],
             new(node.Source.Start, node.Source.Length), node.Text!, scope.Fields.Keys);
@@ -261,7 +272,7 @@ internal sealed partial class SemanticAnalyzer
         CheckMemberContracts(scope, node.Text!, value, valueSource, context);
         CheckSessionMemberAssignment(scope, node.Text!, value, valueSource, context);
         CheckClosedMemberAssignment(scope, node.Text!, value, valueSource, context);
-        InvalidateScopeAliases(scope, context);
+        InvalidateScopeAliases(scope, node.Text!, value, context);
         var updated = scope with { Fields = scope.Fields.SetItem(node.Text!, value) };
         context.Objects[scope.Region] = updated;
         context.FieldWrites.Add((scope.Region, node.Text!));

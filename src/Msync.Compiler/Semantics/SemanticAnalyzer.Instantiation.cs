@@ -60,18 +60,21 @@ internal sealed partial class SemanticAnalyzer
             if (!visited.Add(value)) return;
             if (value.Scope is { } scope)
             {
-                scope = context.Objects.GetValueOrDefault(scope.Region, scope);
-                if (scope.Region >= 0 && !importedRegions.Add(scope.Region)) return;
-                query.Objects[scope.Region] = scope;
-                foreach (var field in scope.Fields.Keys)
-                    if (context.MemberContracts.TryGetValue((scope.Region, field), out var contracts))
-                        query.MemberContracts[(scope.Region, field)] = contracts;
-                if (context.AliasViews.TryGetValue(scope.Region, out var views))
+                if (scope.Region >= 0)
                 {
-                    query.AliasViews[scope.Region] = views;
-                    foreach (var view in views)
-                        if (context.Objects.TryGetValue(view, out var viewScope))
-                            Import(new(hir.Type(new HirType(TypeRef.Scope, Shape: viewScope.Layout)), HirNodeId.None, Scope: viewScope));
+                    if (!importedRegions.Add(scope.Region)) return;
+                    scope = context.Objects.GetValueOrDefault(scope.Region, scope);
+                    query.Objects[scope.Region] = scope;
+                    foreach (var field in scope.Fields.Keys)
+                        if (context.MemberContracts.TryGetValue((scope.Region, field), out var contracts))
+                            query.MemberContracts[(scope.Region, field)] = contracts;
+                    if (context.AliasViews.TryGetValue(scope.Region, out var views))
+                    {
+                        query.AliasViews[scope.Region] = views;
+                        foreach (var view in views)
+                            if (context.Objects.TryGetValue(view, out var viewScope))
+                                Import(new(hir.Type(new HirType(TypeRef.Scope, Shape: viewScope.Layout)), HirNodeId.None, Scope: viewScope));
+                    }
                 }
                 if (!scope.Aliases.IsDefault)
                     foreach (var alias in scope.Aliases)
@@ -191,7 +194,8 @@ internal sealed partial class SemanticAnalyzer
                 value = FutureRead(value, storage, caller, capture.Source);
             captureValues[index] = value;
         }
-        string key = InstanceKey(id, arguments, captureValues, caller);
+        SemanticInputSchema? schema = null;
+        string key = InstanceKey(id, arguments, captureValues, caller, ref schema);
         var cache = caller.Publish ? instances : (caller.Queries ??= new()).Instances;
         if (!cache.TryGetValue(key, out var instance))
         {
@@ -201,7 +205,7 @@ internal sealed partial class SemanticAnalyzer
             // Write-only environments may grow across recursive edges without
             // changing the body. Completed summaries still need the full input
             // key: a branch that skips a write must retain that caller's value.
-            string recursiveKey = InstanceKey(id, arguments, captureValues, caller, readOnlyInput: true, recursive: true);
+            string recursiveKey = InstanceKey(id, arguments, captureValues, caller, ref schema, recursive: true);
             if (!cache.Active.TryGetValue(recursiveKey, out instance))
                 instance = BuildInstance(id, template, arguments, captureValues, actualCaptures, source, caller, cache, key, recursiveKey);
         }
@@ -253,7 +257,9 @@ internal sealed partial class SemanticAnalyzer
             var target = context.Location(definition.Target);
             var value = input.Abstract(captureValues[index]);
             context.Values[target] = value;
-            context.Storage[target] = StorageType(captured[index].Source, caller);
+            var storage = StorageType(captured[index].Source, caller);
+            context.Storage[target] = captured[index].Mode == HirCaptureMode.Location ? StructuralStorageType(storage) : storage;
+            context.Output?.SetLocation(target, hir.Locations[target.Value] with { StorageType = context.Storage[target] });
             if (caller.CallableContracts.TryGetValue(captured[index].Source, out var callableContracts))
                 context.CallableContracts[target] = callableContracts;
             if (StandardCell(captured[index].Source, caller) is { } moduleCell)
@@ -265,6 +271,7 @@ internal sealed partial class SemanticAnalyzer
             captures.Add(new(target, captured[index].Mode, target, HirNodeId.None));
         }
         ImmutableArray<HirLocationId>.Builder parameters = ImmutableArray.CreateBuilder<HirLocationId>();
+        var parameterEntryTypes = caller.Publish ? ImmutableArray.CreateBuilder<HirTypeId>(template.Parameters.Length) : null;
         ImmutableArray<SemanticValue>.Builder formalArguments = ImmutableArray.CreateBuilder<SemanticValue>();
         List<HirNodeId> parameterInitializers = [];
         for (int index = 0; index < template.Parameters.Length; index++)
@@ -273,6 +280,7 @@ internal sealed partial class SemanticAnalyzer
             var target = context.Location(original);
             var definition = hir.Locations[original.Value];
             var argument = input.Abstract(arguments[index]);
+            parameterEntryTypes?.Add(argument.Type);
             var parameterType = ResolveHirType(definition.StorageType, context);
             if (hir.Types[parameterType.Value].TypeParameter >= 0)
             {
@@ -306,7 +314,7 @@ internal sealed partial class SemanticAnalyzer
                     [converted.Node], data: target.Value));
             var value = converted with { Location = target, Node = HirNodeId.None };
             context.Values[target] = value;
-            context.Storage[target] = definition.AdmitsNull ? Nullable(parameterType) : parameterType;
+            context.Storage[target] = StructuralStorageType(definition.AdmitsNull ? Nullable(parameterType) : parameterType);
             caller.Output?.SetLocation(target, hir.Locations[target.Value] with { StorageType = context.Storage[target] });
             parameters.Add(incoming);
             formalArguments.Add(value);
@@ -364,7 +372,10 @@ internal sealed partial class SemanticAnalyzer
             FreezeSummary(instance, context);
             instance.Complete = true;
             caller.Output?.SealFunction(function, new(template.Name,
-                parameters.ToImmutable(), captures.ToImmutable(), result.Type, body.Node, id));
+                parameters.ToImmutable(), captures.ToImmutable(), result.Type, body.Node, id)
+            {
+                ParameterEntryTypes = parameterEntryTypes!.MoveToImmutable()
+            });
             return instance;
         }
         catch (CompileException error)

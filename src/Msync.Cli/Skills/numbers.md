@@ -37,3 +37,8 @@ Lazy ranges consume only requested items, even when their count is large.
 `msync skill library math` shows the executable declarations. Ordinary Number
 equality and ordering are numerical operations, not a comparison of stored
 bits. Do not assume floating-point addition is associative when folding values.
+
+Use `$std::bits` for exact unsigned 32-bit words: for example,
+`$std::bits::bit_and(word, 0xff)`, `$std::bits::rotate_left(word, 7)` or
+`$std::bits::pop_count(word)`. Word operands are integers in
+`0..4294967295`; shift and rotate counts are integers in `0..31`.

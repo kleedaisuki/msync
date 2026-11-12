@@ -2,14 +2,16 @@ internal static class ManifestSource
 {
     internal static string Build(int rows, int passes) => $$"""
         fn build(values: Range, directory: Path, endpoint: Connection) {
-            let records = $std::storage::Buffer::new([]);
+            let records = $std::storage::vector_empty(decltype(scope {
+                name: "", path: directory, enabled: true, endpoint: endpoint,
+            }));
             for value in values {
                 let name = $std::string::concat("file-", value as String);
-                $std::storage::Buffer::push(records, scope {
+                $std::storage::vector_push(records, scope {
                     name: name, path: directory/name, enabled: true, endpoint: endpoint,
                 });
             };
-            $std::storage::Buffer::snapshot(records)
+            $std::storage::vector_take(records)
         };
         let endpoint = $local;
         let directory = endpoint @ ./files/;

@@ -74,7 +74,7 @@ internal sealed class ControlFlowGraph
             {
                 OpCode.Return => [],
                 OpCode.Jump => [Edge(last.A, ControlFlowEdgeKind.Jump)],
-                OpCode.JumpIfTrue or OpCode.JumpIfFalse =>
+                OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady =>
                     [Edge(last.A, ControlFlowEdgeKind.Taken), Edge(end, ControlFlowEdgeKind.Fallthrough)],
                 OpCode.IteratorNext =>
                     [Edge(last.B, ControlFlowEdgeKind.IteratorExhausted), Edge(end, ControlFlowEdgeKind.IteratorYield)],

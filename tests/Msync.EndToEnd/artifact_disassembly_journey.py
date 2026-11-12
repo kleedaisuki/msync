@@ -60,7 +60,7 @@ def text_range(lines: list[str], span: dict[str, Any]) -> str:
 
 def validate_model(document: dict[str, Any], stage: str) -> dict[str, int]:
     assert document["schemaVersion"] == 1
-    assert document["formatVersion"] == 5
+    assert document["formatVersion"] == 6
     assert document["languageVersion"] == "0.8.0"
     assert document["stage"] == stage
     assert document["optimizationLevel"] == 0
@@ -68,11 +68,14 @@ def validate_model(document: dict[str, Any], stage: str) -> dict[str, int]:
     assert "read-only disassembly" in text
     assert "does not bind, optimize or execute" in text
     assert "@c" in text and "@f" in text and "block @b" in text
-    assert "fs.exists" in text and "Transfer" in text
+    assert "Transfer" in text
     assert "arguments" in text and "captures" in text and "Path" in text
     assert "世界" in text and "\\n" in text
-    assert "GetSingleton" in text and "SetSingleton" in text
-    assert "declaration #" in text and "Remainder" in text
+    assert re.search(r"^type @t\d+ = Scope layouts \[@l\d+\];$", text, re.MULTILINE)
+    assert re.search(r'^layout @l\d+ = \{ #\d+ "count": @t\d+ \};$', text, re.MULTILINE)
+    assert re.search(r'^place @d\d+ = "count" \[@l\d+\.#\d+\];$', text, re.MULTILINE)
+    assert re.search(r"^static @s\d+ = @l\d+;$", text, re.MULTILINE)
+    assert "Remainder" in text
     lines = text.splitlines()
     symbols = 0
 
@@ -91,8 +94,9 @@ def validate_model(document: dict[str, Any], stage: str) -> dict[str, int]:
 
     for item in document["symbols"]:
         symbol(item)
-    targets = 0
-    sources = 0
+    targets: int = 0
+    sources: int = 0
+    typed_targets: set[str] = set()
     for item in document["references"]:
         spelling = text_range(lines, item["range"])
         assert spelling, item
@@ -104,6 +108,15 @@ def validate_model(document: dict[str, Any], stage: str) -> dict[str, int]:
                 spelling,
                 target,
             )
+            if spelling.startswith("@l"):
+                assert target.startswith("layout " + spelling + " = "), target
+                typed_targets.add("layout")
+            elif spelling.startswith("@d"):
+                assert target.startswith("place " + spelling + " = "), target
+                typed_targets.add("place")
+            elif spelling.startswith("@s"):
+                assert target.startswith("static " + spelling + " = "), target
+                typed_targets.add("static")
         else:
             sources += 1
             assert item["sourceStart"] >= 0 and item["sourceLength"] >= 0
@@ -111,8 +124,14 @@ def validate_model(document: dict[str, Any], stage: str) -> dict[str, int]:
     for item in document["hovers"]:
         assert text_range(lines, item["range"]) and item["markdown"]
     for opcode, explanation in (
-        ("GetSingleton", "shared instance"),
-        ("SetSingleton", "canonical session-owned singleton"),
+        ("NewScope", "field initializers in ordinal order"),
+        ("LoadField", "typed field projection"),
+        ("StoreField", "selected field projection"),
+        ("JumpIfStaticReady", "already published its fields"),
+        ("PublishStatic", "first selected initialization"),
+        ("LoadStaticScope", "Expose the static declaration's identity"),
+        ("LoadStaticField", "without materializing its Scope identity"),
+        ("StoreStaticField", "initialized static slot"),
         ("Remainder", "truncating remainder"),
     ):
         assert any(
@@ -121,11 +140,19 @@ def validate_model(document: dict[str, Any], stage: str) -> dict[str, int]:
             for item in document["hovers"]
         ), (opcode, document["hovers"])
     assert targets > 0 and sources > 0
+    assert typed_targets == {"layout", "place", "static"}, typed_targets
     if stage == "executable":
         assert "context {" in text and "cwd =" in text and "home =" in text
+        assert "ExecutePlan" in text
     else:
         assert "context {" not in text
-    return {"symbols": symbols, "internal_references": targets, "source_spans": sources}
+        assert "fs.exists" in text
+    return {
+        "symbols": symbols,
+        "internal_references": targets,
+        "source_spans": sources,
+        "typed_table_kinds": len(typed_targets),
+    }
 
 
 def main() -> None:
@@ -145,7 +172,11 @@ def main() -> None:
             "Demo::copy(./missing, ./must-not-exist);\n"
             "fn state() { scope Shared { count: 7 }; Shared };\n"
             "let first = state(); let second = state();\n"
-            "let remainder = first::count % 3;\n",
+            "let local = scope { count: 2 };\n"
+            "local::count = 9;\n"
+            "scope Counter { value: 3 };\n"
+            "Counter::value = 8;\n"
+            "let remainder = first::count % (local::count + Counter::value);\n",
             encoding="utf-8",
         )
         relocatable = cwd / "readable.mso"

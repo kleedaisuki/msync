@@ -38,7 +38,7 @@ internal sealed class CopyReachability(IReadOnlyList<FunctionCode> functions)
                 // Native alternatives can return values, but KnownCalls never emits copies for them.
                 if (instruction.Text is { } dispatch)
                 {
-                    foreach (int target in FunctionDispatch.Parse(dispatch).Values)
+                    foreach (int target in FunctionDispatch.Targets(dispatch).Values)
                         if (Add(target)) return true;
                 }
                 else if (instruction.B == 0 || Add(instruction.B - 1)) return true;

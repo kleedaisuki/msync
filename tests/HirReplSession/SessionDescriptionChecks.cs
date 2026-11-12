@@ -19,10 +19,13 @@ internal static class SessionDescriptionChecks
             let object = scope { text: "before", path: ./before, remote: ssh://forge };
             let optional?: String = "before";
             fn identity(item) { item };
-            let values = $std::storage::Buffer::new([1]);
+            let values = $std::storage::vector_new([1]);
+            let vector_alias = values;
             """);
         Compare("initial named/anonymous/callable/concept/indexed descriptions");
-        await Submit("object::text = \"after\"; object::path = ./after; optional = null; $std::storage::Buffer::push(values, 2);");
+        await Submit("object::text = \"after\"; object::path = ./after; optional = null; $std::storage::vector_push(vector_alias, 2);");
+        Check(await Submit("$std::storage::vector_size(values)") is NumberValue { Data: 2 },
+            "An accepted vector alias mutates the original owner across submissions.");
         Compare("runtime field/path/null/indexed feedback");
         await Submit("let object = scope { selected: true }; identity(1); identity(\"text\");");
         Compare("shadowed selected exports and generic signatures");
@@ -34,11 +37,12 @@ internal static class SessionDescriptionChecks
         Check(!compiler.BindingNames.Contains("query_only"), "An editor-only binding leaked into session exports.");
         Console.WriteLine($"PASS {checks} direct accepted-description equivalence checks");
 
-        async Task Submit(string source)
+        async Task<Value> Submit(string source)
         {
             Module module = compiler.Compile(source);
-            await execution.ExecuteAsync(module);
+            Value value = await execution.ExecuteAsync(module);
             compiler.AcceptSubmission(execution.GetLocalValue);
+            return value;
         }
 
         void Compare(string label)

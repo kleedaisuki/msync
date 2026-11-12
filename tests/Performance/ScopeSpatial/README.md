@@ -1,15 +1,17 @@
 # Scope spatial-layout execution probe
 
 The complementary `native_tail.py` runs fresh-process Native launch/source/mexe
-controls with paired blocks and observed P95/P99 ranks. Its boundaries, sample
+controls with paired blocks and observed P95/P99 ranks. Pass two vector-capable
+product images explicitly via `--baseline` and `--candidate`. Its boundaries, sample
 design and shared-host interpretation are documented in
 [the tail-latency note](../../../docs/design/performance-tail-v081.md).
 
 This probe compares immutable product assembly sets without rebuilding the
 product. It compiles and binds each source outside the timer, then executes the
-same bound program on both runtimes. Each source constructs escaping records in
-native Buffer storage and scans their fields. Residual `MakeScope` and
-`GetMember` sites are required; a constant-return artifact is not accepted as a
+same source scenario on both runtimes. Each source uses an unevaluated record
+type witness, constructs escaping records in a dense vector owner, and moves
+its membership into a Range before scanning their fields. Residual `NewScope` and
+`LoadField` sites are required; a constant-return artifact is not accepted as a
 layout result.
 
 The cases distinguish four different allocation regimes:
@@ -40,7 +42,21 @@ only after the semantic calibration succeeds and coordinate a short quiet
 window; do not add CI timing thresholds. Reports preserve every sample,
 assembly/source/artifact SHA256, residual site counts and framework settings.
 
+The vector migration's functional calibration passed the four managed spatial
+cases, all three managed tail cases (including independent bound-artifact
+replays), and the reference, computed and manifest Native AOT source and
+detached executable cases. The latter ran both arms against one frozen image,
+SHA-256 `10dee509607ed70fff216cf1d590dba8535d3206abc0942458833626f4c538c0`;
+they are correctness controls, not new latency comparisons.
+
+The format-6 calibration separately passed all four managed spatial cases
+and all three managed tail cases, including their detached executable
+replays. The reports count the physical `NewScope` and `LoadField` sites.
+
 ## Managed spatial-layout control (2026-11-10)
+
+The following historical results used the prior storage API; they are not
+comparisons against the current vector fixture.
 
 The initial packed-storage image (`spatial-common-1`) increased allocation
 traffic by 119,640 B for computed/literal rows and 82,792 B for mixed rows at

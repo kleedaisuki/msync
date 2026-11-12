@@ -37,7 +37,8 @@ public sealed class ExecutionSession(ExecutionOptions? options = null) : IAsyncD
         if (image is null) image = new(module);
         else image.Publish(module);
         interpreter = new Interpreter(module, (options ?? new()) with
-        { WorkingDirectory = workingDirectory, WorkingDirectoryChanged = AcceptWorkingDirectory }, interpreter, cancellationToken);
+        { WorkingDirectory = workingDirectory, WorkingDirectoryChanged = AcceptWorkingDirectory },
+            interpreter, cancellationToken, staticScopes: image.StaticScopes);
         interpreter.Attach(image);
         return interpreter.ExecuteEntryAsync(locals, startInstruction, cancellationToken);
     }

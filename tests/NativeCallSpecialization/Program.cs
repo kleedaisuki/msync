@@ -6,14 +6,14 @@ using Module = Msync.Core.Module;
 
 int checks = 0;
 BindingContext context = new(Environment.CurrentDirectory, Environment.CurrentDirectory);
-const string buffers = """
-    let items = $std::storage::Buffer::new([10, 20]);
-    let before = $std::storage::Buffer::get(items, 0);
-    $std::storage::Buffer::set(items, 1, 99);
-    let after = $std::storage::Buffer::get(items, 0);
-    let first_size = $std::storage::Buffer::size(items);
-    $std::storage::Buffer::set(items, 1, 77);
-    let second_size = $std::storage::Buffer::size(items);
+const string vectors = """
+    let items = $std::storage::vector_new([10, 20]);
+    let before = $std::storage::vector_get(items, 0);
+    $std::storage::vector_set(items, 1, 99);
+    let after = $std::storage::vector_get(items, 0);
+    let first_size = $std::storage::vector_size(items);
+    $std::storage::vector_set(items, 1, 77);
+    let second_size = $std::storage::vector_size(items);
     before + after + first_size + second_size
     """;
 const string order = """
@@ -52,7 +52,7 @@ const string nested = """
     state * 10 + result
     """;
 foreach (var (name, source, expected) in new (string, string, double)[]
-    { ("public-buffer", buffers, 24), ("native-replacement", order, 14), ("source-replacement", nativeAndSource, 3.5),
+    { ("vector-owner", vectors, 24), ("native-replacement", order, 14), ("source-replacement", nativeAndSource, 3.5),
       ("captured-native", captured, 3), ("nested-evaluation", nested, 123) })
 {
     foreach (int level in new[] { 0, 2, 3 })
@@ -60,14 +60,14 @@ foreach (var (name, source, expected) in new (string, string, double)[]
         Module module = Compiler.Compile(source, name + ".msync", level);
         Check(!module.Functions.SelectMany(function => function.Instructions).Any(instruction =>
             instruction.Text?.StartsWith("@msync-", StringComparison.Ordinal) == true), name + " leaked compiler marker");
-        if (name == "public-buffer" && level >= 2)
+        if (name == "vector-owner" && level >= 2)
         {
             var main = module.Functions[module.EntryPoint];
-            Check(main.Instructions.Count(instruction => instruction.Op == OpCode.NativeCall && instruction.Text == "storage.buffer_get") == 1,
-                "Public Buffer get did not reach indexed read reuse");
-            Check(main.Instructions.Count(instruction => instruction.Op == OpCode.NativeCall && instruction.Text == "storage.buffer_size") == 1,
-                "Public Buffer size did not reach length reuse");
-            Check(!main.Instructions.Any(instruction => instruction.Op == OpCode.Call), "Buffer retained a source method frame");
+            Check(main.Instructions.Count(instruction => instruction.Op == OpCode.NativeCall && instruction.Text == "storage.vector_get") == 1,
+                "Vector owner get did not reach indexed read reuse");
+            Check(main.Instructions.Count(instruction => instruction.Op == OpCode.NativeCall && instruction.Text == "storage.vector_size") == 1,
+                "Vector owner size did not reach length reuse");
+            Check(!main.Instructions.Any(instruction => instruction.Op == OpCode.Call), "Vector primitive retained a source method frame");
         }
         foreach (Module image in Images(module))
         {
@@ -78,8 +78,8 @@ foreach (var (name, source, expected) in new (string, string, double)[]
 }
 
 const string invalid = """
-    let buffer = $std::storage::Buffer::new([1]);
-    $std::storage::Buffer::get(buffer, 9)
+    let values = $std::storage::vector_new([1]);
+    $std::storage::vector_get(values, 9)
     """;
 foreach (int level in new[] { 0, 2, 3 })
 {
@@ -89,7 +89,7 @@ foreach (int level in new[] { 0, 2, 3 })
         try { await Interpreter.ExecuteAsync(image); throw new InvalidOperationException("Missing native bounds failure"); }
         catch (MsyncException error)
         {
-            Check(error.Span?.Source == "native-failure.msync" && error.Span?.Start == invalid.IndexOf("$std::storage::Buffer::get", StringComparison.Ordinal),
+            Check(error.Span?.Source == "native-failure.msync" && error.Span?.Start == invalid.IndexOf("$std::storage::vector_get", StringComparison.Ordinal),
                 $"O{level}: native error lost actual call site: {error.Span}");
         }
     }

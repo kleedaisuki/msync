@@ -19,8 +19,19 @@ internal static class SpatialVmChecks
                 ("mixed-depth", "x: value + 1, y: value * 2, a: \"a\", b: \"b\", c: \"c\", d: \"d\", e: \"e\", f: \"f\", g: \"g\", h: \"h\", i: \"i\", j: \"j\", k: \"k\", l: \"l\", path: ./fixed")
             })
             {
-                string source = "fn build(values: Range<Number>) { let rows = $std::storage::Buffer::new([]); for value in values { $std::storage::Buffer::push(rows, scope { "
-                    + fields + " }); }; $std::storage::Buffer::snapshot(rows) }; build([1, 2, 3, 4])";
+                string source = $$"""
+                    fn build(values: Range<Number>) {
+                        let rows = $std::storage::vector_empty(decltype({
+                            let value = 0;
+                            scope { {{fields}} }
+                        }));
+                        for value in values {
+                            $std::storage::vector_push(rows, scope { {{fields}} });
+                        };
+                        $std::storage::vector_take(rows)
+                    };
+                    build([1, 2, 3, 4])
+                    """;
                 var module = Compiler.Compile(source, name, 2);
                 var result = (RangeValue)await Interpreter.ExecuteAsync(module, new(WorkingDirectory: root));
                 List<ScopeValue> rows = [];

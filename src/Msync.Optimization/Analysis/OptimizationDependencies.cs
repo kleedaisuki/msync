@@ -19,7 +19,7 @@ internal readonly struct OptimizationDependencies
             if (instruction.Op != OpCode.Call || instruction.B < 0) continue;
             if (instruction.B > 0) Add(ref calls, instruction.B - 1, module, effects);
             if (instruction.Text is null) continue;
-            foreach (var target in FunctionDispatch.Parse(instruction.Text).Values)
+            foreach (var target in FunctionDispatch.Targets(instruction.Text).Values)
                 Add(ref calls, target, module, effects);
         }
         return calls is null ? default : new(calls.Values.ToArray());

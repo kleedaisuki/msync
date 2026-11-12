@@ -83,10 +83,31 @@ def standard_projection(client: Client, uri: str) -> dict[str, bool]:
     notify(client, uri, 15, shadow)
     assert diagnostics(client, uri, 15)["diagnostics"] == []
     assert labels(client, uri, shadow, shadow.rindex("Only")) == {"Only"}
+
+    storage: str = """let owner = $std::storage::vector_empty(Number);
+let frozen = $std::storage::vector_snapshot(owner);
+owner;
+$std::storage::vector_push(owner, 7);
+owner;
+frozen;
+"""
+    notify(client, uri, 16, storage)
+    assert diagnostics(client, uri, 16)["diagnostics"] == []
+    before: int = storage.index("\nowner;") + 1
+    after: int = storage.rindex("\nowner;") + 1
+    for offset in (before, after):
+        shown: str = hover_text(client, uri, storage, offset)
+        assert "Storage<Number>" in shown, shown
+    frozen: str = hover_text(client, uri, storage, storage.rindex("frozen;"))
+    assert "Range<Number>" in frozen, frozen
+    storage_members: set[str] = labels(client, uri, storage, storage.index("vector_push"))
+    assert {"vector_push", "vector_get", "vector_snapshot"} <= storage_members
+    assert "Buffer" not in storage_members
     return {
         "projected_standard_scope_completion_and_definition": True,
         "projected_standard_native_documentation": True,
         "incomplete_escaped_and_shadowed_standard_receivers": True,
+        "fixed_owner_carrier_and_snapshot_hover": True,
     }
 
 

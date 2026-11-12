@@ -118,8 +118,8 @@ internal static class NaturalLoops
             "A unique bound writer or cast operand stopped at a lexical block boundary");
         foreach (string input in new[] { "0", "3.1", "17" })
         {
-            var before = new Module(DirectConstants, [crossBlockBound], OptimizationLevel: 0);
-            var after = new Module(crossBlockConstants, [crossBlockOptimized], OptimizationLevel: 0);
+            var before = DirectModule(crossBlockBound, DirectConstants);
+            var after = DirectModule(crossBlockOptimized, crossBlockConstants);
             Require(await Execute(before, input) == await Execute(RoundTrip(after), input),
                 "Cross-block bound reaching definitions changed the serialized loop");
         }
@@ -186,7 +186,8 @@ internal static class NaturalLoops
          new(OpCode.Jump, 26),
          new(OpCode.LoadLocal, 4), new(OpCode.LoadLocal, 3), new(OpCode.Add), new(OpCode.StoreLocal, 4),
          new(OpCode.LoadLocal, 3), new(OpCode.Constant, 2), new(OpCode.Add), new(OpCode.StoreLocal, 3), new(OpCode.Jump, 12),
-         new(OpCode.LoadLocal, 4), new(OpCode.Return)], TypeRef.Number, CaptureCount: raw ? 1 : 0);
+         new(OpCode.LoadLocal, 4), new(OpCode.Return)], TypeRef.Number, CaptureCount: raw ? 1 : 0)
+        { CodeSignature = new([], 0, raw ? [new(1, true)] : []) };
 
     private static FunctionCode CrossBlockBound(bool join)
     {
@@ -203,7 +204,7 @@ internal static class NaturalLoops
              new(OpCode.Jump, 26),
              new(OpCode.LoadLocal, 3), new(OpCode.LoadLocal, 2), new(OpCode.Add), new(OpCode.StoreLocal, 3),
              new(OpCode.LoadLocal, 2), new(OpCode.Constant, 2), new(OpCode.Add), new(OpCode.StoreLocal, 2), new(OpCode.Jump, 12),
-             new(OpCode.LoadLocal, 3), new(OpCode.Return)], TypeRef.Number);
+             new(OpCode.LoadLocal, 3), new(OpCode.Return)], TypeRef.Number) { CodeSignature = new([], 0, []) };
     }
 
     private static readonly Value[] DirectConstants =
@@ -218,7 +219,7 @@ internal static class NaturalLoops
         code[2] = new(OpCode.Constant, 3);
         code[3] = new(OpCode.InitializeLocal, 1);
         code[4] = new(OpCode.Jump, 8);
-        return function with { Instructions = code, CaptureCount = 1 };
+        return function with { Instructions = code, CaptureCount = 1, CodeSignature = new([], 0, [new(1, true)]) };
     }
 
     private static FunctionCode OptimizeDirect(FunctionCode function) => OptimizeDirect(function, out _);
@@ -231,10 +232,13 @@ internal static class NaturalLoops
             .GetConstructors(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).Single().Invoke([constants]);
         var optimize = assembly.GetType("Msync.Optimization.NaturalLoopOptimization")!
             .GetMethod("Optimize", BindingFlags.Static | BindingFlags.NonPublic)!;
-        var optimized = (FunctionCode)optimize.Invoke(null, [function, constants, interner, 2, null])!;
+        var optimized = (FunctionCode)optimize.Invoke(null, [DirectModule(function, constants), function, constants, interner, 2, null])!;
         outputConstants = constants;
         return optimized;
     }
+
+    private static Module DirectModule(FunctionCode function, IReadOnlyList<Value> constants) =>
+        new(constants, [function], OptimizationLevel: 0) { CodeTypes = [new(TypeKind.Number), new(TypeKind.Any)] };
 
     private static string Program(string start, string step, string comparison, string bound,
         string recurrence = "x * 1.0000000001 + 0.125", string result = "x") => $$"""

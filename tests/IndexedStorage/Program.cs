@@ -6,28 +6,28 @@ using Msync.Runtime;
 var cases = new (string Name, string Source, string Expected)[]
 {
     ("heap-order-writes", """
-        let storage = $std::storage::Buffer::new([5, 1, 2]);
+        let storage = $std::storage::vector_new([5, 1, 2]);
         let policy = scope {
             less: fn(a: Number, b: Number) -> Bool {
-                if a == 2 and b == 1 { $std::storage::Buffer::set(storage, 1, 99); };
+                if a == 2 and b == 1 { $std::storage::vector_set(storage, 1, 99); };
                 a < b
             },
         };
-        $std::containers::Heap::sift_down(scope { buffer: storage, order: policy }, 0);
-        $std::text::format("{} {}", $std::storage::Buffer::get(storage, 0),
-            $std::storage::Buffer::get(storage, 1))
+        $std::containers::Heap::sift_down(scope { items: storage, order: policy }, 0);
+        $std::text::format("{} {}", $std::storage::vector_get(storage, 0),
+            $std::storage::vector_get(storage, 1))
         """, "5 99"),
     ("distinct", """
-        let nodes = $std::storage::Buffer::new([scope { red: false }, scope { red: false }]);
-        let a = $std::storage::Buffer::get(nodes, 0);
-        let b = $std::storage::Buffer::get(nodes, 1);
+        let nodes = $std::storage::vector_new([scope { red: false }, scope { red: false }]);
+        let a = $std::storage::vector_get(nodes, 0);
+        let b = $std::storage::vector_get(nodes, 1);
         a::red = true;
         if b::red { "WRONG" } else { "ok" }
         """, "ok"),
     ("alias", """
-        let nodes = $std::storage::Buffer::new([scope { red: false }]);
-        let a = $std::storage::Buffer::get(nodes, 0);
-        let b = $std::storage::Buffer::get(nodes, 0);
+        let nodes = $std::storage::vector_new([scope { red: false }]);
+        let a = $std::storage::vector_get(nodes, 0);
+        let b = $std::storage::vector_get(nodes, 0);
         a::red = true;
         b::red = false;
         if a::red { "WRONG" } else { "ok" }
@@ -35,68 +35,77 @@ var cases = new (string Name, string Source, string Expected)[]
     ("external", """
         let a = scope { red: false };
         let b = scope { red: false };
-        let nodes = $std::storage::Buffer::new([a, b]);
-        let stored = $std::storage::Buffer::get(nodes, 0);
+        let nodes = $std::storage::vector_new([a, b]);
+        let stored = $std::storage::vector_get(nodes, 0);
         stored::red = true;
         if a::red and not b::red { "ok" } else { "WRONG" }
         """, "ok"),
     ("callables", """
         let one = fn(value: Number) { value + 1 };
         let two = fn(value: Number) { value + 2 };
-        let values = $std::storage::Buffer::new([one]);
-        $std::storage::Buffer::push(values, two);
-        let first = $std::storage::Buffer::get(values, 0);
-        let second = $std::storage::Buffer::get(values, 1);
+        let values = $std::storage::vector_new([one]);
+        $std::storage::vector_push(values, two);
+        let first = $std::storage::vector_get(values, 0);
+        let second = $std::storage::vector_get(values, 1);
         if first(4) == 5 and second(4) == 6 { "ok" } else { "WRONG" }
         """, "ok"),
     ("field-callable", """
         let old = fn(value: Number) { value + 1 };
-        let objects = $std::storage::Buffer::new([scope { operation: old }]);
-        let a = $std::storage::Buffer::get(objects, 0);
-        let b = $std::storage::Buffer::get(objects, 0);
+        let objects = $std::storage::vector_new([scope { operation: old }]);
+        let a = $std::storage::vector_get(objects, 0);
+        let b = $std::storage::vector_get(objects, 0);
         a::operation = fn(value: Number) { value + 2 };
-        if b::operation(4) == 6 { "ok" } else { "WRONG" }
+        let c = $std::storage::vector_get(objects, 0);
+        if b::operation(4) == 6 and c::operation(4) == 6 { "ok" } else { "WRONG" }
         """, "ok"),
     ("snapshot", """
-        let values = $std::storage::Buffer::new([1, 2]);
-        let snapshot = $std::storage::Buffer::snapshot(values);
-        $std::storage::Buffer::set(values, 0, 7);
-        if $std::ranges::at(snapshot, 0) == 1 and $std::storage::Buffer::get(values, 0) == 7 { "ok" } else { "WRONG" }
+        let values = $std::storage::vector_new([1, 2]);
+        let snapshot = $std::storage::vector_snapshot(values);
+        $std::storage::vector_set(values, 0, 7);
+        if $std::ranges::at(snapshot, 0) == 1 and $std::storage::vector_get(values, 0) == 7 { "ok" } else { "WRONG" }
         """, "ok"),
     ("nullable-member", """
-        let nodes = $std::storage::Buffer::new([scope { child?: scope { text: "ok" } }]);
-        let a = $std::storage::Buffer::get(nodes, 0);
+        let nodes = $std::storage::vector_new([scope { child?: scope { text: "ok" } }]);
+        let a = $std::storage::vector_get(nodes, 0);
         if a::child is not null { a::child::text } else { "WRONG" }
         """, "ok"),
     ("nullable-branch", """
-        let nodes = $std::storage::Buffer::new([scope { child?: scope { text: "ok" }, flag: false }]);
-        let a = $std::storage::Buffer::get(nodes, 0);
-        let b = $std::storage::Buffer::get(nodes, 0);
+        let nodes = $std::storage::vector_new([scope { child?: scope { text: "ok" }, flag: false }]);
+        let a = $std::storage::vector_get(nodes, 0);
+        let b = $std::storage::vector_get(nodes, 0);
         if a::child is not null {
             if a::flag { b::child = null; "WRONG" } else { a::child::text }
         } else { "WRONG" }
         """, "ok"),
     ("nested", """
-        let nodes = $std::storage::Buffer::new([scope { nested: scope { red: false } }]);
-        let a = $std::storage::Buffer::get(nodes, 0);
-        let b = $std::storage::Buffer::get(nodes, 0);
+        let nodes = $std::storage::vector_new([scope { nested: scope { red: false } }]);
+        let a = $std::storage::vector_get(nodes, 0);
+        let b = $std::storage::vector_get(nodes, 0);
         a::nested::red = true;
         b::nested::red = false;
         if a::nested::red { "WRONG" } else { "ok" }
         """, "ok"),
-    ("first-write", """
-        let values = $std::storage::Buffer::new([]);
-        $std::storage::Buffer::push(values, 7);
-        if $std::storage::Buffer::get(values, 0) == 7 { "ok" } else { "WRONG" }
+    ("typed-empty", """
+        let values = $std::storage::vector_empty(Number);
+        $std::storage::vector_push(values, 7);
+        if $std::storage::vector_get(values, 0) == 7 { "ok" } else { "WRONG" }
+        """, "ok"),
+    ("slot-nested-owner", """
+        let row = scope { keys: $std::storage::vector_empty(String) };
+        let rows = $std::slots::new(decltype(row));
+        let index = $std::slots::allocate(rows, row);
+        let alias = $std::slots::get(rows, index);
+        $std::storage::vector_push(alias::keys, "ok");
+        $std::storage::vector_get(row::keys, 0)
         """, "ok"),
     ("query-alias-isolation", """
         concept Numeric { operation: fn(value: Number) -> Number, };
         fn check(value: Numeric) { 0 };
         let a = scope { operation: fn(value: Number) { value + 1 } };
         let b = scope { operation: fn(value: Number) { value + 2 } };
-        let nodes = $std::storage::Buffer::new([a, b]);
+        let nodes = $std::storage::vector_new([a, b]);
         let invalid = fn {
-            check($std::storage::Buffer::get(nodes, 0));
+            check($std::storage::vector_get(nodes, 0));
             a::operation = fn(value: Number) { true };
         };
         let allowed = $std::meta::is_invocable(invalid);
@@ -104,21 +113,22 @@ var cases = new (string Name, string Source, string Expected)[]
         if not allowed { "ok" } else { "WRONG" }
         """, "ok"),
     ("nullable-adt", """
-        let values = $std::storage::Buffer::new([$std::data::Option::some(null)]);
-        let value = $std::storage::Buffer::get(values, 0);
+        let values = $std::storage::vector_new([$std::data::Option::some(null)]);
+        let value = $std::storage::vector_get(values, 0);
         value::Item = Number;
         if $std::data::Option::is_some(value) { "ok" } else { "WRONG" }
         """, "ok"),
     ("path-conversion", """
-        let paths = $std::storage::Buffer::new([./before]);
-        $std::storage::Buffer::push(paths, "./after");
-        if decltype($std::storage::Buffer::get(paths, 1)) is Path { "ok" } else { "WRONG" }
+        let paths = $std::storage::vector_new([./before]);
+        $std::storage::vector_push(paths, "./after");
+        if decltype($std::storage::vector_get(paths, 1)) is Path { "ok" } else { "WRONG" }
         """, "ok"),
 };
 int checks = 0;
 bool decisionsOnly = args.Contains("--decisions-only", StringComparer.Ordinal);
 foreach (var level in new[] { 0, 2, 3 })
-foreach (var test in cases.Where(test => !decisionsOnly || test.Name == "heap-order-writes"))
+foreach (var test in cases.Where(test => !decisionsOnly || test.Name is "heap-order-writes"
+    or "field-callable" or "typed-empty" or "slot-nested-owner" or "snapshot"))
 {
     var module = Compiler.Compile(test.Source, test.Name + ".msync", level);
     using var relocatable = new MemoryStream();
@@ -150,37 +160,39 @@ foreach (var source in new[]
     fn check(value: Numeric) { 0 };
     let a = scope { operation: fn(value: Number) { value + 1 } };
     let b = scope { operation: fn(value: Number) { value + 2 } };
-    let nodes = $std::storage::Buffer::new([a, b]);
-    check($std::storage::Buffer::get(nodes, 0));
+    let nodes = $std::storage::vector_new([a, b]);
+    check($std::storage::vector_get(nodes, 0));
     a::operation = fn(value: Number) { true };
     """,
     """
-    let values = $std::storage::Buffer::new([$std::data::Option::some(null)]);
-    let value = $std::storage::Buffer::get(values, 0);
+    let values = $std::storage::vector_new([$std::data::Option::some(null)]);
+    let value = $std::storage::vector_get(values, 0);
     value::value = 42;
     """,
-    "let x = $std::storage::Buffer::new([1]); $std::storage::Buffer::push(x, true);",
-    "let x = $std::storage::Buffer::new([scope { red: false }]); $std::storage::Buffer::push(x, scope { red: 1 });",
-    "let x = $std::storage::Buffer::new([scope { red: false }]); $std::storage::Buffer::set(x, 0, scope { wrong: false });",
+    "let x = $std::storage::vector_new([1]); $std::storage::vector_push(x, true);",
+    "$std::storage::vector_get([1], 0);",
+    "let x = $std::storage::vector_new([]); $std::storage::vector_push(x, 1);",
+    "let x = $std::storage::vector_new([scope { red: false }]); $std::storage::vector_push(x, scope { red: 1 });",
+    "let x = $std::storage::vector_new([scope { red: false }]); $std::storage::vector_set(x, 0, scope { wrong: false });",
     """
-    let nodes = $std::storage::Buffer::new([scope { child?: scope { text: "ok" } }]);
-    let a = $std::storage::Buffer::get(nodes, 0);
-    let b = $std::storage::Buffer::get(nodes, 0);
+    let nodes = $std::storage::vector_new([scope { child?: scope { text: "ok" } }]);
+    let a = $std::storage::vector_get(nodes, 0);
+    let b = $std::storage::vector_get(nodes, 0);
     if a::child is not null { b::child = null; a::child::text } else { "WRONG" }
     """,
     """
-    let nodes = $std::storage::Buffer::new([
+    let nodes = $std::storage::vector_new([
         scope { child?: scope { text: "ok" } }, scope { child?: null }
     ]);
-    let a = $std::storage::Buffer::get(nodes, 0);
-    let b = $std::storage::Buffer::get(nodes, 1);
+    let a = $std::storage::vector_get(nodes, 0);
+    let b = $std::storage::vector_get(nodes, 1);
     if a::child is not null { b::child::text } else { "WRONG" }
     """,
     """
     fn clear(value) { value::child = null; };
-    let nodes = $std::storage::Buffer::new([scope { child?: scope { text: "ok" } }]);
-    let a = $std::storage::Buffer::get(nodes, 0);
-    let b = $std::storage::Buffer::get(nodes, 0);
+    let nodes = $std::storage::vector_new([scope { child?: scope { text: "ok" } }]);
+    let a = $std::storage::vector_get(nodes, 0);
+    let b = $std::storage::vector_get(nodes, 0);
     if a::child is not null { clear(b); a::child::text } else { "WRONG" }
     """,
 })
@@ -190,15 +202,15 @@ foreach (var source in new[]
     throw new InvalidOperationException("Expected fixed storage/nullability rejection: " + source);
 }
 CompilerSession session = new();
-session.Compile("let buffer = $std::storage::Buffer::new([]);");
+session.Compile("let vector = $std::storage::vector_empty(Number);");
 session.AcceptSubmission();
 try
 {
-    session.Compile("$std::storage::Buffer::push(buffer, 1); let wrong: Number = true;");
+    session.Compile("$std::storage::vector_push(vector, 1); let wrong: Number = true;");
     throw new InvalidOperationException("Expected failed submission");
 }
 catch (CompileException) { checks++; }
-session.Compile("$std::storage::Buffer::push(buffer, \"ok\");");
+session.Compile("$std::storage::vector_push(vector, 2);");
 checks++;
 checks += await RuntimeCarrierChecks.RunAsync();
 Console.WriteLine($"PASS {checks} indexed storage contracts");

@@ -27,19 +27,8 @@ public sealed partial class Interpreter
         left is DeferredValue || right is DeferredValue ? CompareDeferred(left, right, operation)
             : CompareScalars(left, right, operation);
 
-    private static Value CompareNumbers(double left, double right, OpCode operation)
-    {
-        bool result = operation switch
-        {
-            OpCode.Equal => left == right,
-            OpCode.NotEqual => left != right,
-            OpCode.Less => left < right,
-            OpCode.LessEqual => left <= right,
-            OpCode.Greater => left > right,
-            _ => left >= right
-        };
-        return result ? Value.True : Value.False;
-    }
+    private static Value CompareNumbers(double left, double right, OpCode operation) =>
+        NumberArithmetic.Test(left, right, operation) ? Value.True : Value.False;
 
     private static Value CompareScalars(Value left, Value right, OpCode operation)
     {
@@ -67,17 +56,8 @@ public sealed partial class Interpreter
     {
         if (operation == OpCode.Add && left is StringValue first && right is StringValue second)
             return new StringValue(first.Data + second.Data);
-        return new NumberValue(Arithmetic(((NumberValue)left).Data, ((NumberValue)right).Data, operation));
+        return new NumberValue(NumberArithmetic.Apply(((NumberValue)left).Data, ((NumberValue)right).Data, operation));
     }
-
-    private static double Arithmetic(double left, double right, OpCode operation) => operation switch
-    {
-        OpCode.Add => left + right,
-        OpCode.Subtract => left - right,
-        OpCode.Multiply => left * right,
-        OpCode.Remainder => left % right,
-        _ => left / right
-    };
 
     private static Value ArithmeticDeferred(Value left, Value right, OpCode operation) => CombineValues(left, right,
         left.Type == TypeRef.String ? TypeRef.String : TypeRef.Number,

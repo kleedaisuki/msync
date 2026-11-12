@@ -24,9 +24,28 @@ speculative analysis cannot publish a new dependency into an accepted REPL.
 These contracts are compiler metadata, not a new artifact opcode or runtime
 registry.
 
-Number parsing uses invariant `NumberStyles.Float`, including the platform's
-IEEE NaN/infinity handling. Boolean text accepts only the platform's
-case-insensitive `true`/`false` forms, with surrounding whitespace; it never
-uses nonempty-string truthiness. See the primary platform contracts for
+Number parsing first uses invariant `NumberStyles.Float`, including the
+platform's IEEE NaN/infinity handling, then the language's signed literal
+grammar for radix prefixes and digit separators. Boolean text accepts only
+the platform's case-insensitive `true`/`false` forms, with surrounding
+whitespace; it never uses nonempty-string truthiness. See the primary platform contracts for
 [Double.TryParse](https://learn.microsoft.com/en-us/dotnet/api/system.double.tryparse?view=net-10.0)
 and [Boolean.TryParse](https://learn.microsoft.com/en-us/dotnet/api/system.boolean.tryparse?view=net-10.0).
+
+## Bound Number-text route
+
+Executable preparation recognizes an exact `TypeValue(Number)` load
+immediately preceding the two-argument native cast, provided no edge can enter
+the call directly. A jump to the load is valid; a jump, conditional target or
+iterator exhaustion edge to the call is not. A ready String or Path can use
+the inline native route without changing Number parsing. The `fast_calls`
+metric identifies this dispatch route, not whether the decimal grammar or the
+literal grammar accepted the text.
+
+`NumberTextCastChecks` checks runtime line input through compiled source and
+standalone read-back format-5 portable and bound artifacts. Raw bytecode
+exercises alternative Type values reaching the same call; mixed inputs check
+Path native spelling, signed zero, binary64 edge rounding, integer-radix
+fallback, and canonical dispatch for nullable Type, Bool, Number, Cell and
+deferred process output. Rejected ready text retains the selected cast's
+source span, canonical failure message and native failure observation.

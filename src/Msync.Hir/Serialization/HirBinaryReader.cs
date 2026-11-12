@@ -30,7 +30,7 @@ internal sealed class HirBinaryReader(BinaryReader reader)
         bool session = Boolean();
         HirModule result = new(
             Array("sources", 2, Source),
-            Array("types", 31, Type),
+            Array("types", 35, Type),
             Array("locations", 28, Location),
             Array("functions", 22, Function),
             Array("templates", 25, Template),
@@ -109,7 +109,7 @@ internal sealed class HirBinaryReader(BinaryReader reader)
         for (int index = 0; index < count; index++)
         {
             TypeKind kind = (TypeKind)reader.ReadUInt16();
-            if ((kind & ~TypeKind.Any) != 0) throw new MsyncException($"Unknown runtime type bits {(ushort)kind} in Typed HIR {section}.");
+            if ((kind & ~TypeKind.Runtime) != 0) throw new MsyncException($"Unknown runtime type bits {(ushort)kind} in Typed HIR {section}.");
             kinds[index] = kind;
         }
         TypeRef? result = null;
@@ -118,7 +118,10 @@ internal sealed class HirBinaryReader(BinaryReader reader)
     }
 
     private HirType Type() => new(RuntimeType(), reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32(),
-        Boolean(), Array("type alternatives", 4, () => new HirTypeId(reader.ReadInt32())));
+        Boolean(), Array("type alternatives", 4, () => new HirTypeId(reader.ReadInt32())))
+    {
+        ScopeDomain = HirScopeDomain.FromEncoded(Array("scope construction layouts", 4, reader.ReadInt32))
+    };
     private HirLocation Location()
     {
         string name = String();
@@ -141,7 +144,10 @@ internal sealed class HirBinaryReader(BinaryReader reader)
         HirTypeId result = new(reader.ReadInt32());
         HirNodeId body = new(reader.ReadInt32());
         int template = reader.ReadInt32();
-        return new(name, parameters, captures, result, body, template == -1 ? null : new HirTemplateId(template), Boolean());
+        return new(name, parameters, captures, result, body, template == -1 ? null : new HirTemplateId(template), Boolean())
+        {
+            ParameterEntryTypes = Array("function parameter entry types", 4, () => new HirTypeId(reader.ReadInt32()))
+        };
     }
 
     private HirTemplate Template()

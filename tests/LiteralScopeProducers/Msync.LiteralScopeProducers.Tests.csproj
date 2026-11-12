@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><AssemblyName>Msync.LiteralScopeProducers.Tests</AssemblyName></PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="literal-demand.msync" LogicalName="literal-demand.msync" />
+    <ProjectReference Include="../../src/Msync.Compiler/Msync.Compiler.csproj" />
+    <ProjectReference Include="../../src/Msync.Optimization/Msync.Optimization.csproj" />
+    <ProjectReference Include="../../src/Msync.Runtime/Msync.Runtime.csproj" />
+  </ItemGroup>
+</Project>

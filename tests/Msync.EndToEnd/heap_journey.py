@@ -151,19 +151,23 @@ let counted_top? = Heap::peek(counted);
 if counted_top is not null {
     (counted_top as String) -> ./counted-top.txt;
 };
+let first_job = scope { priority: 1, name: "first" };
 let jobs = Heap::with_policy([
     scope { priority: 7, name: "later" },
-    scope { priority: 1, name: "first" },
+    first_job,
     scope { priority: 4, name: "middle" },
 ], scope {
     Self: Scope,
-    sample?: scope { priority: 0, name: "" },
+    sample?: null,
     less: fn(left: Scope, right: Scope) -> Bool {
-        left::priority < right::priority
+        $std::ranges::contains([first_job], left)
+            and not $std::ranges::contains([first_job], right)
     },
 });
 let job? = Heap::pop(jobs);
-if job is not null { job::name -> ./record-policy.txt; };
+if job is not null and $std::ranges::contains([first_job], job) {
+    first_job::name -> ./record-policy.txt;
+};
 let special = Heap::new([$std::math::nan, 2, 1, $std::math::nan]);
 $std::string::join($std::ranges::map(Heap::drain(special),
     fn(value: Number) {
@@ -173,6 +177,10 @@ let optional = Heap::new([2, null, 1]);
 let optional_first? = Heap::pop(optional);
 ((optional_first is null) and Heap::size(optional) == 2) as String
     -> ./nullable-payload.txt;
+Heap::extend(optional, [null, 3]);
+let extended_first? = Heap::pop(optional);
+((extended_first is null) and Heap::size(optional) == 3) as String
+    -> ./nullable-extend.txt;
 """.replace("INITIAL", "[" + ",".join(map(str, INITIAL)) + "]").replace(
         "STEPS", "[" + ",\n".join(steps) + "]"
     )
@@ -194,6 +202,7 @@ let optional_first? = Heap::pop(optional);
         "record-policy.txt": b"first",
         "nan-order.txt": b"1,2,nan,nan",
         "nullable-payload.txt": b"true",
+        "nullable-extend.txt": b"true",
     }
     return program, outputs
 

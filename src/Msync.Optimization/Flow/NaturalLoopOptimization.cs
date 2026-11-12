@@ -131,12 +131,12 @@ internal static class NaturalLoopOptimization
         private static int InstructionOf(int token) => token >= 0 ? token / 2 : -1;
     }
 
-    internal static FunctionCode Optimize(FunctionCode function, List<Value> constants, ConstantInterner interner,
+    internal static FunctionCode Optimize(Module module, FunctionCode function, List<Value> constants, ConstantInterner interner,
         int level, FunctionAnalysisContext? analysis = null)
     {
         var code = function.Instructions;
         if (level < 2 || !HasScalarBackedge(code)) return function;
-        analysis ??= new FunctionAnalysisContext();
+        analysis ??= new FunctionAnalysisContext(module);
         var graph = analysis.ControlFlow(function);
         LocalFacts? locals = null;
         List<Candidate> selected = [];
@@ -294,7 +294,7 @@ internal static class NaturalLoopOptimization
             positions[pc] = output.Count;
             if (headers.TryGetValue(pc, out var loop))
                 EmitLoop(code, output, loop, constants, fallbacks, exits);
-            if (code[pc].Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.IteratorNext)
+            if (code[pc].Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.JumpIfStaticReady or OpCode.IteratorNext)
                 branches.Add((pc, output.Count));
             output.Add(code[pc]);
         }

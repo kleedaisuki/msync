@@ -184,3 +184,12 @@ status goes to stderr. No performance threshold is an acceptance gate.
 The [five-language library matrix](LibraryMatrix/README.md) covers a checked
 red-black tree, heap, hash table and handwritten scalar SHA-256 kernel. It is
 an exploratory comparison, separate from the product latency journeys.
+
+## General-purpose compiler and VM workload corpus
+
+[Corpus](Corpus/README.md) adds seeded geometry, mutable-state detection,
+lazy dataflow, mixed collection traces, Unicode path processing and real
+manifest-based copies. It compares complete Native CLI images with separate
+source/bound routes, independent result oracles and opt-in SQLite profiles.
+LibraryMatrix and its SHA fixture remain narrow diagnostic workloads rather
+than a general speed score.

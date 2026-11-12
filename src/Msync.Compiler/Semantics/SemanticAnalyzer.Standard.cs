@@ -27,7 +27,7 @@ internal sealed partial class SemanticAnalyzer
         int region = nextRegion++;
         SemanticScope scope = new(region, layout, fields, locations.ToImmutable(), Named: true);
         context.Objects[region] = scope;
-        HirTypeId type = hir.Type(new HirType(TypeRef.Scope, Shape: layout));
+        HirTypeId type = hir.Type(HirType.ConstructedScope(layout));
         if (!context.Publish) return new(type, HirNodeId.None, Scope: scope);
         int construction = hir.Scopes.Count;
         context.Output!.AddScope(new(layout, locations.Values.ToImmutableArray()));
@@ -70,12 +70,13 @@ internal sealed partial class SemanticAnalyzer
         target.Values[location] = value;
         context.Values[location] = value;
         if (value.Scope is { } scope) target.Objects[scope.Region] = scope;
-        target.Storage[location] = value.Type;
-        context.Storage[location] = value.Type;
+        var storage = StructuralStorageType(value.Type);
+        target.Storage[location] = storage;
+        context.Storage[location] = storage;
         target.ActivatedModules = target.ActivatedModules.Add(location);
         context.ActivatedModules = context.ActivatedModules.Add(location);
         foreach (var pair in target.Objects) context.Objects[pair.Key] = pair.Value;
-        SealStorage(location, value.Type, target);
+        SealStorage(location, storage, target);
         entryPrelude.Add(context.Output!.Add(HirKind.Declare, hir.Type(TypeRef.Null), source, [value.Node], location.Value));
     }
 

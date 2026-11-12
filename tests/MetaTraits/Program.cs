@@ -79,33 +79,38 @@ var programs = new (string Name, string Source, Value Expected)[]
         $std::meta::is_same(number_type(), Number);
         calls
         """, new NumberValue(1)),
-    ("buffer-probe-isolation", """
-        let buffer = $std::storage::buffer_new([]);
-        let populate = fn { $std::storage::buffer_push(buffer, 1) };
-        $std::meta::is_invocable(populate);
-        $std::storage::buffer_push(buffer, "Klee");
-        $std::storage::buffer_get(buffer, 0)
+    ("vector-probe-isolation", """
+        let owner = $std::storage::vector_empty(String);
+        let populate = fn { $std::storage::vector_push(owner, "probe") };
+        let valid = $std::meta::is_invocable(populate);
+        $std::storage::vector_push(owner, "Klee");
+        if valid and $std::storage::vector_size(owner) == 1 {
+            $std::storage::vector_get(owner, 0)
+        } else { "probe mutated owner" }
         """, new StringValue("Klee")),
-    ("failed-buffer-probe-isolation", """
-        let buffer = $std::storage::buffer_new([]);
+    ("failed-vector-probe-isolation", """
+        let owner = $std::storage::vector_empty(String);
         let invalid = fn {
-            $std::storage::buffer_push(buffer, 1);
-            scope { value: 1 }::missing
+            $std::storage::vector_push(owner, "probe");
+            $std::storage::vector_push(owner, true)
         };
-        $std::meta::is_invocable(invalid);
-        $std::storage::buffer_push(buffer, "Klee");
-        $std::storage::buffer_get(buffer, 0)
+        let valid = $std::meta::is_invocable(invalid);
+        $std::storage::vector_push(owner, "Klee");
+        if not valid and $std::storage::vector_size(owner) == 1 {
+            $std::storage::vector_get(owner, 0)
+        } else { "probe accepted invalid carrier or mutated owner" }
         """, new StringValue("Klee")),
-    ("buffer-memory-view-isolation", """
+    ("vector-memory-view-isolation", """
         let record = scope { flag: true };
-        let inspect = fn { $std::storage::buffer_new([record]) };
+        let inspect = fn { $std::storage::vector_new([record]) };
         $std::meta::invoke_result(inspect);
         if record::flag { "Klee" } else { scope {}::missing }
         """, new StringValue("Klee")),
 };
 
 foreach (int level in new[] { 0, 2, 3 })
-    foreach (var (name, source, expected) in programs)
+    foreach (var (name, source, expected) in programs
+        .Where(program => args.Length == 0 || args.Contains(program.Name, StringComparer.Ordinal)))
     {
         Module original = Compiler.Compile(source, name + ".msync", level);
         foreach (Module module in Stages(original))

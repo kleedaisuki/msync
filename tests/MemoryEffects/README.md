@@ -46,29 +46,29 @@ write to the caller's binding.
 
 ### Indexed storage resources
 
-`IndexedReads` and `IndexedWrites` summarize Buffer access relative to the
+`IndexedReads` and `IndexedWrites` summarize vector access relative to the
 same entry receiver paths, with separate length and contents regions. A
 contents footprint has either an exact integral index or a wildcard. For
-example, `set(buffer, 1, value)` reads length for bounds and writes contents
+example, `vector_set(owner, 1, value)` reads length for bounds and writes contents
 at 1; it does not mutate length. A push or insert writes length and wildcard
 contents. The first successful read and every real call still execute.
 
 The shared native effect table is used by both the summary producer and the
 indexed availability pass. The producer reuses sparse operand definitions for
 write indices when there is no adjacent literal witness. The scope analysis's
-indexed contents alias describes the values retained by a Buffer, separately
+indexed contents alias describes the values retained by a vector, separately
 from the native footprint that can invalidate a membership read.
 
 At a source call, the availability pass first proves the actual source
 callable and admitted callee, then maps writes to evaluated arguments or
 captures. The positive call hint is not a source-call proof. An unresolvable
 receiver path becomes a possible alias; two distinct value numbers alone do
-not prove disjointness. Separate direct `buffer_new` allocations can provide
+not prove disjointness. Separate direct `vector_new` allocations can provide
 that proof. When a callee may replace a binding along an indexed receiver
 path through an aliasing formal argument, callers must not project that path
 onto a stale entry field. The summary widens just the receiver (retaining
 length versus contents and the index). The transitive rebinding control
-creates one Scope with an old local Buffer, then passes it as both formals;
+creates one Scope with a local vector, then passes it as both formals;
 the callee replaces the field through one formal and writes through the other.
 Unresolved calls, deferred invocation, potentially effectful
 enumeration and ordering boundaries invalidate read witnesses. Scoped

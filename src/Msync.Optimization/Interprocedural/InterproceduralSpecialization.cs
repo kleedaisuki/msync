@@ -126,7 +126,10 @@ internal static class InterproceduralSpecialization
             ParameterCount = removed.Count(value => !value),
             LocalCount = next,
             Instructions = code,
-            ParameterTypes = function.ParameterTypes?.Where((_, index) => !removed[index]).ToArray()
+            ParameterTypes = function.ParameterTypes?.Where((_, index) => !removed[index]).ToArray(),
+            CodeSignature = function.CodeSignature is { } signature
+                ? signature with { Parameters = signature.Parameters.Where((_, index) => !removed[index]).ToArray() }
+                : null
         };
     }
 
@@ -139,7 +142,7 @@ internal static class InterproceduralSpecialization
             positions[position] = code.Count;
             if (!rewrites.TryGetValue(position, out var clone))
             {
-                if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.IteratorNext) branches.Add(code.Count);
+                if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady or OpCode.IteratorNext) branches.Add(code.Count);
                 code.Add(instruction); continue;
             }
             var kept = new int[clone.Removed.Length];
@@ -212,6 +215,7 @@ internal static class InterproceduralSpecialization
                 case OpCode.Divide:
                 case OpCode.Remainder:
                     var right = Pop(); var left = new HashSet<int>(Pop()); left.UnionWith(right); stack.Add(left); break;
+                case OpCode.JumpIfStaticReady: Reset(); break;
                 case OpCode.JumpIfFalse:
                 case OpCode.JumpIfTrue:
                     foreach (var parameter in Pop()) control[parameter] = true;
@@ -222,8 +226,9 @@ internal static class InterproceduralSpecialization
                 case OpCode.False:
                 case OpCode.LoadCell:
                 case OpCode.LoadStorage:
-                case OpCode.SetSingleton: Pop(); stack.Add([]); break;
-                case OpCode.GetSingleton: case OpCode.LoadBuiltin: stack.Add([]); break;
+                case OpCode.LoadStaticScope:
+                case OpCode.LoadStaticField:
+                case OpCode.LoadBuiltin: stack.Add([]); break;
                 case OpCode.Nop: case OpCode.Barrier: break;
                 default: Reset(); break;
             }
@@ -274,19 +279,23 @@ internal static class InterproceduralSpecialization
                 case OpCode.SpecializeClosure:
                     var closure = Pop();
                     var specialized = instruction.A < 0 || closure.Function is null ? null : instruction.Text is null ? instruction.A
-                        : FunctionDispatch.Parse(instruction.Text).TryGetValue(closure.Function.Value, out var selected) ? selected : (int?)null;
+                        : FunctionDispatch.Targets(instruction.Text).TryGetValue(closure.Function.Value, out var selected) ? selected : (int?)null;
                     stack.Add(closure with { Function = specialized }); break;
-                case OpCode.MakeScope:
-                    var values = PopMany(instruction.A); var names = instruction.Text?.Split('\0', StringSplitOptions.RemoveEmptyEntries) ?? [];
-                    stack.Add(names.Distinct(StringComparer.Ordinal).Count() == names.Length
-                        ? new(Members: names.Select((name, index) => KeyValuePair.Create(name, values[index])).ToDictionary()) : Unknown); break;
-                case OpCode.GetMember:
-                    var scope = Pop(); stack.Add(scope.Members is { } members && members.TryGetValue(instruction.Text!, out var member) ? member : Unknown); break;
+                case OpCode.NewScope:
+                    var fields = ScopeOperands.Construction(module, instruction).Fields;
+                    var values = PopMany(fields.Count);
+                    stack.Add(new(Members: fields.Select((field, index) => KeyValuePair.Create(field.Name, values[index])).ToDictionary())); break;
+                case OpCode.LoadField:
+                    var scope = Pop();
+                    stack.Add(scope.Members is { } members && members.TryGetValue(ScopeOperands.Projection(module, instruction).Name, out var member)
+                        ? member : Unknown);
+                    break;
+                case OpCode.AdmitScope: break;
                 case OpCode.Call:
                     var arguments = PopMany(instruction.A); var callee = Pop();
                     var target = instruction.B < 0 ? null : callee.Function;
                     if (target is not null && instruction.Text is { } mapping)
-                        target = FunctionDispatch.Parse(mapping).TryGetValue(target.Value, out var dispatched) ? dispatched : null;
+                        target = FunctionDispatch.Targets(mapping).TryGetValue(target.Value, out var dispatched) ? dispatched : null;
                     else if (target is not null && instruction.B > 0) target = instruction.B - 1;
                     if (target is { } known && known >= 0 && known < module.Functions.Count
                         && callee.CaptureCount == module.Functions[known].CaptureCount)
@@ -294,7 +303,8 @@ internal static class InterproceduralSpecialization
                     stack.Add(Unknown); Invalidate(); break;
                 case OpCode.NativeCall: PopMany(instruction.A); stack.Add(Unknown); Invalidate(); break;
                 case OpCode.ProcessCall: PopMany(instruction.A + 1); stack.Add(Unknown); Invalidate(); break;
-                case OpCode.SetMember: PopMany(2); stack.Add(Unknown); Invalidate(); break;
+                case OpCode.StoreStaticField:
+                case OpCode.StoreField: PopMany(instruction.Op == OpCode.StoreField ? 2 : 1); stack.Add(Unknown); Invalidate(); break;
                 case OpCode.MakeRange: case OpCode.MakeLazyRange: PopMany(instruction.A); stack.Add(Unknown); break;
                 case OpCode.GetCapture: Pop(); stack.Add(UnknownStorage); break;
                 case OpCode.Not:
@@ -305,19 +315,19 @@ internal static class InterproceduralSpecialization
                 case OpCode.SelectPath:
                 case OpCode.DeferRange: Pop(); stack.Add(Unknown); break;
                 case OpCode.RegexMatch: PopMany(instruction.Text is null ? 2 : 1); stack.Add(Unknown); break;
-                case OpCode.SetSingleton: Pop(); stack.Add(Unknown); break;
-                case OpCode.GetSingleton: case OpCode.LoadBuiltin: stack.Add(Unknown); break;
+                case OpCode.PublishStatic: PopMany(ScopeOperands.Construction(module, instruction).Fields.Count); Invalidate(); break;
+                case OpCode.LoadStaticScope: case OpCode.LoadStaticField: case OpCode.LoadBuiltin: stack.Add(Unknown); break;
                 case OpCode.Acquire: if (instruction.A != 0) { Pop(); stack.Add(Unknown); } Invalidate(); break;
                 case OpCode.IteratorNext: stack.Add(Unknown); Invalidate(); break;
                 case OpCode.JumpIfFalse: case OpCode.JumpIfTrue: Pop(); stack.Clear(); Array.Fill(locals, Unknown); break;
-                case OpCode.Jump: case OpCode.Return: stack.Clear(); Array.Fill(locals, Unknown); break;
+                case OpCode.Jump: case OpCode.JumpIfStaticReady: case OpCode.Return: stack.Clear(); Array.Fill(locals, Unknown); break;
                 default: PopMany(2); stack.Add(Unknown); break;
             }
         }
     }
 
     private static HashSet<int> Starts(IReadOnlyList<Instruction> instructions) => instructions
-        .Where(instruction => instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse).Select(instruction => instruction.A)
+        .Where(instruction => instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady).Select(instruction => instruction.A)
         .Concat(instructions.Where(instruction => instruction.Op == OpCode.IteratorNext).Select(instruction => instruction.B)).ToHashSet();
     private static bool Immutable(Value value) => value is NullValue or BoolValue or NumberValue or StringValue or TypeValue or PathValue or ConnectionValue;
     private static bool HasSlot(OpCode op) => op is OpCode.LoadLocal or OpCode.LoadCell or OpCode.LoadStorage or OpCode.StoreLocal or OpCode.InitializeLocal or OpCode.IteratorNext;

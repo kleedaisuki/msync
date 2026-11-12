@@ -12,8 +12,11 @@ output file bytes, IEEE-754 accumulation, serialized relocatable and executable
 artifacts, and a large literal table retained by the code-size cost model.
 A typed but runtime-supplied Range checks LICM structurally and behaviorally:
 the invariant Number operation moves before the iterator header while its
-per-iteration destination declaration remains inside. A selected missing-field
-error inside a known empty loop is never speculated.
+per-iteration destination declaration remains inside. An opaque Scope
+projection inside a known empty loop is never speculated; with one selected
+iteration, the same projection fails at its original source span. The
+hand-assembled fixtures supply the portable layout and signature tables and
+exercise both serialized object and executable paths.
 
 ## Pass contract
 
@@ -39,6 +42,8 @@ integer identities.
 
 Legacy scheduling modules retain their original iterator/control boundaries;
 the pass applies only to modules with directional scheduling semantics.
+
+The current Release suite passed 435 contracts after the format-6 migration.
 
 ## Component measurement
 

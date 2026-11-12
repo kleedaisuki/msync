@@ -1,0 +1,14 @@
+# Unsigned 32-bit words represented exactly as Number.
+native fn bit_and(left: Number, right: Number) -> Number;
+native fn bit_or(left: Number, right: Number) -> Number;
+native fn bit_xor(left: Number, right: Number) -> Number;
+native fn bit_not(value: Number) -> Number;
+native fn shift_left(value: Number, count: Number) -> Number;
+native fn shift_right(value: Number, count: Number) -> Number;
+native fn shift_right_signed(value: Number, count: Number) -> Number;
+native fn rotate_left(value: Number, count: Number) -> Number;
+native fn rotate_right(value: Number, count: Number) -> Number;
+native fn pop_count(value: Number) -> Number;
+native fn leading_zero_count(value: Number) -> Number;
+native fn trailing_zero_count(value: Number) -> Number;
+native fn reverse_bytes(value: Number) -> Number;

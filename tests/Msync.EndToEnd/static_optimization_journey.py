@@ -16,19 +16,19 @@ from stdlib_experience_journey import accept, invoke
 
 ROOT: Path = Path(__file__).resolve().parents[2]
 PROGRAM: str = """
-let items = $std::storage::Buffer::new([10, 20]);
-let before = $std::storage::Buffer::get(items, 0);
-$std::storage::Buffer::set(items, 1, 99);
-let after = $std::storage::Buffer::get(items, 0);
+let items = $std::storage::vector_new([10, 20]);
+let before = $std::storage::vector_get(items, 0);
+$std::storage::vector_set(items, 1, 99);
+let after = $std::storage::vector_get(items, 0);
 ((before + after) as String) -> ./values.txt;
-let first_size = $std::storage::Buffer::size(items);
-$std::storage::Buffer::set(items, 1, 77);
-let second_size = $std::storage::Buffer::size(items);
+let first_size = $std::storage::vector_size(items);
+$std::storage::vector_set(items, 1, 77);
+let second_size = $std::storage::vector_size(items);
 ((first_size + second_size) as String) -> ./sizes.txt;
-let nodes = $std::storage::Buffer::new([scope { value: 1 }]);
-let node = $std::storage::Buffer::get(nodes, 0);
+let nodes = $std::storage::vector_new([scope { value: 1 }]);
+let node = $std::storage::vector_get(nodes, 0);
 node::value = 2;
-($std::storage::Buffer::get(nodes, 0)::value as String) -> ./alias.txt;
+($std::storage::vector_get(nodes, 0)::value as String) -> ./alias.txt;
 let selected = $std::math::abs;
 fn argument() {
     global selected;
@@ -105,10 +105,10 @@ def execute(binary: Path, directory: Path, level: int, stage: str) -> dict[str, 
         r"^fn @f" + entry.group(1) + r" .*?^}\n", text, re.DOTALL | re.MULTILINE
     )
     assert body is not None
-    gets: int = body.group(0).count('NativeCall "storage.buffer_get"')
-    sizes: int = body.group(0).count('NativeCall "storage.buffer_size"')
+    gets: int = body.group(0).count('NativeCall "storage.vector_get"')
+    sizes: int = body.group(0).count('NativeCall "storage.vector_size"')
     if level >= 2:
-        assert gets == 2, f"Expected one get per owned buffer, found {gets}"
+        assert gets == 2, f"Expected one get per owned vector, found {gets}"
         assert sizes == 1, f"Expected one stable length read, found {sizes}"
     assert "@msync-callee:" not in text and "@msync-cell:" not in text
     if stage == "executable":
@@ -126,6 +126,7 @@ def execute(binary: Path, directory: Path, level: int, stage: str) -> dict[str, 
             ),
             "bind",
         )
+        artifact.unlink()
         artifact = executable
     assert not any((directory / name).exists() for name in OUTPUTS), (
         "Static stages executed IO"

@@ -22,14 +22,44 @@ public sealed partial class Interpreter
         if (function.NativeName is not null) return function;
         var target = instruction.A < 0 ? SessionDispatchTarget(function, -instruction.A - 1, instruction.Span)
             : instruction.Text is null ? instruction.A : DispatchTarget(function, instruction);
-        return target == function.Function ? function : function with { Function = target };
+        if (target == function.Function) return function;
+        RequireCaptureContract(function, target, instruction.Span);
+        return function with { Function = target };
+    }
+
+    private void RequireCaptureContract(FunctionValue function, int target, SourceSpan? span)
+    {
+        var expected = module.Functions[target].CodeSignature!.Captures;
+        var captures = function.Captures;
+        if (expected.Count == 0 && captures is null or { Count: 0 }) return;
+        if (captures is null || captures.Count != expected.Count)
+            throw new MsyncException("The selected specialization requires a different capture layout.", span);
+        var places = CurrentPlaces;
+        for (int i = 0; i < captures.Count; i++)
+        {
+            var capture = expected[i];
+            var actual = captures[i];
+            var storage = places.Storage(capture.Type);
+            bool fits = capture.Location
+                ? actual is CellValue cell && storage.Same(cell.CodeStorage)
+                : actual is not CellValue && places.FitsValue(capture.Type, actual);
+            if (!fits)
+            {
+                string required = capture.Location ? $"location of {storage}" : storage.ToString();
+                string supplied = actual is CellValue location
+                    ? $"location of {location.CodeStorage?.ToString() ?? "untyped storage"}"
+                    : actual.Type.ToString();
+                throw new MsyncException($"Capture {i} requires {required}; the selected closure supplies {supplied}.", span);
+            }
+        }
     }
     private int DispatchTarget(FunctionValue function, Instruction instruction)
     {
-        if (!dispatchTables.TryGetValue(instruction.Text!, out var targets))
+        string wire = instruction.Text!;
+        if (!dispatchTables.TryGetValue(wire, out var targets))
         {
-            targets = FunctionDispatch.Parse(instruction.Text!);
-            dispatchTables.Add(instruction.Text!, targets);
+            targets = FunctionDispatch.Targets(wire);
+            dispatchTables.Add(wire, targets);
         }
         return targets.TryGetValue(function.Function, out var target) ? target
             : throw new MsyncException($"Function #{function.Function} has no compiled specialization in this dispatch table", instruction.Span);
@@ -60,9 +90,9 @@ public sealed partial class Interpreter
         };
     }
     private static Value NativeScope(string name) => new ScopeValue(NativeSignatures.All.Where(s => s.Name.StartsWith(name + ".", StringComparison.Ordinal)).ToDictionary(s => s.Name[(name.Length + 1)..], s => (Value)new FunctionValue(-1, NativeName: s.Name)));
-    private Value Member(Value value, string name, int hint = 0) => value switch
+    private Value Member(Value value, string name) => value switch
     {
-        ScopeValue scope => ScopeMember(scope, name, hint),
+        ScopeValue scope when scope.TryGetValue(name, out var member) => member,
         ProcessValue process => ProcessMember(process, name),
         ConnectionValue connection => Qualify(connection, new PathValue(name)),
         _ => throw new MsyncException($"{value.Type} has no member '{name}'")

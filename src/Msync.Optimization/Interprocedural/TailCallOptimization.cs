@@ -8,7 +8,7 @@ internal static class TailCallOptimization
         if (!code.Select((instruction, index) => (instruction, index)).Any(pair => pair.instruction.Op == OpCode.Call
             && (pair.instruction.B == 0 || pair.instruction.B == functionIndex + 1) && Returns(code, pair.index + 1))) return function;
         HashSet<int> knownClosures = [];
-        var targets = FunctionInlining.Targets(function, module.Constants, layouts: module.Functions,
+        var targets = FunctionInlining.Targets(module, function, module.Constants, layouts: module.Functions,
             knownClosures: knownClosures);
         if (!targets.Any(pair => pair.Value == functionIndex && Returns(code, pair.Key + 1))) return function;
         // Locally established closure identity and size do not depend on other
@@ -31,7 +31,7 @@ internal static class TailCallOptimization
             var instruction = code[pc];
             if (!tailCalls.Contains(pc))
             {
-                if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.IteratorNext)
+                if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady or OpCode.IteratorNext)
                     branches.Add(output.Count);
                 output.Add(instruction); continue;
             }
@@ -114,7 +114,7 @@ internal static class TailCallOptimization
                 if (instruction.Op == OpCode.MakeClosure || instruction.Op == OpCode.SpecializeClosure && instruction.Text is null) Function(instruction.A);
                 if (instruction.Op == OpCode.Call && instruction.B > 0) Function(instruction.B - 1);
                 if (instruction.Op is OpCode.Call or OpCode.SpecializeClosure && instruction.Text is not null)
-                    foreach (var pair in FunctionDispatch.Parse(instruction.Text)) { Function(pair.Key); Function(pair.Value); }
+                    foreach (var pair in FunctionDispatch.Targets(instruction.Text)) { Function(pair.Key); Function(pair.Value); }
             }
         }
         return true;

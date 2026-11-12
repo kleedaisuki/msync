@@ -221,3 +221,23 @@ counterexample, nested higher-order calls, and a changed read capture.
 `tests/HirSessionDispatch --factories-only` passes 15 source-session contracts.
 The standalone O0 reproducer compiles to eight functions without unbounded
 specialization.
+
+### Specialization lookup reads concrete provenance in place
+
+An instance lookup can encode a concrete semantic input graph without first
+projecting it into a formal `SemanticContext`. It assigns canonical ordinals
+to actual Scope regions, indexed resources, and location captures. Visiting
+a repeated anchor emits a backreference; reference identity of an
+intermediate `SemanticValue` is not a graph-cycle test on this path. Stable
+indexed carriers still contribute their element and storage constraints, and
+Scopes still contribute their observed fields and member contracts.
+
+A detached location capture supplies a fallback value when no live caller
+fact is available. A direct key can use that value only when all observed
+copies agree, ignoring annotations that cannot affect a scalar key. If
+callable alternatives or recursive write-only elision can hide an occurrence
+of the cell, the existing formal key handles the ambiguity. Structural
+views, resource joins, deferred writes, and by-value environments keep
+their normalization. The per-lookup ordinal tables never retain the caller
+across invocations. Actual instance creation and call-specific effects still
+use their separate formal and caller-projection steps.

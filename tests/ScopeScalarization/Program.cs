@@ -7,6 +7,10 @@ using Msync.Core;
 using Msync.Runtime;
 using Module = Msync.Core.Module;
 
+const int Number = 0, Text = 1, Null = 2, Opaque = 3, NumericRow = 4, StringRow = 5, ValueRow = 6;
+const int NumericLayout = 0, StringLayout = 1, ValueLayout = 2, NestedLayout = 3, EmptyLayout = 4;
+const int ItemField = 0, ValueField = 1, MissingField = 2;
+
 int assertions = 0;
 void Require(bool condition, string message)
 {
@@ -16,16 +20,11 @@ void Require(bool condition, string message)
 
 MethodInfo scalarize = typeof(Optimizer).Assembly.GetType("Msync.Optimization.ScopeScalarization")!
     .GetMethod("Optimize", BindingFlags.NonPublic | BindingFlags.Static)!;
-Module Scalarize(Module module)
+Module Scalarize(Module module) => module with
 {
-    var constants = module.Constants.ToList();
-    return module with
-    {
-        Functions = module.Functions.Select(function => (FunctionCode)scalarize.Invoke(null, [module, function, constants])!).ToArray(),
-        Constants = constants,
-        Blocks = null
-    };
-}
+    Functions = module.Functions.Select(function => (FunctionCode)scalarize.Invoke(null, [module, function])!).ToArray(),
+    Blocks = null
+};
 
 string Snapshot(Value value) => value switch
 {
@@ -40,7 +39,7 @@ try
     async Task<string> Execute(Module module)
     {
         try { return Snapshot(await Interpreter.ExecuteAsync(module, new(WorkingDirectory: root))); }
-        catch (MsyncException exception) { return "error:" + exception.Message; }
+        catch (MsyncException exception) { return "error:" + exception.Message + ":" + exception.Span; }
     }
 
     foreach ((string name, string source, bool eliminated) in new[]
@@ -63,8 +62,8 @@ try
         Module transformed = Scalarize(original);
         if (eliminated)
         {
-            Require(transformed.Functions[0].Instructions.All(instruction => instruction.Op != OpCode.MakeScope), name + ": private object still allocated");
-            Require(transformed.Functions[0].Instructions.All(instruction => instruction.Op is not (OpCode.GetMember or OpCode.SetMember)), name + ": private field operations remain");
+            Require(transformed.Functions[0].Instructions.All(instruction => instruction.Op != OpCode.NewScope), name + ": private object still allocated");
+            Require(transformed.Functions[0].Instructions.All(instruction => instruction.Op is not (OpCode.LoadField or OpCode.StoreField)), name + ": private field operations remain");
         }
         Module twice = Scalarize(transformed);
         Require(twice.Functions.SelectMany(function => function.Instructions).SequenceEqual(transformed.Functions.SelectMany(function => function.Instructions)), name + ": scalarization is not idempotent");
@@ -85,51 +84,59 @@ try
             }
         }
     }
-    Module cellAliases = new([new NumberValue(1), new NumberValue(2)], [new("cells", 0, 2,
-        [new(OpCode.Constant, 0), new(OpCode.MakeScope, 1, Text: "item"), new(OpCode.InitializeLocal, 0),
-         new(OpCode.LoadCell, 0), new(OpCode.InitializeLocal, 1), new(OpCode.Constant, 1), new(OpCode.MakeScope, 1, Text: "item"),
-         new(OpCode.StoreLocal, 1), new(OpCode.LoadLocal, 0), new(OpCode.GetMember, Text: "item"), new(OpCode.Return)], TypeRef.Number)], OptimizationLevel: 0);
-    Require(await Execute(Scalarize(cellAliases)) == "Number:2", "raw capture-cell alias store did not update original binding");
-    Module capturedAcrossBlocks = new([new StringValue("before"), new StringValue("replacement")],
+    Module cellAliases = Image([new NumberValue(1), new NumberValue(2)], [new("cells", 0, 2,
+        [new(OpCode.Constant, 0), new(OpCode.NewScope, NumericLayout), new(OpCode.InitializeLocal, 0),
+         new(OpCode.LoadCell, 0, NumericRow + 1), new(OpCode.InitializeLocal, 1), new(OpCode.Constant, 1), new(OpCode.NewScope, NumericLayout),
+         new(OpCode.StoreLocal, 1), new(OpCode.LoadLocal, 0), new(OpCode.LoadField, ItemField), new(OpCode.Return)], TypeRef.Number)
+         { CodeSignature = new([], Number, []) }]);
+    await CheckImages(cellAliases, Scalarize(cellAliases), "Number:2", "raw capture-cell alias store");
+    Module capturedAcrossBlocks = Image([new StringValue("before"), new StringValue("replacement")],
         [new("cross-block-capture", 0, 2,
-            [new(OpCode.Constant, 0), new(OpCode.MakeScope, 1, Text: "item"), new(OpCode.InitializeLocal, 0),
-             new(OpCode.LoadCell, 0), new(OpCode.MakeClosure, 1, 1), new(OpCode.InitializeLocal, 1), new(OpCode.Jump, 7),
-             new(OpCode.Constant, 1), new(OpCode.MakeScope, 1, Text: "item"), new(OpCode.StoreLocal, 0),
-             new(OpCode.LoadLocal, 1), new(OpCode.Call, 0, 2), new(OpCode.Return)], TypeRef.String),
+            [new(OpCode.Constant, 0), new(OpCode.NewScope, StringLayout), new(OpCode.InitializeLocal, 0),
+             new(OpCode.LoadCell, 0, StringRow + 1), new(OpCode.MakeClosure, 1, 1), new(OpCode.InitializeLocal, 1), new(OpCode.Jump, 7),
+             new(OpCode.Constant, 1), new(OpCode.NewScope, StringLayout), new(OpCode.StoreLocal, 0),
+             new(OpCode.LoadLocal, 1), new(OpCode.Call, 0, 2), new(OpCode.Return)], TypeRef.String)
+             { CodeSignature = new([], Text, []) },
          new("read-captured-scope", 0, 1,
-            [new(OpCode.LoadLocal, 0), new(OpCode.GetMember, Text: "item"), new(OpCode.Return)], TypeRef.String, CaptureCount: 1)], OptimizationLevel: 0);
-    Require(await Execute(Scalarize(capturedAcrossBlocks)) == "String:replacement", "cross-block captured rebinding lost its Scope allocation");
+            [new(OpCode.LoadLocal, 0), new(OpCode.AdmitScope, StringRow), new(OpCode.LoadField, ItemField), new(OpCode.Return)],
+            TypeRef.String, CaptureCount: 1) { CodeSignature = new([], Text, [new(StringRow, true)]) }]);
+    await CheckImages(capturedAcrossBlocks, Scalarize(capturedAcrossBlocks), "String:replacement", "cross-block captured rebinding");
     var freshCode = capturedAcrossBlocks.Functions[0].Instructions.ToArray();
     freshCode[9] = new(OpCode.InitializeLocal, 0);
     freshCode[10] = new(OpCode.LoadLocal, 0);
-    freshCode[11] = new(OpCode.GetMember, Text: "item");
+    freshCode[11] = new(OpCode.LoadField, ItemField);
     Module freshIdentity = capturedAcrossBlocks with { Functions = [capturedAcrossBlocks.Functions[0] with { Instructions = freshCode }, capturedAcrossBlocks.Functions[1]] };
     Module freshScalarized = Scalarize(freshIdentity);
-    Require(freshScalarized.Functions[0].Instructions.Count(instruction => instruction.Op == OpCode.MakeScope) == 1,
+    Require(freshScalarized.Functions[0].Instructions.Count(instruction => instruction.Op == OpCode.NewScope) == 1,
         "a fresh lexical identity inherited a previous cell's escape state");
-    Require(await Execute(freshScalarized) == "String:replacement", "fresh lexical identity changed its result");
-    Module fieldAliases = new([new NumberValue(1), new NumberValue(2)], [new("fields", 0, 2,
-        [new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0), new(OpCode.Pop),
-         new(OpCode.LoadStorage, 0), new(OpCode.MakeScope, 1, Text: "item"), new(OpCode.InitializeLocal, 1),
-         new(OpCode.LoadLocal, 1), new(OpCode.Constant, 1), new(OpCode.SetMember, Text: "item"), new(OpCode.Pop),
-         new(OpCode.LoadLocal, 0), new(OpCode.Return)], TypeRef.Number)], OptimizationLevel: 0);
-    Require(await Execute(Scalarize(fieldAliases)) == "Number:2", "scalar field store lost shared captured location");
-    Module captureAliases = new([new NumberValue(10), new NumberValue(20)],
+    await CheckImages(freshIdentity, freshScalarized, "String:replacement", "fresh lexical identity");
+    Module fieldAliases = Image([new NumberValue(1), new NumberValue(2)], [new("fields", 0, 2,
+        [new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0, Number + 1), new(OpCode.Pop),
+         new(OpCode.LoadStorage, 0), new(OpCode.NewScope, NumericLayout), new(OpCode.InitializeLocal, 1),
+         new(OpCode.LoadLocal, 1), new(OpCode.Constant, 1), new(OpCode.StoreField, ItemField), new(OpCode.Pop),
+         new(OpCode.LoadLocal, 0), new(OpCode.Return)], TypeRef.Number) { CodeSignature = new([], Number, []) }]);
+    await CheckImages(fieldAliases, Scalarize(fieldAliases), "Number:2", "scalar field store shares its captured location");
+    Module captureAliases = Image([new NumberValue(10), new NumberValue(20)],
         [new("capture-alias", 0, 4,
-            [new(OpCode.Constant, 0), new(OpCode.MakeScope, 1, Text: "value"), new(OpCode.InitializeLocal, 0),
-             new(OpCode.LoadCell, 0), new(OpCode.MakeClosure, 1, 1), new(OpCode.InitializeLocal, 1),
+            [new(OpCode.Constant, 0), new(OpCode.NewScope, ValueLayout), new(OpCode.InitializeLocal, 0),
+             new(OpCode.LoadCell, 0, ValueRow + 1), new(OpCode.MakeClosure, 1, 1), new(OpCode.InitializeLocal, 1),
              new(OpCode.LoadLocal, 1), new(OpCode.GetCapture, 0), new(OpCode.InitializeLocal, 2),
-             new(OpCode.LoadStorage, 2), new(OpCode.MakeScope, 1, Text: "item"), new(OpCode.InitializeLocal, 3),
-             new(OpCode.LoadLocal, 3), new(OpCode.Constant, 1), new(OpCode.MakeScope, 1, Text: "value"),
-             new(OpCode.SetMember, Text: "item"), new(OpCode.Pop), new(OpCode.LoadLocal, 0), new(OpCode.GetMember, Text: "value"), new(OpCode.Return)], TypeRef.Number),
-         new("captured", 0, 1, [new(OpCode.LoadLocal, 0), new(OpCode.Return)], TypeRef.Scope, CaptureCount: 1)], OptimizationLevel: 0);
-    Require(await Execute(Scalarize(captureAliases)) == "Number:20", "GetCapture field alias lost original mutable location");
-    Module invalid = new([], [new("missing", 0, 0,
-        [new(OpCode.MakeScope), new(OpCode.GetMember, Text: "missing"), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)], TypeRef.Null)], OptimizationLevel: 0);
-    Require(await Execute(Scalarize(invalid)) == await Execute(invalid), "missing member diagnostic was removed");
-    Module duplicate = new([new NumberValue(1), new NumberValue(2)], [new("duplicate", 0, 0,
-        [new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.MakeScope, 2, Text: "item\0item"), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)], TypeRef.Null)], OptimizationLevel: 0);
-    Require(await Execute(Scalarize(duplicate)) == await Execute(duplicate), "duplicate field construction diagnostic was removed");
+             new(OpCode.LoadStorage, 2), new(OpCode.NewScope, NestedLayout), new(OpCode.InitializeLocal, 3),
+             new(OpCode.LoadLocal, 3), new(OpCode.Constant, 1), new(OpCode.NewScope, ValueLayout),
+             new(OpCode.StoreField, ItemField), new(OpCode.Pop), new(OpCode.LoadLocal, 0), new(OpCode.LoadField, ValueField), new(OpCode.Return)], TypeRef.Number)
+             { CodeSignature = new([], Number, []) },
+         new("captured", 0, 1, [new(OpCode.LoadLocal, 0), new(OpCode.AdmitScope, ValueRow), new(OpCode.Return)],
+            TypeRef.Scope, CaptureCount: 1) { CodeSignature = new([], ValueRow, [new(ValueRow, true)]) }]);
+    await CheckImages(captureAliases, Scalarize(captureAliases), "Number:20", "GetCapture field alias shares its original mutable location");
+    SourceSpan missingSpan = new("opaque-scalarization", 4, 7);
+    Module invalid = Image([], [
+        new("missing", 0, 0, [new(OpCode.MakeClosure, 1), new(OpCode.NewScope, EmptyLayout),
+            new(OpCode.Call, 1, 2), new(OpCode.Return)], TypeRef.Null) { CodeSignature = new([], Null, []) },
+        new("opaque field", 1, 1, [new(OpCode.LoadLocal, 0), new(OpCode.LoadField, MissingField, Span: missingSpan),
+            new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, ParameterTypes: [TypeRef.Scope])
+            { CodeSignature = new([Opaque], Null, []) }
+    ]);
+    await CheckImages(invalid, Scalarize(invalid), $"error:Scope has no member 'missing':{missingSpan}", "selected opaque field diagnostic");
     Module fieldSlots = Compiler.Compile("let field = 0; if exists ./flag { field = 1; } else { field = 2; }; field", optimization: 0);
     var applicabilityScan = new ObservedInstructions(fieldSlots.Functions[0].Instructions);
     FunctionCode noAllocation = fieldSlots.Functions[0] with { Instructions = applicabilityScan };
@@ -161,7 +168,7 @@ try
         Module transformed = Scalarize(Compiler.Compile(source.ToString(), "alias-property", 0));
         Require(await Execute(transformed) == "Number:" + (observed + values[0] + values[1]), "generated alias memory versions differ from independent scalar model");
         Require(await Execute(Optimizer.Optimize(transformed, 3)) == "Number:" + (observed + values[0] + values[1]), "integrated alias memory versions differ from independent scalar model");
-        Require(transformed.Functions[0].Instructions.All(instruction => instruction.Op is not (OpCode.MakeScope or OpCode.GetMember or OpCode.SetMember)), "generated private objects were not fully scalarized");
+        Require(transformed.Functions[0].Instructions.All(instruction => instruction.Op is not (OpCode.NewScope or OpCode.LoadField or OpCode.StoreField)), "generated private objects were not fully scalarized");
     }
     if (args.Contains("--performance", StringComparer.Ordinal))
     {
@@ -179,15 +186,44 @@ try
                 Module result = Scalarize(input);
                 times.Add(Stopwatch.GetElapsedTime(start).TotalMilliseconds);
                 allocations.Add(GC.GetAllocatedBytesForCurrentThread() - allocated);
-                Require(result.Functions[0].Instructions.All(instruction => instruction.Op != OpCode.MakeScope), "scaling scope not scalarized");
+                Require(result.Functions[0].Instructions.All(instruction => instruction.Op != OpCode.NewScope), "scaling scope not scalarized");
             }
             times.Sort(); allocations.Sort();
             Console.WriteLine($"{count} instances: {times[4]:F3} ms, {allocations[4] / 1_000_000.0:F3} MB allocation");
         }
     }
     Console.WriteLine($"Scope scalarization: {assertions} contracts passed.");
+
+    async Task CheckImages(Module before, Module after, string expected, string label)
+    {
+        foreach (var module in new[] { before, after, Binding.Bind(after, new(root, root)) })
+        {
+            Require(await Execute(module) == expected, label + ": live result differs");
+            using MemoryStream stream = new();
+            Artifact.Write(module, stream); stream.Position = 0;
+            Require(await Execute(Artifact.Read(stream)) == expected, label + ": serialized result differs");
+        }
+    }
 }
 finally { Directory.Delete(root, recursive: true); }
+
+static Module Image(IReadOnlyList<Value> constants, IReadOnlyList<FunctionCode> functions) =>
+    new(constants, functions, OptimizationLevel: 0)
+    {
+        CodeTypes = [
+            new(TypeKind.Number), new(TypeKind.String), new(TypeKind.Null), new(TypeKind.Scope),
+            new(TypeKind.Scope, ScopeLayouts: [NumericLayout]), new(TypeKind.Scope, ScopeLayouts: [StringLayout]),
+            new(TypeKind.Scope, ScopeLayouts: [ValueLayout])
+        ],
+        ScopeLayouts = [
+            new([new("item", Number)]), new([new("item", Text)]), new([new("value", Number)]),
+            new([new("item", ValueRow)]), new([])
+        ],
+        FieldProjections = [
+            new("item", [new(NumericLayout, 0), new(StringLayout, 0), new(NestedLayout, 0)]),
+            new("value", [new(ValueLayout, 0)]), new("missing", [])
+        ]
+    };
 
 internal sealed class ObservedInstructions(IReadOnlyList<Instruction> instructions) : IReadOnlyList<Instruction>
 {

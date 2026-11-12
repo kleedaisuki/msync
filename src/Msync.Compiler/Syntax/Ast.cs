@@ -66,7 +66,10 @@ public sealed record BlockExpr(IReadOnlyList<Statement> Statements, SourceSpan S
 }
 public sealed record IfExpr(Expr Condition, BlockExpr Then, Expr? Else, SourceSpan Span) : Expr(Span);
 public sealed record MatchExpr(Expr Value, IReadOnlyList<MatchArm> Arms, SourceSpan Span) : Expr(Span);
-public sealed record ForExpr(Pattern Pattern, Expr Source, BlockExpr Body, SourceSpan Span) : Expr(Span);
+public sealed record ForExpr(Pattern Pattern, Expr Source, BlockExpr Body, SourceSpan Span) : Expr(Span)
+{
+    public bool Nullable { get; init; }
+}
 public sealed record FunctionExpr(string? Name, IReadOnlyList<Parameter> Parameters, TypeSyntax? ReturnType, BlockExpr Body, SourceSpan Span) : Expr(Span)
 {
     public SourceSpan? NameSpan { get; init; }

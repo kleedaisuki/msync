@@ -20,7 +20,7 @@ internal sealed class CallTargetGraph(Module module)
     {
         int ceiling = captureCeiling ??= CaptureCeiling();
         var plainReturns = module.Functions.Select(function => CallTargets.ReturnsPlain(function, module.Constants)).ToArray();
-        return module.Functions.Select(function => CallTargets.Analyze(function, module.Constants,
+        return module.Functions.Select(function => CallTargets.Analyze(module, function, module.Constants,
             requireKnownCallee: true, layouts: module.Functions, trackArguments: true, captureCeiling: ceiling,
             plainReturns: plainReturns)).ToArray();
     }
@@ -32,7 +32,7 @@ internal sealed class CallTargetGraph(Module module)
         int ceiling = captureCeiling ??= CaptureCeiling();
         if (originalId == module.EntryPoint && ceiling != int.MaxValue && (entryClosed ??= EntryIsClosed()))
             ceiling = caller.CaptureCount;
-        return CallTargets.Analyze(caller, constants, requireKnownCallee: true, layouts: module.Functions,
+        return CallTargets.Analyze(module, caller, constants, requireKnownCallee: true, layouts: module.Functions,
             captureCeiling: ceiling);
     }
 
@@ -50,7 +50,7 @@ internal sealed class CallTargetGraph(Module module)
                 if (instruction.Op is not (OpCode.Call or OpCode.SpecializeClosure)) continue;
                 if (instruction.Text is { } dispatch)
                 {
-                    if (FunctionDispatch.Parse(dispatch).Values.Contains(entry)) return false;
+                    if (FunctionDispatch.Targets(dispatch).Values.Contains(entry)) return false;
                 }
                 else if (instruction.Op == OpCode.Call ? instruction.B == entry + 1 : instruction.A == entry) return false;
             }

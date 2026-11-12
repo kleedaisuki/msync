@@ -9,7 +9,7 @@ internal sealed partial class SemanticAnalyzer
     private readonly HashSet<HirLocationId> flowCapturedWrites = [];
     private int flowDeclarationCount;
 
-    private HirFlowAnalysis PrepareFlow(HirNodeId root, SemanticContext context)
+    private HirFlowAnalysis PrepareFlow(HirNodeId root, SemanticContext context, SemanticValue? iterationSource = null)
     {
         var domains = ImmutableDictionary.CreateBuilder<HirLocationId, FlowLocationDomain>();
         var visited = new HashSet<HirNodeId>();
@@ -80,7 +80,18 @@ internal sealed partial class SemanticAnalyzer
         var projection = new HirTypeProjection(program, hir, context, algebra,
             (callable, arguments) => SourceFlowReturn(callable, arguments, context), Place,
             id => BoundCallables(id, context));
-        return new HirFlowGraphBuilder(program, projection.Project, context.Location, Place).Analyze(root, facts);
+        FlowFact? evaluated = null;
+        if (iterationSource is { Element: { } element } source && hir.Types[element.Type.Value].ScopeDomain.Count != 0)
+        {
+            // The iterator has already selected this source. Re-projecting
+            // its bound expression would replace actual construction IDs
+            // with the speculative structural rows used by pre-analysis.
+            var sourceType = hir.Types[source.Type.Value];
+            var known = sourceType.Element == element.Type.Value ? source.Type
+                : hir.Type(sourceType with { Element = element.Type.Value });
+            evaluated = new(Runtime(source), SemanticType: known, Eager: source.EagerRange);
+        }
+        return new HirFlowGraphBuilder(program, projection.Project, context.Location, Place).Analyze(root, facts, evaluated);
     }
 
     private SemanticValue FlowRead(HirNodeId id, HirLocationId location, SemanticValue value,
@@ -92,9 +103,14 @@ internal sealed partial class SemanticAnalyzer
         if (!fact.Assigned || fact.Type.Kind == TypeKind.Never) return value;
         HirTypeId type = fact.SemanticType ?? hir.Type(fact.Type);
         SemanticValue result = value;
-        if (hir.Types[type.Value].Shape != hir.Types[value.Type.Value].Shape
-            || type != value.Type && !hir.Types[type.Value].Alternatives.IsDefaultOrEmpty)
-            result = RetypeFlowValue(value, type, []);
+        if (type != value.Type)
+        {
+            fact = ConstrainFlowRead(fact, facts, location, value, context);
+            type = fact.SemanticType ?? type;
+            if (type != value.Type && (hir.Types[type.Value].Shape != hir.Types[value.Type.Value].Shape
+                || !hir.Types[type.Value].Alternatives.IsDefaultOrEmpty))
+                result = RetypeFlowValue(value, type, []);
+        }
         bool stable = facts.Domain(location).StableForLifetime;
         result = result with
         {
@@ -116,9 +132,15 @@ internal sealed partial class SemanticAnalyzer
                 FlowFact fieldFact = facts.Read(field);
                 if (!fieldFact.Assigned || fieldFact.Type.Kind == TypeKind.Never) continue;
                 SemanticValue fieldValue = context.Values.GetValueOrDefault(field, fields[name]);
+                HirTypeId readType = fieldFact.SemanticType ?? hir.Type(fieldFact.Type);
+                if (readType != fieldValue.Type)
+                {
+                    fieldFact = ConstrainFlowRead(fieldFact, facts, field, fieldValue, context);
+                    readType = fieldFact.SemanticType ?? readType;
+                }
                 fieldValue = fieldValue with
                 {
-                    Type = fieldFact.SemanticType ?? hir.Type(fieldFact.Type),
+                    Type = readType,
                     Literal = fieldFact.Boolean is { } fieldBoolean ? new(HirLiteralKind.Bool, Boolean: fieldBoolean) : null,
                     DenotedType = fieldFact.Denotations is { Types.Length: 1 } fieldTypes ? fieldTypes.Types[0] : null,
                     Observation = null,
@@ -139,6 +161,19 @@ internal sealed partial class SemanticAnalyzer
             result = result with { Callables = ResolveFlowCallables(value, callables, context) };
         context.Values[location] = result;
         return result;
+    }
+
+    private FlowFact ConstrainFlowRead(FlowFact fact, FlowFacts facts, HirLocationId location,
+        SemanticValue value, SemanticContext context)
+    {
+        if (Runtime(value).Accepts(fact.Type)) return fact;
+        // The loop graph may predate the declaration's inferred carrier.
+        // Its edge facts refine storage; they cannot admit additional values.
+        HirTypeId type = StorageType(location, context);
+        TypeRef carrier = hir.Types[type.Value].RuntimeType;
+        if (carrier.Accepts(fact.Type) || (carrier.Kind & fact.Type.Kind) == TypeKind.Never) return fact;
+        return facts.Constrain(fact, facts.Domain(location) with
+        { StorageType = carrier, StorageSemanticType = type });
     }
 
     private ImmutableArray<SemanticCallable> ResolveFlowCallables(SemanticValue value, FlowCallableDomain domain,

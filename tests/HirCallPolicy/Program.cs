@@ -13,6 +13,27 @@ await Source("native fn first(values: Range) -> String; let text = \"before\"; f
 await Source("native fn first(values: Range) -> String; let text = \"before\"; fn once(value: String) { [value] }; fn provider(operation) { fn(value: String) { operation(value) } }; let delayed = provider(once)(text); text = \"after\"; first(delayed)", "after");
 await Source("native fn first(values: Range) -> String; native fn materialize(values: Range) -> Range; let text = \"before\"; fn snapshot(value: String) { materialize([value]) }; fn provider(operation) { fn(value: String) { operation(value) } }; let saved = provider(snapshot)(text); text = \"after\"; first(saved)", "before");
 await Source("native fn first(values: Range) -> String; let selected = true; fn choose(value: Bool) { if value { [\"yes\"] } else { [\"no\"] } }; let delayed = choose(selected); selected = false; first(delayed)", "no");
+await Source("""
+    native fn first(values: Range) -> String;
+    let value = "before";
+    fn delayed(input: String) {
+        loop { break [input]; }
+    };
+    let pending = delayed(value);
+    value = "after";
+    first(pending)
+    """, "after");
+await Source("""
+    let effects = scope { count: 0 };
+    fn touch() -> String { effects::count = effects::count + 1; "seen" };
+    fn construct(value: String) {
+        let result = scope { value: value };
+        loop { break result; }
+    };
+    let inspected = decltype(construct(touch()));
+    let result = construct(touch());
+    if effects::count == 1 { result::value } else { "bad count" }
+    """, "seen");
 await Source("native fn first(values: Range) -> String; let flag = true; let delayed = [if flag { \"yes\" } else { \"no\" }]; flag = false; first(delayed)", "no");
 await Source("native fn first(values: Range) -> String; let state = scope { flag: true }; let delayed = [if state::flag { \"yes\" } else { \"no\" }]; state::flag = false; first(delayed)", "no");
 await Source("native fn first(values: Range) -> String; let state = scope { flag: true }; fn build() { if state::flag { [\"yes\"] } else { [\"no\"] } }; let delayed = build(); state::flag = false; first(delayed)", "no");

@@ -32,9 +32,13 @@ internal sealed class HirFlowGraphBuilder(IFlowProgramView module,
     private readonly Dictionary<HirLocationId, FlowLocationDomain> temporaries = [];
     private int current;
     private int nextTemporary;
+    private HirNodeId root;
+    private FlowFact? evaluatedForSequence;
 
-    public HirFlowAnalysis Analyze(HirNodeId body, FlowFacts initial)
+    public HirFlowAnalysis Analyze(HirNodeId body, FlowFacts initial, FlowFact? evaluatedSequence = null)
     {
+        root = body;
+        evaluatedForSequence = evaluatedSequence;
         nextTemporary = Math.Max(module.LocationCount, initial.NextLocationIdentity);
         Visit(body);
         FlowGraph graph = new(blocks.Select(block => new FlowBlock(block.Operations.ToImmutableArray(),
@@ -109,7 +113,7 @@ internal sealed class HirFlowGraphBuilder(IFlowProgramView module,
         {
             case HirKind.If: Conditional(children); return;
             case HirKind.Match: Match(node, children); return;
-            case HirKind.For: For(node, children); return;
+            case HirKind.For: For(id, node, children); return;
             case HirKind.Loop: Loop(node, children); return;
             case HirKind.Return:
                 foreach (var child in children) Visit(child);
@@ -235,13 +239,15 @@ internal sealed class HirFlowGraphBuilder(IFlowProgramView module,
         current = end.Value;
     }
 
-    private void For(HirNode node, ReadOnlySpan<HirNodeId> children)
+    private void For(HirNodeId id, HirNode node, ReadOnlySpan<HirNodeId> children)
     {
         Visit(children[0]);
         // Iteration reads the evaluated sequence value, not a later value of its source cell.
         HirLocationId sequence = new(nextTemporary++);
         temporaries.Add(sequence, new(TypeRef.Any, TypeRef.Any, StableForLifetime: true, InitiallyAssigned: false));
-        Operation(FlowOperation.Evaluate(sequence, children[0]));
+        Operation(id == root && evaluatedForSequence is { } evaluated
+            ? FlowOperation.Assign(sequence, evaluated)
+            : FlowOperation.Evaluate(sequence, children[0]));
         HirFor iteration = module.For(node.Data);
         FlowBlockId head = NewBlock(), body = NewBlock(), end = NewBlock();
         Edge(head);

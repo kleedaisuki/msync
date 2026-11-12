@@ -16,6 +16,10 @@ field slot, and raw captured cells keep their original shared identity.
 The raw-cell discriminators include `GetCapture` extraction, aliasing through
 another local, and using a captured location as a Scope field. These execute at
 optimization level zero so automatic executable binding cannot mask pass bugs.
+Their format-6 images declare layout IDs, field projection cases and the
+capture storage contract; optimized values are checked after both object and
+executable serialization. The selected error case is an opaque missing-field
+read with its original diagnostic and span, not an invalid duplicate layout.
 
 `--performance` additionally measures 100/500/2000 independent mutable
 instances after three warm-ups, reporting medians of nine Release executions.
@@ -30,7 +34,10 @@ rebindings and interleaved writes/reads. Its expected result comes from an
 independent pair of scalar cells, not the unoptimized interpreter alone.
 
 Cross-block scalarization may remove every allocation after the driver's feature
-summary was computed. This pass independently checks for a remaining MakeScope
+summary was computed. This pass independently checks for a remaining `NewScope`
 before constructing CFG/liveness. The scope-free regression observes exactly one
 applicability enumeration and no indexed CFG access, rather than enforcing an
 environment-dependent timing threshold.
+
+The migrated Release suite passed 231 contracts without changing the required
+private-allocation, field-elimination or scope-free applicability assertions.

@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text;
 using Msync.Compiler.Semantics;
 using Msync.Core;
 using Msync.Hir;
@@ -12,13 +13,26 @@ internal static class KeySchemaChecks
         var analyzer = new SemanticAnalyzer(program);
         analyzer.Analyze();
         var state = analyzer.FinalState;
-        var keyMethod = typeof(SemanticAnalyzer).GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
-            .Single(method => method.Name == "InstanceKey" && method.GetParameters().Length == 5);
+        var keyMethod = typeof(SemanticAnalyzer).GetMethod("InstanceKey", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var codeSchema = typeof(SemanticAnalyzer).GetMethod("CodeSchema", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var appendInputKey = typeof(SemanticAnalyzer).GetMethod("AppendInputKey", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var provenance = typeof(SemanticAnalyzer).GetNestedType("KeyProvenance", BindingFlags.NonPublic)!;
         var regionField = typeof(SemanticAnalyzer).GetField("nextRegion", BindingFlags.Instance | BindingFlags.NonPublic)!;
         SemanticValue Value(string name) => state.Values[program.Declarations.Single(item => item.Name == name && item.Kind == DeclarationKind.Local).Location];
         string Key(SemanticAnalyzer owner, SemanticContext context, IReadOnlyList<SemanticValue> values, bool direct,
-            IReadOnlyList<SemanticValue>? captures = null) =>
-            (string)keyMethod.Invoke(owner, [new HirTemplateId(0), values, captures ?? Array.Empty<SemanticValue>(), context, direct])!;
+            IReadOnlyList<SemanticValue>? captures = null)
+        {
+            HirTemplateId template = new(0);
+            captures ??= Array.Empty<SemanticValue>();
+            if (direct) return (string)keyMethod.Invoke(owner, [template, values, captures, context, null, false])!;
+            object schema = codeSchema.Invoke(owner, [values, captures, context])!;
+            Type schemaType = schema.GetType();
+            var buffer = new StringBuilder("0i:");
+            appendInputKey.Invoke(owner, [buffer, template, schemaType.GetProperty("Arguments")!.GetValue(schema),
+                schemaType.GetProperty("Captures")!.GetValue(schema), schemaType.GetProperty("Context")!.GetValue(schema),
+                Activator.CreateInstance(provenance, [false, false])]);
+            return buffer.ToString();
+        }
         string Compare(IReadOnlyList<SemanticValue> values, bool exact = true)
         {
             int before = (int)regionField.GetValue(analyzer)!;
@@ -42,9 +56,31 @@ internal static class KeySchemaChecks
         var dynamic = Value("first") with { Scope = Value("first").Scope! with { Region = -1, Dynamic = true } };
         Compare([dynamic], exact: false);
         var item = Value("first").Scope!.Fields["value"];
-        var rangeType = program.Hir.Type(new HirType(new(TypeKind.Range, TypeRef.Number), Element: item.Type.Value));
+        var ownerType = program.Hir.Type(new HirType(new(TypeKind.Storage, TypeRef.Number), Element: item.Type.Value));
         state.Indexed[7000] = new(item, item.Type);
-        Compare([new(rangeType, HirNodeId.None, Element: item, IndexedRegion: 7000)], exact: false);
+        state.Indexed[7001] = new(item, item.Type);
+        SemanticValue owner = new(ownerType, HirNodeId.None, Element: item, IndexedRegion: 7000);
+        SemanticValue separate = owner with { IndexedRegion = 7001 };
+        Check(Compare([owner, owner]) != Compare([owner, separate]), "Exact indexed aliases retain distinct keys.");
+        Check(Compare([owner]) == Compare([separate]), "Independent equivalent indexed carriers share a key.");
+        var concrete = dynamic with { Scope = dynamic.Scope! with { Region = 7002 } };
+        Compare([concrete]);
+
+        var closure = Value("left");
+        var callable = closure.Callables.Single();
+        var capture = callable.Captures.Single();
+        SemanticValue Detached(SemanticValue payload) => closure with
+        {
+            Callables = [callable with { Captures = [capture with { Source = new(7003), Value = payload }] }]
+        };
+        Compare([Detached(item), Detached(item with { Node = new(42), Location = new(7) }), concrete]);
+        var firstDetached = Detached(item);
+        var secondDetached = Detached(item with { Type = program.Hir.Type(TypeRef.String) });
+        Compare([firstDetached with { Callables = [firstDetached.Callables[0], secondDetached.Callables[0]] }, concrete], exact: false);
+
+        state.Values[capture.Source] = closure;
+        Compare([closure, concrete]);
+        state.Values[capture.Source] = capture.Value;
 
         var listProgram = new SourceBinder().Bind("let actual = $std::containers::List::new([1, 2, 3]); $std::containers::List::size(actual)", "list-key-schema.msync");
         var listAnalyzer = new SemanticAnalyzer(listProgram);

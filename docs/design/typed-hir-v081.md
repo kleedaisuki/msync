@@ -20,7 +20,9 @@ source -> syntax -> bound generic bodies -> semantic constraints/signatures
 `Msync.Hir` depends only on Core. It owns the immutable semantic model and a
 pure lowerer. Compiler owns binding, inference, specialization and semantic
 queries. Optimization and Runtime continue to consume the existing bytecode.
-Serialization/printing consume HIR, not Compiler implementation objects.
+Serialization/printing consume HIR, not Compiler implementation objects. The
+[tiered execution boundary](tiered-execution-v086.md) distinguishes portable
+bytecode from process-local targets derived from a bound image.
 
 ## Information ownership
 
@@ -304,6 +306,12 @@ first-write carrier. Inferring a cell does not substitute a compound hint type
 globally: an inferred `Range<String>` must not narrow another explicitly broad
 `Range` declaration that happens to share an interned hint.
 
+The loop solver may have recorded a wider fact before the initializer
+established its carrier. A later semantic read intersects that fact with
+the authoritative storage constraint; it does not treat missing projection
+information as proof of new values. This preserves the distinction between a
+storage contract and a [control-flow observation](https://www.typescriptlang.org/docs/handbook/2/narrowing.html#assignments).
+
 Concept admission can supply concrete evidence for a Null-only field whose
 storage carrier is still open. `RequiredMember` consults the actual field cell's
 `StorageType` before the resolved layout schema; it does not interpret an open
@@ -369,6 +377,17 @@ is materialized. Evaluation policy is resolved against the relevant read
 domain, then a single typed call/defer operation is published. The old sequence
 of emitting a current-value call, probing a second AST compilation in deferred
 mode, and repairing instructions is not the architecture.
+
+Do not ask the return-type scheme a question already answered by a known
+callee. A native signature can establish a non-Range or eager result;
+a source template's annotation or lexical result proof can exclude Range.
+The latter reads the bound body once per template, including explicit return
+and break operands. A non-nullable inferred local whose initializer excludes
+Range keeps that fact across legal writes to its fixed carrier. None of these
+proofs analyze or publish an operand. When the evaluation policy remains
+open, current and future projection and thunk construction share the same
+lexical read/declaration footprint, while their value domains remain distinct.
+See the [measured source journeys](../../artifacts/benchmarks/hir-call-policy-v086/README.md).
 
 The established cases remain discriminators: a `lines` function mapping every
 Path/String/Range alternative to Range stays lazy; an identity over a writable

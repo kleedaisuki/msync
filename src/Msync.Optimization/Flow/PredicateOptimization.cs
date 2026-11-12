@@ -31,7 +31,7 @@ internal static class PredicateOptimization
         private readonly bool[] starts = new bool[function.Instructions.Count + 1];
         private readonly bool[] queued = new bool[function.Instructions.Count + 1];
         private readonly Queue<int> work = new();
-        private readonly (int[] Indices, int Count) aliases = AliasIndices(function);
+        private readonly (int[] Indices, int Count) aliases = AliasIndices(module, function);
         private readonly Dictionary<(int Block, int Slot, bool Stack, bool Invalidation), int> identities = [];
         private int nextIdentity = -function.LocalCount - 1;
 
@@ -58,7 +58,7 @@ internal static class PredicateOptimization
                     output.Add(Literal(value, instruction.Span));
                     continue;
                 }
-                if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.IteratorNext) branches.Add(output.Count);
+                if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.JumpIfStaticReady or OpCode.IteratorNext) branches.Add(output.Count);
                 output.Add(instruction);
             }
             positions[^1] = output.Count;
@@ -77,7 +77,7 @@ internal static class PredicateOptimization
             for (var pc = 0; pc < code.Count; pc++)
             {
                 var instruction = code[pc];
-                if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue)
+                if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.JumpIfStaticReady)
                     starts[instruction.A] = starts[pc + 1] = true;
                 else if (instruction.Op == OpCode.IteratorNext) starts[instruction.B] = starts[pc + 1] = true;
                 else if (instruction.Op == OpCode.Return) starts[pc + 1] = true;
@@ -131,6 +131,7 @@ internal static class PredicateOptimization
                         case OpCode.Pop: Pop(); break;
                         case OpCode.Dup: var duplicate = Pop(); state.Stack.Add(duplicate); Push(duplicate); break;
                         case OpCode.Jump: Merge(instruction.A, state); goto EndBlock;
+                        case OpCode.JumpIfStaticReady: Merge(instruction.A, state); Merge(pc + 1, state); goto EndBlock;
                         case OpCode.JumpIfFalse:
                         case OpCode.JumpIfTrue:
                             var condition = Pop(); conditions[pc] = condition;
@@ -155,8 +156,9 @@ internal static class PredicateOptimization
                             if ((InstructionEffects.NativeEffects(instruction.Text) & InstructionEffect.Invoke) != 0) Invalidate();
                             var result = arguments is null ? null : PureEvaluation.Native(instruction.Text, arguments, module);
                             Push(new(NativeSignatures.TryGet(instruction.Text!, out var native) ? native.Result : TypeRef.Any, identity, result)); break;
-                        case OpCode.GetSingleton: Push(Unknown(new(TypeKind.Scope | TypeKind.Null))); break;
-                        case OpCode.SetSingleton: Pop(); Push(Unknown(TypeRef.Scope)); break;
+                        case OpCode.LoadStaticScope: Push(Unknown(TypeRef.Scope)); break;
+                        case OpCode.LoadStaticField: Push(Unknown(ScopeOperands.FieldType(module, instruction))); break;
+                        case OpCode.PublishStatic: Discard(ScopeOperands.Construction(module, instruction).Fields.Count); Invalidate(); break;
                         case OpCode.LoadBuiltin:
                             Push(Unknown(instruction.Text?.TrimStart('$') is "std" ? TypeRef.Scope : TypeRef.Connection)); break;
                         case OpCode.MakeRange:
@@ -167,8 +169,9 @@ internal static class PredicateOptimization
                             Push(Unknown(new(TypeKind.Range, element))); break;
                         case OpCode.MakeLazyRange: Discard(instruction.A); Push(Unknown(new(TypeKind.Range))); break;
                         case OpCode.DeferRange: Pop(); Push(Unknown(new(TypeKind.Range))); break;
-                        case OpCode.MakeScope: Discard(instruction.A); Push(Unknown(TypeRef.Scope)); break;
-                        case OpCode.GetMember: Pop(); Push(Unknown(TypeRef.Any)); break;
+                        case OpCode.NewScope: Discard(ScopeOperands.Construction(module, instruction).Fields.Count); Push(Unknown(TypeRef.Scope)); break;
+                        case OpCode.LoadField: Pop(); Push(Unknown(ScopeOperands.FieldType(module, instruction))); break;
+                        case OpCode.AdmitScope: Push(Pop() with { Type = TypeRef.Scope }); break;
                         case OpCode.GetIterator: Pop(); Push(Unknown(new(TypeKind.Range))); break;
                         case OpCode.IteratorNext:
                             Invalidate(); Merge(instruction.B, state, borrowed: true); Push(Unknown(TypeRef.Any)); Merge(pc + 1, state); goto EndBlock;
@@ -177,7 +180,8 @@ internal static class PredicateOptimization
                             Pop();
                             if ((Pop().Type.Kind & TypeKind.Range) != 0) Invalidate();
                             Push(Unknown(TypeRef.Bool)); break;
-                        case OpCode.SetMember: Discard(2); Invalidate(); Push(new(TypeRef.Null, identity, Value.Null)); break;
+                        case OpCode.StoreStaticField:
+                        case OpCode.StoreField: Discard(instruction.Op == OpCode.StoreField ? 2 : 1); Invalidate(); Push(new(TypeRef.Null, identity, Value.Null)); break;
                         case OpCode.Barrier: break;
                         case OpCode.Acquire:
                             var acquired = instruction.A != 0 ? Pop() : (Fact?)null;
@@ -397,9 +401,9 @@ internal static class PredicateOptimization
         }
     }
 
-    private static (int[] Indices, int Count) AliasIndices(FunctionCode function)
+    private static (int[] Indices, int Count) AliasIndices(Module module, FunctionCode function)
     {
-        int[] slots = CaptureAliases(function);
+        int[] slots = CaptureAliases(module, function);
         if (slots.Length == 0) return ([], 0);
         int[] indices = new int[function.LocalCount];
         Array.Fill(indices, -1);
@@ -409,7 +413,7 @@ internal static class PredicateOptimization
 
     // Raw locations flow separately from payload facts: LoadLocal dereferences,
     // whereas LoadCell/LoadStorage/GetCapture can establish another write alias.
-    internal static int[] CaptureAliases(FunctionCode function)
+    internal static int[] CaptureAliases(Module module, FunctionCode function)
     {
         var code = function.Instructions;
         var aliases = Enumerable.Range(0, function.CaptureCount + function.ParameterCount).ToHashSet();
@@ -454,22 +458,26 @@ internal static class PredicateOptimization
                     case OpCode.Nop: case OpCode.Barrier: break;
                     case OpCode.LoadCell: case OpCode.LoadStorage: aliases.Add(instruction.A); stack.Add(true); break;
                     case OpCode.GetCapture: Pop(); stack.Add(true); break;
-                    case OpCode.SetSingleton: Pop(); stack.Add(false); break;
-                    case OpCode.GetSingleton: case OpCode.LoadLocal: case OpCode.LoadBuiltin: case OpCode.Constant: case OpCode.Null: case OpCode.True: case OpCode.False: stack.Add(false); break;
+                    case OpCode.PublishStatic: Consume(ScopeOperands.Construction(module, instruction).Fields.Count); break;
+                    case OpCode.StoreStaticField: Pop(); stack.Add(false); break;
+                    case OpCode.LoadStaticScope: case OpCode.LoadStaticField: case OpCode.LoadLocal: case OpCode.LoadBuiltin: case OpCode.Constant: case OpCode.Null: case OpCode.True: case OpCode.False: stack.Add(false); break;
                     case OpCode.StoreLocal: case OpCode.InitializeLocal: if (Pop()) aliases.Add(instruction.A); break;
                     case OpCode.Pop: Pop(); break;
                     case OpCode.Dup: stack.Add(stack[^1]); break;
                     case OpCode.Jump: Merge(instruction.A, stack); return;
                     case OpCode.JumpIfFalse: case OpCode.JumpIfTrue: Pop(); Merge(instruction.A, stack); break;
+                    case OpCode.JumpIfStaticReady: Merge(instruction.A, stack); break;
                     case OpCode.Return: return;
                     case OpCode.IteratorNext: Merge(instruction.B, stack); stack.Add(true); break;
                     case OpCode.MakeClosure: Consume(instruction.B); stack.Add(false); break;
-                    case OpCode.MakeScope: case OpCode.MakeRange: case OpCode.MakeLazyRange: Consume(instruction.A); stack.Add(false); break;
+                    case OpCode.NewScope: Consume(ScopeOperands.Construction(module, instruction).Fields.Count); stack.Add(false); break;
+                    case OpCode.MakeRange: case OpCode.MakeLazyRange: Consume(instruction.A); stack.Add(false); break;
                     case OpCode.Call: Consume(instruction.A + 1); stack.Add(true); break;
                     case OpCode.ProcessCall: Consume(instruction.A + 1); stack.Add(false); break;
                     case OpCode.NativeCall: Consume(instruction.A); stack.Add(instruction.Text?.StartsWith("ranges.", StringComparison.Ordinal) == true); break;
                     case OpCode.Acquire: break;
-                    case OpCode.GetMember:
+                    case OpCode.AdmitScope: break;
+                    case OpCode.LoadField:
                     case OpCode.SpecializeClosure:
                     case OpCode.Not:
                     case OpCode.IsNull:

@@ -1,6 +1,6 @@
 namespace Msync.Optimization;
 
-internal sealed class FunctionAnalysisContext
+internal sealed class FunctionAnalysisContext(Module module)
 {
     private ControlFlowGraph? controlFlow;
     private SparseDefUse? defUse;
@@ -13,5 +13,5 @@ internal sealed class FunctionAnalysisContext
     }
 
     internal SparseDefUse DefUse(FunctionCode function) => defUse is { } current && current.Describes(function)
-        ? current : defUse = new SparseDefUse(function, ControlFlow(function));
+        ? current : defUse = new SparseDefUse(module, function, ControlFlow(function));
 }

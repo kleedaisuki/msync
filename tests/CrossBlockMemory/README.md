@@ -14,9 +14,10 @@ slots. Nested object containment propagates escapes transitively.
 
 An allocation executed inside a cycle can create several simultaneously live
 instances. Those sites retain physical objects. Captured/raw field cells,
-escaping instances, ambiguous receivers and selected missing/duplicate-member
-errors remain physical as well; this is an optimization applicability decision,
-never a source-language rejection or an iteration quota.
+escaping instances and ambiguous receivers remain physical when their identity
+is observed. An opaque field projection retains the selected missing-member
+error. Duplicate names in a layout are rejected by the format-6 codec, before
+an optimizer or runtime sees the construction.
 
 The design follows the def/use/join separation described by
 [LLVM MemorySSA](https://llvm.org/docs/MemorySSA.html) and the distinct alias and
@@ -35,7 +36,10 @@ staging preserves argument evaluation and raw-cell fields stay physical.
 The four-argument optimizer entry consumes one module-wide `MemoryEffects`
 analysis. Known parameter and capture field paths invalidate only overlapping
 fields, while captured binding rebinding is separate from mutation of the old
-object. Readonly helpers and filesystem observations do not overwrite Scope
+object. The possible payload kinds of a captured location and its unknown
+alternatives are tracked separately: a Null initialization cannot alias the
+receiver of a successful Scope field write, but an unknown Scope still can.
+Readonly helpers and filesystem observations do not overwrite Scope
 fields. Unknown source callbacks invalidate escaped fields when invoked or
 enumerated; creating a lazy adapter is not that invocation. Native and closure
 dispatch use the actual reachable callable, never an unproved direct-call hint.

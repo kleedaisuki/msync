@@ -59,12 +59,12 @@ unknown represented types, and static `decltype` identities through the same
 `.mhir` round-trip boundary. A dynamic Type is a value, not a request to execute
 the right operand in a speculative query context.
 
-The indexed-resource slice combines independently allocated Buffers stored in
-different Scope rows, then reads and mutates a selected row's Buffer. The flow
+The indexed-resource slice combines independently allocated vectors stored in
+different Scope rows, then reads and mutates a selected row's vector. The flow
 join retains a finite domain of possible resource identities, not a new merged
 resource. Reads join their element facts; writes must satisfy each possible
 target's fixed carrier and update the corresponding alias facts. A union with
-an ordinary Range does not acquire the Buffer capability.
+an ordinary Range cannot be passed as an indexed owner.
 
 The indexed-cast slice selects between Path-backed and String-backed resources,
 checks the actual stored representation after push/set/insert, and checks that
@@ -73,8 +73,8 @@ String-to-Path conversion retains the runtime directory/home context; the
 opposite conversion uses the selected Path's native spelling.
 
 Range identity tests distinguish a true identity from a derived view with the
-same element carrier. Reverse/filter/materialize do not acquire mutable Buffer
-ownership; references stored as elements still retain their own identities.
+same element carrier. Neither a Range snapshot nor reverse/filter/materialize
+can be used as a mutable owner; stored references retain their identities.
 Nested-effect tests distinguish consuming an outer Range from enumerating an
 inner Range returned as one of its values.
 

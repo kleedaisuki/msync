@@ -1,0 +1,44 @@
+fn sweep(rounds: Number, width: Number, initial: Number) {
+    let outer = 0;
+    let inner = 0;
+    let value = initial;
+    let wraps = 0;
+    let updates = 0;
+    loop {
+        if outer >= rounds {
+            break;
+        };
+        inner = 0;
+        loop {
+            if inner >= width {
+                break;
+            };
+            if value < 8 {
+                value = value * 1.0000000001 + 0.25;
+            } else {
+                value = (value - 8) * 0.875;
+                wraps = wraps + 1;
+            };
+            updates = updates + 1;
+            inner = inner + 1;
+        };
+        outer = outer + 1;
+    };
+    scope {
+        value: value,
+        wraps: wraps,
+        updates: updates
+    }
+};
+
+let rounds? = $std::io::read_line();
+let width? = $std::io::read_line();
+let initial? = $std::io::read_line();
+if rounds? or width? or initial? {
+    $std::io::println("missing inputs");
+} else {
+    let result = sweep(rounds as Number, width as Number, initial as Number);
+    $std::io::println(result::value as String);
+    $std::io::println(result::wraps as String);
+    $std::io::println(result::updates as String);
+};

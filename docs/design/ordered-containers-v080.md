@@ -23,7 +23,8 @@ denoting `Scope` cannot describe its fields. A Type-valued `Self` can additional
 supply the carrier of an empty scalar collection. These are compiler-checked
 capability and schema constraints, not proofs of transitivity or comparator
 stability. Functions specialize normally for the supplied policy. There is no
-global instance registry or additional runtime type kind.
+global instance registry; the internal `Storage` kind describes an owned
+collection allocation, not an additional user-declared type or a Range.
 
 The default `NaturalOrder` is Null-first. For Number it places all NaNs in one
 final equivalence class and treats the two zeros as equivalent. This is an
@@ -45,30 +46,28 @@ not deep-copy keys or repeatedly validate this contract on ordinary operations.
 
 ## Indexed storage without an open type universe
 
-`storage::Buffer` supplies the small host-only capability needed by source
-algorithms: indexed get/set, append/pop, bounded page insertion/removal, swap,
-size, clear, and an eager membership snapshot. A Buffer instance is the owned
-Range backed by `List<Value>`, not a Scope wrapping an `items` field. Its named
-family exposes native function values without per-access wrapper frames. It has no global
-handle table, manual lifetime protocol, or additional user-visible type kind.
-Ordinary materialized Ranges do not become mutable.
+`Storage` is a noniterable implementation capability. The owning collection
+chooses a representation instead of making mutable memory look like a Range:
+Heap and bounded page sequences use dense vectors, red-black Set uses its
+specialized fixed-stride rows, and B/B+ allocate pages from stable slots. The
+ordinary collection API remains a named Scope with explicit instance
+arguments. An owner-relative page index never denotes a Range position,
+process pointer, or entry in a global handle table.
 
-Indexed access and replacement are O(1); append is amortized O(1). Insertion or
-removal inside a Buffer shifts its suffix. Tree pages contain at most fifteen
-keys, so those shifts are bounded independently of collection size. Heap
-operations use only indexing, replacement, append, and final-element removal.
-The host implementation reuses the platform's
-[List indexing](https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.list-1.item?view=net-10.0)
-and [capacity growth](https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.list-1.add?view=net-10.0),
-not another custom allocator.
+Dense indexed access and replacement are O(1), and append is amortized O(1).
+Insertion/removal shifts the suffix of the same vector. Tree pages contain at
+most fifteen keys, so shifts are bounded independently of collection size.
+Numeric vectors store binary64 directly and reuse the platform's
+[`List<T>` indexing and growth](https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.list-1?view=net-10.0).
+Slots preserve live page indices across growth and reuse an intrusive free
+chain; they do not shift later pages on release.
 
-Compiler metadata distinguishes an owned buffer from an ordinary Range and
-retains the inferred element schema. Buffer elements do not borrow a prototype
-parameter's storage location merely because a prototype established their type.
-Returned Scope values retain possible aliasing: two indices can contain the
-same object, and an object can also be referenced outside the buffer. Flow
-refinements are invalidated by potentially aliasing writes rather than treating
-each retrieval as a fresh allocation.
+The compiler keeps a fixed element carrier separately from the dynamic
+elements observed in an owner. A Type witness establishes the carrier, not a
+hypothetical resource identity for the value's fields. The first allocation
+of a page supplies the actual nested vector aliases. A retrieved Scope or
+key/value retains its possible aliases; potentially aliasing writes invalidate
+affected flow facts rather than treating each retrieval as a fresh object.
 
 Native effect summaries model indexed contents as a memory resource, including
 reads, writes, stored references, and returned aliases. These operations are not
@@ -92,10 +91,15 @@ red-black invariants rather than relying on a product validator.
 
 ### B-tree and B+ tree
 
-Both trees use numeric arena edges. This keeps recursive graph identity separate
-from recursively expanding structural Scope schemas. A node owns its indexed
-key/value/child pages. The fixed minimum degree eight is a layout choice, not an
-input quota. Node-local search is binary; moving page contents remains bounded.
+Both trees use owner-relative numeric page slots. This keeps recursive graph
+identity separate from recursively expanding structural Scope schemas. The
+slot arena owns allocation, live count and recycling; each occupied slot
+holds a page Scope with separate noniterable vectors for keys, values and
+child indices. The fixed minimum degree eight is a layout choice, not an
+input quota. Node-local search is binary; moving page contents remains
+bounded. [SQLite's numbered B-tree pages and free list][sqlite-pages] use the
+same separation between an index and its current allocation, without implying
+any disk format or pager policy for msync.
 
 The B-tree uses preemptive splitting and top-down deletion, including sibling
 borrowing, merging, and predecessor/successor replacement. The B+ tree maintains
@@ -107,10 +111,17 @@ searching from the root for every record. The mechanisms follow the standard
 the [Rust BTreeMap contract](https://doc.rust-lang.org/std/collections/struct.BTreeMap.html)
 provides a practical ordered-map and key-stability comparison.
 
-Retired pages clear their key/value/child references before entering the free
-list. Reuse preserves the owned node and its cleared Buffers rather than
-allocating replacement objects on every delete/insert cycle. Capacity follows
-the high-water number of live pages, not the total historical operation count.
+Retiring a page releases the arena's reference to it and links its index into
+the arena's free list. Reuse installs a fresh page at that index; retaining a
+stale page identity is not part of the map contract. Capacity follows the
+high-water number of live pages, not the total historical operation count.
+`clear` resets the same arena to one root, so aliases of the collection still
+observe the cleared map. Sibling merges read occupied vectors directly.
+Entry and range collection build one output vector and transfer its membership
+to the published Range, without exposing the mutable owner or copying element
+objects.
+
+[sqlite-pages]: https://www.sqlite.org/fileformat.html#the_freelist
 
 `new(key_prototype, value_prototype)` establishes the fixed key/value schemas;
 `with_policy` additionally selects ordering. `get` returns `Option?`, preserving
@@ -118,6 +129,9 @@ the distinction between a missing entry and an entry containing Null. Entries
 are raw `{ key?: ..., value?: ... }` records. `range(low, high)` is half-open in
 the selected comparator order. `height`, `page_count`, and `validate` expose
 useful structural observations without changing ordinary query behavior.
+The [nullable B+ journey](../../tests/Msync.EndToEnd/bplus_nullable_journey.py)
+checks a present Null key and value through leaf splitting, removal, and a
+published half-open snapshot on source, portable, and bound execution paths.
 
 ### Red-black Set
 
@@ -146,6 +160,61 @@ this is the same practical mechanism used by the platform
 [PriorityQueue implementation](https://github.com/dotnet/runtime/blob/main/src/libraries/System.Collections/src/System/Collections/Generic/PriorityQueue.cs)
 and the [Rust BinaryHeap family](https://doc.rust-lang.org/std/collections/struct.BinaryHeap.html).
 
+Heap owns a dense vector with a fixed element carrier; there is no mutable
+Range or parallel boxed mirror. A Number vector starts with a contiguous
+`List<double>`, even when empty. An explicit Type witness reserves that
+owner directly and neither runs nor specializes bottom-up heapification.
+A real Range is consumed once before selected comparisons; a primitive
+Number producer copies its unboxed elements into the vector. Other
+carriers preserve original value references. Push and pop mutate the
+tail, and growth never changes the owner object seen by aliases.
+If a Range already retains an unresolved Number from a live Process,
+construction retains that reference instead of joining its producer
+early. Normal vector writes do not widen a primitive Number lane. The
+[gated child journey](../../tests/ReturnedProcesses/HeapDeferredChecks.cs)
+requires the Heap and its snapshot to return before the caller supplies
+the child's input, then checks both selected Numbers and the child output
+across source and both artifact stages.
+
+The native writer borrows the vector's current primitive extent after
+proving indices and selecting a callback-free method. No resizing or
+suspending call may execute inside that borrow; this is also the contract
+of [`CollectionsMarshal.AsSpan`](https://learn.microsoft.com/en-us/dotnet/api/system.runtime.interopservices.collectionsmarshal.asspan).
+When child selection calls a user comparator, the source reads the
+selected child's live value afterward. There is no library-level
+leaf-callable probe and no fork between two different sift algorithms.
+The executable optimizer can inline proved immediate comparison
+policies. Typed basic-block parameters distinguish Boolean short-circuit
+joins of an inlined comparator from numeric child/value joins; neither
+shares a global register indexed by operand stack depth.
+
+`snapshot` is the first conversion from the owner to a Range and copies
+membership, not key objects. `drain` allocates a same-carrier private
+vector, fills it in removal order, and transfers its backing extent
+directly to an immutable Range. It does not take an intermediate snapshot
+to recover the carrier, or copy the completed output a second time.
+The [dense-owner journey](../../tests/Msync.EndToEnd/heap_storage_journey.py)
+checks each pop and saved member over source, detached object, detached
+executable, and JIT-off execution. Its disassembly rejects a Buffer call
+in the new image, and the optional native assertion requires actual
+worker stores.
+
+On the frozen Linux x64 `arena-vector` stage, that test observed 2,016
+native worker entries and 18,917 machine stores. Replacing the policy
+after warm-up still produced every expected key, the unchanged heap-order
+snapshot and exactly 8,806 selected comparisons; its JIT-off output was
+byte-identical. An [8,192-key paired replay](../../artifacts/benchmarks/container-representation-v086/heap-dense-owner-timings.json)
+used nine alternating fresh processes and exact independent output
+oracles, with each host compiling the same public-API source against
+its own standard module. The older Buffer host and the combined
+dense-owner stage measured median bound wall time 226 → 203 ms and
+direct-source wall time 345 → 294 ms. These are end-to-end differences,
+not an attribution to the allocator alone.
+After the shared structural Scope projection fix, the full managed Heap
+model passed six O0/O2 staged journeys with 96 mutations and 18 exact
+outputs each, including a retained reference key, nullable extension,
+custom comparison, and three selected negative source diagnostics.
+
 `snapshot` preserves heap order. `sorted` drains a copy; `drain` consumes the
 instance. Empty `peek`/`pop` return Null; with nullable payloads, inspect
 `is_empty` to distinguish an absent element from a present Null. `replace_top`
@@ -168,10 +237,31 @@ Targeted churn checks observe arena high-water capacity, immediate payload
 release, and reuse of owned node records. These are incremental container
 checks, not a repeated full language or installer regression.
 
-### Managed integration observations
+### Slot-owner B/B+ acceptance
 
-The implementation owners reused frozen adjacent Compiler/Core/Runtime images;
-these observations are not Native AOT timing claims.
+The [B/B+ journey](../../tests/Msync.EndToEnd/btree_bplus_journey.py) drives
+745 independent model mutations per family through source, detached `.mso`,
+and detached `.mexe`. In addition to the map and page invariants it checks
+retired slot reuse and reset directly, and verifies that the artifacts call
+the slot allocator and vector primitives rather than the removed Buffer
+operations. All [six managed routes](../../artifacts/benchmarks/direct-indexed-rows-v086/slot-owner-btree-bplus-managed.json)
+passed. The [nullable B+ journey](../../tests/Msync.EndToEnd/bplus_nullable_journey.py)
+separately distinguishes a present Null from a missing key and checks that a
+range snapshot outlives the deletion of its Null key.
+
+The [3,072-transaction B+ inventory pairs](../../artifacts/benchmarks/direct-indexed-rows-v086/slot-owner-bplus-inventory.json)
+compile and bind the same source independently for two Linux x64 Native AOT
+hosts. Nine alternating pairs on one logical CPU ran the checked workload
+with wall medians 292.0 → 260.1 ms and process CPU medians 205.8 → 192.1 ms.
+This measures the combined slot/vector checkpoint, not an isolated allocator
+microbenchmark. The comparison used the numeric workload, not the subsequent
+non-null structural witness correction.
+
+### Historical managed integration observations
+
+The implementation owners reused frozen adjacent Compiler/Core/Runtime images
+from before the slot-owner migration; these observations are not Native AOT
+timing claims or requirements to retain the earlier objects.
 
 | Changed mechanism | Accepted observation |
 | --- | --- |

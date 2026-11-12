@@ -11,9 +11,10 @@ void Check(bool condition, string message)
 }
 
 RuntimeContext context = new(new(WorkingDirectory: Environment.CurrentDirectory));
-ValueTask<Value> Native(string name, params double[] numbers) => NativeRegistry.InvokeAsync("math." + name,
+ValueTask<Value> NativeQualified(string name, double[] numbers) => NativeRegistry.InvokeAsync(name,
     numbers.Select(number => (Value)new NumberValue(number)).ToArray(), context,
-    (_, _, _) => throw new InvalidOperationException("Scalar math must not invoke callbacks"));
+    (_, _, _) => throw new InvalidOperationException("Scalar natives must not invoke callbacks"));
+ValueTask<Value> Native(string name, params double[] numbers) => NativeQualified("math." + name, numbers);
 async Task<double> Number(string name, params double[] arguments) => ((NumberValue)await Native(name, arguments)).Data;
 async Task Exact(string name, double expected, params double[] arguments)
 {
@@ -104,6 +105,8 @@ for (int index = 0; index < 40; index++)
     await Near("hypot", Math.Sqrt(first * first + second * second), first, second);
 }
 
+await Word32Checks.NativeAsync((name, numbers) => NativeQualified("bits." + name, numbers), Check);
+
 if (args.Contains("--native-only", StringComparer.Ordinal))
 {
     Console.WriteLine($"PASS: {checks} Number native and IEEE contracts");
@@ -139,4 +142,5 @@ foreach (var (source, expected) in new[]
         }
     }
 }
+await Word32Checks.ArtifactsAsync(Check);
 Console.WriteLine($"PASS: {checks} Number native, IEEE, source composition and binary-stage contracts");

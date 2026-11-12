@@ -24,7 +24,7 @@ List<(string Name, Func<Code> Program, double Expected, int Gets)> cases =
     ("field-replacement", FieldReplacement, 109, 2),
     ("raw-cell-rebind", CellRebind, 109, 2),
     ("scope-cell-rebind", ScopeCellRebind, 109, 2),
-    ("swap", Swap, 30, 2),
+    ("remove-shifts-index", RemoveShiftsIndex, 50, 2),
     ("unknown-index", UnknownIndex, 109, 3),
     ("length-resize", SizeAcrossResize, 5, 0),
     ("callback-mutation", CallbackMutation, 109, 2),
@@ -36,20 +36,20 @@ foreach (var item in cases)
 {
     Code program = item.Program();
     FunctionCode original = program.Function();
-    FunctionCode rewritten = Rewrite(original, program.Constants);
-    Check(rewritten.Instructions.Count(instruction => instruction.Op == OpCode.NativeCall && instruction.Text == "storage.buffer_get") == item.Gets,
+    Module raw = program.Image([original, .. program.Helpers]);
+    FunctionCode rewritten = Rewrite(raw, original);
+    Check(rewritten.Instructions.Count(instruction => instruction.Op == OpCode.NativeCall && instruction.Text == "storage.vector_get") == item.Gets,
         item.Name + " residual get count");
-    Check(Rewrite(rewritten, program.Constants).Instructions.SequenceEqual(rewritten.Instructions), item.Name + " idempotence");
+    Check(Rewrite(raw, rewritten).Instructions.SequenceEqual(rewritten.Instructions), item.Name + " idempotence");
     foreach (int level in new[] { 0, 2, 3 })
     {
-        Module raw = new(program.Constants, [original, .. program.Helpers], OptimizationLevel: 0);
         Module optimized = Optimizer.Optimize(raw, level);
         if (level >= 2)
         {
             Check(optimized.Functions.Sum(body => body.Instructions.Count(instruction => instruction.Op == OpCode.NativeCall
-                && instruction.Text == "storage.buffer_get")) == item.Gets, item.Name + " public optimizer residual gets");
+                && instruction.Text == "storage.vector_get")) == item.Gets, item.Name + " public optimizer residual gets");
             if (item.Name == "length-value-partition") Check(optimized.Functions.Sum(body => body.Instructions.Count(instruction =>
-                instruction.Op == OpCode.NativeCall && instruction.Text == "storage.buffer_size")) == 1, "public length reuse");
+                instruction.Op == OpCode.NativeCall && instruction.Text == "storage.vector_size")) == 1, "public length reuse");
         }
         foreach (Module image in Images(optimized))
         {
@@ -72,15 +72,15 @@ foreach (var item in new[]
 {
     var program = item.Program;
     var original = program.Function();
-    var rewritten = Rewrite(original, program.Constants);
+    Module raw = program.Image([original, .. program.Helpers]);
+    var rewritten = Rewrite(raw, original);
     Check(GetCount(rewritten) == item.Gets, item.Name + " edge pass residual gets");
-    Check(Rewrite(rewritten, program.Constants).Instructions.SequenceEqual(rewritten.Instructions),
+    Check(Rewrite(raw, rewritten).Instructions.SequenceEqual(rewritten.Instructions),
         item.Name + " edge pass idempotence");
     if (item.Name == "edge-local")
         Check(rewritten.LocalCount == original.LocalCount, "reuse the existing selected-result local");
     foreach (int level in new[] { 0, 2, 3 })
     {
-        Module raw = new(program.Constants, [original, .. program.Helpers], OptimizationLevel: 0);
         Module optimized = Optimizer.Optimize(raw, level);
         if (level >= 2)
             Check(optimized.Functions.Sum(GetCount) == item.Gets, item.Name + " public residual gets");
@@ -97,7 +97,7 @@ foreach (var item in new[]
 
 foreach (bool left in new[] { true, false })
 {
-    Code code = new(); code.Buffer(10);
+    Code code = new(); code.Vector(10);
     code.InputIsNull(); int other = code.Jump(OpCode.JumpIfFalse);
     code.Number(3); code.Emit(OpCode.InitializeLocal, 1);
     code.GetLocal(1, 71); code.Emit(OpCode.Pop); int join = code.Jump(OpCode.Jump);
@@ -106,7 +106,7 @@ foreach (bool left in new[] { true, false })
     code.Target(join); code.GetLocal(1, 91); code.Emit(OpCode.Return);
     foreach (int level in new[] { 0, 2, 3 })
     {
-        Module optimized = Optimizer.Optimize(new(code.Constants, [code.Function()], OptimizationLevel: 0), level);
+        Module optimized = Optimizer.Optimize(code.Image(), level);
         if (level >= 2) Check(optimized.Functions.Sum(GetCount) == 2, "edge failures retained, selected reread removed");
         foreach (Module image in Images(optimized))
         {
@@ -122,22 +122,22 @@ foreach (bool left in new[] { true, false })
 
 foreach (var (name, operation, index, other, capture, expected, gets) in new[]
 {
-    ("callee-read", "buffer_size", 0, false, false, 20d, 1),
-    ("callee-disjoint-index", "buffer_set", 1, false, false, 20d, 1),
-    ("callee-overlap", "buffer_set", 0, false, false, 109d, 2),
-    ("callee-fresh-parameter", "buffer_push", 0, true, false, 20d, 1),
-    ("callee-fresh-capture", "buffer_push", 0, true, true, 20d, 1),
-    ("callee-capture-overlap", "buffer_set", 0, false, true, 109d, 2),
+    ("callee-read", "vector_size", 0, false, false, 20d, 1),
+    ("callee-disjoint-index", "vector_set", 1, false, false, 20d, 1),
+    ("callee-overlap", "vector_set", 0, false, false, 109d, 2),
+    ("callee-fresh-parameter", "vector_push", 0, true, false, 20d, 1),
+    ("callee-fresh-capture", "vector_push", 0, true, true, 20d, 1),
+    ("callee-capture-overlap", "vector_set", 0, false, true, 109d, 2),
 })
 {
     Code program = new();
     if (other)
     {
-        program.Buffer(1, 2);
+        program.Vector(1, 2);
         program.Emit(OpCode.LoadLocal, 0);
         program.Emit(OpCode.InitializeLocal, 2);
     }
-    program.Buffer(10, 20);
+    program.Vector(10, 20);
     program.Get(0);
     program.Emit(OpCode.InitializeLocal, 1);
     if (capture) program.Emit(OpCode.LoadLocal, other ? 2 : 0);
@@ -152,19 +152,18 @@ foreach (var (name, operation, index, other, capture, expected, gets) in new[]
 
     List<Instruction> helper = [];
     // Keep the read-only case at an actual call boundary: unlike a direct
-    // Buffer observation, an external input operation is not inlined.
-    if (operation == "buffer_size")
+    // vector observation, an external input operation is not inlined.
+    if (operation == "vector_size")
         helper.AddRange([new(OpCode.NativeCall, Text: "io.read_line"), new(OpCode.Pop)]);
     int arguments = helper.Count;
     helper.Add(new(OpCode.LoadLocal, 0));
-    if (operation == "buffer_set") helper.Add(new(OpCode.Constant, program.Constant(new NumberValue(index))));
-    if (operation is "buffer_set" or "buffer_push") helper.Add(new(OpCode.Constant, program.Constant(new NumberValue(99))));
+    if (operation == "vector_set") helper.Add(new(OpCode.Constant, program.Constant(new NumberValue(index))));
+    if (operation is "vector_set" or "vector_push") helper.Add(new(OpCode.Constant, program.Constant(new NumberValue(99))));
     helper.Add(new(OpCode.NativeCall, helper.Count - arguments, Text: "storage." + operation));
     helper.Add(new(OpCode.Return));
-    var function = new FunctionCode(name, capture ? 0 : 1, 1, helper,
-        operation == "buffer_set" ? TypeRef.Null : TypeRef.Number, capture ? 1 : 0,
-        capture ? [] : [new(TypeKind.Range)]);
-    Module raw = new(program.Constants, [program.Function(), function], OptimizationLevel: 0);
+    var function = Code.Body(name, 1, helper, operation == "vector_set" ? Code.NullType : Code.NumberType,
+        parameters: capture ? [] : [Code.OwnerType], captures: capture ? [new(Code.OwnerType, false)] : []);
+    Module raw = program.Image(program.Function(), function);
     foreach (int level in new[] { 0, 2, 3 })
     {
         Module optimized = Optimizer.Optimize(raw, level);
@@ -178,11 +177,11 @@ foreach (var (name, operation, index, other, capture, expected, gets) in new[]
 
 {
     // A wrapper binds two formal arguments to one locally allocated Scope.
-    // The callee replaces its Buffer through one name, then writes through
+    // The callee replaces its vector through one name, then writes through
     // the other. Projecting its indexed path onto the entry field would see
-    // only the old local Buffer and lose the write to the caller's argument.
+    // only the old local vector and lose the write to the caller's argument.
     Code program = new();
-    program.Buffer(10, 20);
+    program.Vector(10, 20);
     program.Get(0);
     program.Emit(OpCode.InitializeLocal, 1);
     program.Emit(OpCode.MakeClosure, 1);
@@ -195,21 +194,20 @@ foreach (var (name, operation, index, other, capture, expected, gets) in new[]
     program.Emit(OpCode.Return);
     int zero = program.Constant(new NumberValue(0));
     int replacement = program.Constant(new NumberValue(99));
-    TypeRef range = new(TypeKind.Range);
-    var wrapper = new FunctionCode("alias-wrapper", 1, 2,
+    var wrapper = Code.Body("alias-wrapper", 2,
         [
-            new(OpCode.Constant, zero), new(OpCode.MakeRange, 1), new(OpCode.NativeCall, 1, Text: "storage.buffer_new"),
-            new(OpCode.MakeScope, 1, Text: "items"), new(OpCode.InitializeLocal, 1),
+            new(OpCode.Constant, zero), new(OpCode.MakeRange, 1), new(OpCode.NativeCall, 1, Text: "storage.vector_new"),
+            new(OpCode.NewScope, Code.OwnerLayout), new(OpCode.InitializeLocal, 1),
             new(OpCode.MakeClosure, 2), new(OpCode.LoadLocal, 1), new(OpCode.LoadLocal, 1),
             new(OpCode.LoadLocal, 0), new(OpCode.Call, 3, 3), new(OpCode.Return)
-        ], TypeRef.Null, ParameterTypes: [range]);
-    var mutate = new FunctionCode("alias-rebind-and-write", 3, 3,
+        ], Code.NullType, parameters: [Code.OwnerType]);
+    var mutate = Code.Body("alias-rebind-and-write", 3,
         [
-            new(OpCode.LoadLocal, 0), new(OpCode.LoadLocal, 2), new(OpCode.SetMember, Text: "items"), new(OpCode.Pop),
-            new(OpCode.LoadLocal, 1), new(OpCode.GetMember, Text: "items"), new(OpCode.Constant, zero),
-            new(OpCode.Constant, replacement), new(OpCode.NativeCall, 3, Text: "storage.buffer_set"), new(OpCode.Return)
-        ], TypeRef.Null, ParameterTypes: [TypeRef.Scope, TypeRef.Scope, range]);
-    Module raw = new(program.Constants, [program.Function(), wrapper, mutate], OptimizationLevel: 0);
+            new(OpCode.LoadLocal, 0), new(OpCode.LoadLocal, 2), new(OpCode.StoreField, Code.Items), new(OpCode.Pop),
+            new(OpCode.LoadLocal, 1), new(OpCode.LoadField, Code.Items), new(OpCode.Constant, zero),
+            new(OpCode.Constant, replacement), new(OpCode.NativeCall, 3, Text: "storage.vector_set"), new(OpCode.Return)
+        ], Code.NullType, parameters: [Code.OwnerScope, Code.OwnerScope, Code.OwnerType]);
+    Module raw = program.Image(program.Function(), wrapper, mutate);
     foreach (int level in new[] { 0, 2, 3 })
     {
         Module optimized = Optimizer.Optimize(raw, level);
@@ -221,20 +219,21 @@ foreach (var (name, operation, index, other, capture, expected, gets) in new[]
 
 foreach (bool resize in new[] { false, true })
 {
-    Code program = new(); program.Buffer(10);
+    Code program = new(); program.Vector(10);
     if (resize)
     {
         program.Get(0); program.Emit(OpCode.Pop);
-        program.Emit(OpCode.LoadLocal, 0); program.Native("buffer_pop", 1); program.Emit(OpCode.Pop);
+        program.Emit(OpCode.LoadLocal, 0); program.Native("vector_pop", 1); program.Emit(OpCode.Pop);
     }
     program.Get(resize ? 0 : 4, 71); program.Emit(OpCode.Pop);
     program.Get(resize ? 0 : 4, 99); program.Emit(OpCode.Return);
-    FunctionCode rewritten = Rewrite(program.Function(), program.Constants);
-    var gets = rewritten.Instructions.Where(instruction => instruction.Op == OpCode.NativeCall && instruction.Text == "storage.buffer_get").ToArray();
+    Module raw = program.Image();
+    FunctionCode rewritten = Rewrite(raw, raw.Functions[0]);
+    var gets = rewritten.Instructions.Where(instruction => instruction.Op == OpCode.NativeCall && instruction.Text == "storage.vector_get").ToArray();
     Check(gets[0].Span?.Start == (resize ? 0 : 71), "first get failure provenance");
     foreach (int level in new[] { 0, 2, 3 })
     {
-        Module optimized = Optimizer.Optimize(new(program.Constants, [program.Function()], OptimizationLevel: 0), level);
+        Module optimized = Optimizer.Optimize(raw, level);
         try { await Interpreter.ExecuteAsync(optimized); throw new InvalidOperationException("Missing bounds failure"); }
         catch (MsyncException error)
         {
@@ -243,14 +242,14 @@ foreach (bool resize in new[] { false, true })
     }
 }
 
-Code noBuffer = new(); noBuffer.Number(1); noBuffer.Emit(OpCode.Return);
-FunctionCode noBufferFunction = noBuffer.Function();
-Check(ReferenceEquals(Rewrite(noBufferFunction, noBuffer.Constants), noBufferFunction), "negative control identity");
+Code noVector = new(); noVector.Number(1); noVector.Emit(OpCode.Return);
+FunctionCode noVectorFunction = noVector.Function();
+Check(ReferenceEquals(Rewrite(noVector.Image(noVectorFunction), noVectorFunction), noVectorFunction), "negative control identity");
 Console.WriteLine($"PASS {checks} indexed memory contracts");
 
-FunctionCode Rewrite(FunctionCode function, IReadOnlyList<Value> constants) => (FunctionCode)pass.Invoke(null, [function, constants])!;
+FunctionCode Rewrite(Module module, FunctionCode function) => (FunctionCode)pass.Invoke(null, [module, function])!;
 int GetCount(FunctionCode function) => function.Instructions.Count(instruction =>
-    instruction is { Op: OpCode.NativeCall, Text: "storage.buffer_get" });
+    instruction is { Op: OpCode.NativeCall, Text: "storage.vector_get" });
 void Check(bool condition, string message)
 {
     checks++;
@@ -270,97 +269,97 @@ Module RoundTrip(Module module)
 
 Code Repeat()
 {
-    Code code = new(); code.Buffer(10, 20); code.Get(0); code.Get(0); code.Emit(OpCode.Add); code.Emit(OpCode.Return); return code;
+    Code code = new(); code.Vector(10, 20); code.Get(0); code.Get(0); code.Emit(OpCode.Add); code.Emit(OpCode.Return); return code;
 }
 Code Disjoint()
 {
-    Code code = new(); code.Buffer(10, 20); code.Get(0); code.Emit(OpCode.InitializeLocal, 1);
+    Code code = new(); code.Vector(10, 20); code.Get(0); code.Emit(OpCode.InitializeLocal, 1);
     code.Set(1, 99); code.Emit(OpCode.LoadLocal, 1); code.Get(0); code.Emit(OpCode.Add); code.Emit(OpCode.Return); return code;
 }
 Code SameIndex()
 {
-    Code code = new(); code.Buffer(10, 20); code.Get(0); code.Emit(OpCode.InitializeLocal, 1);
+    Code code = new(); code.Vector(10, 20); code.Get(0); code.Emit(OpCode.InitializeLocal, 1);
     code.Set(0, 99); code.Emit(OpCode.LoadLocal, 1); code.Get(0); code.Emit(OpCode.Add); code.Emit(OpCode.Return); return code;
 }
 Code SizeAcrossStore()
 {
-    Code code = new(); code.Buffer(10, 20); code.Size(); code.Emit(OpCode.InitializeLocal, 1);
+    Code code = new(); code.Vector(10, 20); code.Size(); code.Emit(OpCode.InitializeLocal, 1);
     code.Set(0, 99); code.Emit(OpCode.LoadLocal, 1); code.Size(); code.Emit(OpCode.Add); code.Emit(OpCode.Return); return code;
 }
 Code ScopeAlias()
 {
-    Code code = new(); code.Number(1); code.Emit(OpCode.MakeScope, 1, text: "x");
-    code.Emit(OpCode.MakeRange, 1); code.Native("buffer_new", 1); code.Emit(OpCode.InitializeLocal, 0);
-    code.Get(0); code.Emit(OpCode.InitializeLocal, 1);
-    code.Emit(OpCode.LoadLocal, 1); code.Number(2); code.Emit(OpCode.SetMember, text: "x"); code.Emit(OpCode.Pop);
-    code.Get(0); code.Emit(OpCode.GetMember, text: "x"); code.Emit(OpCode.Return); return code;
+    Code code = new(); code.Number(1); code.Emit(OpCode.NewScope, Code.ItemLayout);
+    code.Emit(OpCode.MakeRange, 1); code.Native("vector_new", 1); code.Emit(OpCode.InitializeLocal, 0);
+    code.Get(0); code.Emit(OpCode.AdmitScope, Code.ItemScope); code.Emit(OpCode.InitializeLocal, 1);
+    code.Emit(OpCode.LoadLocal, 1); code.Number(2); code.Emit(OpCode.StoreField, Code.Item); code.Emit(OpCode.Pop);
+    code.Get(0); code.Emit(OpCode.AdmitScope, Code.ItemScope); code.Emit(OpCode.LoadField, Code.Item); code.Emit(OpCode.Return); return code;
 }
 Code FieldReplacement()
 {
-    Code code = new(); code.Buffer(10); code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.MakeScope, 1, text: "items");
-    code.Emit(OpCode.InitializeLocal, 1); code.Buffer(99); code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.InitializeLocal, 2);
-    code.Emit(OpCode.LoadLocal, 1); code.Emit(OpCode.GetMember, text: "items"); code.Number(0); code.Native("buffer_get", 2);
+    Code code = new(); code.Vector(10); code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.NewScope, Code.OwnerLayout);
+    code.Emit(OpCode.InitializeLocal, 1); code.Vector(99); code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.InitializeLocal, 2);
+    code.Emit(OpCode.LoadLocal, 1); code.Emit(OpCode.LoadField, Code.Items); code.Number(0); code.Native("vector_get", 2);
     code.Emit(OpCode.InitializeLocal, 3);
-    code.Emit(OpCode.LoadLocal, 1); code.Emit(OpCode.LoadLocal, 2); code.Emit(OpCode.SetMember, text: "items"); code.Emit(OpCode.Pop);
-    code.Emit(OpCode.LoadLocal, 3); code.Emit(OpCode.LoadLocal, 1); code.Emit(OpCode.GetMember, text: "items");
-    code.Number(0); code.Native("buffer_get", 2); code.Emit(OpCode.Add); code.Emit(OpCode.Return); return code;
+    code.Emit(OpCode.LoadLocal, 1); code.Emit(OpCode.LoadLocal, 2); code.Emit(OpCode.StoreField, Code.Items); code.Emit(OpCode.Pop);
+    code.Emit(OpCode.LoadLocal, 3); code.Emit(OpCode.LoadLocal, 1); code.Emit(OpCode.LoadField, Code.Items);
+    code.Number(0); code.Native("vector_get", 2); code.Emit(OpCode.Add); code.Emit(OpCode.Return); return code;
 }
 Code CellRebind()
 {
-    Code code = new(); code.Buffer(99); code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.InitializeLocal, 2); code.Buffer(10);
-    code.Emit(OpCode.LoadCell, 0); code.Emit(OpCode.InitializeLocal, 1); code.Get(0); code.Emit(OpCode.InitializeLocal, 3);
+    Code code = new(); code.Vector(99); code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.InitializeLocal, 2); code.Vector(10);
+    code.Emit(OpCode.LoadCell, 0, Code.OwnerType + 1); code.Emit(OpCode.InitializeLocal, 1); code.Get(0); code.Emit(OpCode.InitializeLocal, 3);
     code.Emit(OpCode.LoadLocal, 2); code.Emit(OpCode.StoreLocal, 1); code.Emit(OpCode.LoadLocal, 3); code.Get(0);
     code.Emit(OpCode.Add); code.Emit(OpCode.Return); return code;
 }
 Code ScopeCellRebind()
 {
-    Code code = new(); code.Buffer(99); code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.InitializeLocal, 2); code.Buffer(10);
-    code.Emit(OpCode.LoadCell, 0); code.Emit(OpCode.MakeScope, 1, text: "items"); code.Emit(OpCode.InitializeLocal, 1);
+    Code code = new(); code.Vector(99); code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.InitializeLocal, 2); code.Vector(10);
+    code.Emit(OpCode.LoadCell, 0, Code.OwnerType + 1); code.Emit(OpCode.NewScope, Code.OwnerLayout); code.Emit(OpCode.InitializeLocal, 1);
     code.Get(0); code.Emit(OpCode.InitializeLocal, 3);
-    code.Emit(OpCode.LoadLocal, 1); code.Emit(OpCode.LoadLocal, 2); code.Emit(OpCode.SetMember, text: "items"); code.Emit(OpCode.Pop);
+    code.Emit(OpCode.LoadLocal, 1); code.Emit(OpCode.LoadLocal, 2); code.Emit(OpCode.StoreField, Code.Items); code.Emit(OpCode.Pop);
     code.Emit(OpCode.LoadLocal, 3); code.Get(0); code.Emit(OpCode.Add); code.Emit(OpCode.Return); return code;
 }
-Code Swap()
+Code RemoveShiftsIndex()
 {
-    Code code = new(); code.Buffer(10, 20); code.Get(0); code.Emit(OpCode.InitializeLocal, 1);
-    code.Emit(OpCode.LoadLocal, 0); code.Number(0); code.Number(1); code.Native("buffer_swap", 3); code.Emit(OpCode.Pop);
-    code.Emit(OpCode.LoadLocal, 1); code.Get(0); code.Emit(OpCode.Add); code.Emit(OpCode.Return); return code;
+    Code code = new(); code.Vector(10, 20, 30); code.Get(1); code.Emit(OpCode.InitializeLocal, 1);
+    code.Emit(OpCode.LoadLocal, 0); code.Number(0); code.Native("vector_remove", 2); code.Emit(OpCode.Pop);
+    code.Emit(OpCode.LoadLocal, 1); code.Get(1); code.Emit(OpCode.Add); code.Emit(OpCode.Return); return code;
 }
 Code UnknownIndex()
 {
-    Code code = new(); code.Buffer(0); code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.InitializeLocal, 2); code.Buffer(10, 20);
+    Code code = new(); code.Vector(0); code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.InitializeLocal, 2); code.Vector(10, 20);
     code.Get(0); code.Emit(OpCode.InitializeLocal, 1);
-    code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.LoadLocal, 2); code.Number(0); code.Native("buffer_get", 2); code.Number(99);
-    code.Native("buffer_set", 3); code.Emit(OpCode.Pop); code.Emit(OpCode.LoadLocal, 1); code.Get(0);
+    code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.LoadLocal, 2); code.Number(0); code.Native("vector_get", 2); code.Number(99);
+    code.Native("vector_set", 3); code.Emit(OpCode.Pop); code.Emit(OpCode.LoadLocal, 1); code.Get(0);
     code.Emit(OpCode.Add); code.Emit(OpCode.Return); return code;
 }
 Code SizeAcrossResize()
 {
-    Code code = new(); code.Buffer(10, 20); code.Size(); code.Emit(OpCode.InitializeLocal, 1);
-    code.Emit(OpCode.LoadLocal, 0); code.Number(99); code.Native("buffer_push", 2); code.Emit(OpCode.Pop);
+    Code code = new(); code.Vector(10, 20); code.Size(); code.Emit(OpCode.InitializeLocal, 1);
+    code.Emit(OpCode.LoadLocal, 0); code.Number(99); code.Native("vector_push", 2); code.Emit(OpCode.Pop);
     code.Emit(OpCode.LoadLocal, 1); code.Size(); code.Emit(OpCode.Add); code.Emit(OpCode.Return); return code;
 }
 Code CallbackMutation()
 {
-    Code code = new(); code.Buffer(10, 20); code.Get(0); code.Emit(OpCode.InitializeLocal, 1);
+    Code code = new(); code.Vector(10, 20); code.Get(0); code.Emit(OpCode.InitializeLocal, 1);
     int zero = code.Constant(new NumberValue(0)), changed = code.Constant(new NumberValue(99));
-    code.Helpers.Add(new("mutate", 1, 2,
+    code.Helpers.Add(Code.Body("mutate", 2,
     [
         new(OpCode.LoadLocal, 0), new(OpCode.Constant, zero), new(OpCode.Constant, changed),
-        new(OpCode.NativeCall, 3, Text: "storage.buffer_set"), new(OpCode.Pop), new(OpCode.True), new(OpCode.Return)
-    ], TypeRef.Bool, CaptureCount: 1, ParameterTypes: [TypeRef.Any]));
+        new(OpCode.NativeCall, 3, Text: "storage.vector_set"), new(OpCode.Pop), new(OpCode.True), new(OpCode.Return)
+    ], Code.BoolType, parameters: [Code.AnyType], captures: [new(Code.OwnerType, false)]));
     code.Emit(OpCode.Null); code.Emit(OpCode.MakeRange, 1); code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.MakeClosure, 1, 1);
     code.Emit(OpCode.NativeCall, 2, text: "ranges.any"); code.Emit(OpCode.Pop);
     code.Emit(OpCode.LoadLocal, 1); code.Get(0); code.Emit(OpCode.Add); code.Emit(OpCode.Return); return code;
 }
 Code Barrier()
 {
-    Code code = new(); code.Buffer(10, 20); code.Get(0); code.Emit(OpCode.InitializeLocal, 1); code.Emit(OpCode.Acquire);
+    Code code = new(); code.Vector(10, 20); code.Get(0); code.Emit(OpCode.InitializeLocal, 1); code.Emit(OpCode.Acquire);
     code.Emit(OpCode.LoadLocal, 1); code.Get(0); code.Emit(OpCode.Add); code.Emit(OpCode.Return); return code;
 }
 Code Diamond()
 {
-    Code code = new(); code.Buffer(10, 20); code.Get(0); code.Emit(OpCode.InitializeLocal, 1);
+    Code code = new(); code.Vector(10, 20); code.Get(0); code.Emit(OpCode.InitializeLocal, 1);
     code.String("MSYNC_INDEXED_OPT_UNUSED"); code.Emit(OpCode.NativeCall, 1, text: "environment.get"); code.Emit(OpCode.IsNull);
     int otherwise = code.Jump(OpCode.JumpIfFalse); code.Set(1, 99); int end = code.Jump(OpCode.Jump);
     code.Target(otherwise); code.Set(1, 77); code.Target(end);
@@ -368,7 +367,7 @@ Code Diamond()
 }
 Code Loop()
 {
-    Code code = new(); code.Buffer(1); code.Number(0); code.Emit(OpCode.InitializeLocal, 1); code.Number(0); code.Emit(OpCode.InitializeLocal, 2);
+    Code code = new(); code.Vector(1); code.Number(0); code.Emit(OpCode.InitializeLocal, 1); code.Number(0); code.Emit(OpCode.InitializeLocal, 2);
     int header = code.Count; code.Emit(OpCode.LoadLocal, 1); code.Number(3); code.Emit(OpCode.Less); int exit = code.Jump(OpCode.JumpIfFalse);
     code.Emit(OpCode.LoadLocal, 2); code.Get(0); code.Get(0); code.Emit(OpCode.Add); code.Emit(OpCode.Add); code.Emit(OpCode.StoreLocal, 2);
     code.Emit(OpCode.LoadLocal, 1); code.Number(1); code.Emit(OpCode.Add); code.Emit(OpCode.StoreLocal, 1);
@@ -377,7 +376,7 @@ Code Loop()
 
 Code SelectedEdge()
 {
-    Code code = new(); code.Buffer(10, 20);
+    Code code = new(); code.Vector(10, 20);
     code.Get(0); code.Emit(OpCode.Pop); code.Get(1); code.Emit(OpCode.Pop);
     code.Number(0); code.Emit(OpCode.InitializeLocal, 1);
     code.InputIsNull(); int join = code.Jump(OpCode.JumpIfTrue);
@@ -387,7 +386,7 @@ Code SelectedEdge()
 
 Code SelectedExpression()
 {
-    Code code = new(); code.Buffer(10, 20, 30);
+    Code code = new(); code.Vector(10, 20, 30);
     code.InputIsNull(); int other = code.Jump(OpCode.JumpIfFalse);
     code.Number(0); code.Emit(OpCode.InitializeLocal, 1); Read(); code.Emit(OpCode.Pop);
     int join = code.Jump(OpCode.Jump);
@@ -397,29 +396,29 @@ Code SelectedExpression()
     void Read()
     {
         code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.LoadLocal, 1); code.Number(1);
-        code.Emit(OpCode.Add); code.Native("buffer_get", 2);
+        code.Emit(OpCode.Add); code.Native("vector_get", 2);
     }
 }
 
 Code SelectedLocal(bool write, bool callback)
 {
-    Code code = new(); code.Buffer(10, 20);
+    Code code = new(); code.Vector(10, 20);
     code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.InitializeLocal, 3);
     code.InputIsNull(); int other = code.Jump(OpCode.JumpIfFalse);
     Read(0);
     if (write)
     {
         code.Emit(OpCode.LoadLocal, 3); code.Number(0); code.Number(99);
-        code.Native("buffer_set", 3); code.Emit(OpCode.Pop);
+        code.Native("vector_set", 3); code.Emit(OpCode.Pop);
     }
     if (callback)
     {
         int zero = code.Constant(new NumberValue(0)), changed = code.Constant(new NumberValue(99));
-        code.Helpers.Add(new("mutate", 0, 1,
+        code.Helpers.Add(Code.Body("mutate", 1,
         [
             new(OpCode.LoadLocal, 0), new(OpCode.Constant, zero), new(OpCode.Constant, changed),
-            new(OpCode.NativeCall, 3, Text: "storage.buffer_set"), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)
-        ], TypeRef.Null, CaptureCount: 1));
+            new(OpCode.NativeCall, 3, Text: "storage.vector_set"), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)
+        ], Code.NullType, captures: [new(Code.OwnerType, false)]));
         code.Emit(OpCode.LoadLocal, 3); code.Emit(OpCode.MakeClosure, 1, 1);
         code.Emit(OpCode.Call, 0); code.Emit(OpCode.Pop);
     }
@@ -437,8 +436,8 @@ Code SelectedLocal(bool write, bool callback)
 
 Code SelectedReceiver()
 {
-    Code code = new(); code.Buffer(10);
-    code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.InitializeLocal, 1); code.Buffer(20);
+    Code code = new(); code.Vector(10);
+    code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.InitializeLocal, 1); code.Vector(20);
     code.InputIsNull(); int other = code.Jump(OpCode.JumpIfFalse);
     code.Emit(OpCode.LoadLocal, 1); Read(true); int join = code.Jump(OpCode.Jump);
     code.Target(other); code.Emit(OpCode.LoadLocal, 0); Read(true);
@@ -447,25 +446,36 @@ Code SelectedReceiver()
     void Read(bool remember)
     {
         if (remember) { code.Emit(OpCode.Dup); code.Emit(OpCode.InitializeLocal, 2); }
-        code.Number(0); code.Native("buffer_get", 2);
+        code.Number(0); code.Native("vector_get", 2);
         if (remember) code.Emit(OpCode.Pop);
     }
 }
 
 Code MixedCell()
 {
-    Code code = new(); code.Buffer(20);
-    code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.InitializeLocal, 1); code.Buffer(10);
+    Code code = new(); code.Vector(20);
+    code.Emit(OpCode.LoadLocal, 0); code.Emit(OpCode.InitializeLocal, 1); code.Vector(10);
     code.InputIsNull(); int join = code.Jump(OpCode.JumpIfFalse);
-    code.Emit(OpCode.LoadCell, 0); code.Native("buffer_size", 1); code.Emit(OpCode.Pop);
+    code.Emit(OpCode.LoadCell, 0, Code.OwnerType + 1); code.Emit(OpCode.Pop);
+    code.Size(); code.Emit(OpCode.Pop);
     code.Target(join); code.Emit(OpCode.LoadStorage, 0); code.Emit(OpCode.InitializeLocal, 2);
     code.Emit(OpCode.LoadLocal, 1); code.Emit(OpCode.StoreLocal, 0);
-    code.Get(0); code.Emit(OpCode.LoadLocal, 2); code.Number(0); code.Native("buffer_get", 2);
+    code.Get(0); code.Emit(OpCode.LoadLocal, 2); code.Number(0); code.Native("vector_get", 2);
     code.Emit(OpCode.Add); code.Emit(OpCode.Return); return code;
 }
 
 sealed class Code
 {
+    internal const int NumberType = 0, NullType = 1, BoolType = 2, AnyType = 3, OwnerType = 4, ItemScope = 5, OwnerScope = 6;
+    internal const int ItemLayout = 0, OwnerLayout = 1, Item = 0, Items = 1;
+    private static readonly CodeType[] Types =
+    [
+        new(TypeKind.Number), new(TypeKind.Null), new(TypeKind.Bool), new(TypeKind.Any), new(TypeKind.Storage),
+        new(TypeKind.Scope, ScopeLayouts: [ItemLayout]), new(TypeKind.Scope, ScopeLayouts: [OwnerLayout])
+    ];
+    private static readonly CodeLayout[] Layouts = [new([new("x", NumberType)]), new([new("items", OwnerType)])];
+    private static readonly CodeFieldProjection[] Projections =
+    [new("x", [new(ItemLayout, 0)]), new("items", [new(OwnerLayout, 0)])];
     internal List<Value> Constants { get; } = [];
     internal List<FunctionCode> Helpers { get; } = [];
     private readonly List<Instruction> instructions = [];
@@ -476,17 +486,29 @@ sealed class Code
     internal void String(string value) { int index = Constants.Count; Constants.Add(new StringValue(value)); Emit(OpCode.Constant, index); }
     internal int Constant(Value value) { int index = Constants.Count; Constants.Add(value); return index; }
     internal void Native(string name, int count, int span = 0) => Emit(OpCode.NativeCall, count, text: "storage." + name, span: span);
-    internal void Buffer(params double[] values)
+    internal void Vector(params double[] values)
     {
         foreach (double value in values) Number(value);
-        Emit(OpCode.MakeRange, values.Length); Native("buffer_new", 1); Emit(OpCode.InitializeLocal, 0);
+        Emit(OpCode.MakeRange, values.Length); Native("vector_new", 1); Emit(OpCode.InitializeLocal, 0);
     }
-    internal void Get(int index, int span = 0) { Emit(OpCode.LoadLocal, 0); Number(index); Native("buffer_get", 2, span); }
-    internal void GetLocal(int slot, int span = 0) { Emit(OpCode.LoadLocal, 0); Emit(OpCode.LoadLocal, slot); Native("buffer_get", 2, span); }
+    internal void Get(int index, int span = 0) { Emit(OpCode.LoadLocal, 0); Number(index); Native("vector_get", 2, span); }
+    internal void GetLocal(int slot, int span = 0) { Emit(OpCode.LoadLocal, 0); Emit(OpCode.LoadLocal, slot); Native("vector_get", 2, span); }
     internal void InputIsNull() { Emit(OpCode.NativeCall, 0, text: "io.read_line"); Emit(OpCode.IsNull); }
-    internal void Size() { Emit(OpCode.LoadLocal, 0); Native("buffer_size", 1); }
-    internal void Set(int index, double value) { Emit(OpCode.LoadLocal, 0); Number(index); Number(value); Native("buffer_set", 3); Emit(OpCode.Pop); }
+    internal void Size() { Emit(OpCode.LoadLocal, 0); Native("vector_size", 1); }
+    internal void Set(int index, double value) { Emit(OpCode.LoadLocal, 0); Number(index); Number(value); Native("vector_set", 3); Emit(OpCode.Pop); }
     internal int Jump(OpCode op) { int index = instructions.Count; Emit(op); return index; }
     internal void Target(int position) => instructions[position] = instructions[position] with { A = instructions.Count };
-    internal FunctionCode Function() => new("indexed-memory", 0, 4, instructions, TypeRef.Number);
+    internal static FunctionCode Body(string name, int locals, IReadOnlyList<Instruction> code, int result,
+        int[]? parameters = null, CodeCapture[]? captures = null)
+    {
+        parameters ??= [];
+        captures ??= [];
+        return new(name, parameters.Length, locals, code, new(Types[result].Kind), captures.Length,
+            parameters.Select(type => new TypeRef(Types[type].Kind)).ToArray())
+        { CodeSignature = new(parameters, result, captures) };
+    }
+    internal FunctionCode Function() => Body("indexed-memory", 4, instructions, NumberType);
+    internal Module Image(params FunctionCode[] functions) =>
+        new(Constants, functions.Length == 0 ? [Function(), .. Helpers] : functions, OptimizationLevel: 0)
+        { CodeTypes = Types, ScopeLayouts = Layouts, FieldProjections = Projections };
 }

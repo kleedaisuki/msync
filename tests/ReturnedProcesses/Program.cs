@@ -3,6 +3,26 @@ using Msync.Compiler;
 using Msync.Core;
 using Msync.Runtime;
 
+if (args is ["--native-prefix-suspension"])
+{
+    await NativePrefixSuspension.Run();
+    return;
+}
+if (args is ["--indexed-roots"])
+{
+    await IndexedRootChecks.Run(Environment.ProcessPath!);
+    return;
+}
+if (args is ["--arena-roots"])
+{
+    await IndexedRootChecks.RunArena(Environment.ProcessPath!);
+    return;
+}
+if (args is ["--heap-deferred-owner"])
+{
+    await HeapDeferredChecks.Run(Environment.ProcessPath!);
+    return;
+}
 if (args.FirstOrDefault() == "--no-io-baseline")
 {
     await AllocationCheck.Run(args[1]);
@@ -107,8 +127,8 @@ try
                 """,
             prelude + """
                 fn values() {
-                    let buffer = $std::storage::Buffer::new([start()]);
-                    $std::storage::Buffer::snapshot(buffer)
+                    let children = $std::storage::vector_new([start()]);
+                    $std::storage::vector_take(children)
                 };
                 let child = $std::ranges::first(values());
                 $std::process::write_stdin(child, "snapshot");
@@ -222,12 +242,13 @@ async Task CheckRetainedValues()
     if (snapshot.RetainedValues is not { Count: 1 } values || !ReferenceEquals(values[0], first))
         throw new InvalidOperationException("Materialized ownership roots retain discarded source membership.");
     checks++;
-    var buffer = (RangeValue)await NativeRegistry.InvokeAsync("storage.buffer_new", [source], context, NoCallback);
-    await NativeRegistry.InvokeAsync("storage.buffer_pop", [buffer], context, NoCallback);
-    var saved = (RangeValue)await NativeRegistry.InvokeAsync("storage.buffer_snapshot", [buffer], context, NoCallback);
+    var owner = (StorageValue)await NativeRegistry.InvokeAsync("storage.vector_new", [source], context, NoCallback);
+    await NativeRegistry.InvokeAsync("storage.vector_pop", [owner], context, NoCallback);
+    var saved = (RangeValue)await NativeRegistry.InvokeAsync("storage.vector_snapshot", [owner], context, NoCallback);
+    await NativeRegistry.InvokeAsync("storage.vector_clear", [owner], context, NoCallback);
     if (saved.RetainedValues is not { Count: 1 } savedValues || !ReferenceEquals(savedValues[0], first)
-        || ReferenceEquals(savedValues, buffer.RetainedValues))
-        throw new InvalidOperationException("Buffer snapshot ownership roots are not its independent output membership.");
+        || owner.RetainedReferences().Any())
+        throw new InvalidOperationException("A vector snapshot must independently own the selected output membership.");
     checks++;
 }
 

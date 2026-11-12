@@ -13,12 +13,12 @@ The public source-family path is additionally exercised by
 
 ## Mechanism and boundaries
 
-At O2/O3, a successful buffer get is available until a possibly overlapping
+At O2/O3, a successful vector get is available until a possibly overlapping
 write. Exact nonnegative integral literal indices identify disjoint locations;
-an unknown index may overlap every location. A value-only set or swap leaves
+an unknown index may overlap every location. A value-only set leaves
 length available. Resizing invalidates both contents and length. Unknown calls,
 enumeration callbacks and directional barriers terminate availability. Different
-receiver value numbers are not assumed to prove different buffers: writes
+receiver value numbers are not assumed to prove different owners: writes
 invalidate every possibly overlapping read, including accesses through aliases.
 
 For a read after a join, the pass projects the receiver and index into each
@@ -48,7 +48,7 @@ exception and must-execute proofs, as illustrated by LLVM's
 [tagged DSE implementation](https://github.com/llvm/llvm-project/blob/llvmorg-23.1.5/llvm/lib/Transforms/Scalar/DeadStoreElimination.cpp).
 
 The existing function-feature scan admits only repeated get or size sites.
-Distinct literal-index-only bodies skip CFG analysis. Ordinary non-Buffer code
+Distinct literal-index-only bodies skip CFG analysis. Ordinary non-indexed code
 does not allocate pass state. Persistent immutable availability maps share branch
 state rather than copying an ever-growing table at every edge. Analysis is one
 reverse-postorder traversal of the shared CFG, with conservative resets on
@@ -70,6 +70,7 @@ element, then reads size again. Controls use distinct indices and no Buffer.
 Returned values are checked before timing. These are deliberately small causal
 component workloads, not a claim that every tree traversal repeats sixteen loads.
 
+The following historical comparison predates the vector-owner migration.
 The paired experiment froze the same Core and Runtime source graph and changed
 only the indexed-pass hook and its feature admission. Setup: .NET SDK 10.0.403,
 runtime 10.0.14, tiered compilation disabled equally, ABBA process order,
@@ -102,9 +103,9 @@ path has no additional optimizer allocation.
 Frozen inputs, DLL hashes and raw pairs are under
 `.temp/gcc-llvm-optimization/paired-indexed/{manifest,paired}.json`; the final
 admission-only observation is `.temp/gcc-llvm-optimization/indexed-gated-final.json`.
-The fixtures and procedure above remain reproducible if disposable records are
-cleaned. The ordinary controls' optimized artifacts are byte-identical between
-images; the beneficial cases change bytecode as intended.
+The ordinary controls' optimized artifacts were byte-identical between images;
+the beneficial cases changed bytecode as intended. Current runs use dense
+vector owners, not the historical mutable-Range carrier.
 
 ## Selected-read join journey and SQLite profile
 
@@ -125,7 +126,9 @@ O2 compilers as `--baseline-compiler` and `--candidate-compiler`, and the loop
 as `--source`. The expected stdout is `720896\n`. The artifacts must differ;
 no profiling overhead belongs in the elapsed samples.
 
-In eight AB/BA pairs after two warmup pairs on Linux x86-64 logical CPU 6,
+In the historical mutable-Range run, eight AB/BA pairs after two warmup pairs
+on Linux x86-64 logical CPU 6 measured the result. The same timing harness
+now accepts the vector source. In that historical experiment,
 the same Native VM (SHA-256
 `3a605f6253525ef5959caad242073a53edc655737a0f2dcd16a14503a8139ea8`)
 ran the two pre-bound images in 391.33 → 371.82 ms median, with −20.04 ms
@@ -161,18 +164,18 @@ For a frozen compiler without resource-relative call effects, add
 `--baseline` and choose a separate workspace. The harness checks O0/O2/O3
 stdout through source, relocatable, and executable routes, and checks both
 artifact views for a retained actual source call. It tests a read-only callee
-after a selected-read join, literal disjoint writes on the same Buffer, writes
-on a separate newly allocated Buffer, a captured Buffer mutation, and length
+after a selected-read join, literal disjoint writes on the same vector, writes
+on a separately allocated vector, a captured vector mutation, and length
 after a content-only write. Two distinct parameters can still alias: passing
-the same Buffer through them and enumerating a mutating lazy callback are
+the same vector through them and enumerating a mutating lazy callback are
 negative controls. A profiled failing read in each route proves the original
 first read still fails before any helper entry or write.
 
 The [hot fixture](modref-loop.msync) executes 131,072 retained helper calls.
 Each helper writes index 1 and reads length between the caller's two reads
 of index 0. The expected stdout is `2883584\n`. A profile verifies 262,144 →
-131,072 actual `storage.buffer_get` calls while `storage.buffer_set`,
-`storage.buffer_size`, and `touch_other` frame entries each remain 131,072.
+131,072 actual `storage.vector_get` calls while `storage.vector_set`,
+`storage.vector_size`, and `touch_other` frame entries each remain 131,072.
 The fixture keeps the helper in a low-numbered entry local rather than
 reordering declarations to work around reaching-location analysis.
 
@@ -183,7 +186,7 @@ with `--source tests/IndexedMemoryOptimization/modref-loop.msync`. Elapsed
 samples run with recording off; separate SQLite samples account for actual
 native operations, managed allocation, source frames and Number boxes.
 
-A same-VM comparison used the frozen Linux Native AOT runner
+A historical same-VM comparison used the frozen Linux Native AOT runner
 `bf99379a5108f55c758d2e430becaa0a5d47bece4dd1654fd6a7aea62c0f3df9`,
 the original O2 compiler and a managed compiler snapshot with the mod/ref
 pass (`Msync.Optimization.dll` SHA-256

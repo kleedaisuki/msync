@@ -30,8 +30,8 @@ using MemoryStream encoded = new();
 Artifact.Write(module, encoded);
 if (emittedArtifact.Length != 0) File.WriteAllBytes(emittedArtifact, encoded.ToArray());
 string artifactSha256 = Hash(inputArtifact.Length == 0 ? encoded.ToArray() : File.ReadAllBytes(inputArtifact));
-int fieldReads = module.Functions.Sum(function => function.Instructions.Count(instruction => instruction.Op == OpCode.GetMember));
-int constructors = module.Functions.Sum(function => function.Instructions.Count(instruction => instruction.Op == OpCode.MakeScope));
+int fieldReads = module.Functions.Sum(function => function.Instructions.Count(instruction => instruction.Op == OpCode.LoadField));
+int constructors = module.Functions.Sum(function => function.Instructions.Count(instruction => instruction.Op == OpCode.NewScope));
 if (fieldReads == 0 || constructors == 0) throw new InvalidOperationException("The workload lost its physical Scope sites.");
 ExecutionOptions options = new(WorkingDirectory: root, Output: TextWriter.Null, Error: TextWriter.Null);
 double expected = scenario switch
@@ -114,11 +114,14 @@ static string Workload(string scenario, int rows, int passes)
         : "total = total + row::x + row::y + row::z + row::w;";
     return $$"""
         fn build(values: Range) {
-            let records = $std::storage::Buffer::new([]);
+            let records = $std::storage::vector_empty(decltype({
+                let value = 0;
+                scope { {{fields}} }
+            }));
             for value in values {
-                $std::storage::Buffer::push(records, scope { {{fields}} });
+                $std::storage::vector_push(records, scope { {{fields}} });
             };
-            $std::storage::Buffer::snapshot(records)
+            $std::storage::vector_take(records)
         };
         let rows = build($std::ranges::iota(0, {{rows}}));
         let total = 0;
@@ -133,7 +136,7 @@ internal readonly record struct Sample(double Milliseconds, int Gen0Collections,
 internal sealed record Quantiles(double P50Milliseconds, double P95Milliseconds, double P99Milliseconds, double MaximumMilliseconds);
 internal sealed record Report(string Framework, string OS, string? TieredCompilation,
     Dictionary<string, string> Assemblies, string Scenario, int Rows, int Passes, int Warmups,
-    string Source, string SourceSha256, string ArtifactSha256, int MakeScopeSites, int FieldReadSites, long TotalAllocatedBytes,
+    string Source, string SourceSha256, string ArtifactSha256, int ScopeConstructorSites, int FieldReadSites, long TotalAllocatedBytes,
     Quantiles Quantiles, Sample[] Samples);
 [JsonSerializable(typeof(Report))]
 internal sealed partial class TailJson : JsonSerializerContext;

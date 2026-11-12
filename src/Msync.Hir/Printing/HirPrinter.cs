@@ -120,6 +120,9 @@ public static class HirPrinter
             if (!type.Alternatives.IsDefaultOrEmpty) detail += " alternatives [" + string.Join(", ", type.Alternatives.Select(item => "@t" + item.Value)) + "]";
             if (type.Element >= 0) detail += " element @t" + type.Element;
             if (type.Shape >= 0) detail += " shape @h" + type.Shape;
+            var domain = type.ScopeDomain;
+            if (domain.Count != 0)
+                detail += " layouts [" + string.Join(", ", Enumerable.Range(0, domain.Count).Select(i => "@h" + domain[i])) + "]";
             if (type.Signature >= 0) detail += " signature @q" + type.Signature;
             if (type.Concept >= 0) detail += " concept @p" + type.Concept;
             Define($"type @t{index} {detail}", "@t" + index, "Type " + index, detail, HirTextCategory.Type);
@@ -151,7 +154,8 @@ public static class HirPrinter
         private void Function(int index)
         {
             var function = module.Functions[index];
-            Define($"fn @f{index} {Quote(function.Name)} ({Locations(function.Parameters)}) -> @t{function.Result.Value} {(function.IsOpen ? "open" : "closed")}{(function.Template is { } template ? " template @g" + template.Value : "")} body {(function.Body.IsNone ? "none" : "@n" + function.Body.Value)} captures [{Captures(function.Captures)}]",
+            var entry = function.ParameterEntryTypes.IsDefaultOrEmpty ? "" : $" entry [{string.Join(" ", function.ParameterEntryTypes.Select(type => "@t" + type.Value))}]";
+            Define($"fn @f{index} {Quote(function.Name)} ({Locations(function.Parameters)}) -> @t{function.Result.Value} {(function.IsOpen ? "open" : "closed")}{(function.Template is { } template ? " template @g" + template.Value : "")} body {(function.Body.IsNone ? "none" : "@n" + function.Body.Value)} captures [{Captures(function.Captures)}]{entry}",
                 "@f" + index, function.Name, "Finalized function identity and capture layout; bytecode locals are assigned later.", HirTextCategory.Function);
         }
 

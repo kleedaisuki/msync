@@ -11,26 +11,34 @@ internal sealed partial class SemanticAnalyzer
     private readonly Dictionary<string, ReturnShape> returnSchemes = new(StringComparer.Ordinal);
     private readonly HashSet<string> activeReturnSchemes = new(StringComparer.Ordinal);
 
-    private ReturnShape? CallShape(HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext caller)
+    private readonly record struct CallInputLocations(HashSet<HirLocationId> Read, HashSet<HirLocationId> Declared);
+
+    private CallInputLocations CallLocations(ReadOnlySpan<HirNodeId> children)
+    {
+        HashSet<HirLocationId> read = [], declared = [];
+        foreach (HirNodeId child in children) CollectLocations(child, read, declared);
+        read.ExceptWith(declared);
+        return new(read, declared);
+    }
+
+    private ReturnShape? CallShape(HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext caller,
+        HashSet<HirLocationId> read)
     {
         // Eagerness is an expression policy, whereas future safety is a value
         // domain. Neither projection publishes or specializes executable code.
-        ReturnShape? policy = ProjectCallShape(node, children, caller, future: false);
+        ReturnShape? policy = ProjectCallShape(node, children, caller, read, future: false);
         if (policy is { } current && (current.Eager || (current.Fact.Type.Kind & TypeKind.Range) == 0)) return current;
-        ReturnShape? domain = ProjectCallShape(node, children, caller, future: true);
+        ReturnShape? domain = ProjectCallShape(node, children, caller, read, future: true);
         return domain is { } legal ? legal with { Eager = policy?.Eager ?? legal.Eager } : policy;
     }
 
     private ReturnShape? ProjectCallShape(HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext caller,
-        bool future)
+        HashSet<HirLocationId> read, bool future)
     {
         SemanticContext context = caller.QueryFork();
         context.DeferredReads = future;
         context.FlowAnalysis = null;
         context.ReturnPlaces = null;
-        HashSet<HirLocationId> read = [], declared = [];
-        foreach (HirNodeId child in children) CollectLocations(child, read, declared);
-        read.ExceptWith(declared);
         var domains = ImmutableDictionary.CreateBuilder<HirLocationId, FlowLocationDomain>();
         foreach (HirLocationId original in read)
         {
@@ -66,16 +74,14 @@ internal sealed partial class SemanticAnalyzer
         return result;
     }
 
-    private SemanticValue DeferredCall(HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext caller)
+    private SemanticValue DeferredCall(HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext caller,
+        CallInputLocations locations)
     {
-        HashSet<HirLocationId> read = [], declared = [];
-        foreach (HirNodeId child in children) CollectLocations(child, read, declared);
-        read.ExceptWith(declared);
         SemanticContext deferred = new(new(caller.Publish ? hir.Functions.Count : -1), caller.Output, caller)
         { DeferredReads = true, NextRegion = caller.NextRegion };
         var captures = ImmutableArray.CreateBuilder<HirCapture>();
         Dictionary<HirLocationId, HirLocationId> sources = [];
-        foreach (HirLocationId original in read.OrderBy(location => location.Value))
+        foreach (HirLocationId original in locations.Read.OrderBy(location => location.Value))
         {
             HirLocationId source = caller.Location(original);
             HirLocationId target = AllocateThunkLocation(original, deferred);
@@ -89,7 +95,7 @@ internal sealed partial class SemanticAnalyzer
             captures.Add(new(target, HirCaptureMode.Location, source, HirNodeId.None));
             sources[target] = source;
         }
-        foreach (HirLocationId local in declared) _ = AllocateThunkLocation(local, deferred);
+        foreach (HirLocationId local in locations.Declared) _ = AllocateThunkLocation(local, deferred);
         caller.Output?.ReserveFunction(new("<range-call>", [], captures.ToImmutable(),
             hir.Type(TypeRef.Any), HirNodeId.None, IsOpen: true));
         SemanticValue result = Call(node, children, deferred, allowDeferral: false);

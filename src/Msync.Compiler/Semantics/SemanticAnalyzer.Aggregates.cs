@@ -118,7 +118,7 @@ internal sealed partial class SemanticAnalyzer
             destination.MaybeInitializedSingletons = destination.MaybeInitializedSingletons.Add(construction.Singleton);
         }
         if (context.Publish && construction.Singleton >= 0) singletonScopes.TryAdd(construction.Singleton, result);
-        HirTypeId type = hir.Type(new HirType(TypeRef.Scope, Shape: shape));
+        HirTypeId type = hir.Type(HirType.ConstructedScope(shape));
         HirNodeId expression = HirNodeId.None;
         if (context.Publish)
         {
@@ -132,8 +132,9 @@ internal sealed partial class SemanticAnalyzer
         if (self is { } completed)
         {
             destination.Values[completed] = valueResult;
-            destination.Storage[completed] = type;
-            destination.Output?.SetLocation(completed, hir.Locations[completed.Value] with { StorageType = type });
+            var storage = StructuralStorageType(type);
+            destination.Storage[completed] = storage;
+            destination.Output?.SetLocation(completed, hir.Locations[completed.Value] with { StorageType = storage });
         }
         return valueResult;
     }

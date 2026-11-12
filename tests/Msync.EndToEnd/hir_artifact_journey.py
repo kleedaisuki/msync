@@ -65,6 +65,20 @@ let callable = fn(value: Number) { value + 1 };
 """,
         {"concept.txt": b"HIR", "query.txt": b"true"},
     ),
+    Case(
+        "static_and_fresh_places",
+        """scope Shared { count: 1 };
+let alias = Shared;
+Shared::count = 2;
+(alias::count as String) -> ./shared.txt;
+let left = scope { count: 3 };
+let right = scope { count: 4 };
+left::count = 5;
+(left::count as String) -> ./left.txt;
+(right::count as String) -> ./right.txt;
+""",
+        {"shared.txt": b"2", "left.txt": b"5", "right.txt": b"4"},
+    ),
 )
 
 
@@ -123,7 +137,7 @@ def run_case(binary: Path, directory: Path, case: Case, level: int) -> dict[str,
     executable = directory / "program.mexe"
     invoke(binary, directory, ["compile", str(source), "--emit", "hir", "-o", str(hir)])
     raw = hir.read_bytes()
-    if not raw.startswith(b"MSYNHIR\x00"):
+    if not raw.startswith(b"MSYNHIR\x00\x03\x00"):
         raise AssertionError("HIR export is not the semantic binary format")
     invoke(binary, directory, ["compile", str(source), f"-O{level}", "-o", str(direct)])
     no_outputs(directory, case)
@@ -132,7 +146,7 @@ def run_case(binary: Path, directory: Path, case: Case, level: int) -> dict[str,
     document: dict[str, Any] = json.loads(
         invoke(binary, directory, ["disassemble", str(hir), "--json"]).stdout
     )
-    if document["artifactKind"] != "hir" or document["formatVersion"] != 1:
+    if document["artifactKind"] != "hir" or document["formatVersion"] != 3:
         raise AssertionError(document)
     if document["schemaVersion"] != 1 or document["languageVersion"] != "0.8.0":
         raise AssertionError(document)
@@ -148,7 +162,8 @@ def run_case(binary: Path, directory: Path, case: Case, level: int) -> dict[str,
     if canonical.read_bytes() != raw:
         raise AssertionError("Semantic file read/write changed the artifact")
     invoke(binary, directory, ["compile", str(hir), f"-O{level}", "-o", str(lowered)])
-    if lowered.read_bytes() != direct.read_bytes():
+    lowered_bytes = lowered.read_bytes()
+    if lowered_bytes != direct.read_bytes():
         raise AssertionError(
             "Loaded HIR and direct source lowering produced different bytecode"
         )
@@ -171,10 +186,15 @@ def run_case(binary: Path, directory: Path, case: Case, level: int) -> dict[str,
         (directory / name).unlink()
     other = directory / "other cwd"
     other.mkdir()
+    direct.unlink()
+    lowered.unlink()
+    hir.unlink()
+    canonical.unlink()
     invoke(binary, other, ["run-ir", str(executable)])
     observations += check_outputs(directory, case)
     for name in case.expected:
         (directory / name).unlink()
+    hir.write_bytes(raw)
     invoke(binary, other, ["run", str(hir), f"-O{level}"])
     observations += check_outputs(other, case)
     if hir.read_bytes() != raw:
@@ -186,7 +206,7 @@ def run_case(binary: Path, directory: Path, case: Case, level: int) -> dict[str,
         "byte_observations": observations,
         "hir_sha256": hashlib.sha256(raw).hexdigest(),
         "hir_bytes": len(raw),
-        "bytecode_sha256": hashlib.sha256(lowered.read_bytes()).hexdigest(),
+        "bytecode_sha256": hashlib.sha256(lowered_bytes).hexdigest(),
         "symbols": len(document["symbols"]),
         "references": len(document["references"]),
     }

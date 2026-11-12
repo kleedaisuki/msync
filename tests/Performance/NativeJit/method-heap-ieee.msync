@@ -1,0 +1,31 @@
+let Heap = $std::containers::Heap;
+let io = $std::io;
+let queue = Heap::new(Number);
+let values = [0 / 0, -1 / 0, 1 / 0, -0, 0, -7, 13, 1];
+for _ in $std::ranges::iota(0, 64) {
+    for value in values { Heap::push(queue, value); };
+};
+for _ in $std::ranges::iota(0, 512) {
+    let value? = Heap::pop(queue);
+    if value is null {
+        io::println("missing key");
+    } else {
+        if value != value {
+            io::println("nan");
+        } else {
+            if value == 0 {
+                if 1 / value < 0 { io::println("-0"); } else { io::println("+0"); };
+            } else {
+                if value == 1 / 0 {
+                    io::println("+inf");
+                } else {
+                    if value == -1 / 0 {
+                        io::println("-inf");
+                    } else {
+                        io::println(value as String);
+                    };
+                };
+            };
+        };
+    };
+};

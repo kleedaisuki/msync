@@ -1,0 +1,25 @@
+let Set = $std::containers::Set;
+let io = $std::io;
+let tree = Set::new(Number);
+let inserted = 0;
+let duplicates = 0;
+let order_score = 0;
+for line in io::stdin_lines() {
+    let key = line as Number;
+    if Set::insert(tree, key) {
+        inserted = inserted + 1;
+        order_score = order_score * 7 + key;
+    } else {
+        duplicates = duplicates + 1;
+    };
+    order_score = order_score % 1000003;
+};
+let retained = 0;
+for key in Set::snapshot(tree) {
+    retained = retained + key;
+};
+io::println(inserted as String);
+io::println(duplicates as String);
+io::println(order_score as String);
+io::println(retained as String);
+io::println(Set::size(tree) as String);

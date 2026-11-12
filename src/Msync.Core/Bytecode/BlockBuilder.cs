@@ -25,11 +25,11 @@ public static class BlockBuilder
         for (var index = 0; index < code.Count; index++)
         {
             var instruction = code[index];
-            if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue) marks[instruction.A] |= boundary;
+            if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.JumpIfStaticReady) marks[instruction.A] |= boundary;
             if (instruction.Op == OpCode.IteratorNext) marks[instruction.B] |= boundary;
             bool hasEffects = InstructionEffects.Effects(instruction) != InstructionEffect.None;
             if (hasEffects) marks[index] |= effect;
-            if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.IteratorNext or OpCode.Return)
+            if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.JumpIfStaticReady or OpCode.IteratorNext or OpCode.Return)
                 marks[index + 1] |= boundary;
         }
         var start = 0;
@@ -46,7 +46,7 @@ public static class BlockBuilder
             {
                 OpCode.Return => [],
                 OpCode.Jump => [last.A],
-                OpCode.JumpIfTrue or OpCode.JumpIfFalse => [last.A, end],
+                OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady => [last.A, end],
                 OpCode.IteratorNext => [last.B, end],
                 _ => end < code.Count ? [end] : []
             };

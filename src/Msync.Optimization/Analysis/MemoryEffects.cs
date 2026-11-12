@@ -42,7 +42,7 @@ internal static class MemoryEffects
             if (instruction.Op == OpCode.Constant) ValueTargets(module.Constants[instruction.A]);
             if (instruction.Op != OpCode.Call) continue;
             if (instruction.B > 0) targets.Add(instruction.B - 1);
-            if (instruction.Text is not null) foreach (int target in FunctionDispatch.Parse(instruction.Text).Values) targets.Add(target);
+            if (instruction.Text is not null) foreach (int target in FunctionDispatch.Targets(instruction.Text).Values) targets.Add(target);
         }
         return targets.Select((target, index) => (target, index)).ToDictionary(pair => pair.index, pair => pair.target);
     }
@@ -55,7 +55,7 @@ internal static class MemoryEffects
             if (code[0].Op == OpCode.Constant)
             {
                 var value = module.Constants[code[0].A];
-                return value is ScopeValue or FunctionValue or RangeValue or CellValue
+                return value is CellValue || !Scalar(value.Type)
                     ? FunctionMemoryEffects.Empty with { UnknownReturnAlias = true, HasDeferredInvocation = value is RangeValue }
                     : FunctionMemoryEffects.Empty;
             }
@@ -75,7 +75,8 @@ internal static class MemoryEffects
             : null;
     }
 
-    private static bool Scalar(TypeRef type) => (type.Kind & (TypeKind.Scope | TypeKind.Function | TypeKind.Range)) == 0;
+    private static bool Scalar(TypeRef type) =>
+        (type.Kind & (TypeKind.Scope | TypeKind.Function | TypeKind.Range | TypeKind.Storage)) == 0;
 
     private static bool Same(FunctionMemoryEffects left, FunctionMemoryEffects right) => left.UnknownReads == right.UnknownReads
         && left.UnknownWrites == right.UnknownWrites && left.UnknownReturnAlias == right.UnknownReturnAlias
@@ -125,7 +126,7 @@ internal static class MemoryEffects
         private readonly Dictionary<int, State> entries = [];
         private readonly HashSet<int> queued = [];
         private readonly HashSet<int> starts = [0];
-        private readonly Dictionary<int, string[]> allocationFields = [];
+        private readonly HashSet<int> indexedAllocations = [];
         private int instructionPosition;
         private long invalidationVersion;
 
@@ -135,7 +136,7 @@ internal static class MemoryEffects
             if (code.Count == 0) return FunctionMemoryEffects.Empty;
             foreach (var instruction in code)
             {
-                if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue) starts.Add(instruction.A);
+                if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.JumpIfStaticReady) starts.Add(instruction.A);
                 if (instruction.Op == OpCode.IteratorNext) starts.Add(instruction.B);
             }
             var locals = Enumerable.Repeat(ValueInfo.Empty, function.LocalCount).ToArray();
@@ -160,7 +161,7 @@ internal static class MemoryEffects
                     if (instruction.Op == OpCode.Return)
                     {
                         ValueInfo value = state.Stack.Count == 0 ? ValueInfo.Empty : Dereference(state, Pop(state));
-                        if ((function.ReturnType.Kind & (TypeKind.Scope | TypeKind.Function | TypeKind.Range)) != 0)
+                        if (!Scalar(function.ReturnType))
                         {
                             foreach (var origin in value.Origins)
                                 if (External(origin)) returns.Add(origin); else unknownReturn = true;
@@ -173,7 +174,7 @@ internal static class MemoryEffects
                     }
                     Transfer(state, instruction, pc);
                     if (instruction.Op == OpCode.Jump) { Merge(instruction.A, state, instruction.A <= pc); break; }
-                    if (instruction.Op is OpCode.JumpIfFalse or OpCode.JumpIfTrue) Merge(instruction.A, state, instruction.A <= pc);
+                    if (instruction.Op is OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.JumpIfStaticReady) Merge(instruction.A, state, instruction.A <= pc);
                     if (instruction.Op == OpCode.IteratorNext)
                     {
                         var exit = state.Copy(); Pop(exit); Merge(instruction.B, exit, false);
@@ -244,11 +245,19 @@ internal static class MemoryEffects
             {
                 case OpCode.Nop: break;
                 case OpCode.Barrier: ordering = true; break;
-                case OpCode.GetSingleton: unknownReads = true; Push(ValueInfo.Top); break;
-                case OpCode.SetSingleton: Escape(state, Pop(state), []); unknownWrites = true; Push(ValueInfo.Top); break;
+                case OpCode.LoadStaticScope:
+                case OpCode.LoadStaticField: unknownReads = true; Push(ValueInfo.Top); break;
+                case OpCode.PublishStatic:
+                    foreach (var field in Arguments(state, ScopeOperands.Construction(module, instruction).Fields.Count))
+                        Escape(state, field, []);
+                    unknownWrites = true; break;
+                case OpCode.StoreStaticField:
+                    Escape(state, Pop(state), []); unknownWrites = true; Invalidate(state); Push(ValueInfo.Empty); break;
                 case OpCode.Constant:
                     var literal = module.Constants[instruction.A];
-                    Push(literal is FunctionValue callable ? ConstantFunction(callable) : literal is ScopeValue or RangeValue ? ValueInfo.Top : ValueInfo.Empty); break;
+                    Push(literal is FunctionValue callable ? ConstantFunction(callable)
+                        : Scalar(literal.Type) ? ValueInfo.Empty : ValueInfo.Top);
+                    break;
                 case OpCode.Null: case OpCode.True: case OpCode.False: case OpCode.LoadBuiltin: Push(ValueInfo.Empty); break;
                 case OpCode.LoadLocal:
                     var local = state.Locals[instruction.A]; ReadCells(local); unknownReads |= local.UnknownCell; Push(Dereference(state, local)); break;
@@ -271,19 +280,18 @@ internal static class MemoryEffects
                 case OpCode.InitializeLocal: state.Locals[instruction.A] = Pop(state); break;
                 case OpCode.Pop: Pop(state); break;
                 case OpCode.Dup: var duplicated = Pop(state); Push(duplicated); Push(duplicated); break;
-                case OpCode.MakeScope:
-                    var items = Arguments(state, instruction.A);
-                    if (!allocationFields.TryGetValue(pc, out var names))
-                        allocationFields.Add(pc, names = instruction.Text?.Split('\0', StringSplitOptions.RemoveEmptyEntries) ?? []);
+                case OpCode.NewScope:
+                    var fields = ScopeOperands.Construction(module, instruction).Fields;
+                    var items = Arguments(state, fields.Count);
                     MemoryAccess allocation = new(new(MemoryRootKind.Allocation, pc));
-                    for (int index = 0; index < Math.Min(items.Length, names.Length); index++) state.Fields[allocation.Field(names[index])] = items[index];
+                    for (int index = 0; index < fields.Count; index++) state.Fields[allocation.Field(fields[index].Name)] = items[index];
                     Push(ValueInfo.At(allocation)); break;
-                case OpCode.GetMember:
-                    Push(ReadField(state, Dereference(state, Pop(state)), instruction.Text!)); break;
-                case OpCode.SetMember:
+                case OpCode.LoadField:
+                    Push(ReadField(state, Dereference(state, Pop(state)), ScopeOperands.Projection(module, instruction).Name)); break;
+                case OpCode.StoreField:
                     bindingWrites = true;
                     var value = Dereference(state, Pop(state)); var receiver = Dereference(state, Pop(state));
-                    WriteField(state, receiver, instruction.Text!, value); Push(ValueInfo.Empty); break;
+                    WriteField(state, receiver, ScopeOperands.Projection(module, instruction).Name, value); Push(ValueInfo.Empty); break;
                 case OpCode.MakeClosure: Push(ValueInfo.Callable(new(instruction.A, Arguments(state, instruction.B)))); break;
                 case OpCode.GetCapture:
                     var closure = Dereference(state, Pop(state)); var capture = ValueInfo.Empty;
@@ -297,7 +305,7 @@ internal static class MemoryEffects
                     Push(specialized with
                     {
                         Closures = specialized.Closures.Select(candidate => candidate.Native is not null ? candidate
-                        : candidate with { Function = instruction.Text is null ? instruction.A : FunctionDispatch.Parse(instruction.Text).GetValueOrDefault(candidate.Function, candidate.Function) }).ToArray()
+                        : candidate with { Function = instruction.Text is null ? instruction.A : FunctionDispatch.Targets(instruction.Text).GetValueOrDefault(candidate.Function, candidate.Function) }).ToArray()
                     }); break;
                 case OpCode.Call:
                     var arguments = Arguments(state, instruction.A).Select(argument => Dereference(state, argument)).ToArray();
@@ -340,7 +348,7 @@ internal static class MemoryEffects
                     ordering = true;
                     if (instruction.A != 0) Push(Pop(state)); break;
                 case OpCode.JumpIfFalse: case OpCode.JumpIfTrue: Pop(state); break;
-                case OpCode.Jump: break;
+                case OpCode.AdmitScope: case OpCode.JumpIfStaticReady: case OpCode.Jump: break;
                 case OpCode.Qualify:
                     var qualifier = Arguments(state, 2)[0];
                     unknownReads |= qualifier.Unknown || qualifier.Origins.Length > 0;
@@ -357,7 +365,14 @@ internal static class MemoryEffects
         }
 
         private static ValueInfo ConstantFunction(FunctionValue function) => ValueInfo.Callable(new(function.Function,
-            function.Captures?.Select(value => value is FunctionValue nested ? ConstantFunction(nested) : value is CellValue ? ValueInfo.Top with { UnknownCell = true } : value is ScopeValue or RangeValue ? ValueInfo.Top : ValueInfo.Empty).ToArray() ?? [], function.NativeName));
+            function.Captures?.Select(ConstantCapture).ToArray() ?? [], function.NativeName));
+
+        private static ValueInfo ConstantCapture(Value value) => value switch
+        {
+            FunctionValue nested => ConstantFunction(nested),
+            CellValue => ValueInfo.Top with { UnknownCell = true },
+            _ => Scalar(value.Type) ? ValueInfo.Empty : ValueInfo.Top,
+        };
 
         private ValueInfo ReadField(State state, ValueInfo receiver, string name)
         {
@@ -408,7 +423,7 @@ internal static class MemoryEffects
                 int target;
                 if (instruction.Text is { } mapping)
                 {
-                    if (!FunctionDispatch.Parse(mapping).TryGetValue(closure.Function, out target))
+                    if (!FunctionDispatch.Targets(mapping).TryGetValue(closure.Function, out target))
                     { result = Union(result, ValueInfo.Top); continue; }
                 }
                 else target = instruction.B > 0 ? instruction.B - 1 : closure.Function;
@@ -582,11 +597,13 @@ internal static class MemoryEffects
 
         private ValueInfo IndexedStorage(State state, string name, NativeSignature signature, ValueInfo[] arguments)
         {
-            if (name == "storage.buffer_new")
+            if (name == "storage.vector_new")
             {
                 if (MayEnumerate(arguments[0])) Enumerate(state, arguments[0]);
                 return OwnedStorage(state, RangeContents(state, arguments[0]));
             }
+            if (name is "storage.vector_empty" or "storage.vector_empty_like")
+                return OwnedStorage(state, ValueInfo.Empty);
             var effect = IndexedNativeEffect.For(name);
             if (effect == default) { Unknown(state, arguments); return ValueInfo.Top; }
             var receiver = arguments[0];
@@ -603,20 +620,22 @@ internal static class MemoryEffects
             }
             // Membership witnesses and value aliases are different facts. A
             // size observation does not inspect the stored values at all.
-            if (name == "storage.buffer_size") return ValueInfo.Empty;
+            if (IndexedNativeEffect.Read(name) == IndexedReadKind.Count) return ValueInfo.Empty;
             ValueInfo contents = ReadField(state, arguments[0], IndexedContents);
-            if (name == "storage.buffer_snapshot") return OwnedStorage(state, contents);
+            if (name == "storage.vector_snapshot") return OwnedStorage(state, contents);
             if (signature.Effect == NativeEffect.Write)
             {
                 ValueInfo next = name switch
                 {
-                    "storage.buffer_clear" => ValueInfo.Empty,
-                    "storage.buffer_push" => Union(contents, arguments[1]),
-                    "storage.buffer_set" or "storage.buffer_insert" => Union(contents, arguments[2]),
+                    "storage.vector_clear" or "storage.vector_take" => ValueInfo.Empty,
+                    "storage.vector_push" => Union(contents, arguments[1]),
+                    "storage.vector_set" or "storage.vector_insert" =>
+                        Union(contents, arguments[2]),
                     _ => contents
                 };
                 WriteField(state, arguments[0], IndexedContents, next);
             }
+            if (name == "storage.vector_take") return OwnedStorage(state, contents);
             return signature.ResultRule == NativeResultRule.RangeItem ? contents : ValueInfo.Empty;
         }
 
@@ -654,7 +673,7 @@ internal static class MemoryEffects
             // Exact writes can keep other reads available. Nonliteral read
             // metadata alone needn't build a graph when the fast case missed.
             if (!write) return null;
-            var definitions = (contexts[functionIndex] ??= new()).DefUse(function).Inputs(instructionPosition)[argument];
+            var definitions = (contexts[functionIndex] ??= new(module)).DefUse(function).Inputs(instructionPosition)[argument];
             int? result = null;
             foreach (int definition in definitions)
             {
@@ -671,7 +690,7 @@ internal static class MemoryEffects
         private ValueInfo OwnedStorage(State state, ValueInfo contents)
         {
             MemoryAccess allocation = new(new(MemoryRootKind.Allocation, instructionPosition));
-            allocationFields[instructionPosition] = [IndexedContents];
+            indexedAllocations.Add(instructionPosition);
             state.Fields[allocation.Field(IndexedContents)] = contents;
             return ValueInfo.At(allocation) with { CallbackFreeRange = true };
         }
@@ -765,9 +784,13 @@ internal static class MemoryEffects
 
         private IEnumerable<ValueInfo> Contents(State state, MemoryAccess origin)
         {
-            if (origin.Root.Kind != MemoryRootKind.Allocation || origin.Fields.Count != 0
-                || !allocationFields.TryGetValue(origin.Root.Index, out var names)) yield break;
-            foreach (string name in names) yield return FieldValue(state, origin.Field(name));
+            if (origin.Root.Kind != MemoryRootKind.Allocation || origin.Fields.Count != 0) yield break;
+            var instruction = function.Instructions[origin.Root.Index];
+            if (instruction.Op == OpCode.NewScope)
+                foreach (var field in ScopeOperands.Construction(module, instruction).Fields)
+                    yield return FieldValue(state, origin.Field(field.Name));
+            else if (indexedAllocations.Contains(origin.Root.Index))
+                yield return FieldValue(state, origin.Field(IndexedContents));
         }
 
         private void Merge(int target, State incoming, bool backedge)

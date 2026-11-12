@@ -70,6 +70,9 @@ internal sealed class HirBinaryWriter(BinaryWriter writer)
         RuntimeType(type.RuntimeType);
         writer.Write(type.Shape); writer.Write(type.Signature); writer.Write(type.Element); writer.Write(type.TypeParameter); writer.Write(type.Concept);
         writer.Write(type.Nullable); Array(type.Alternatives, value => writer.Write(value.Value));
+        var domain = type.ScopeDomain;
+        writer.Write(domain.Count);
+        for (int i = 0; i < domain.Count; i++) writer.Write(domain[i]);
     }
 
     private void Location(HirLocation location)
@@ -91,6 +94,7 @@ internal sealed class HirBinaryWriter(BinaryWriter writer)
         String(function.Name); Array(function.Parameters, value => writer.Write(value.Value)); Array(function.Captures, Capture);
         writer.Write(function.Result.Value); writer.Write(function.Body.Value);
         writer.Write(function.Template?.Value ?? -1); writer.Write(function.IsOpen);
+        Array(function.ParameterEntryTypes, value => writer.Write(value.Value));
     }
 
     private void Template(HirTemplate template)

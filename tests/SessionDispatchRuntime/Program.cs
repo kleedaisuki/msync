@@ -71,9 +71,10 @@ async Task NativeTarget(int level)
 {
     Value[] constants = [new FunctionValue(-1, NativeName: "ranges.single"), new NumberValue(42)];
     FunctionCode main = new("native", 0, 0,
-        [new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Call, 1, -1), new(OpCode.Return)], new(TypeKind.Range, TypeRef.Number));
+        [new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Call, 1, -1), new(OpCode.Return)], new(TypeKind.Range, TypeRef.Number))
+    { CodeSignature = new([], CodeIds.Numbers, []) };
     Module module = new(constants, [main], OptimizationLevel: level)
-    { SessionDispatches = [new(0, new Dictionary<int, int>())] };
+    { CodeTypes = CodeIds.Types, SessionDispatches = [new(0, new Dictionary<int, int>())] };
     Artifact.Validate(module);
     var result = await Interpreter.ExecuteAsync(module);
     Require(result is RangeValue, $"O{level}: native Function values bypass source identity lookup");
@@ -96,18 +97,23 @@ async Task SignatureSlots(int level)
     [
         new(OpCode.MakeClosure, 1), new(OpCode.Constant, 0), new(OpCode.Call, 1, -1),
         new(OpCode.MakeClosure, 1), new(OpCode.Constant, 2), new(OpCode.Call, 1, -2),
-        new(OpCode.MakeScope, 2, Text: "number\0text"), new(OpCode.Return)
-    ], TypeRef.Scope);
-    FunctionCode generic = new("generic", 1, 1, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null);
+        new(OpCode.NewScope), new(OpCode.Return)
+    ], TypeRef.Scope) { CodeSignature = new([], CodeIds.ResultScope, []) };
+    FunctionCode generic = new("generic", 1, 1, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null)
+    { CodeSignature = new CodeSignature([CodeIds.Any], CodeIds.Null, []) { IsTemplate = true } };
     FunctionCode number = new("number", 1, 1,
         [new(OpCode.LoadLocal, 0), new(OpCode.Constant, 1), new(OpCode.Add), new(OpCode.Return)], TypeRef.Number,
-        ParameterTypes: [TypeRef.Number]);
+        ParameterTypes: [TypeRef.Number]) { CodeSignature = new([CodeIds.Number], CodeIds.Number, []) };
     FunctionCode text = new("text", 1, 1,
         [new(OpCode.LoadLocal, 0), new(OpCode.Constant, 3), new(OpCode.Add), new(OpCode.Return)], TypeRef.String,
-        ParameterTypes: [TypeRef.String]);
+        ParameterTypes: [TypeRef.String]) { CodeSignature = new([CodeIds.String], CodeIds.String, []) };
     Module module = new([new NumberValue(10), new NumberValue(1), new StringValue("value"), new StringValue("-ok")],
         [main, generic, number, text], OptimizationLevel: level)
-    { SessionDispatches = [new(0, new Dictionary<int, int> { [1] = 2 }), new(1, new Dictionary<int, int> { [1] = 3 })] };
+    {
+        CodeTypes = CodeIds.Types,
+        ScopeLayouts = [new([new("number", CodeIds.Number), new("text", CodeIds.String)])],
+        SessionDispatches = [new(0, new Dictionary<int, int> { [1] = 2 }), new(1, new Dictionary<int, int> { [1] = 3 })]
+    };
     Artifact.Validate(module);
     Value result = await Interpreter.ExecuteAsync(module);
     Require(result is ScopeValue scope && scope["number"] is NumberValue { Data: 11 }
@@ -149,7 +155,8 @@ async Task FutureProcess(int level)
     [
         new(OpCode.Constant, 2), new(OpCode.Constant, 3), new(OpCode.Constant, 4), new(OpCode.ProcessCall, 2, 1), new(OpCode.Pop),
         new(OpCode.LoadLocal, 0), new(OpCode.MakeRange, 1), new(OpCode.Return)
-    ], new(TypeKind.Range, TypeRef.Number), CaptureCount: 1);
+    ], new(TypeKind.Range, TypeRef.Number), CaptureCount: 1)
+    { CodeSignature = new([], CodeIds.Numbers, [new(CodeIds.Number, false)]) };
     next = next with
     {
         Functions = functions,
@@ -181,20 +188,22 @@ void PortableContract()
         Require(error.Message.Contains("active REPL", StringComparison.Ordinal), "open session exports explain the live dependency");
         Require(stream.Length == 0, "rejecting a session export does not emit a partial header");
     }
-    FunctionCode main = new("closed", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Return)], TypeRef.Number);
-    Module closed = new([new NumberValue(7)], [main]);
+    FunctionCode main = new("closed", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Return)], TypeRef.Number)
+    { CodeSignature = new([], 0, []) };
+    Module closed = new([new NumberValue(7)], [main]) { CodeTypes = [new(TypeKind.Number)] };
     Artifact.Write(closed, stream);
     stream.Position = 0;
     Module loaded = Artifact.Read(stream);
-    Require(loaded.SessionDispatches is null && Artifact.FormatVersion == 5 && Artifact.LanguageVersion == "0.8.0",
-        "portable artifacts use the execution-plan format without serializing live session dispatch");
+    Require(loaded.SessionDispatches is null && Artifact.FormatVersion == 6 && Artifact.LanguageVersion == "0.8.0",
+        "portable artifacts use the typed code format without serializing live session dispatch");
     Require((InstructionEffects.Effects(new(OpCode.Call, 0, -1)) & (InstructionEffect.Read | InstructionEffect.Write))
         == (InstructionEffect.Read | InstructionEffect.Write), "open call effects cannot be treated as a pure fixed target");
     Require((InstructionEffects.Effects(new(OpCode.Call, 0, 1)) & (InstructionEffect.Read | InstructionEffect.Write)) == 0,
         "ordinary direct-call effects are unchanged");
     try
     {
-        Artifact.Validate(Image(Initial(), 0, future: false) with { SessionDispatches = null });
+        Artifact.Validate(closed with { Functions = [main with
+        { Instructions = [new(OpCode.Call, B: -1), new(OpCode.Return)] }] });
         throw new InvalidOperationException("A negative call operand was accepted without its session table");
     }
     catch (MsyncException error)
@@ -206,30 +215,37 @@ void PortableContract()
 static Module Image(IReadOnlyList<Instruction> entry, int level, bool future)
 {
     TypeRef range = new(TypeKind.Range, TypeRef.Number);
-    FunctionCode identity = new("generic", 0, 1, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, CaptureCount: 1);
-    FunctionCode body = new("typed", 0, 1, [new(OpCode.LoadLocal, 0), new(OpCode.MakeRange, 1), new(OpCode.Return)], range, CaptureCount: 1);
-    FunctionCode thunk = new("pending", 0, 1, [new(OpCode.LoadLocal, 0), new(OpCode.Call, 0, -1), new(OpCode.Return)], range, CaptureCount: 1);
-    FunctionCode main = new("<main>", 0, 2, entry, TypeRef.Any);
+    FunctionCode identity = new("generic", 0, 1, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, CaptureCount: 1)
+    { CodeSignature = new CodeSignature([], CodeIds.Null, [new(CodeIds.Number, false)]) { IsTemplate = true } };
+    FunctionCode body = new("typed", 0, 1, [new(OpCode.LoadLocal, 0), new(OpCode.MakeRange, 1), new(OpCode.Return)], range, CaptureCount: 1)
+    { CodeSignature = new([], CodeIds.Numbers, [new(CodeIds.Number, false)]) };
+    FunctionCode thunk = new("pending", 0, 1, [new(OpCode.LoadLocal, 0), new(OpCode.Call, 0, -1), new(OpCode.Return)], range, CaptureCount: 1)
+    { CodeSignature = new([], CodeIds.Numbers, [new(CodeIds.Function, true)]) };
+    FunctionCode main = new("<main>", 0, 2, entry, TypeRef.Any) { CodeSignature = new([], CodeIds.Any, []) };
     Dictionary<int, int> targets = new() { [1] = 2 };
     if (future) targets.Add(4, 5);
     return new([new NumberValue(10), new NumberValue(20)], [main, identity, body, thunk, identity, body], OptimizationLevel: level)
-    { SessionDispatches = [new(0, targets)], SessionRoots = [0, 1] };
+    { CodeTypes = CodeIds.Types, SessionDispatches = [new(0, targets)], SessionRoots = [0, 1] };
 }
 
 static Module CallbackImage(IReadOnlyList<Instruction> entry, int level, bool future)
 {
     Module image = Image(entry, level, future);
     FunctionCode[] functions = image.Functions.ToArray();
-    functions[1] = functions[4] = new("generic_callback", 1, 2, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, CaptureCount: 1);
+    functions[1] = functions[4] = new("generic_callback", 1, 2, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, CaptureCount: 1)
+    { CodeSignature = new CodeSignature([CodeIds.Any], CodeIds.Null, [new(CodeIds.Number, false)]) { IsTemplate = true } };
     functions[2] = new("initial_callback", 1, 2,
-        [new(OpCode.LoadLocal, 0), new(OpCode.LoadLocal, 1), new(OpCode.Add), new(OpCode.Return)], TypeRef.Number, CaptureCount: 1);
+        [new(OpCode.LoadLocal, 0), new(OpCode.LoadLocal, 1), new(OpCode.Add), new(OpCode.Return)], TypeRef.Number, CaptureCount: 1)
+    { CodeSignature = new([CodeIds.Number], CodeIds.Number, [new(CodeIds.Number, false)]) };
     functions[5] = new("future_callback", 1, 2,
-        [new(OpCode.LoadLocal, 0), new(OpCode.LoadLocal, 1), new(OpCode.Multiply), new(OpCode.Return)], TypeRef.Number, CaptureCount: 1);
+        [new(OpCode.LoadLocal, 0), new(OpCode.LoadLocal, 1), new(OpCode.Multiply), new(OpCode.Return)], TypeRef.Number, CaptureCount: 1)
+    { CodeSignature = new([CodeIds.Number], CodeIds.Number, [new(CodeIds.Number, false)]) };
     functions[3] = new("deferred_transform", 0, 1,
     [
         new(OpCode.Constant, 2), new(OpCode.LoadLocal, 0), new(OpCode.SpecializeClosure, -1),
         new(OpCode.NativeCall, 2, Text: "ranges.transform"), new(OpCode.Return)
-    ], new(TypeKind.Range, TypeRef.Number), CaptureCount: 1);
+    ], new(TypeKind.Range, TypeRef.Number), CaptureCount: 1)
+    { CodeSignature = new([], CodeIds.Numbers, [new(CodeIds.Function, true)]) };
     return image with
     {
         Functions = functions,
@@ -241,7 +257,7 @@ static Module CallbackImage(IReadOnlyList<Instruction> entry, int level, bool fu
 static Instruction[] Initial() =>
 [
     new(OpCode.Constant, 0), new(OpCode.MakeClosure, 1, 1), new(OpCode.InitializeLocal, 0),
-    new(OpCode.LoadCell, 0), new(OpCode.MakeClosure, 3, 1), new(OpCode.DeferRange), new(OpCode.InitializeLocal, 1),
+    new(OpCode.LoadCell, 0, CodeIds.Function + 1), new(OpCode.MakeClosure, 3, 1), new(OpCode.DeferRange), new(OpCode.InitializeLocal, 1),
     new(OpCode.Null), new(OpCode.Return)
 ];
 
@@ -264,4 +280,14 @@ void Require(bool condition, string description)
 {
     checks++;
     if (!condition) throw new InvalidOperationException(description);
+}
+
+static class CodeIds
+{
+    internal const int Any = 0, Number = 1, String = 2, Null = 3, Function = 4, Numbers = 5, ResultScope = 6;
+    internal static readonly CodeType[] Types =
+    [
+        new(TypeKind.Any), new(TypeKind.Number), new(TypeKind.String), new(TypeKind.Null),
+        new(TypeKind.Function), new(TypeKind.Range, Element: Number), new(TypeKind.Scope)
+    ];
 }

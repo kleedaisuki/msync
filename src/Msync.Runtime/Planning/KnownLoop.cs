@@ -74,9 +74,13 @@ internal sealed class KnownLoop(Module module, IReadOnlyList<Instruction> code, 
                     return Push(left is PathValue or StringValue && right is PathValue or StringValue
                         ? PathSemantics.JoinValue(context.AsPath(left), right) : null);
                 }
-            case OpCode.GetMember:
+            case OpCode.AdmitScope:
+                return stack[^1] is ScopeValue selected && BoundScopePlaces.For(module).IsAdmitted(selected, instruction.A);
+            case OpCode.LoadField:
                 {
-                    Value? value = Pop() is ScopeValue scope ? member(scope, instruction.Text!) : null;
+                    Value? value = Pop() is ScopeValue scope
+                        && BoundScopePlaces.For(module).TryField(scope, instruction.A, out int field)
+                            ? member(scope, scope.Layout.Names[field]) : null;
                     return Push(value is CellValue cell ? cell.Data : value);
                 }
             case OpCode.MakeRange:

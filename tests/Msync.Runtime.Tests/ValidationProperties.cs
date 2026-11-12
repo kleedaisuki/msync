@@ -3,6 +3,7 @@ using Msync.Core;
 internal static class ValidationProperties
 {
     private static readonly Value[] Constants = [new StringValue("text"), new PathValue("./file"), Value.Null, Value.True, Value.False, new NumberValue(1), new TypeValue(TypeRef.Path)];
+    private static readonly CodeType[] Types = [new(TypeKind.Bool), new(TypeKind.Any)];
 
     internal static int Run()
     {
@@ -12,7 +13,8 @@ internal static class ValidationProperties
         {
             foreach (var code in new[] { Branch(random), Loop(random), Iterator(random) })
             {
-                var module = new Module(Constants, [new("generated", 1, 8, code, TypeRef.Any, ParameterTypes: [TypeRef.Bool])]);
+                var module = new Module(Constants, [new FunctionCode("generated", 1, 8, code, TypeRef.Any, ParameterTypes: [TypeRef.Bool])
+                { CodeSignature = new([0], 1, []) }]) { CodeTypes = Types };
                 string? previousError = Error(() => InstructionValidationOracle.Validate(module));
                 string? currentError = Error(() => Artifact.Validate(module));
                 if (previousError is null && currentError is not null)

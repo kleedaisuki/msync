@@ -9,7 +9,7 @@ internal static class AffineScanFusion
 
     private sealed record Group(List<Scan> Scans, List<Body> Bodies);
 
-    internal static FunctionCode Optimize(FunctionCode function,
+    internal static FunctionCode Optimize(Module module, FunctionCode function,
         Func<int, int, AffineScanFacts?> factsAt)
     {
         var code = function.Instructions;
@@ -23,7 +23,7 @@ internal static class AffineScanFusion
             Scan first = scans[index];
             var facts = factsAt(first.Start, first.Range);
             if (facts is null || facts.CapturedSlots.Contains(first.Range)) continue;
-            Body? body = Analyze(function, first, facts);
+            Body? body = Analyze(module, function, first, facts);
             if (body is null) continue;
             Group group = new([first], [body]);
             int last = index;
@@ -33,7 +33,7 @@ internal static class AffineScanFusion
                 if (next.Range != first.Range || !EmptyBetween(code, scans[last].End, next.Start)
                     || ExternalEntry(incoming, first.Start, next.End)
                     || ReadAfter(code, next.End, next.Iterator)) break;
-                Body? following = Analyze(function, next, facts);
+                Body? following = Analyze(module, function, next, facts);
                 if (following is null || group.Bodies.Any(previous => !Independent(previous, following))) break;
                 group.Scans.Add(next);
                 group.Bodies.Add(following);
@@ -60,7 +60,8 @@ internal static class AffineScanFusion
                 || next.B <= header + 2 || next.B > code.Count) continue;
             int latch = next.B - 1;
             if (code[latch].Op != OpCode.Jump || code[latch].A != header
-                || code[header + 1].Op is not (OpCode.StoreLocal or OpCode.InitializeLocal)
+                || code[header + (code[header + 1].Op == OpCode.AdmitScope ? 2 : 1)].Op
+                    is not (OpCode.StoreLocal or OpCode.InitializeLocal)
                 || ExternalEntry(incoming, start, next.B)) continue;
             result.Add(new(start, header, latch, next.B, code[start].A, next.A));
             start = latch;
@@ -68,7 +69,7 @@ internal static class AffineScanFusion
         return result;
     }
 
-    private static Body? Analyze(FunctionCode function, Scan scan, AffineScanFacts facts)
+    private static Body? Analyze(Module module, FunctionCode function, Scan scan, AffineScanFacts facts)
     {
         var types = facts.LocalTypes.ToDictionary(pair => pair.Key,
             pair => pair.Value == TypeKind.Scope ? TypeKind.Any : pair.Value);
@@ -110,9 +111,17 @@ internal static class AffineScanFusion
                     if (stack.Count == 0) return null;
                     stack.Add(stack[^1]);
                     break;
-                case OpCode.GetMember:
+                case OpCode.AdmitScope:
+                    if (stack.Count == 0 || stack[^1] != TypeKind.Scope
+                        || facts.Source.Layouts is not { } layouts
+                        || !layouts.All(module.CodeTypes[instruction.A].ScopeLayouts!.Contains)) return null;
+                    break;
+                case OpCode.LoadField:
+                    var projection = ScopeOperands.Projection(module, instruction);
                     if (!Pop(stack, out TypeKind receiver) || receiver != TypeKind.Scope
-                        || instruction.Text is null || !facts.Source.NumericFields.Contains(instruction.Text)) return null;
+                        || !facts.Source.NumericFields.Contains(projection.Name)
+                        || projection.Cases.Count > 0 && (facts.Source.Layouts is not { } fieldLayouts
+                            || !fieldLayouts.All(layout => ScopeOperands.Ordinal(module, instruction, layout) >= 0))) return null;
                     stack.Add(TypeKind.Number);
                     break;
                 case OpCode.Negate:
@@ -202,7 +211,7 @@ internal static class AffineScanFusion
             Instruction instruction = code[pc];
             int target = instruction.Op switch
             {
-                OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse => instruction.A,
+                OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady => instruction.A,
                 OpCode.IteratorNext => instruction.B,
                 _ => -1
             };
@@ -215,7 +224,7 @@ internal static class AffineScanFusion
     {
         Instruction instruction = code[pc];
         if (instruction.Op == OpCode.Return) yield break;
-        if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse)
+        if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady)
         {
             yield return instruction.A;
             if (instruction.Op == OpCode.Jump) yield break;
@@ -236,7 +245,7 @@ internal static class AffineScanFusion
             if (!groups.TryGetValue(pc, out Group? group))
             {
                 positions[pc] = output.Count;
-                if (source[pc].Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.IteratorNext)
+                if (source[pc].Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady or OpCode.IteratorNext)
                     originalBranches.Add(output.Count);
                 output.Add(source[pc++]);
                 continue;
@@ -247,6 +256,11 @@ internal static class AffineScanFusion
             for (; pc < first.Header; pc++) { positions[pc] = output.Count; output.Add(source[pc]); }
             int header = output.Count;
             output.Add(source[first.Header]);
+            var admission = source[first.Header + 1];
+            bool sharedAdmission = admission.Op == OpCode.AdmitScope
+                && group.Scans.All(scan => source[scan.Header + 1] is { Op: OpCode.AdmitScope } itemAdmission
+                    && itemAdmission.A == admission.A);
+            if (sharedAdmission) output.Add(admission);
             int item = locals++;
             output.Add(new(OpCode.InitializeLocal, item, Span: source[first.Header].Span));
             for (int index = 0; index < group.Scans.Count; index++)
@@ -255,8 +269,9 @@ internal static class AffineScanFusion
                 Dictionary<int, int> remap = [];
                 if (index != 0)
                     foreach (int slot in group.Bodies[index].Private) remap.Add(slot, locals++);
-                output.Add(new(OpCode.LoadLocal, item, Span: source[scan.Header + 1].Span));
-                for (int body = scan.Header + 1; body < scan.Latch; body++)
+                int start = scan.Header + (sharedAdmission ? 2 : 1);
+                output.Add(new(OpCode.LoadLocal, item, Span: source[start].Span));
+                for (int body = start; body < scan.Latch; body++)
                 {
                     positions[body] = output.Count;
                     Instruction instruction = source[body];

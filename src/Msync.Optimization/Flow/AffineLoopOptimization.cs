@@ -8,6 +8,6 @@ internal static class AffineLoopOptimization
             return function;
         var provenance = new AffineScanProvenance(module, function);
         provenance.Analyze();
-        return AffineScanFusion.Optimize(function, provenance.At);
+        return AffineScanFusion.Optimize(module, function, provenance.At);
     }
 }

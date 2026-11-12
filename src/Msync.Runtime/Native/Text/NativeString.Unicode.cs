@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text;
 using Msync.Core;
 
@@ -16,9 +17,9 @@ public static partial class NativeRegistry
             "length" => new NumberValue(ScalarLength(text)),
             "utf8_size" => new NumberValue(Encoding.UTF8.GetByteCount(text)),
             "is_ascii" => Bool(!text.AsSpan().ContainsAnyExceptInRange('\0', '\u007F')),
-            "chars" => new RangeValue(Characters(text), TypeRef.String),
-            "lines" => new RangeValue(Lines(text), TypeRef.String),
-            "split_whitespace" => new RangeValue(Words(text), TypeRef.String),
+            "chars" => RangeValue.TextSlices(Characters(text)),
+            "lines" => RangeValue.TextSlices(Lines(text)),
+            "split_whitespace" => RangeValue.TextSlices(Words(text)),
             "char_at" => new StringValue(CharacterAt(text, TextNatural(args[1], "string.char_at index"))),
             "substring" => new StringValue(Substring(text, TextNatural(args[1], "string.substring start"), TextNatural(args[2], "string.substring count"))),
             "find" => FindString(text, Text(args[1]), backward: false),
@@ -97,27 +98,43 @@ public static partial class NativeRegistry
         });
     }
 
-    private static IEnumerable<Value> Characters(string text)
+    private static IEnumerable<TextSlice> Characters(string text)
     {
-        foreach (Rune rune in text.EnumerateRunes()) yield return new StringValue(rune.ToString());
+        for (int offset = 0; offset < text.Length;)
+        {
+            var status = Rune.DecodeFromUtf16(text.AsSpan(offset), out _, out int width);
+            yield return status == OperationStatus.Done ? new TextSlice(text, offset, width) : new TextSlice("\uFFFD");
+            offset += width;
+        }
     }
 
-    private static IEnumerable<Value> Lines(string text)
+    private static IEnumerable<TextSlice> Lines(string text)
     {
-        using StringReader reader = new(text);
-        while (reader.ReadLine() is { } line) yield return new StringValue(line);
+        for (int start = 0; start < text.Length;)
+        {
+            int width = text.AsSpan(start).IndexOfAny('\r', '\n');
+            if (width < 0)
+            {
+                yield return new TextSlice(text, start, text.Length - start);
+                yield break;
+            }
+            yield return new TextSlice(text, start, width);
+            int terminator = start + width;
+            start = terminator + 1;
+            if (text[terminator] == '\r' && start < text.Length && text[start] == '\n') start++;
+        }
     }
 
-    private static IEnumerable<Value> Words(string text)
+    private static IEnumerable<TextSlice> Words(string text)
     {
         int start = -1, offset = 0;
         foreach (Rune rune in text.EnumerateRunes())
         {
             if (!Rune.IsWhiteSpace(rune)) { if (start < 0) start = offset; }
-            else if (start >= 0) { yield return new StringValue(text[start..offset]); start = -1; }
+            else if (start >= 0) { yield return new TextSlice(text, start, offset - start); start = -1; }
             offset += rune.Utf16SequenceLength;
         }
-        if (start >= 0) yield return new StringValue(text[start..]);
+        if (start >= 0) yield return new TextSlice(text, start, text.Length - start);
     }
 
     private static async ValueTask<Value> JoinStringAsync(IReadOnlyList<Value> args, CancellationToken token)
@@ -126,13 +143,34 @@ public static partial class NativeRegistry
         string separator = Text(args[1]);
         StringBuilder result = new();
         bool first = true;
-        await foreach (Value value in values.Items.WithCancellation(token))
+        values = await DeferredRangeSource.Demand(values, token);
+        if (values.Items is StringRangeItems.Sync strings)
         {
-            if (value is not StringValue text) throw new MsyncException($"string.join expects String elements, received {value.Type}.");
-            if (!first) result.Append(separator);
-            result.Append(text.Data);
-            first = false;
+            foreach (var slice in strings.Read())
+            {
+                token.ThrowIfCancellationRequested();
+                Append(slice.Span);
+            }
+        }
+        else if (values.Items is StringRangeItems.Async stream)
+        {
+            await foreach (var slice in stream.Read.WithCancellation(token)) Append(slice.Span);
+        }
+        else
+        {
+            await foreach (Value value in values.Items.WithCancellation(token))
+            {
+                if (value is not StringValue text) throw new MsyncException($"string.join expects String elements, received {value.Type}.");
+                Append(text.Data);
+            }
         }
         return new StringValue(result.ToString());
+
+        void Append(ReadOnlySpan<char> text)
+        {
+            if (!first) result.Append(separator);
+            result.Append(text);
+            first = false;
+        }
     }
 }

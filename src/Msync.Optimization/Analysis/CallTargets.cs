@@ -60,7 +60,7 @@ internal static class CallTargets
         internal void Consume(int count) => Stack.RemoveRange(Stack.Count - count, count);
     }
 
-    internal static Result Analyze(FunctionCode function, IReadOnlyList<Value> constants,
+    internal static Result Analyze(Module module, FunctionCode function, IReadOnlyList<Value> constants,
         bool requireKnownCallee, IReadOnlyList<FunctionCode>? layouts, ISet<int>? knownClosures = null, bool trackArguments = false,
         int captureCeiling = int.MaxValue, IReadOnlyList<bool>? plainReturns = null)
     {
@@ -77,7 +77,7 @@ internal static class CallTargets
             Array.Fill(locals, Fact.Plain, firstPrivate, locals.Length - firstPrivate);
         State entry = new(locals, []);
 
-        if (!code.Any(instruction => instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.IteratorNext))
+        if (!code.Any(instruction => instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady or OpCode.IteratorNext))
         {
             for (int pc = 0; pc < code.Count && code[pc].Op != OpCode.Return; pc++)
                 if (!Step(pc, entry)) return new([], null);
@@ -125,7 +125,7 @@ internal static class CallTargets
                 switch (instruction.Op)
                 {
                     case OpCode.Return: return;
-                    case OpCode.Jump: break;
+                    case OpCode.Jump: case OpCode.JumpIfStaticReady: break;
                     case OpCode.JumpIfTrue:
                     case OpCode.JumpIfFalse:
                         if (state.Stack.Count == 0) { inconsistent = true; return; }
@@ -157,7 +157,8 @@ internal static class CallTargets
         bool Step(int pc, State state)
         {
             var instruction = code[pc];
-            int consumed = Consumed(instruction);
+            if (!ExecutionStackEffect.TryGet(module, instruction, state.Stack.Count, out var effect)) return false;
+            int consumed = effect.Inputs;
             if (consumed > state.Stack.Count) return false;
             switch (instruction.Op)
             {
@@ -167,7 +168,8 @@ internal static class CallTargets
                 case OpCode.False: state.Stack.Add(new(true, Bool: false)); break;
                 case OpCode.Null:
                 case OpCode.LoadBuiltin: state.Stack.Add(Fact.Plain); break;
-                case OpCode.GetSingleton: state.Stack.Add(Fact.Plain); break;
+                case OpCode.LoadStaticScope: state.Stack.Add(Fact.Plain); break;
+                case OpCode.LoadStaticField: state.Stack.Add(default); break;
                 case OpCode.LoadLocal:
                 case OpCode.LoadStorage: state.Stack.Add(state.Locals[instruction.A]); break;
                 case OpCode.LoadCell:
@@ -188,17 +190,18 @@ internal static class CallTargets
                 case OpCode.SpecializeClosure:
                     state.Stack.Add(Specialize(state.Pop(), instruction, requireKnownCallee));
                     break;
-                case OpCode.MakeScope:
-                    var scope = Scope(instruction, state.Stack);
+                case OpCode.NewScope:
+                    var scope = Scope(ScopeOperands.Construction(module, instruction), state.Stack);
                     state.HasMembers |= scope.Shape is not null;
                     state.Consume(consumed);
                     state.Stack.Add(scope);
                     break;
-                case OpCode.GetMember:
+                case OpCode.LoadField:
                     var receiver = state.Pop().Shape;
-                    state.Stack.Add(receiver?.Members is { } members && members.TryGetValue(instruction.Text!, out var member)
+                    state.Stack.Add(receiver?.Members is { } members && members.TryGetValue(ScopeOperands.Projection(module, instruction).Name, out var member)
                         ? member : default);
                     break;
+                case OpCode.AdmitScope: break;
                 case OpCode.Call:
                     var closure = state.Stack[state.Stack.Count - consumed].Shape;
                     var target = Select(instruction, closure, requireKnownCallee, layouts);
@@ -232,28 +235,12 @@ internal static class CallTargets
                 default:
                     state.Consume(consumed);
                     if (InvalidatesMembers(instruction)) state.InvalidateMembers();
-                    if (PushedValue(instruction) is Fact result) state.Stack.Add(result);
+                    if (effect.ProducesValue && PushedValue(instruction) is Fact result) state.Stack.Add(result);
                     break;
             }
             return true;
         }
     }
-
-    private static int Consumed(Instruction instruction) => instruction.Op switch
-    {
-        OpCode.StoreLocal or OpCode.InitializeLocal or OpCode.Pop or OpCode.Dup or OpCode.SpecializeClosure or OpCode.GetMember
-            or OpCode.GetCapture or OpCode.Not or OpCode.Negate or OpCode.IsNull or OpCode.GetIterator or OpCode.Convert
-            or OpCode.SelectPath or OpCode.DeferRange or OpCode.SetSingleton => 1,
-        OpCode.Acquire => instruction.A == 0 ? 0 : 1,
-        OpCode.ExecutePlan or OpCode.PlanResult or OpCode.MakeClosure => instruction.B,
-        OpCode.Call or OpCode.ProcessCall => instruction.A + 1,
-        OpCode.MakeRange or OpCode.MakeLazyRange or OpCode.MakeScope or OpCode.NativeCall => instruction.A,
-        OpCode.RegexMatch => instruction.Text is null ? 2 : 1,
-        OpCode.Qualify or OpCode.PathJoin or OpCode.Transfer or OpCode.LocalTransfer or OpCode.Equal or OpCode.NotEqual
-            or OpCode.Less or OpCode.LessEqual or OpCode.Greater or OpCode.GreaterEqual or OpCode.IsType or OpCode.Add
-            or OpCode.Subtract or OpCode.Multiply or OpCode.Divide or OpCode.Remainder or OpCode.SetMember => 2,
-        _ => 0
-    };
 
     private static Fact? PushedValue(Instruction instruction) => instruction.Op switch
     {
@@ -275,21 +262,21 @@ internal static class CallTargets
                 or OpCode.Divide or OpCode.Remainder or OpCode.Negate or OpCode.Not or OpCode.IsNull
                 or OpCode.Equal or OpCode.NotEqual or OpCode.Less or OpCode.LessEqual or OpCode.Greater
                 or OpCode.GreaterEqual or OpCode.IsType or OpCode.Convert or OpCode.RegexMatch or OpCode.PathJoin
-                or OpCode.MakeScope or OpCode.MakeRange or OpCode.MakeLazyRange or OpCode.MakeClosure
-                or OpCode.SpecializeClosure or OpCode.DeferRange or OpCode.LoadBuiltin or OpCode.GetSingleton => true,
+                or OpCode.NewScope or OpCode.MakeRange or OpCode.MakeLazyRange or OpCode.MakeClosure
+                or OpCode.SpecializeClosure or OpCode.DeferRange or OpCode.LoadBuiltin or OpCode.LoadStaticScope => true,
             _ => false
         };
         if (!plain) return false;
         // This is a producer proof, not a TypeRef proof: a raw Cell can have
         // the same language type as its payload.
         for (int pc = 0; pc + 1 < code.Count; pc++)
-            if (code[pc].Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.IteratorNext or OpCode.Return)
+            if (code[pc].Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady or OpCode.IteratorNext or OpCode.Return)
                 return false;
         return true;
     }
 
     private static bool InvalidatesMembers(Instruction instruction) => instruction.Op is OpCode.NativeCall or OpCode.ProcessCall
-        or OpCode.SetMember or OpCode.GetIterator or OpCode.Acquire or OpCode.Barrier or OpCode.Transfer
+        or OpCode.StoreField or OpCode.StoreStaticField or OpCode.PublishStatic or OpCode.GetIterator or OpCode.Acquire or OpCode.Barrier or OpCode.Transfer
         or OpCode.LocalTransfer or OpCode.Qualify;
 
     private static Fact Constant(Value value) => value switch
@@ -300,17 +287,16 @@ internal static class CallTargets
         _ => Fact.Plain
     };
 
-    private static Fact Scope(Instruction instruction, List<Fact> stack)
+    private static Fact Scope(CodeLayout layout, List<Fact> stack)
     {
         bool hasCallable = false;
-        for (int slot = stack.Count - instruction.A; slot < stack.Count; slot++)
+        var fields = layout.Fields;
+        for (int slot = stack.Count - fields.Count; slot < stack.Count; slot++)
             hasCallable |= stack[slot].Shape is not null;
         if (!hasCallable) return Fact.Plain;
-        var fields = instruction.Text?.Split('\0', StringSplitOptions.RemoveEmptyEntries) ?? [];
-        if (fields.Length != instruction.A || fields.Length == 0) return Fact.Plain;
-        Dictionary<string, Fact> members = new(fields.Length, StringComparer.Ordinal);
-        for (int slot = 0; slot < fields.Length; slot++)
-            if (!members.TryAdd(fields[slot], stack[stack.Count - fields.Length + slot])) return Fact.Plain;
+        Dictionary<string, Fact> members = new(fields.Count, StringComparer.Ordinal);
+        for (int slot = 0; slot < fields.Count; slot++)
+            members.Add(fields[slot].Name, stack[stack.Count - fields.Count + slot]);
         return new(true, new(Members: members));
     }
 
@@ -321,7 +307,7 @@ internal static class CallTargets
         if (instruction.Text is not { } mapping)
             return closure?.Function is not null || !requireKnownCallee
                 ? new(true, new(instruction.A, closure?.Captures)) : Fact.Plain;
-        return closure?.Function is int original && FunctionDispatch.Parse(mapping).TryGetValue(original, out int target)
+        return closure?.Function is int original && FunctionDispatch.Targets(mapping).TryGetValue(original, out int target)
             ? new(true, new(target, closure.Captures)) : Fact.Plain;
     }
 
@@ -331,7 +317,7 @@ internal static class CallTargets
         if (instruction.B < 0 || requireKnownCallee && closure?.Function is null) return null;
         int? target;
         if (instruction.Text is { } mapping)
-            target = closure?.Function is int identity && FunctionDispatch.Parse(mapping).TryGetValue(identity, out int selected)
+            target = closure?.Function is int identity && FunctionDispatch.Targets(mapping).TryGetValue(identity, out int selected)
                 ? selected : null;
         else target = instruction.B > 0 ? instruction.B - 1 : closure?.Function;
         if (target is not int known || layouts is null) return target;

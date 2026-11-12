@@ -12,7 +12,9 @@ internal readonly record struct FlowOperation(FlowOperationKind Kind, HirLocatio
     FlowReadKind Read = FlowReadKind.Immediate, HirNodeId Expression = default)
 {
     public static FlowOperation Assign(HirLocationId target, TypeRef type, bool? boolean = null) =>
-        new(FlowOperationKind.Value, target, new(type, true, boolean));
+        Assign(target, new FlowFact(type, true, boolean));
+    public static FlowOperation Assign(HirLocationId target, FlowFact value) =>
+        new(FlowOperationKind.Value, target, value);
     public static FlowOperation Copy(HirLocationId target, HirLocationId source,
         FlowReadKind read = FlowReadKind.Immediate) => new(FlowOperationKind.Copy, target, Source: source, Read: read);
     public static FlowOperation Write(HirLocationId target) => new(FlowOperationKind.UnknownWrite, target);

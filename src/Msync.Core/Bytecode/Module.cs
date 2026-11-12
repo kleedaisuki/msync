@@ -4,6 +4,11 @@ public sealed record Module(IReadOnlyList<Value> Constants, IReadOnlyList<Functi
     ArtifactStage Stage = ArtifactStage.Relocatable, BindingContext? Context = null, int OptimizationLevel = 2,
     IReadOnlyList<BasicBlock>? Blocks = null, ModuleSemantics Semantics = ModuleSemantics.Current, bool PreserveLocals = false)
 {
+    public IReadOnlyList<CodeType> CodeTypes { get; init; } = [];
+    public IReadOnlyList<CodeLayout> ScopeLayouts { get; init; } = [];
+    public IReadOnlyList<CodeFieldProjection> FieldProjections { get; init; } = [];
+    public IReadOnlyList<CodeStaticScope> StaticScopes { get; init; } = [];
+
     // Session-only reachability metadata; object/executable files do not export locals.
     public IReadOnlyList<int>? SessionRoots { get; init; }
     public IReadOnlyList<SessionDispatchTable>? SessionDispatches { get; init; }

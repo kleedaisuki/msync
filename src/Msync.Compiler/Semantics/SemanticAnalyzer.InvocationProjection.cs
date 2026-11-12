@@ -93,10 +93,14 @@ internal sealed partial class SemanticAnalyzer
             if (formal.Origin is { } origin && origin.Fields.IsDefaultOrEmpty) origins[origin.Root] = actual;
             if (formal.Scope is { } shape && actual.Scope is { } scope)
             {
-                if (shape.Region >= 0) shape = instance.Objects.GetValueOrDefault(shape.Region, shape);
                 scope = caller.Objects.GetValueOrDefault(scope.Region, scope);
-                scopeBindings[shape.Region] = scope;
-                if (scope.Region >= 0) regions[shape.Region] = scope.Region;
+                // A structural summary has fields, but no region identity to bind.
+                if (shape.Region >= 0)
+                {
+                    shape = instance.Objects.GetValueOrDefault(shape.Region, shape);
+                    scopeBindings[shape.Region] = scope;
+                    if (scope.Region >= 0) regions[shape.Region] = scope.Region;
+                }
                 foreach (var pair in shape.Fields)
                     if (scope.Fields.TryGetValue(pair.Key, out var field))
                         Bind(pair.Value, scope.Locations.TryGetValue(pair.Key, out var location)
@@ -581,7 +585,7 @@ internal sealed partial class SemanticAnalyzer
                     SealWriteStorage(fieldLocation, write.After, context);
                     owner.CheckSessionMemberAssignment(target, write.Field!, write.After, owner.hir.Locations[fieldLocation.Value].Source, context);
                 }
-                owner.InvalidateScopeAliases(target, context);
+                owner.InvalidateScopeAliases(target, write.Field!, write.After, context);
                 target = target with { Fields = target.Fields.SetItem(write.Field!, write.After) };
                 context.Objects[write.Region] = target;
                 if (target.Locations.TryGetValue(write.Field!, out var location))

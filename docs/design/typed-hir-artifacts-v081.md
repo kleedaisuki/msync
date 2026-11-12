@@ -21,13 +21,25 @@ Language semantics stay `0.8.0`; the product release is `0.8.1`. These versions
 are separate contracts. Introducing HIR does not invalidate published bytecode
 by changing its language version string merely to match the product version.
 
-**0.8.6 compatibility note:** the current bytecode contract is format 5. The
-connection-first source operator adds the `QualifyOn` node to the format-1 HIR
-kind table, retaining the old `Qualify` node for earlier HIR. Lowering evaluates
-children in the node's recorded order. An older reader rejects an unknown node
-tag; a new HIR file that uses `QualifyOn` is therefore not forward-readable by
-0.8.5. Both forms lower to the same format-5 bytecode operation, so existing
-executable artifacts retain their recorded operand order.
+**Current containers:** the bytecode reader accepts format 6 only. Typed HIR
+uses format 3: finalized callables retain the incoming parameter type facts
+separately from mutable local storage, and lowering projects actual layout
+domains, field ordinals, and named static slots into the portable artifact.
+The connection-first operator retains its recorded evaluation order.
+
+**Construction layout domains:**
+A type's semantic `shape` can be the intersection view from a control-flow
+join. A distinct `layouts` field retains the sorted finite set of actual
+construction layout IDs, or is absent when the producer is opaque. A single
+known layout is stored inline by the HIR model; storage constraints remain
+structural, not tied to the initial value's layout. A join with an opaque
+Scope producer or an unknown yielding Range arm does not inherit the other
+arm's exact representation. The reader validates
+layout IDs and construction agreement. Source-free lowering emits logical
+field ordinals for the whole finite domain; physical addresses belong to
+executable preparation. There is no reader for earlier HIR or bytecode
+formats. See [the typed place design](object-spatial-layout.md#portable-schema)
+for the subsequent portable proof-bearing field contract.
 
 ## User workflow
 

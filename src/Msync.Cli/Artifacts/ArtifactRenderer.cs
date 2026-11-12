@@ -36,6 +36,7 @@ internal sealed partial class ArtifactRenderer(Module module, int version, strin
             Emit("}");
         }
         Emit("");
+        ScopeTables();
         Emit($"; {module.Constants.Count} constants, {module.Functions.Count} functions");
         for (int index = 0; index < module.Constants.Count; index++) Constant(index);
         for (int index = 0; index < (module.ExecutionPlans?.Count ?? 0); index++) Plan(index, module.ExecutionPlans![index]);
@@ -49,6 +50,42 @@ internal sealed partial class ArtifactRenderer(Module module, int version, strin
             }
         return new(text.ToString(), version, module.Stage.ToString().ToLowerInvariant(), module.OptimizationLevel, symbols, references, hovers,
             ExecutionPlans: executionPlans);
+    }
+
+    private void ScopeTables()
+    {
+        for (int id = 0; id < module.CodeTypes.Count; id++)
+        {
+            var type = module.CodeTypes[id];
+            string element = type.Element < 0 ? "" : $" element @t{type.Element}";
+            string layouts = type.ScopeLayouts is not { Count: > 0 } cases ? ""
+                : $" layouts [{string.Join(", ", cases.Select(layout => "@l" + layout))}]";
+            TableEntry("type", "@t" + id, $"{type.Kind}{element}{layouts}");
+        }
+        for (int id = 0; id < module.ScopeLayouts.Count; id++)
+        {
+            var layout = module.ScopeLayouts[id];
+            string fields = string.Join(", ", layout.Fields.Select((field, ordinal) =>
+                $"#{ordinal} {ArtifactDisassembly.Quote(field.Name)}: @t{field.StorageType}"));
+            TableEntry("layout", "@l" + id, "{ " + fields + " }");
+        }
+        for (int id = 0; id < module.FieldProjections.Count; id++)
+        {
+            var place = module.FieldProjections[id];
+            string cases = place.Cases.Count == 0 ? "dynamic"
+                : string.Join(", ", place.Cases.Select(field => $"@l{field.Layout}.#{field.Ordinal}"));
+            TableEntry("place", "@d" + id, $"{ArtifactDisassembly.Quote(place.Name)} [{cases}]");
+        }
+        for (int id = 0; id < module.StaticScopes.Count; id++)
+            TableEntry("static", "@s" + id, "@l" + module.StaticScopes[id].Layout);
+    }
+
+    private void TableEntry(string label, string name, string details)
+    {
+        int at = line, start = label.Length + 1;
+        Emit($"{label} {name} = {details};");
+        definitions[name] = (at, start);
+        symbols.Add((JsonNode)Symbol(name, details, 14, at, at, start, name.Length));
     }
 
     private void Constant(int index)
@@ -97,7 +134,7 @@ internal sealed partial class ArtifactRenderer(Module module, int version, strin
         }
         if (blockSymbol is not null) End(blockSymbol, line - 1);
         // A legal branch can target the function's end rather than an instruction.
-        if (function.Instructions.Any(instruction => instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse && instruction.A == function.Instructions.Count
+        if (function.Instructions.Any(instruction => instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady && instruction.A == function.Instructions.Count
             || instruction.Op == OpCode.IteratorNext && instruction.B == function.Instructions.Count))
         {
             string exit = Block(index, function.Instructions.Count);
@@ -157,9 +194,12 @@ internal sealed partial class ArtifactRenderer(Module module, int version, strin
             OpCode.LoadBuiltin => "$" + (instruction.Text ?? "").TrimStart('$'),
             OpCode.MakeRange => "items " + instruction.A,
             OpCode.MakeLazyRange => $"items {instruction.A}, deferred-mask {Text()}" + (instruction.B > 0 ? $", item-type @c{instruction.B - 1}" : ""),
-            OpCode.MakeScope => $"fields [{string.Join(", ", (instruction.Text ?? "").Split('\0', StringSplitOptions.RemoveEmptyEntries).Select(ArtifactDisassembly.Quote))}], allocation-site {instruction.B}",
-            OpCode.GetSingleton or OpCode.SetSingleton => "declaration #" + instruction.A,
-            OpCode.GetMember or OpCode.SetMember => Text() + (instruction.A > 0 ? $", slot #{instruction.A - 1} (layout-checked hint)" : ""),
+            OpCode.NewScope => $"@l{instruction.A}, allocation-site {instruction.B}",
+            OpCode.LoadField or OpCode.StoreField => "@d" + instruction.A,
+            OpCode.AdmitScope => "@t" + instruction.A,
+            OpCode.JumpIfStaticReady => $"@s{instruction.B}, ready -> {Block(function, instruction.A)}",
+            OpCode.PublishStatic or OpCode.LoadStaticScope => "@s" + instruction.A,
+            OpCode.LoadStaticField or OpCode.StoreStaticField => $"@s{instruction.A}.#{instruction.B}",
             OpCode.GetCapture => "capture " + instruction.A,
             OpCode.SpecializeClosure when instruction.Text is not null => "dispatch {" + Dispatch(instruction.Text) + "}",
             OpCode.SpecializeClosure => "@f" + instruction.A,
@@ -174,7 +214,7 @@ internal sealed partial class ArtifactRenderer(Module module, int version, strin
         };
     }
 
-    private static string Dispatch(string value) => string.Join(", ", FunctionDispatch.Parse(value).Select(pair => $"@f{pair.Key} -> @f{pair.Value}"));
+    private static string Dispatch(string value) => string.Join(", ", FunctionDispatch.Targets(value).Select(pair => $"@f{pair.Key} -> @f{pair.Value}"));
     private static string Direction(int value) => value switch { 1 => "before (acquire)", 2 => "after (release)", 3 => "before-and-after (acqrel)", _ => "flags " + value };
 
     private static IEnumerable<string> Targets(int function, Instruction instruction)
@@ -182,11 +222,21 @@ internal sealed partial class ArtifactRenderer(Module module, int version, strin
         if (instruction.Op == OpCode.Constant) yield return "@c" + instruction.A;
         if (instruction.Op is OpCode.ExecutePlan or OpCode.PlanResult) yield return "@p" + instruction.A;
         if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse) yield return Block(function, instruction.A);
+        if (instruction.Op == OpCode.JumpIfStaticReady)
+        {
+            yield return "@s" + instruction.B;
+            yield return Block(function, instruction.A);
+        }
+        if (instruction.Op == OpCode.NewScope) yield return "@l" + instruction.A;
+        if (instruction.Op is OpCode.LoadField or OpCode.StoreField) yield return "@d" + instruction.A;
+        if (instruction.Op == OpCode.AdmitScope) yield return "@t" + instruction.A;
+        if (instruction.Op is OpCode.PublishStatic or OpCode.LoadStaticScope or OpCode.LoadStaticField or OpCode.StoreStaticField)
+            yield return "@s" + instruction.A;
         if (instruction.Op == OpCode.IteratorNext) yield return Block(function, instruction.B);
         if (instruction.Op == OpCode.MakeClosure || instruction.Op == OpCode.SpecializeClosure && instruction.Text is null) yield return "@f" + instruction.A;
         if (instruction.Op == OpCode.Call && instruction.B > 0) yield return "@f" + (instruction.B - 1);
         if (instruction.Op is OpCode.Call or OpCode.SpecializeClosure && instruction.Text is not null)
-            foreach (var pair in FunctionDispatch.Parse(instruction.Text)) { yield return "@f" + pair.Key; yield return "@f" + pair.Value; }
+            foreach (var pair in FunctionDispatch.Targets(instruction.Text)) { yield return "@f" + pair.Key; yield return "@f" + pair.Value; }
         if (instruction.Op == OpCode.MakeLazyRange && instruction.B > 0) yield return "@c" + (instruction.B - 1);
     }
 
@@ -255,12 +305,16 @@ internal sealed partial class ArtifactRenderer(Module module, int version, strin
         OpCode.PlanResult => "Consume the indicated operands, await the referenced plan's selected transfer and push its Bool result. This observes the retained transfer rather than an overwritten dead operation.",
         OpCode.Call => "Pop arguments and the callable, invoke its selected typed specialization, and push the result. Invocation-owned jobs join at its return.",
         OpCode.ProcessCall => "Pop arguments and executable, launch the native process, and push Process. The release flag controls whether launch waits for completion.",
-        OpCode.MakeScope => "Pop declared field values and create a fresh lexical Scope. Raw captured cells retain their shared identities.",
-        OpCode.GetSingleton => "Push this named Scope declaration's shared instance, or Null before its first selected initialization. Anonymous Scopes do not use this table.",
-        OpCode.SetSingleton => "Replace the initializer Scope with this declaration's canonical session-owned singleton. The first published instance wins, including recursive initialization; later declarations reuse that identity.",
-        OpCode.GetMember => "Pop a receiver and push its named member value.",
-        OpCode.Qualify => "Attach the selected Connection to a Path/String value and push its Path. This lowers source 'connection @ path'; lexical 'scope::member' uses GetMember instead.",
-        OpCode.SetMember => "Pop assigned value and receiver, update the existing Scope field, and push Null.",
+        OpCode.Qualify => "Attach the selected Connection to a Path/String value and push its Path. This lowers source 'connection @ path'; lexical fields use separate place operations.",
+        OpCode.NewScope => "Create a fresh Scope with this layout and consume its field initializers in ordinal order.",
+        OpCode.LoadField => "Read the selected typed field projection from a Scope.",
+        OpCode.StoreField => "Write the selected field projection and push Null.",
+        OpCode.AdmitScope => "Check the selected Scope's actual layout at the boundary of a finite domain; preserve the operand.",
+        OpCode.JumpIfStaticReady => "Branch if the named declaration has already published its fields. The operand stack is unchanged.",
+        OpCode.PublishStatic => "Consume the typed field initializers and publish the first selected initialization of this static slot.",
+        OpCode.LoadStaticScope => "Expose the static declaration's identity. Ordinary field access does not need this operation.",
+        OpCode.LoadStaticField => "Read a field from an initialized static slot without materializing its Scope identity.",
+        OpCode.StoreStaticField => "Write a field of an initialized static slot and push Null.",
         OpCode.MakeClosure => "Pop captured locations and create a callable with the indicated bytecode identity.",
         OpCode.Barrier => "Apply the specified directional ordering boundary; paired region markers retain statement ownership.",
         OpCode.Acquire => "Wait for the selected Process or the session-owned pending frontier, not unrelated external jobs.",

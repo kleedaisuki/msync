@@ -4,6 +4,7 @@ using Msync.Core;
 using Msync.Optimization;
 using Msync.Runtime;
 using Module = Msync.Core.Module;
+using static PortableCallFixture;
 
 internal static class CallTargetChecks
 {
@@ -19,10 +20,13 @@ internal static class CallTargetChecks
         await Check("distinct callees", Diamond(sameTarget: false), 1, [("", 11), ("input", 8)]);
         await Check("iterator exhausted and item edges", Iteration(), 0, [("", 12)]);
         await Check("a backedge kills a changed callable", Reassignment(), 1, [("", 22)]);
-        await Check("raw Cell argument is a value, not a shared parameter", RawArgument(), 0, [("", 4)]);
+        await Check("a value read from a Cell is not a shared parameter", CellArgument(), 0, [("", 4)]);
+        Require(Rejects(CellArgument(raw: true), "call argument cannot be a raw location"),
+            "A raw captured location cannot cross the ordinary argument boundary");
         await Check("call may replace an exposed local callable", CapturedWrite(), 1, [("", 22)]);
         await Check("an already evaluated callable outlives argument effects", EvaluatedCallee(), 0, [("", 11)]);
-        await Check("imported direct-call capture prefix can exceed the target declaration", ExcessCaptureAlias(), 1, [("", 22)]);
+        Require(Rejects(ExcessCaptureAlias(), "specialization changes the capture count"),
+            "An imported direct call cannot hide extra captured aliases in private target locals");
         RecursiveComponent();
         await Product();
         await CapturedLoop();
@@ -36,6 +40,7 @@ internal static class CallTargetChecks
 
         async Task Check(string label, Module before, int calls, (string Input, double Result)[] examples)
         {
+            Artifact.Validate(before);
             var after = (Module)Inline.Invoke(null, [before, 2])!;
             Require(after.Functions[0].Instructions.Count(item => item.Op == OpCode.Call) == calls, label + ": residual calls");
             foreach (var (input, result) in examples)
@@ -116,34 +121,37 @@ internal static class CallTargetChecks
         }
     }
 
-    private static Module Diamond(bool sameTarget) => new([new NumberValue(1), new NumberValue(2), new NumberValue(10)],
+    private static Module Diamond(bool sameTarget) => Image([new NumberValue(1), new NumberValue(2), new NumberValue(10)],
         [
             new("main", 0, 0,
                 [new(OpCode.NativeCall, Text: "io.read_line"), new(OpCode.IsNull), new(OpCode.JumpIfFalse, 6),
                  new(OpCode.Constant, 0), new(OpCode.MakeClosure, 1, 1), new(OpCode.Jump, 8),
                  new(OpCode.Constant, 1), new(OpCode.MakeClosure, sameTarget ? 1 : 2, 1),
-                 new(OpCode.Constant, 2), new(OpCode.Call, 1), new(OpCode.Return)], TypeRef.Number),
+                 new(OpCode.Constant, 2), new(OpCode.Call, 1), new(OpCode.Return)], TypeRef.Number)
+                 { CodeSignature = new([], Number, []) },
             CapturedArithmetic("add", OpCode.Add),
             CapturedArithmetic("subtract", OpCode.Subtract)
-        ], OptimizationLevel: 0);
+        ]);
 
     private static FunctionCode CapturedArithmetic(string name, OpCode operation) => new(name, 1, 2,
         [new(OpCode.LoadLocal, 1), new(OpCode.LoadLocal, 0), new(operation), new(OpCode.Return)],
-        TypeRef.Number, CaptureCount: 1, ParameterTypes: [TypeRef.Number]);
+        TypeRef.Number, CaptureCount: 1, ParameterTypes: [TypeRef.Number])
+        { CodeSignature = new([Number], Number, [new(Number, false)]) };
 
-    private static Module Iteration() => new([new NumberValue(1), new NumberValue(2), new NumberValue(10)],
+    private static Module Iteration() => Image([new NumberValue(1), new NumberValue(2), new NumberValue(10)],
         [
             new("main", 0, 3,
                 [new(OpCode.MakeClosure, 1), new(OpCode.InitializeLocal, 0),
                  new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.MakeRange, 2), new(OpCode.GetIterator), new(OpCode.InitializeLocal, 1),
                  new(OpCode.IteratorNext, 1, 14), new(OpCode.InitializeLocal, 2), new(OpCode.LoadLocal, 0), new(OpCode.LoadLocal, 2),
                  new(OpCode.Call, 1), new(OpCode.Pop), new(OpCode.Jump, 7),
-                 new(OpCode.LoadLocal, 0), new(OpCode.Constant, 2), new(OpCode.Call, 1), new(OpCode.Return)], TypeRef.Number),
+                 new(OpCode.LoadLocal, 0), new(OpCode.Constant, 2), new(OpCode.Call, 1), new(OpCode.Return)], TypeRef.Number)
+                 { CodeSignature = new([], Number, []) },
             new("increment", 1, 1, [new(OpCode.LoadLocal, 0), new(OpCode.Constant, 1), new(OpCode.Add), new(OpCode.Return)],
-                TypeRef.Number, ParameterTypes: [TypeRef.Number])
-        ], OptimizationLevel: 0);
+                TypeRef.Number, ParameterTypes: [TypeRef.Number]) { CodeSignature = new([Number], Number, []) }
+        ]);
 
-    private static Module Reassignment() => new(
+    private static Module Reassignment() => Image(
         [new NumberValue(11), new NumberValue(22), new NumberValue(0), new NumberValue(1), new NumberValue(2)],
         [
             new("main", 0, 3,
@@ -152,60 +160,75 @@ internal static class CallTargetChecks
                  new(OpCode.LoadLocal, 1), new(OpCode.Constant, 4), new(OpCode.GreaterEqual), new(OpCode.JumpIfTrue, 20),
                  new(OpCode.LoadLocal, 0), new(OpCode.Call), new(OpCode.StoreLocal, 2), new(OpCode.MakeClosure, 2), new(OpCode.StoreLocal, 0),
                  new(OpCode.LoadLocal, 1), new(OpCode.Constant, 3), new(OpCode.Add), new(OpCode.StoreLocal, 1), new(OpCode.Jump, 6),
-                 new(OpCode.LoadLocal, 2), new(OpCode.Return)], TypeRef.Number),
+                 new(OpCode.LoadLocal, 2), new(OpCode.Return)], TypeRef.Number)
+                 { CodeSignature = new([], Number, []) },
             LiteralFunction("first", 0),
             LiteralFunction("second", 1)
-        ], OptimizationLevel: 0);
+        ]);
 
-    private static Module RawArgument() => new([new NumberValue(4), new NumberValue(9)],
+    private static Module CellArgument(bool raw = false)
+    {
+        Instruction[] read = raw ? [] : [new(OpCode.Pop), new(OpCode.LoadLocal, 0)];
+        return Image([new NumberValue(4), new NumberValue(9)],
         [
             new("main", 0, 1,
-                [new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.MakeClosure, 1), new(OpCode.LoadCell, 0),
-                 new(OpCode.Call, 1), new(OpCode.Pop), new(OpCode.LoadLocal, 0), new(OpCode.Return)], TypeRef.Number),
+                [new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.MakeClosure, 1),
+                 new(OpCode.LoadCell, 0, Number + 1), .. read,
+                 new(OpCode.Call, 1), new(OpCode.Pop), new(OpCode.LoadLocal, 0), new(OpCode.Return)], TypeRef.Number)
+                 { CodeSignature = new([], Number, []) },
             new("replace", 1, 1,
                 [new(OpCode.Constant, 1), new(OpCode.StoreLocal, 0), new(OpCode.LoadLocal, 0), new(OpCode.Return)],
-                TypeRef.Number, ParameterTypes: [TypeRef.Number])
-        ], OptimizationLevel: 0);
+                TypeRef.Number, ParameterTypes: [TypeRef.Number]) { CodeSignature = new([Number], Number, []) }
+        ]);
+    }
 
-    private static Module CapturedWrite() => new([new NumberValue(11), new NumberValue(22)],
+    private static Module CapturedWrite() => Image([new NumberValue(11), new NumberValue(22)],
         [
             new("main", 0, 1,
-                [new(OpCode.MakeClosure, 1), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0), new(OpCode.MakeClosure, 3, 1),
-                 new(OpCode.Call), new(OpCode.Pop), new(OpCode.LoadLocal, 0), new(OpCode.Call), new(OpCode.Return)], TypeRef.Number),
+                [new(OpCode.MakeClosure, 1), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0, Callable + 1), new(OpCode.MakeClosure, 3, 1),
+                 new(OpCode.Call), new(OpCode.Pop), new(OpCode.LoadLocal, 0), new(OpCode.Call), new(OpCode.Return)], TypeRef.Number)
+                 { CodeSignature = new([], Number, []) },
             LiteralFunction("first", 0),
             LiteralFunction("second", 1),
             Rebind()
-        ], OptimizationLevel: 0);
+        ]);
 
-    private static Module EvaluatedCallee() => new([new NumberValue(11), new NumberValue(22)],
+    private static Module EvaluatedCallee() => Image([new NumberValue(11), new NumberValue(22)],
         [
             new("main", 0, 1,
                 [new(OpCode.MakeClosure, 1), new(OpCode.InitializeLocal, 0), new(OpCode.LoadLocal, 0),
-                 new(OpCode.LoadCell, 0), new(OpCode.MakeClosure, 3, 1), new(OpCode.Call), new(OpCode.Call, 1), new(OpCode.Return)], TypeRef.Number),
-            LiteralFunction("first", 0) with { ParameterCount = 1, LocalCount = 1 },
-            LiteralFunction("second", 1) with { ParameterCount = 1, LocalCount = 1 },
+                 new(OpCode.LoadCell, 0, Callable + 1), new(OpCode.MakeClosure, 3, 1), new(OpCode.Call), new(OpCode.Call, 1), new(OpCode.Return)], TypeRef.Number)
+                 { CodeSignature = new([], Number, []) },
+            LiteralFunction("first", 0, ignoresArgument: true),
+            LiteralFunction("second", 1, ignoresArgument: true),
             Rebind()
-        ], OptimizationLevel: 0);
+        ]);
 
     private static FunctionCode Rebind() => new("rebind", 0, 1,
         [new(OpCode.MakeClosure, 2), new(OpCode.StoreLocal, 0), new(OpCode.Null), new(OpCode.Return)],
-        TypeRef.Null, CaptureCount: 1);
+        TypeRef.Null, CaptureCount: 1) { CodeSignature = new([], Null, [new(Callable, true)]) };
 
-    private static Module ExcessCaptureAlias() => new([new NumberValue(11), new NumberValue(22)],
+    private static Module ExcessCaptureAlias() => Image([new NumberValue(11), new NumberValue(22)],
         [
             new("main", 0, 1,
-                [new(OpCode.MakeClosure, 1), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0), new(OpCode.LoadCell, 0),
-                 new(OpCode.MakeClosure, 3, 2), new(OpCode.Call, 0, 5), new(OpCode.Return)], TypeRef.Number),
+                [new(OpCode.MakeClosure, 1), new(OpCode.InitializeLocal, 0),
+                 new(OpCode.LoadCell, 0, Callable + 1), new(OpCode.LoadCell, 0, Callable + 1),
+                 new(OpCode.MakeClosure, 3, 2), new(OpCode.Call, 0, 5), new(OpCode.Return)], TypeRef.Number)
+                 { CodeSignature = new([], Number, []) },
             LiteralFunction("first", 0),
             LiteralFunction("second", 1),
-            new("carrier", 0, 2, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, CaptureCount: 2),
+            new("carrier", 0, 2, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, CaptureCount: 2)
+                { CodeSignature = new([], Null, [new(Callable, true), new(Callable, true)]) },
             new("extra-captures", 0, 2,
                 [new(OpCode.MakeClosure, 1), new(OpCode.StoreLocal, 0), new(OpCode.MakeClosure, 2), new(OpCode.StoreLocal, 1),
                  new(OpCode.LoadLocal, 0), new(OpCode.Call), new(OpCode.Return)], TypeRef.Number)
-        ], OptimizationLevel: 0);
+                 { CodeSignature = new([], Number, []) }
+        ]);
 
-    private static FunctionCode LiteralFunction(string name, int index) => new(name, 0, 0,
-        [new(OpCode.Constant, index), new(OpCode.Return)], TypeRef.Number);
+    private static FunctionCode LiteralFunction(string name, int index, bool ignoresArgument = false) =>
+        new(name, ignoresArgument ? 1 : 0, ignoresArgument ? 1 : 0,
+            [new(OpCode.Constant, index), new(OpCode.Return)], TypeRef.Number)
+        { CodeSignature = new(ignoresArgument ? [Any] : [], Number, []) };
 
     private static Module RoundTrip(Module module)
     {
@@ -213,5 +236,29 @@ internal static class CallTargetChecks
         Artifact.Write(module, stream);
         stream.Position = 0;
         return Artifact.Read(stream);
+    }
+}
+
+internal static class PortableCallFixture
+{
+    internal const int Number = 0, BoolCode = 1, TextCode = 2, Null = 3, Callable = 4, Any = 5;
+
+    internal static Module Image(IReadOnlyList<Value> constants, IReadOnlyList<FunctionCode> functions) =>
+        new(constants, functions, OptimizationLevel: 0)
+        {
+            CodeTypes = [
+                new(TypeKind.Number), new(TypeKind.Bool), new(TypeKind.String), new(TypeKind.Null),
+                new(TypeKind.Function), new(TypeKind.Any)
+            ]
+        };
+
+    internal static bool Rejects(Module module, string message)
+    {
+        using MemoryStream bytes = new();
+        Artifact.WriteProduced(module, bytes);
+        bytes.Position = 0;
+        try { _ = Artifact.Read(bytes); }
+        catch (MsyncException error) when (error.Message.Contains(message, StringComparison.Ordinal)) { return true; }
+        return false;
     }
 }

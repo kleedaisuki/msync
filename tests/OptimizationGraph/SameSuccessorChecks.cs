@@ -6,6 +6,9 @@ internal static class SameSuccessorChecks
 {
     private static readonly SourceSpan BranchSpan = new("same-successor.msync", 18, 2);
     private static readonly SourceSpan MemberSpan = new("same-successor.msync", 4, 7);
+    private const int Any = 0, Scope = 1, Bool = 2, String = 3;
+    private static readonly CodeType[] Types =
+        [new(TypeKind.Any), new(TypeKind.Scope), new(TypeKind.Bool), new(TypeKind.String)];
 
     internal static async Task<int> Run(string directory)
     {
@@ -42,8 +45,9 @@ internal static class SameSuccessorChecks
             Check(await Execute(candidate, directory, "") is NullValue, "The selected empty-input path changed.");
         }
 
-        var failure = Program([], new(OpCode.MakeScope), new(OpCode.GetMember, Text: "absent", Span: MemberSpan),
-            new(OpCode.IsNull), new(OpCode.JumpIfTrue, 4, Span: BranchSpan), new(OpCode.True), new(OpCode.Return));
+        var failure = WithOpaqueRead(Program([], new(OpCode.MakeClosure, 1), new(OpCode.True), new(OpCode.NewScope),
+            new(OpCode.Call, 1, 2), new(OpCode.IsNull), new(OpCode.JumpIfTrue, 6, Span: BranchSpan),
+            new(OpCode.True), new(OpCode.Return)), new([new("other", Bool)]), "absent");
         foreach (var candidate in Artifacts(failure, 2, directory))
         {
             Check(!candidate.Functions[0].Instructions.Any(IsBranch), "The branch after the failing producer was retained.");
@@ -52,9 +56,10 @@ internal static class SameSuccessorChecks
                 "Removing the branch lost the selected member error.");
         }
 
-        var unknown = Program([new ScopeValue(new Dictionary<string, Value> { ["condition"] = new StringValue("not Bool") })],
-            new(OpCode.Constant), new(OpCode.GetMember, Text: "condition"), new(OpCode.JumpIfTrue, 3, Span: BranchSpan),
-            new(OpCode.True), new(OpCode.Return));
+        var unknown = WithOpaqueRead(Program([new ScopeValue(new ScopeLayout(["condition"], 0), [new StringValue("not Bool")])],
+            new(OpCode.MakeClosure, 1), new(OpCode.Constant), new(OpCode.Call, 1, 2),
+            new(OpCode.JumpIfTrue, 4, Span: BranchSpan), new(OpCode.True), new(OpCode.Return)),
+            new([new("condition", String)]), "condition");
         foreach (var candidate in Artifacts(unknown, 2, directory))
         {
             Check(candidate.Functions[0].Instructions.Any(IsBranch), "An unproved condition was treated as an immediate Bool.");
@@ -67,7 +72,7 @@ internal static class SameSuccessorChecks
         {
             TaskCompletionSource<ProcessValue> producer = new(TaskCreationOptions.RunContinuationsAsynchronously);
             var deferred = Program([new ProcessValue(0, "", "") { Completion = producer.Task }],
-                new(OpCode.Constant), new(OpCode.GetMember, Text: "success"), new(OpCode.JumpIfTrue, 3, Span: BranchSpan),
+                new(OpCode.Constant), new(OpCode.NativeCall, 1, Text: "process.success"), new(OpCode.JumpIfTrue, 3, Span: BranchSpan),
                 new(OpCode.True), new(OpCode.Return));
             var pending = Execute(Optimizer.OptimizeInstructions(deferred, level), directory);
             bool awaited = !pending.IsCompleted;
@@ -117,7 +122,17 @@ internal static class SameSuccessorChecks
     private static Instruction ReadLine() => new(OpCode.NativeCall, Text: "io.read_line");
     private static bool IsBranch(Instruction instruction) => instruction.Op is OpCode.JumpIfTrue or OpCode.JumpIfFalse;
     private static Module Program(Value[] constants, params Instruction[] code) =>
-        new(constants, [new("main", 0, 0, code, TypeRef.Any)], OptimizationLevel: 0);
+        new(constants, [new FunctionCode("main", 0, 0, code, TypeRef.Any)
+            { CodeSignature = new([], Any, []) }], OptimizationLevel: 0) { CodeTypes = Types };
+
+    private static Module WithOpaqueRead(Module caller, CodeLayout layout, string name) =>
+        caller with
+        {
+            ScopeLayouts = [layout], FieldProjections = [new(name, [])],
+            Functions = [caller.Functions[0], new FunctionCode("read opaque field", 1, 1,
+                [new(OpCode.LoadLocal, 0), new(OpCode.LoadField, Span: MemberSpan), new(OpCode.Return)],
+                TypeRef.Any, ParameterTypes: [TypeRef.Scope]) { CodeSignature = new([Scope], Any, []) }]
+        };
 
     private static IEnumerable<Module> Artifacts(Module source, int level, string directory)
     {

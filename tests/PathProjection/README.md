@@ -43,3 +43,16 @@ specialization identities; an earlier analysis retains its frozen signatures.
 checks compiled `stdout`, `stderr`, `exit_code` and Bool `success` properties
 against the canonical standard-library result. It uses `/bin/sh` on Unix and
 `ComSpec` on Windows; no simulated Process value substitutes for the child.
+
+The default journey also executes format-5 artifacts whose lexical result is
+consumed by a String comparison. It covers both implicit conversion and
+explicit cast, endpoint-specific backslash/trailing-separator behavior,
+unbound Windows projection, and supplementary-plane scalar ordering. Logical
+instruction sites and the lexical operation's fast-native counter must remain
+available even when neither intermediate value is allocated.
+
+The direct owned-result variant uses the same endpoint grammar and verifies
+the complete result Path (not just its display), including captured cwd and
+home, unchanged remote endpoint, raw/native spelling differences and absent
+duplicate projection. Direct String inputs acquire the active binding
+context. Both variants require the same original instruction counts.

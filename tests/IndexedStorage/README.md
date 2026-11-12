@@ -7,13 +7,14 @@ binder and interpreter. Run it with:
 dotnet run --project tests/IndexedStorage -c Release
 ```
 
-The cases distinguish independent buffer elements, repeated reads of the same
-object, external aliases and nested objects. They also cover callable elements
+The cases distinguish independent vector elements, repeated reads of the same
+object, external aliases and nested owners. They also cover callable elements
 and field replacement, immutable snapshot membership, actual Path/String store
-conversion, first-write type inference and fixed-schema rejection. Nullable
-member refinements survive an unrelated control-flow branch but are invalidated
-by a potentially aliasing write, including a write through a function. Refining
-one dynamically selected element never refines another selected element.
+conversion and fixed-schema rejection. A typed-empty slot arena must recover
+the live vector owned by an inserted row rather than the type witness's
+hypothetical field. Nullable member refinements survive an unrelated branch
+but are invalidated by a potentially aliasing write, including a write through
+a function. Refining one selected element never refines another one.
 
 A concept checked through a dynamically selected aggregate retains its callable
 contract when the underlying field is subsequently assigned through an original
@@ -24,19 +25,11 @@ executable bytecode at O0/O2/O3; rejects are checked at the same levels.
 The compiler ownership and proof model is recorded in
 [the indexed-storage design note](../../docs/design/indexed-storage-v080.md).
 
-The final focused managed run passed 191 assertions with no build warnings.
-It includes a present-Null ADT stored in a Buffer: frozen associated-type proofs
-survive dynamic access, while incompatible required-payload writes remain errors.
-
-Runtime carrier checks additionally consume actual production NativeRegistry and
-source/object/executable results, rather than comparing only inferred types.
-They cover first-write insertion/push, retained Range aliases across actual REPL
-submissions, before/after snapshots, fixed carriers after clear, ordinary
-Range equality and hashed-key stability. The `ItemType` getter remains a field
-load; the immutable-origin protocol is confined to equality and hashing.
-
-The owned-Range Buffer representation passed the same 191 focused assertions
-against the frozen GCC/indexed-memory candidate assemblies. This incremental
-run rebuilt only the test entrypoint; it did not rebuild the product or repeat
-the unrelated ordered-container property matrices. Introspection observes the
-Buffer value directly rather than an implementation-only `items` Scope field.
+Runtime carrier checks additionally consume actual production NativeRegistry
+and source/object/executable results, rather than comparing only inferred
+types. They cover insertion/removal, retained storage aliases across actual
+REPL submissions, independent Range snapshots, moving membership out of the
+same vector, ordinary Range equality and stable mutable-owner identity. A
+vector declares its element carrier at construction and does not become a
+Range. An ordinary Range and an untyped empty Range cannot serve as mutable
+storage or silently change a constructed vector's carrier.

@@ -2,20 +2,25 @@ namespace Msync.Optimization;
 
 internal static partial class CrossBlockMemoryOptimization
 {
-    private readonly record struct Reference(DefinitionSet Origins, bool Cell = false, bool Opaque = false,
+    private readonly record struct Reference(DefinitionSet Origins, bool Cell = false, TypeKind UnknownKinds = TypeKind.Never,
         TypeKind Kinds = TypeKind.Never, int Closure = 0, int CellSlot = 0, bool Eager = false, int Function = 0)
     {
+        internal bool Opaque => UnknownKinds != TypeKind.Never;
+        internal static Reference UnknownValue(TypeKind kinds = TypeKind.Any, bool cell = false, int closure = 0,
+            bool eager = false, int function = 0, DefinitionSet origins = default) =>
+            new(origins, cell, kinds, kinds, closure, Eager: eager, Function: function);
+
         internal Reference Union(Reference other)
         {
-            if (Kinds == TypeKind.Never && Origins.Count == 0 && !Cell && !Opaque) return other;
-            if (other.Kinds == TypeKind.Never && other.Origins.Count == 0 && !other.Cell && !other.Opaque) return this;
-            return new(Origins.Union(other.Origins), Cell || other.Cell, Opaque || other.Opaque, Kinds | other.Kinds,
+            if (Kinds == TypeKind.Never && Origins.Count == 0 && !Cell) return other;
+            if (other.Kinds == TypeKind.Never && other.Origins.Count == 0 && !other.Cell) return this;
+            return new(Origins.Union(other.Origins), Cell || other.Cell, UnknownKinds | other.UnknownKinds, Kinds | other.Kinds,
                 Closure == other.Closure ? Closure : 0, CellSlot == other.CellSlot ? CellSlot : 0, Eager && other.Eager,
                 Function == other.Function ? Function : -1);
         }
         internal bool Same(Reference other)
         {
-            if (Cell != other.Cell || Opaque != other.Opaque || Origins.Count != other.Origins.Count || Kinds != other.Kinds
+            if (Cell != other.Cell || UnknownKinds != other.UnknownKinds || Origins.Count != other.Origins.Count || Kinds != other.Kinds
                 || Closure != other.Closure || CellSlot != other.CellSlot || Eager != other.Eager || Function != other.Function) return false;
             foreach (var origin in Origins) if (!other.Origins.Contains(origin)) return false;
             return true;
@@ -45,9 +50,10 @@ internal static partial class CrossBlockMemoryOptimization
         internal bool Cyclic;
     }
 
-    private sealed class Allocation(int position, string[] names)
+    private sealed class Allocation(int position, int layout, string[] names)
     {
         internal readonly int Position = position;
+        internal readonly int Layout = layout;
         internal readonly string[] Names = names;
         internal readonly Dictionary<string, int> Fields = names.Select((name, index) => (name, index))
             .ToDictionary(pair => pair.name, pair => pair.index, StringComparer.Ordinal);
@@ -65,7 +71,7 @@ internal static partial class CrossBlockMemoryOptimization
         IReadOnlyList<FunctionMemoryEffects>? summaries)
     {
         _ = constants;
-        if (!function.Instructions.Any(instruction => instruction.Op == OpCode.MakeScope)) return function;
+        if (!function.Instructions.Any(instruction => instruction.Op == OpCode.NewScope)) return function;
         return new Analysis(module, function, summaries).Optimize();
     }
 
@@ -80,7 +86,7 @@ internal static partial class CrossBlockMemoryOptimization
         private readonly Dictionary<int, Reference> stored = [];
         private readonly Dictionary<int, HashSet<int>> cellAliases = [];
         private readonly HashSet<int> cellSlots = [];
-        private readonly Dictionary<int, int> targets = FunctionInlining.Targets(function, module.Constants, true, module.Functions);
+        private readonly Dictionary<int, int> targets = FunctionInlining.Targets(module, function, module.Constants, true, module.Functions);
         private readonly HashSet<int> captured = function.Instructions.Where(instruction => instruction.Op == OpCode.LoadCell)
             .Select(instruction => instruction.A).Concat(Enumerable.Range(0, function.CaptureCount)).ToHashSet();
         private Block[] blocks = [];
@@ -97,9 +103,12 @@ internal static partial class CrossBlockMemoryOptimization
             if (allocations.Count == 0) return function;
             cellSlots.UnionWith(captured);
             var initial = new Reference[function.LocalCount];
-            for (var slot = 0; slot < function.CaptureCount + function.ParameterCount; slot++) initial[slot] = new(default,
-                Cell: slot < function.CaptureCount, Opaque: true,
-                Kinds: slot < function.CaptureCount ? TypeKind.Any : function.ParameterTypes?[slot - function.CaptureCount].Kind ?? TypeKind.Any);
+            for (var slot = 0; slot < function.CaptureCount + function.ParameterCount; slot++)
+            {
+                bool capture = slot < function.CaptureCount;
+                initial[slot] = Reference.UnknownValue(
+                    capture ? TypeKind.Any : function.ParameterTypes?[slot - function.CaptureCount].Kind ?? TypeKind.Any, capture);
+            }
             blocks[0].Input = new(initial, []);
             Enqueue(0);
             while (work.TryDequeue(out var index))
@@ -110,7 +119,7 @@ internal static partial class CrossBlockMemoryOptimization
             foreach (var (position, receiver) in receivers)
             {
                 if (receiver.Single is var origin && allocations.TryGetValue(origin, out var allocation)
-                    && allocation.Fields.ContainsKey(code[position].Text!)) continue;
+                    && ScopeOperands.Ordinal(module, code[position], allocation.Layout) >= 0) continue;
                 Escape(receiver);
             }
             foreach (var allocation in allocations.Values)
@@ -131,9 +140,9 @@ internal static partial class CrossBlockMemoryOptimization
             for (var pc = 0; pc < code.Count; pc++)
             {
                 var instruction = code[pc];
-                if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse) starts.Add(instruction.A);
+                if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady) starts.Add(instruction.A);
                 if (instruction.Op == OpCode.IteratorNext) starts.Add(instruction.B);
-                if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.IteratorNext or OpCode.Return)
+                if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady or OpCode.IteratorNext or OpCode.Return)
                     starts.Add(pc + 1);
             }
             var positions = starts.ToArray();
@@ -147,7 +156,7 @@ internal static partial class CrossBlockMemoryOptimization
             {
                 var block = blocks[index];
                 var instruction = code[block.End - 1];
-                if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse) Edge(instruction.A);
+                if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady) Edge(instruction.A);
                 if (instruction.Op == OpCode.IteratorNext) Edge(instruction.B);
                 if (instruction.Op is not (OpCode.Jump or OpCode.Return)) Edge(block.End);
 
@@ -200,10 +209,9 @@ internal static partial class CrossBlockMemoryOptimization
             for (var pc = 0; pc < code.Count; pc++)
             {
                 var instruction = code[pc];
-                if (instruction.Op != OpCode.MakeScope || blocks[blockAt[pc]].Cyclic) continue;
-                var names = instruction.Text?.Split('\0', StringSplitOptions.RemoveEmptyEntries) ?? [];
-                if (names.Length != instruction.A || names.Distinct(StringComparer.Ordinal).Count() != names.Length) continue;
-                allocations.Add(pc, new(pc, names));
+                if (instruction.Op != OpCode.NewScope || blocks[blockAt[pc]].Cyclic) continue;
+                var names = ScopeOperands.Construction(module, instruction).Fields.Select(field => field.Name).ToArray();
+                allocations.Add(pc, new(pc, instruction.A, names));
             }
         }
 
@@ -227,11 +235,11 @@ internal static partial class CrossBlockMemoryOptimization
         private Reference ReadField(Reference receiver, string field, int block)
         {
             if (!allocations.TryGetValue(receiver.Single, out var owner) || !owner.Fields.ContainsKey(field))
-                return new(default, Opaque: true, Kinds: TypeKind.Any);
+                return Reference.UnknownValue();
             if (!readers.TryGetValue((owner.Position, field), out var waiting)) readers.Add((owner.Position, field), waiting = []);
             waiting.Add(block);
             return owner.Contents.TryGetValue(field, out var value)
-                ? value with { Cell = false, Opaque = value.Opaque || value.Cell }
+                ? value with { Cell = false, UnknownKinds = value.UnknownKinds | (value.Cell ? value.Kinds : TypeKind.Never) }
                 : default;
         }
 
@@ -283,24 +291,30 @@ internal static partial class CrossBlockMemoryOptimization
                 return result;
             }
             void Consume(int count) { for (var item = 0; item < count; item++) Escape(Pop()); }
-            void Unknown(int consumed, bool cell = false, TypeKind kinds = TypeKind.Any) { Consume(consumed); state.Stack.Add(new(default, cell, Opaque: true, Kinds: kinds)); }
+            void Unknown(int consumed, bool cell = false, TypeKind kinds = TypeKind.Any)
+            { Consume(consumed); state.Stack.Add(Reference.UnknownValue(kinds, cell)); }
             for (var pc = blocks[index].Start; pc < blocks[index].End; pc++)
             {
                 var instruction = code[pc];
                 switch (instruction.Op)
                 {
                     case OpCode.Nop: case OpCode.Barrier: break;
-                    case OpCode.GetSingleton: Unknown(0, kinds: TypeKind.Scope | TypeKind.Null); break;
-                    case OpCode.SetSingleton: Unknown(1, kinds: TypeKind.Scope); break;
+                    case OpCode.LoadStaticScope: Unknown(0, kinds: TypeKind.Scope); break;
+                    case OpCode.LoadStaticField: Unknown(0, kinds: ScopeOperands.FieldType(module, instruction).Kind); break;
+                    case OpCode.PublishStatic:
+                        Consume(ScopeOperands.Construction(module, instruction).Fields.Count); break;
+                    case OpCode.StoreStaticField: Unknown(1, kinds: TypeKind.Null); break;
+                    case OpCode.AdmitScope:
+                        var admitted = Pop(); Escape(admitted); state.Stack.Add(admitted); break;
                     case OpCode.Constant:
                         var literal = module.Constants[instruction.A];
-                        state.Stack.Add(new(default, Opaque: true, Kinds: literal.Type.Kind,
-                            Closure: literal is FunctionValue ? -instruction.A - 1 : 0,
-                            Function: literal is FunctionValue literalFunction ? literalFunction.Function : -1)); break;
-                    case OpCode.Null: state.Stack.Add(new(default, Opaque: true, Kinds: TypeKind.Null)); break;
+                        state.Stack.Add(Reference.UnknownValue(literal.Type.Kind,
+                            closure: literal is FunctionValue ? -instruction.A - 1 : 0,
+                            function: literal is FunctionValue literalFunction ? literalFunction.Function : -1)); break;
+                    case OpCode.Null: state.Stack.Add(Reference.UnknownValue(TypeKind.Null)); break;
                     case OpCode.True:
-                    case OpCode.False: state.Stack.Add(new(default, Opaque: true, Kinds: TypeKind.Bool)); break;
-                    case OpCode.LoadBuiltin: state.Stack.Add(new(default, Opaque: true, Kinds: TypeKind.Connection)); break;
+                    case OpCode.False: state.Stack.Add(Reference.UnknownValue(TypeKind.Bool)); break;
+                    case OpCode.LoadBuiltin: state.Stack.Add(Reference.UnknownValue(TypeKind.Connection)); break;
                     case OpCode.LoadLocal:
                         var loaded = state.Locals[instruction.A]; state.Stack.Add(loaded with { Cell = false }); break;
                     case OpCode.LoadCell:
@@ -329,8 +343,8 @@ internal static partial class CrossBlockMemoryOptimization
                         break;
                     case OpCode.Pop: Pop(); break;
                     case OpCode.Dup: var duplicate = Pop(); state.Stack.Add(duplicate); state.Stack.Add(duplicate); break;
-                    case OpCode.MakeScope:
-                        var fields = PopMany(instruction.A);
+                    case OpCode.NewScope:
+                        var fields = PopMany(ScopeOperands.Construction(module, instruction).Fields.Count);
                         if (allocations.TryGetValue(pc, out var allocation))
                         {
                             allocation.SharedFields |= fields.Any(field => field.Cell);
@@ -340,22 +354,27 @@ internal static partial class CrossBlockMemoryOptimization
                         else
                         {
                             foreach (var field in fields) Escape(field);
-                            state.Stack.Add(new(default, Opaque: true, Kinds: TypeKind.Scope));
+                            state.Stack.Add(Reference.UnknownValue(TypeKind.Scope));
                         }
                         break;
-                    case OpCode.GetMember:
-                        var receiver = Pop(); Receiver(pc, receiver); state.Stack.Add(ReadField(receiver, instruction.Text!, index)); break;
-                    case OpCode.SetMember:
+                    case OpCode.LoadField:
+                        var receiver = Pop(); Receiver(pc, receiver);
+                        if (allocations.TryGetValue(receiver.Single, out var readOwner) && ScopeOperands.Ordinal(module, instruction, readOwner.Layout) < 0)
+                            Escape(receiver);
+                        state.Stack.Add(ReadField(receiver, ScopeOperands.Projection(module, instruction).Name, index)); break;
+                    case OpCode.StoreField:
                         var assigned = Pop(); var destination = Pop(); Receiver(pc, destination);
-                        if (allocations.TryGetValue(destination.Single, out var owner) && owner.Fields.ContainsKey(instruction.Text!))
-                        { Content(owner, instruction.Text!, assigned); owner.SharedFields |= assigned.Cell; }
-                        else Escape(assigned);
-                        state.Stack.Add(new(default, Opaque: true, Kinds: TypeKind.Null)); break;
+                        // Structural storage admission must still execute on the physical instance.
+                        if (NeedsStorageCheck(instruction)) Escape(destination);
+                        if (allocations.TryGetValue(destination.Single, out var owner) && ScopeOperands.Ordinal(module, instruction, owner.Layout) is >= 0 and var ordinal)
+                        { Content(owner, owner.Names[ordinal], assigned); owner.SharedFields |= assigned.Cell; }
+                        else { Escape(destination); Escape(assigned); }
+                        state.Stack.Add(Reference.UnknownValue(TypeKind.Null)); break;
                     case OpCode.MakeClosure:
                         var captures = PopMany(instruction.B);
                         foreach (var capture in captures) Escape(capture);
                         Remember(closures, pc + 1, captures);
-                        state.Stack.Add(new(default, Opaque: true, Kinds: TypeKind.Function, Closure: pc + 1, Function: instruction.A)); break;
+                        state.Stack.Add(Reference.UnknownValue(TypeKind.Function, closure: pc + 1, function: instruction.A)); break;
                     case OpCode.Call:
                     case OpCode.ProcessCall:
                         var arguments = PopMany(instruction.A + 1); Remember(calls, pc, arguments);
@@ -369,20 +388,21 @@ internal static partial class CrossBlockMemoryOptimization
                         bool invoke = NativeInvokes(instruction.Text, nativeArguments);
                         if (invoke) InvalidateBindings(state);
                         var signature = NativeSignatures.TryGet(instruction.Text!, out var nativeSignature) ? nativeSignature : null;
-                        state.Stack.Add(new(default, Opaque: true, Kinds: signature?.Result.Kind ?? TypeKind.Any,
-                            Eager: EagerNative(instruction.Text, signature, nativeArguments))); break;
+                        state.Stack.Add(Reference.UnknownValue(signature?.Result.Kind ?? TypeKind.Any,
+                            eager: EagerNative(instruction.Text, signature, nativeArguments))); break;
                     case OpCode.MakeRange:
                     case OpCode.MakeLazyRange:
-                        Consume(instruction.A); state.Stack.Add(new(default, Opaque: true, Kinds: TypeKind.Range, Eager: instruction.Op == OpCode.MakeRange)); break;
+                        Consume(instruction.A);
+                        state.Stack.Add(Reference.UnknownValue(TypeKind.Range, eager: instruction.Op == OpCode.MakeRange)); break;
                     case OpCode.GetCapture: Unknown(1, cell: true); break;
                     case OpCode.SpecializeClosure:
                         var callable = Pop();
-                        state.Stack.Add(instruction.A < 0 ? new(default, Opaque: true, Kinds: TypeKind.Function)
+                        state.Stack.Add(instruction.A < 0 ? Reference.UnknownValue(TypeKind.Function)
                             : callable.Closure == 0 || callable.Function < 0 ? callable
                             : callable with
                             {
                                 Function = instruction.Text is null ? instruction.A
-                                : FunctionDispatch.Parse(instruction.Text).GetValueOrDefault(callable.Function, callable.Function)
+                                : FunctionDispatch.Targets(instruction.Text).GetValueOrDefault(callable.Function, callable.Function)
                             }); break;
                     case OpCode.GetIterator:
                         var range = Pop(); Enumeration(pc, range);
@@ -398,17 +418,18 @@ internal static partial class CrossBlockMemoryOptimization
                         var destinationPath = Pop(); var source = Pop(); Escape(source); Escape(destinationPath);
                         Enumeration(pc, source);
                         if (MayEnumerate(source)) InvalidateBindings(state);
-                        state.Stack.Add(new(default, Opaque: true, Kinds: TypeKind.Bool)); break;
+                        state.Stack.Add(Reference.UnknownValue(TypeKind.Bool)); break;
                     case OpCode.RegexMatch: Unknown(instruction.Text is null ? 2 : 1); break;
                     case OpCode.Acquire: if (instruction.A != 0) Unknown(1); break;
                     case OpCode.IteratorNext:
                         Enumeration(pc, state.Locals[instruction.A]);
                         if (!state.Locals[instruction.A].Eager) InvalidateBindings(state);
                         Merge(instruction.B, state);
-                        state.Stack.Add(new(default, Opaque: true, Kinds: TypeKind.Any)); break;
+                        state.Stack.Add(Reference.UnknownValue()); break;
                     case OpCode.JumpIfTrue:
                     case OpCode.JumpIfFalse:
                         Escape(Pop()); Merge(instruction.A, state); break;
+                    case OpCode.JumpIfStaticReady: Merge(instruction.A, state); break;
                     case OpCode.Jump: Merge(instruction.A, state); return;
                     case OpCode.Return: if (state.Stack.Count > 0) Escape(Pop()); return;
                     default: Unknown(2); break;
@@ -416,6 +437,9 @@ internal static partial class CrossBlockMemoryOptimization
             }
             Merge(blocks[index].End, state);
         }
+
+        private bool NeedsStorageCheck(Instruction instruction) =>
+            instruction.Op == OpCode.StoreField && ScopeOperands.Projection(module, instruction).Cases.Count == 0;
 
         private FunctionCode Rewrite(Dictionary<int, Allocation> promoted, Dictionary<int, int> forwarded)
         {
@@ -439,10 +463,11 @@ internal static partial class CrossBlockMemoryOptimization
                     }
                     continue;
                 }
-                if (receivers.TryGetValue(pc, out var receiver) && promoted.TryGetValue(receiver.Single, out var owner))
+                if (!NeedsStorageCheck(instruction) && receivers.TryGetValue(pc, out var receiver)
+                    && promoted.TryGetValue(receiver.Single, out var owner) && ScopeOperands.Ordinal(module, instruction, owner.Layout) is >= 0 and var ordinal)
                 {
-                    var slot = owner.FirstSlot + owner.Fields[instruction.Text!];
-                    if (instruction.Op == OpCode.GetMember)
+                    var slot = owner.FirstSlot + ordinal;
+                    if (instruction.Op == OpCode.LoadField)
                     {
                         if (!owner.Promoted && !forwarded.ContainsKey(pc)) { output.Add(instruction); continue; }
                         output.Add(new(OpCode.Pop, Span: instruction.Span));
@@ -461,7 +486,7 @@ internal static partial class CrossBlockMemoryOptimization
                     }
                     continue;
                 }
-                if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.IteratorNext) branches.Add(output.Count);
+                if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady or OpCode.IteratorNext) branches.Add(output.Count);
                 output.Add(instruction);
             }
             positions[^1] = output.Count;

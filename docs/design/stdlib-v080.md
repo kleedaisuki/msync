@@ -161,6 +161,7 @@ maintaining another authoritative signature table.
 | `$std::ranges` | Sequence adapters, searches, folds and aggregate tools | Source composition for expressible algorithms; native iteration/materialization capabilities where source cannot implement a lazy producer |
 | `$std::functional` | Function and predicate composition | Ordinary generic source functions and closures |
 | `$std::math` | Binary64 arithmetic, classification and scalar composition | Host floating-point intrinsics and ordinary source utilities; no integer/fenv subsystem |
+| `$std::bits` | Exact unsigned Word32 logic, shifts, rotations, bit counts, and byte order | Typed native word operations; source values remain Number |
 | `$std::string` | Unicode text, searches, slices and Range producers | Unicode scalar host primitives plus source conveniences |
 | `$std::path` | Lexical path composition and decomposition | Source wrappers over existing path/filesystem primitives; endpoint provenance remains attached |
 | `$std::io` | File content and link-oriented workflows | Selected host effects, with Range-based lines/bytes instead of an Array type |
@@ -398,7 +399,7 @@ private, comment-only `_core` source contributes no public export.
 | `fs` | 66 | 5 | 0 | 71 |
 | `functional` | 0 | 14 | 0 | 14 |
 | `io` | 8 | 23 | 0 | 31 |
-| `math` | 45 | 13 | 6 | 64 |
+| `math` | 49 | 13 | 6 | 68 |
 | `path` | 0 | 40 | 0 | 40 |
 | `process` | 12 | 4 | 0 | 16 |
 | `ranges` | 37 | 51 | 0 | 88 |

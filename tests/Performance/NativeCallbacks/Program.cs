@@ -44,7 +44,7 @@ foreach (int level in new[] { 0, 2, 3 })
 List<Observation> observations = [];
 foreach ((string name, Module raw, double expected) in new[]
 {
-    ("buffer_get", BufferModule(count), 1d),
+    ("vector_get", VectorModule(count), 1d),
     ("literal", new Module([new NumberValue(42)], [new("main", 0, 0,
         [new(OpCode.Constant, 0), new(OpCode.Return)], TypeRef.Number)], OptimizationLevel: 0), 42d)
 })
@@ -74,7 +74,7 @@ foreach ((string name, Module raw, double expected) in new[]
         for (int iteration = 0; iteration < iterations; iteration++) CheckNumber(run(), expected);
         double allocation = (GC.GetTotalAllocatedBytes(precise: true) - before) / (double)iterations;
         double[] sorted = times.Order().ToArray();
-        observations.Add(new(name, stage, name == "buffer_get" ? count + 2 : 0, artifactSha,
+        observations.Add(new(name, stage, name == "vector_get" ? count + 2 : 0, artifactSha,
             times, sorted[sorted.Length / 2], allocation));
         Console.WriteLine($"{name}/{stage}: {observations[^1].P50Milliseconds:F4} ms / {allocation:F0} B");
     }
@@ -87,9 +87,9 @@ Report report = new(Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(i
 string output = Path.GetFullPath(Option("--output", ".temp/native-callback/results.json"));
 Directory.CreateDirectory(Path.GetDirectoryName(output)!);
 File.WriteAllText(output, JsonSerializer.Serialize(report, ReportJson.Default.Report));
-Console.WriteLine($"PASS {checks} callback freshness and Buffer/literal checks");
+Console.WriteLine($"PASS {checks} callback freshness and vector/literal checks");
 
-void CheckNumber(Value value, double expected) => Check(value is NumberValue number && number.Data == expected, "Buffer/literal result changed");
+void CheckNumber(Value value, double expected) => Check(value is NumberValue number && number.Data == expected, "Vector/literal result changed");
 void Check(bool condition, string message)
 {
     checks++;
@@ -100,16 +100,16 @@ string Option(string name, string fallback)
     int index = Array.IndexOf(args, name);
     return index < 0 ? fallback : args[index + 1];
 }
-static Module BufferModule(int count)
+static Module VectorModule(int count)
 {
     List<Instruction> code = [new(OpCode.Constant, 0), new(OpCode.MakeRange, 1),
-        new(OpCode.NativeCall, 1, Text: "storage.buffer_new"), new(OpCode.InitializeLocal, 0)];
+        new(OpCode.NativeCall, 1, Text: "storage.vector_new"), new(OpCode.InitializeLocal, 0)];
     for (int index = 0; index < count; index++)
     {
         code.Add(new(OpCode.LoadLocal, 0)); code.Add(new(OpCode.Constant, 1));
-        code.Add(new(OpCode.NativeCall, 2, Text: "storage.buffer_get")); code.Add(new(OpCode.Pop));
+        code.Add(new(OpCode.NativeCall, 2, Text: "storage.vector_get")); code.Add(new(OpCode.Pop));
     }
-    code.Add(new(OpCode.LoadLocal, 0)); code.Add(new(OpCode.NativeCall, 1, Text: "storage.buffer_size"));
+    code.Add(new(OpCode.LoadLocal, 0)); code.Add(new(OpCode.NativeCall, 1, Text: "storage.vector_size"));
     code.Add(new(OpCode.Return));
     return new([new NumberValue(1), new NumberValue(0)], [new("main", 0, 1, code, TypeRef.Number)], OptimizationLevel: 0);
 }

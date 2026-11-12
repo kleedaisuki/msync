@@ -40,6 +40,365 @@ or cause an allocator to retain every historical page. Reference-free numeric
 pages and separately owned row references are one candidate; the implementation
 choice must be measured against small mixed/reference-heavy objects.
 
+## Indexed allocation is not a Range capability
+
+The target model separates the iterator from the memory owner. Range exposes
+iteration and stream transformations; a lazy producer, a singleton, and a
+materialized vector are alternative representations. Random mutation and
+allocation are not operations on the iterator. Replace the unpublished
+Buffer-backed collection ABI rather than carrying a second storage path.
+Preserve guest alias and snapshot semantics where observable, not the
+internal operations that happened to implement them.
+
+A collection-owned indexed heap reserves a row (or an extent when a collection
+needs one), returns an owner-relative integer handle, and recycles the slot
+when the owner releases it. Start with a fixed row stride from the specialized
+layout and a free list; do not build a general variable-size allocator for
+red-black-tree nodes. A binary Heap instead needs a dense vector, not a
+separate allocation or a free-list entry per element. The native analogues are
+[Bonwick's fixed-object slabs](https://www.usenix.org/conference/usenix-summer-1994-technical-conference/slab-allocator-object-caching-kernel)
+and [SQLite's numbered pages and freelist](https://www.sqlite.org/fileformat.html#the_freelist);
+neither their OS policy nor their disk format belongs in the guest heap.
+
+An indexed row is a product of its declared field representations. Typed HIR
+owns the field and capture facts, portable bytecode carries the logical facts,
+and the executable chooses physical offsets, strides and operations. A proven
+field access is base plus row stride plus field offset, with no lookup by name
+or per-field type test. A reference field remains visible to the host GC;
+only actual variant fields need a discriminator. An alias to a Scope does not
+make every field a Cell: it can share the row. A mutable binding whose location
+is shared by a closure or a lexical import must retain that location, but
+neither independent fields nor uncaptured locals pay for it. A private,
+nonescaping Scope can stay in locals/registers without a handle.
+
+Handle admission belongs at the boundary where an owner and a dynamic index
+are selected. Traversals with a proven live owner and in-bounds links should
+not recheck those facts at every load. Retiring a row invalidates its use by
+the collection; an ordinary guest Scope already published from it still has
+its original identity and payload. Neither a row number nor a guest alias
+silently becomes the next object to reuse the storage. A private free list does
+not require generation tags on tree links; a future public raw-handle contract
+must decide stale-handle semantics independently.
+
+Set's collection owner has no node Scope or parallel object list. The source
+rotations and the native worker both address the same owner-relative rows,
+and their stores update the same memory. The earlier typed Range projection,
+lazy Scope handle cache, and membership remapping path were removed with the
+mutable Buffer carrier.
+
+## Named Scope static section
+
+[CPython's dataclass slots](https://docs.python.org/3/library/dataclasses.html)
+are the useful analogy for a fixed field layout, not for field boxing:
+[the member descriptor](https://github.com/python/cpython/blob/main/Include/descrobject.h)
+records a name, type, and offset. Msync's stable shape and field types can
+take that farther, choosing a machine representation for each field instead
+of treating every slot as an object reference.
+
+A named declaration's storage class is static, but its initialized state
+belongs to an execution or REPL session, not the host process. The runtime
+relocates portable declaration IDs to compact indices in the execution-owned
+static section. Get/SetSingleton then index that section directly. A slot
+starts empty, the first selected initialization publishes it, and aliases and
+successive session images retain the same object. An unselected initializer
+does not execute just because a slot has been reserved. Instruction positions
+and portable operands on disk do not change. Anonymous constructions do not
+use this section, even when they share the same layout as a named Scope.
+
+The section currently stores a Scope reference per named declaration.
+Separately optimizing the fields themselves means relocating known field
+access to typed offsets and retaining a guest Scope handle only where its
+identity is actually observable. The reference section is not evidence that
+the whole payload has moved to static storage.
+
+## Scope namespace erasure and typed places
+
+The target model does not have a generic object slot for every binding.
+Separate three questions: which declaration a name denotes; whether a value
+has observable instance identity; whether a particular storage location is
+shared. None answers the others. Lexical namespace selection can disappear
+even when the selected field is mutable or its initializer is effectful:
+translate the selection to the actual field location, not necessarily a
+constant. Conversely, a Scope passed to an opaque identity-observing consumer
+can require one handle without requiring generic field dispatch or a Cell per
+field. Sharing the row and sharing a mutable binding that *contains* the row
+are different alias relationships.
+
+| HIR use | Lowered value or place | What disappears |
+| --- | --- | --- |
+| A known callable or constant selected through an inert namespace expression | Symbol, literal, or direct call with its actual capture operands | Receiver loads, namespace handles, member loads and generic dispatch |
+| A field of a named declaration reached only by statically resolved uses | Program/session static field, or SSA value if immutable and dominated by initialization | Namespace wrapper, singleton-reference transport, field-name lookup |
+| A field of a fresh, nonescaping construction | SSA value; private frame place only when needed across control or lifetime boundaries | Scope allocation, fields array, boxing and Cell transport |
+| A field whose location is shared | Environment or static field place; capture the location, not a copy of its payload | Per-field boxes and unrelated Cells |
+| A field of a published Scope or collection row | Typed projection from one admitted owner and identity; publish/reuse the handle only at the observation boundary | Generic layout tests on known accesses; per-row wrapper allocation on internal traversal |
+
+These are classifications by use and ownership, not new guest types.
+Returning a Scope from a known callee need not publish a handle when callers
+only project fields. Returning one at the user/host boundary can publish it.
+Two layout-identical anonymous constructions remain distinct if observed;
+two aliases of a single row share one instance. A named declaration's stable
+symbol survives code generations even if the current alias is re-bound.
+Similarly, a known function shape is not a proof that a mutable function
+field still contains the same callable. An open session may add later uses;
+accepted export and capture locations keep their identities and must not be
+erased by a closed-script projection rule.
+
+The existing compiler supplies the starting facts. `HirScopeLayout` and
+`HirLocation` in
+[`HirModule.cs`](../../src/Msync.Hir/Model/HirModule.cs) carry field types,
+null admission and location identity; `HirCaptureMode` distinguishes a value
+from a location. `HirLowerer.Scope` already separates initializer evaluation
+order from physical field order. `IsNativeCalleeProjection` in
+[`SemanticAnalyzer.Native.cs`](../../src/Msync.Compiler/Semantics/SemanticAnalyzer.Native.cs)
+already erases known inert native receivers, but
+[`HirLowerer.Call`](../../src/Msync.Hir/Lowering/HirLowerer.cs) still
+transports a callable for a known source target. Generalize the existing
+callee-erasure condition to a proven source symbol and explicit capture
+operands. An effectful receiver, a mutable selection or an open dispatch slot
+is not a direct symbol: preserve its evaluation once, in the original order,
+even when its eventual result permits a direct call.
+
+### One address model across lowering
+
+**Typed HIR** keeps logical field identities, value-versus-location capture,
+initializer/effect order, source diagnostics and the reachability of exported
+values. It neither chooses a host pointer nor invents a heap object for a
+lexical namespace. Existing def-use, memory effects and escape facts decide
+where aggregate identity is needed. An immutable shape determines which fields
+exist; it does not prove which row a mutable binding currently names.
+
+**Portable typed code** represents a surviving place by a typed logical
+coordinate: `Frame(slot)`, `Static(declaration, field)`,
+`Environment(capture, field)` or `Row(owner, index, field)`. A place's
+contract includes its payload representation, owner/provenance and writable
+or readonly status. The address calculation is ordinary IR; the absence of
+pointer arithmetic in source is irrelevant. It is not a Number or an
+arbitrary machine address, and computing it is not a memory access.
+An index is a proved integral row identity or the result of explicit dynamic
+admission, not a floating guest value revalidated on each field access.
+Layouts and logical selectors can be interned and shared across functions.
+Persist the minimal facts needed to resolve those places, not the typed HIR,
+source text, target-native offsets or a second escape-analysis result.
+
+**Bound execution** relocates a place once to a lane and offset in its actual
+owner. Static, frame and environment accesses use the known base and offset;
+row access adds the admitted index times the selected stride. Raw lanes keep
+Number, index and Bool bits; reference lanes keep host-visible GC roots and
+use the host's reference access/barrier, not an untracked native pointer.
+Unions need a tag only where their representation genuinely differs. The
+managed executor and native emitter consume the same normalized operands,
+with direct typed loads/stores. Keep the portable origin PC separately for
+diagnostics, effects and continuation recipes. Do not reintroduce
+`ScopeValue`, `Cell` or string lookup as the operand abstraction at this stage.
+
+Readiness, lifetime, bounds and shape are facts with different origins. The
+producer verifies local/field indices and fixed layout once. Only an
+unresolved dynamic owner, index, variant or mutable policy needs a guard.
+An admitted base can be used throughout a non-suspending region until an
+actual invalidating effect; reacquire the owner after suspension if needed
+instead of retaining an unrooted interior address. A side exit carries live
+values, owner/row identities and the original continuation, and never repeats
+already performed initializer or I/O effects. Use narrow typed places for
+the interpreter as well as the JIT; fixing only emitted machine code leaves
+the same object protocol as the canonical model.
+
+### Portable schema
+
+Separate address formation from the load/store itself, as in
+[LLVM's GetElementPtr](https://llvm.org/docs/GetElementPtr.html). A logical
+place contains the owner and field ordinal, not a serialized machine address.
+For a fixed physical lane the bound address is base plus byte offset; for an
+indexed owner it is base plus row stride times index plus byte offset.
+The source language needs no address arithmetic to express either operation.
+
+The incoming parameter value domain is distinct from the type of its mutable
+local slot: entering with one layout does not forbid a later legal structural
+rebind. A by-value capture can be checked against its selected value domain.
+A by-location capture instead carries an invariant storage contract (the same
+reason Rust's [interior-mutable place is invariant](https://doc.rust-lang.org/reference/subtyping.html)).
+Code-type table IDs are image-local; a promoted Cell retains its structural
+contract and does not hold the old executable image alive. A changed opaque
+call target admits that contract once at the selected boundary. Neither
+comparing the current payload nor rechecking every field load proves the
+invariant. Checking a Range-valued argument or field never enumerates it.
+
+Replace the unpublished Scope wire encoding in one revision, not an old and
+new ABI in parallel. Bump the artifact format discriminator to reject old
+bytes unambiguously; do not add an old-version reader, a runtime compatibility
+mode or a second importer. Keep source-language semantics and the separate
+language version unchanged. Both artifact stages carry the same logical
+records; only `.mexe` additionally carries its contextual plans.
+
+Extend [`Module`](../../src/Msync.Core/Bytecode/Module.cs) with four
+module-local tables, serialized after the header/context and before constants
+and functions. Use the current length-prefixed arrays and signed 32-bit
+indices (`-1` only for an absent optional index), so there is no pointer-sized
+field on disk:
+
+| Table | Entry and invariant |
+| --- | --- |
+| `CodeTypes` | `(TypeKindMask:u16, ElementType:i32, ScopeLayouts:i32[])`. `ElementType` is absent unless the value can be a Range. A nonempty, sorted, unique layout set enumerates every possible Scope alternative; an empty set with the Scope bit is *opaque*, not proof of any layout. Nullability remains a kind alternative. Nesting uses type IDs, not embedded descriptors. |
+| `ScopeLayouts` | `Fields[]` in deterministic logical ordinal order, each `(Name:string, StorageType:i32)`. Names are unique; each fixed storage contract includes its Null admission. An ordinal is not a byte offset. This table describes values, not object identity or which fields happen to be captured by a particular construction. |
+| `StaticScopes` | `(Layout:i32)` per declaration, never deduplicated by layout. Array index is the standalone static ID. A persistent compiler image additionally owns the append-only declaration-to-slot assignment across generations, without serializing live session roots or values. |
+| `FieldProjections` | `(Name:string, Cases:(Layout:i32, Ordinal:i32)[])` with finite cases sorted by unique layout ID. Every case must identify the named member. A one-case entry is monomorphic; an empty case list instead declares an explicitly checked structural projection. For a finite projection, the result type is the union of admitted fields' storage types and a store's value must fit *each* admitted field. |
+
+Carry `CodeTypeId` for every parameter, result and captured payload in
+[`FunctionCode`](../../src/Msync.Core/Bytecode/FunctionCode.cs); each capture
+also says value versus location. The current public `TypeRef` views, where
+still needed by analyses, are projections of this one signature, not a
+duplicate type table on disk. For selected static field access a function
+also declares the sorted set of `RequiredStatics` it assumes initialized at
+entry. Locals and stack values are inferred by the bytecode verifier; no
+second table per instruction is needed. Encode Scope constants by layout ID
+and values in ordinal order, so constants and constructors establish the
+same provenance; for a constant Range its element type must include the
+layouts of the actual serialized elements. Stable IDs follow function
+specialization, closure captures, Range element flow and image rebasing.
+An inferred `TypeRef.Scope` alone is deliberately insufficient for access.
+Neither is every current HIR `Shape` an allocation layout:
+[`SemanticAnalyzer.Join`](../../src/Msync.Compiler/Semantics/SemanticAnalyzer.Types.cs)
+creates an intersection view of the fields of two Scopes. Carry the finite
+constructor-layout alternatives independently of that semantic view, including
+through returned values, captured storage contracts and Range elements. Do
+not register the view as a new physical layout or derive a receiver set from
+its field names after lowering. Use the open state only for a producer that
+genuinely lacks the layout fact.
+
+Use the existing `Instruction(Op, A, B, Text, Span)` encoding. The new Scope
+instructions use `Text=null`, with diagnostic names supplied by the tables:
+
+| Instruction | Operand and stack contract | Replaces |
+| --- | --- | --- |
+| `NewScope A=layout, B=site` | Consume one initializer value per field in logical order, produce a fresh `Scope<A>`. Allocation site is provenance, not layout or identity. | `MakeScope` name list parsing and shape inference from payload. |
+| `LoadField A=projection` | Consume a non-null Scope with an admitted layout; produce the selected field's typed payload. | Scope `GetMember`, hint comparison and name lookup. |
+| `StoreField A=projection` | Consume receiver then assigned value in existing push order; update the selected typed field and produce Null. Conversions are explicit producers, not side effects of address resolution. | Scope `SetMember`, hint comparison and name lookup. |
+| `AdmitScope A=code-type` | Consume a genuinely opaque Scope and produce the stated finite Scope layout domain or its selected diagnostic. Admission checks the actual owner's typed layout once; it does not expose arbitrary byte-address arithmetic or implicitly copy a mutable object. | Only needed at an actual open producer boundary, not a second member operation. |
+| `JumpIfStaticReady A=target, B=static` | Jump when the declaration has a published owner, establishing readiness on the taken edge. Stack is unchanged; the target uses the ordinary branch operand. | `GetSingleton; Dup; IsNull; JumpIfFalse; Pop` guard protocol. |
+| `PublishStatic A=static` | Consume one candidate field value per declared field, commit only if no owner has won, and establish readiness. Does not return or allocate a namespace wrapper. | The named `MakeScope; SetSingleton` pair. |
+| `LoadStaticField / StoreStaticField A=static, B=ordinal` | Require readiness and lexical provenance for that declaration. Read pushes its typed payload; write consumes the assigned value and pushes Null. Neither loads a receiver. | Named field receiver load, member resolution and singleton reference transit. |
+| `LoadStaticScope A=static` | Require readiness; return the winning declaration's identity handle only for an actual whole-Scope value use. It views the authoritative static fields. | Loading a singleton object as the prerequisite to every field access. |
+
+A fixed place lowers to base and typed lane/offset without a general
+address object at runtime. For a finite layout join the binder resolves all
+cases once. If their physical location/representation agrees, emit a direct
+load/store; otherwise choose the actual typed place by layout identity and
+reuse that selection while its receiver is live. Different layouts are a
+real dispatch requirement. The explicitly structural form checks the actual
+selected field and, for stores, that field's fixed payload contract.
+Inlining may reveal a finite receiver without proving that the assigned value
+fits its storage; do not reject the checked form or replace it with an
+unchecked finite projection on receiver evidence alone. Open admission checks
+both ownership and typed storage validity; matching field names cannot
+authorize unchecked loads from an independently mutable foreign owner.
+
+There is no generic Scope/Process/Connection member opcode in the new
+format. Current source already emits a registered Process member
+capability and rejects Connection `::` in favor of `@`; lower Process
+members to their explicit typed native operation and Connection qualification
+to its existing operation. Mutable lexical alias rebinding still selects the
+actual Scope; the static field form is only valid when reaching definitions
+prove that the receiver denotes its declaration.
+
+**Validation is source-free.** The reader validates table indices, unique
+fields and case/domain consistency once, then extends
+[`BytecodeValidation`](../../src/Msync.Core/Artifacts/BytecodeValidation.cs)'s
+CFG stack/local proof. Each typed load requires a definitely non-null
+receiver whose *entire* layout domain is covered by the projection; an
+intersection test on `TypeKind` is not sufficient. A control-flow join
+unions possible layout IDs and intersects definite-static-ready sets.
+Verified constructor operands, constant fields, call arguments/returns,
+capture modes and typed native result contracts establish values; a
+declaration in a table is not evidence that an opaque producer actually
+returned the declared shape. A store value must satisfy every possible
+field's fixed contract. A raw location is not a Scope operand; if a
+mutable captured location is loaded, use its fixed storage domain, not
+the shape of its last observed value. Verify static readiness on both
+direct field operations and callees' entry requirements; a selected open
+call can admit unresolved requirements once at the call edge. A failed
+proof is a format error for a typed operation, not a request to retry it
+by name. The binder never opens HIR and the executor never revalidates
+these facts.
+
+Format 6 carries typed places directly. The former `ExecutionScopePlaces`
+inference, name-based layout parsing and wrapper-only singleton transport
+are no longer part of the bound path. The
+[bound place table](../../src/Msync.Runtime/Execution/BoundScopePlaces.cs)
+translates verified layout/ordinal pairs to executable field access. The
+[portable place tests](../../tests/PortableScopeCode/Program.cs) reject
+invalid wire contracts; the
+[typed place journey](../../tests/Msync.EndToEnd/typed_place_journey.py)
+retains source, detached artifact, identity and alias coverage.
+
+This follows [LLVM's address computation versus load/store
+distinction](https://llvm.org/docs/GetElementPtr.html) and
+[Cranelift's verified stack places and explicit offsets](https://github.com/bytecodealliance/wasmtime/blob/main/cranelift/docs/ir.md).
+[LLVM SROA](https://llvm.org/docs/Passes.html#sroa-scalar-replacement-of-aggregates)
+supports splitting private aggregates into values, while [Stadler et al.'s
+partial escape analysis](https://ssw.jku.at/Research/Papers/Stadler14/Stadler2014-CGO-PEA.pdf)
+shows why materializing at an observed escape is different from allocating
+on all paths. Use these mechanisms, not their source-language object
+contracts or their target machine layouts.
+
+### Implementation order and discriminating tests
+
+1. Change the artifact schema and compiler, validator and executor together:
+   replace `MakeScope`, Scope `GetMember/SetMember`, and Scope constant name
+   lists with layout IDs and field projections. Delete the name guard and
+   the bound graph's recovery pass in the same switch. This removes checks
+   across constructors, local fields, argument/return projections and typed
+   rows; optimizing one pattern or library is not a prerequisite.
+2. Replace `GetSingleton/SetSingleton` with selected initialization in the
+   execution/session static
+   layout. Reserve field storage without evaluating anything; run the
+   original initializer only on a selected first entry. Commit the winning
+   candidate once, preserving the existing reentrant first-publication
+   behavior and the binding initialized by that declaration. Stage candidate
+   values in the initializer activation; do not expose partially initialized
+   fields. If an initializer publishes a closure that captures a candidate
+   field before commit, that location stays with its candidate (including
+   a losing one), while winning captures and any published handle view the
+   authoritative fields. Do not retarget escaped locations or keep mirrored
+   fields.
+3. Use the same place model for private anonymous fields and for typed
+   collection rows. Eliminate a closed standard or source namespace
+   receiver when a known call needs only its explicit captures. Port Set
+   mutation and rotations to owner-relative places with typed link/color
+   operations. Remove the superseded Buffer/object protocols after the
+   typed route covers construction, reads, writes, captures and live exits.
+4. Require source, source-free `.mso` and source-free `.mexe` execution
+   through the same field semantics, with native on/off where applicable.
+   The [object-locality journey](../../tests/Msync.EndToEnd/object_locality_journey.py)
+   already detects eager or repeated named initialization and anonymous
+   identity conflation. The [literal projection fixture](../../tests/LiteralScopeProducers/literal-demand.msync)
+   distinguishes mutable aliases, fresh views and a genuinely lazy tail;
+   it must not be optimized into an eager snapshot. Add variants for
+   reentrant named initialization, escaped closures that mutate a shared
+   static field, field-layout joins and selected mutable callable replacement
+   across REPL submissions. Reject malformed layout IDs, projection offsets,
+   incomplete join cases, nullable or opaque receivers at typed loads,
+   incompatible stores and uninitialized static loads at artifact read.
+   Prove the representation too: for a closed field loop there is no
+   `ScopeValue` allocation, name lookup or per-field guard in the lowered hot
+   body; for its escaping counterpart the handle count matches actual
+   observed instances. Check end-to-end time and cold binding cost rather
+   than declaring success from an opcode census alone.
+
+For the format cutover, the collaborating edits form one dependency chain:
+
+| Owner | Required change |
+| --- | --- |
+| Compiler + HIR | Preserve actual layout alternatives at semantic joins independently of structural views. Update HIR model/codec, session layout interning and `HirLowerer` to emit the complete portable table and typed operands, including nested Scope constants and explicit Process members. |
+| Core artifact and bytecode | Add the table records, update `Module`, `FunctionCode`, `OpCode`, `InstructionEffects`, `BlockBuilder`, artifact encode/decode and the verifier. Handle nested Scope/Range/closure constants with the same table context. Bump the wire revision at the same point the old opcodes disappear. |
+| Portable optimizer | Replace textual operands in scalar replacement, memory/effect analysis, CFG/def-use, inlining and aggregate argument specialization. The logical identity for a field analysis is layout plus ordinal; a projection may name a finite set of these. Rewriters preserve or explicitly remap IDs, not reconstruct a name-based instruction for the executor. |
+| Contextual binding + Runtime | Consume the typed table in `ExecutionTargets`, region/native worker importers and the contextual planner. Layout-known Scope construction uses its compiled descriptor. Replace `Interpreter.State`'s field guards and `StaticScopeSection`'s wrapper protocol with direct owner access and selected initialization. |
+| Tooling + acceptance | Render typed operands in the CLI artifact disassembler, update hand-assembled test modules, and rebuild unpublished fixture artifacts from their original source. Test source-free bind/run and malformed-image rejection in a single native build. |
+
+Adding an optional table while emitting the current name operands would leave
+two authorities and would not make the validator or executor simpler. The
+first cutover does not need to move every field into native register or
+row storage on day one; it does need every Scope producer and consumer in
+the chosen format to agree on one typed layout contract.
+
 Allocation removal, spatial locality and lifetime retention are different
 outcomes. Avoid replacing repeated NumberValue allocation with a new object at
 every field read: construction, field access/store and OperandStack boundaries
@@ -412,3 +771,26 @@ passes the three changed session/HIR contracts on both platforms. Both include
 the actual source editor host and Windows installer upgrade acceptance; neither
 publishes or replaces the existing release. Exact package receipts remain under
 `artifacts/candidates/tail-latency/9e5e997/` and `604b558/`.
+
+## Lazy scalar Scope templates
+
+A capture-free, straight-line lazy item producer that only constructs a
+Scope from immutable scalar literals can share the immutable field array.
+It still creates a fresh mutable Scope handle on every pull. This is not
+memoization of the yielded object and does not force range enumeration.
+The exact bound Module owns the recipe, and retained session images keep
+the original path.
+
+Shared literal rows use the same direct read as ordinary Scope rows.
+A write-side marker detaches the field array under the first-write lock;
+ordinary field reads do not pay a new dispatch test. Host record copies
+still share the original instance's field storage, so their source first
+detaches from other template-backed objects. Capture installation uses
+the same write boundary. Malformed layouts, context-dependent literals,
+callable state and actual effects remain on canonical demand.
+
+On the same frozen standard polygon artifact, final Native AOT p50
+changed 595.11 -> 399.26 ms (7/7 faster), managed allocation
+35.22 -> 13.20 MB, and physical frame activations 196,614 -> 6.
+The 196,608 logical producers and their original PCs remain observable.
+See the [acceptance receipt](../../artifacts/benchmarks/literal-scope-v086/README.md).

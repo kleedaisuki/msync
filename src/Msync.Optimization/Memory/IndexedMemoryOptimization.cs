@@ -6,8 +6,8 @@ internal static partial class IndexedMemoryOptimization
 {
     private readonly record struct Atom(int Number, bool Storage = false);
     private readonly record struct Index(int Number, long Constant = 0, bool Known = false);
-    private readonly record struct Access(string Operation, int Buffer, Index Index);
-    private readonly record struct Clobber(int Buffer, IndexedRegion Region, int? Index);
+    private readonly record struct Access(IndexedReadKind Operation, int Owner, Index Index);
+    private readonly record struct Clobber(int Owner, IndexedRegion Region, int? Index);
     private sealed record Read(int Position, Atom Result, Phi? Merge = null);
     private readonly record struct Source(Read? Read, int Local = -1);
     private readonly record struct PhiInput(ControlFlowEdge Edge, Source Source);
@@ -40,10 +40,10 @@ internal static partial class IndexedMemoryOptimization
         internal State? IteratorFailure;
     }
 
-    internal static FunctionCode Optimize(FunctionCode function, IReadOnlyList<Value> constants) =>
-        OptimizeWithAnalysis(function, constants, null);
+    internal static FunctionCode Optimize(Module module, FunctionCode function) =>
+        OptimizeWithAnalysis(module, function, module.Constants, null);
 
-    internal static FunctionCode OptimizeWithAnalysis(FunctionCode function, IReadOnlyList<Value> constants,
+    internal static FunctionCode OptimizeWithAnalysis(Module module, FunctionCode function, IReadOnlyList<Value> constants,
         FunctionAnalysisContext? analysis, CallTargetGraph? callGraph = null,
         Func<IReadOnlyList<FunctionMemoryEffects>>? summaries = null, int originalId = -1)
     {
@@ -55,8 +55,9 @@ internal static partial class IndexedMemoryOptimization
         {
             var instruction = function.Instructions[pc];
             if (instruction.Op != OpCode.NativeCall) continue;
-            if (instruction.Text == "storage.buffer_size" && ++sizes == 2) return Run();
-            if (instruction.Text != "storage.buffer_get") continue;
+            var read = IndexedNativeEffect.Read(instruction.Text);
+            if (read == IndexedReadKind.Count && ++sizes == 2) return Run();
+            if (read != IndexedReadKind.Element) continue;
             gets++;
             if (pc == 0 || function.Instructions[pc - 1] is not { Op: OpCode.Constant } literal
                 || constants[literal.A] is not NumberValue { Data: var index }
@@ -68,11 +69,11 @@ internal static partial class IndexedMemoryOptimization
         }
         return function;
 
-        FunctionCode Run() => new Analysis(function, constants, analysis?.ControlFlow(function) ?? new(function),
+        FunctionCode Run() => new Analysis(module, function, constants, (analysis ?? new(module)).ControlFlow(function),
             callGraph, summaries, originalId).Run();
     }
 
-    private sealed partial class Analysis(FunctionCode function, IReadOnlyList<Value> constants, ControlFlowGraph graph,
+    private sealed partial class Analysis(Module module, FunctionCode function, IReadOnlyList<Value> constants, ControlFlowGraph graph,
         CallTargetGraph? callGraph, Func<IReadOnlyList<FunctionMemoryEffects>>? summaries, int originalId)
     {
         private readonly IReadOnlyList<Instruction> code = function.Instructions;
@@ -81,7 +82,7 @@ internal static partial class IndexedMemoryOptimization
         private readonly Dictionary<int, double> numbers = [];
         private readonly Dictionary<int, Source> replacements = [];
         private readonly List<Identity> definitions = [default];
-        private HashSet<int>? freshBuffers;
+        private HashSet<int>? freshOwners;
         private Dictionary<int, Atom[]>? captures;
         private Dictionary<int, int>? callTargets;
         private BlockState[] states = [];
@@ -213,9 +214,10 @@ internal static partial class IndexedMemoryOptimization
         private bool ProducesPlainValue(Instruction instruction) => instruction.Op switch
         {
             OpCode.Constant => constants[instruction.A] is not CellValue,
-            OpCode.NativeCall when instruction.Text is "storage.buffer_new" or "storage.buffer_snapshot"
-                or "storage.buffer_size" => true,
-            OpCode.Null or OpCode.True or OpCode.False or OpCode.MakeClosure or OpCode.MakeScope or OpCode.MakeRange
+            OpCode.NativeCall when instruction.Text is { } name && (IndexedNativeEffect.Allocates(name)
+                || IndexedNativeEffect.Read(name) == IndexedReadKind.Count
+                || name is "storage.vector_snapshot" or "storage.vector_take") => true,
+            OpCode.Null or OpCode.True or OpCode.False or OpCode.MakeClosure or OpCode.NewScope or OpCode.MakeRange
                 or OpCode.MakeLazyRange or OpCode.GetIterator or OpCode.SpecializeClosure or OpCode.SelectPath
                 or OpCode.DeferRange or OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide
                 or OpCode.Remainder or OpCode.Negate or OpCode.Equal or OpCode.NotEqual or OpCode.Less
@@ -277,16 +279,18 @@ internal static partial class IndexedMemoryOptimization
                     case OpCode.Pop: Pop(); break;
                     case OpCode.Dup: Atom duplicate = Pop(); state.Stack.Add(duplicate); state.Stack.Add(duplicate); break;
                     case OpCode.JumpIfFalse: case OpCode.JumpIfTrue: Pop(); break;
+                    case OpCode.JumpIfStaticReady: case OpCode.AdmitScope: break;
                     case OpCode.Return: if (state.Stack.Count > 0) Pop(); break;
-                    case OpCode.GetMember:
+                    case OpCode.LoadField:
                         Atom receiver = Pop();
+                        var field = ScopeOperands.Projection(module, instruction).Name;
                         int stamp = Number(new(MemberVersion, state.Memory, state.Cells,
-                            state.Fields.GetValueOrDefault(instruction.Text!), instruction.Text));
+                            state.Fields.GetValueOrDefault(field), field));
                         state.Stack.Add(new(Number(new(MemberRead, receiver.Number, stamp))));
                         break;
-                    case OpCode.SetMember:
+                    case OpCode.StoreField:
                         Arguments(2);
-                        state.Fields = state.Fields.SetItem(instruction.Text!, Number(new(FieldWrite, pc)));
+                        state.Fields = state.Fields.SetItem(ScopeOperands.Projection(module, instruction).Name, Number(new(FieldWrite, pc)));
                         state.Cells = Number(new(CellsWrite, pc));
                         state.Stack.Add(Literal(Value.Null)); break;
                     case OpCode.NativeCall: Native(state, instruction, pc, Arguments(instruction.A)); break;
@@ -310,11 +314,22 @@ internal static partial class IndexedMemoryOptimization
                         var closure = Unknown(pc);
                         if (callGraph is not null && captured.Length > 0) (captures ??= [])[closure.Number] = captured;
                         state.Stack.Add(closure); break;
-                    case OpCode.MakeScope: case OpCode.MakeRange: case OpCode.MakeLazyRange:
+                    case OpCode.NewScope:
+                        Arguments(ScopeOperands.Construction(module, instruction).Fields.Count);
+                        state.Stack.Add(Unknown(pc)); break;
+                    case OpCode.PublishStatic:
+                        Arguments(ScopeOperands.Construction(module, instruction).Fields.Count); break;
+                    case OpCode.MakeRange: case OpCode.MakeLazyRange:
                         Arguments(instruction.A); state.Stack.Add(Unknown(pc)); break;
                     case OpCode.GetCapture: Pop(); state.Stack.Add(Unknown(pc, storage: true)); break;
-                    case OpCode.GetSingleton: case OpCode.LoadBuiltin: state.Stack.Add(Unknown(pc)); break;
-                    case OpCode.SetSingleton: Pop(); state.Stack.Add(Unknown(pc)); break;
+                    case OpCode.LoadStaticScope: case OpCode.LoadStaticField:
+                    case OpCode.LoadBuiltin: state.Stack.Add(Unknown(pc)); break;
+                    case OpCode.StoreStaticField:
+                        Pop();
+                        state.Fields = state.Fields.SetItem(ScopeOperands.StaticField(module, instruction).Name,
+                            Number(new(FieldWrite, pc)));
+                        state.Cells = Number(new(CellsWrite, pc));
+                        state.Stack.Add(Literal(Value.Null)); break;
                     case OpCode.Not: case OpCode.IsNull: case OpCode.Negate: case OpCode.Convert:
                     case OpCode.SpecializeClosure: case OpCode.SelectPath: case OpCode.DeferRange:
                         Unary(state, instruction, Pop()); break;
@@ -352,7 +367,7 @@ internal static partial class IndexedMemoryOptimization
                         foreach (var footprint in effect.IndexedWrites)
                             Kill(state, new(Receiver(state, operands, footprint.Receiver), footprint.Region, footprint.Index));
                         // A successful call can change cells or replace a
-                        // member without changing the earlier Buffer object.
+                        // member without changing the earlier indexed owner.
                         ForgetLocations(state, pc);
                         state.Stack.Add(Unknown(pc, storage: true));
                         return;
@@ -378,10 +393,11 @@ internal static partial class IndexedMemoryOptimization
         private void Native(State state, Instruction instruction, int pc, Atom[] arguments)
         {
             string name = instruction.Text!;
-            if (name is "storage.buffer_get" or "storage.buffer_size")
+            var kind = IndexedNativeEffect.Read(name);
+            if (kind != IndexedReadKind.None)
             {
-                var access = new Access(name, Dereference(state, arguments[0]).Number,
-                    name == "storage.buffer_get" ? Subscript(Dereference(state, arguments[1])) : default);
+                var access = new Access(kind, Dereference(state, arguments[0]).Number,
+                    kind == IndexedReadKind.Element ? Subscript(Dereference(state, arguments[1])) : default);
                 if (Available(state, access) is { } read)
                 {
                     // Keep the selected first read and its failure span on each
@@ -392,7 +408,7 @@ internal static partial class IndexedMemoryOptimization
                 }
                 else
                 {
-                    Atom value = Unknown(pc, storage: name == "storage.buffer_get");
+                    Atom value = Unknown(pc, storage: kind == IndexedReadKind.Element);
                     state.Reads = state.Reads.Add(access, new(pc, value));
                     state.Stack.Add(value);
                 }
@@ -413,7 +429,7 @@ internal static partial class IndexedMemoryOptimization
                 Invalidate(state, pc);
             bool item = NativeSignatures.TryGet(name, out var signature) && signature.ResultRule == NativeResultRule.RangeItem;
             var result = Unknown(pc, storage: item);
-            if (name == "storage.buffer_new") (freshBuffers ??= []).Add(result.Number);
+            if (IndexedNativeEffect.Allocates(name)) (freshOwners ??= []).Add(result.Number);
             state.Stack.Add(result);
         }
 

@@ -1,6 +1,6 @@
 namespace Msync.Optimization;
 
-internal sealed record AffineScanSource(bool NumberItems, IReadOnlySet<string> NumericFields);
+internal sealed record AffineScanSource(bool NumberItems, IReadOnlySet<string> NumericFields, IReadOnlySet<int>? Layouts);
 
 internal sealed record AffineScanFacts(AffineScanSource Source,
     IReadOnlyDictionary<int, TypeKind> LocalTypes, IReadOnlySet<int> CapturedSlots,
@@ -13,10 +13,10 @@ internal sealed class AffineScanProvenance(Module module, FunctionCode function)
     private sealed record Closure(int Function, Fact[] Captures);
     private sealed record Sequence(TypeKind ItemType, Fact[]? Items = null,
         string? Deferred = null, Closure? Producer = null, bool Frozen = false,
-        IReadOnlySet<string>? NumericFields = null);
+        IReadOnlySet<string>? NumericFields = null, IReadOnlySet<int>? Layouts = null);
     private sealed record Fact(TypeKind Kind, Sequence? Sequence = null,
         IReadOnlySet<string>? NumericFields = null, Closure? Closure = null, int Cell = -1,
-        TypeRef? DenotedType = null);
+        TypeRef? DenotedType = null, int Layout = -1);
 
     private static readonly Fact unknown = new(TypeKind.Any);
     private static readonly Fact number = new(TypeKind.Number);
@@ -37,7 +37,7 @@ internal sealed class AffineScanProvenance(Module module, FunctionCode function)
         List<Fact> stack = [];
         Dictionary<int, Fact[]> loopEntries = [];
         HashSet<int> joins = function.Instructions.SelectMany((item, pc) =>
-            item.Op is OpCode.JumpIfTrue or OpCode.JumpIfFalse && item.A > pc ? [item.A] : Array.Empty<int>()).ToHashSet();
+            item.Op is OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady && item.A > pc ? [item.A] : Array.Empty<int>()).ToHashSet();
         for (int pc = 0; pc < function.Instructions.Count; pc++)
         {
             if (joins.Contains(pc)) { Array.Fill(locals, unknown); stack.Clear(); }
@@ -69,7 +69,7 @@ internal sealed class AffineScanProvenance(Module module, FunctionCode function)
         bool numeric = sequence.ItemType == TypeKind.Number;
         var fields = sequence.NumericFields ?? noFields;
         if (!numeric && fields.Count == 0) return;
-        facts[(pc, slot)] = new(new(numeric, fields),
+        facts[(pc, slot)] = new(new(numeric, fields, sequence.Layouts),
             locals.Select((value, index) => (value, index)).ToDictionary(pair => pair.index, pair => pair.value.Kind),
             captured, constantTypes);
     }
@@ -126,18 +126,33 @@ internal sealed class AffineScanProvenance(Module module, FunctionCode function)
                 Push(left.Kind == TypeKind.Number && right.Kind == TypeKind.Number ? number : unknown); return true;
             case OpCode.Negate:
                 Push(Resolve(Pop()).Kind == TypeKind.Number ? number : unknown); return true;
-            case OpCode.GetMember:
+            case OpCode.LoadField:
                 var receiver = Resolve(Pop());
-                Push(receiver.NumericFields?.Contains(instruction.Text!) == true ? number : unknown); return true;
-            case OpCode.SetMember:
+                Push(receiver.NumericFields?.Contains(ScopeOperands.Projection(module, instruction).Name) == true ? number : unknown); return true;
+            case OpCode.StoreField:
                 if (summary) return false;
                 Pop(); Pop(); Invalidate(locals, capturedOnly: false); Push(nil); return true;
-            case OpCode.MakeScope:
-                var fields = Many(instruction.A).Select(Resolve).ToArray();
-                string[] names = instruction.Text?.Split('\0', StringSplitOptions.RemoveEmptyEntries) ?? [];
-                if (names.Length != fields.Length) return false;
-                Push(new(TypeKind.Scope, NumericFields: names.Where((_, index) => fields[index].Kind == TypeKind.Number)
-                    .ToHashSet(StringComparer.Ordinal))); return true;
+            case OpCode.NewScope:
+                var layout = ScopeOperands.Construction(module, instruction).Fields;
+                var fields = Many(layout.Count).Select(Resolve).ToArray();
+                Push(new(TypeKind.Scope, NumericFields: layout.Where((field, index) => module.CodeTypes[field.StorageType].Kind == TypeKind.Number
+                    || fields[index].Kind == TypeKind.Number)
+                    .Select(field => field.Name).ToHashSet(StringComparer.Ordinal), Layout: instruction.A)); return true;
+            case OpCode.AdmitScope:
+                if (!summary) return true;
+                var admitted = Resolve(Pop());
+                if (admitted.Layout < 0 || !module.CodeTypes[instruction.A].ScopeLayouts!.Contains(admitted.Layout))
+                    return false;
+                Push(admitted); return true;
+            case OpCode.LoadStaticScope: Push(new(TypeKind.Scope)); return true;
+            case OpCode.LoadStaticField: Push(Typed(ScopeOperands.FieldType(module, instruction))); return true;
+            case OpCode.StoreStaticField:
+                if (summary) return false;
+                Pop(); Invalidate(locals, capturedOnly: false); Push(nil); return true;
+            case OpCode.PublishStatic:
+                if (summary) return false;
+                Many(ScopeOperands.Construction(module, instruction).Fields.Count); return true;
+            case OpCode.JumpIfStaticReady: return !summary;
             case OpCode.MakeRange:
                 var items = Many(instruction.A).Select(Resolve).ToArray();
                 Push(Snapshot(items)); return true;
@@ -194,8 +209,9 @@ internal sealed class AffineScanProvenance(Module module, FunctionCode function)
         if ((signature.Behavior.GetValueOrDefault() & NativeBehavior.EagerRange) != 0 && arguments.Length != 0)
         {
             var result = Materialize(arguments[0], locals, active);
-            return name == "storage.buffer_new" && result.Sequence is { } sequence
-                ? result with { Sequence = sequence with { Frozen = false } } : result;
+            if (signature.Result.Kind == TypeKind.Storage)
+                return new(TypeKind.Storage, result.Sequence is { } sequence ? sequence with { Frozen = false } : null);
+            return result;
         }
         if (signature.ResultRule == NativeResultRule.FirstArgument && arguments.Length != 0
             && signature.Result.Kind == TypeKind.Range)
@@ -277,7 +293,9 @@ internal sealed class AffineScanProvenance(Module module, FunctionCode function)
         foreach (Fact value in values)
             if (value.NumericFields is null) fields = null;
             else fields?.IntersectWith(value.NumericFields);
-        return new(TypeKind.Range, new(kind, Frozen: true, NumericFields: fields));
+        IReadOnlySet<int>? layouts = values.All(value => value.Layout >= 0)
+            ? values.Select(value => value.Layout).ToHashSet() : null;
+        return new(TypeKind.Range, new(kind, Frozen: true, NumericFields: fields, Layouts: layouts));
     }
 
     private static Fact Join(Fact left, Fact right)
@@ -301,6 +319,7 @@ internal sealed class AffineScanProvenance(Module module, FunctionCode function)
 
     private static Fact ForgetSchema(Fact value)
     {
+        if (value.Kind == TypeKind.Storage) return new(TypeKind.Storage);
         if (value.NumericFields is null && value.Sequence is null && value.Closure is null) return value;
         return value with
         {

@@ -16,7 +16,7 @@ internal static class StoragePromotionChecks
         var conditional = Program(
             new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0),
             new(OpCode.NativeCall, Text: "io.read_line"), new(OpCode.IsNull), new(OpCode.JumpIfTrue, 7),
-            new(OpCode.LoadCell, 0), new(OpCode.Pop),
+            new(OpCode.LoadCell, 0, 1), new(OpCode.Pop),
             new(OpCode.LoadStorage, 0), new(OpCode.InitializeLocal, 1),
             new(OpCode.Constant, 1), new(OpCode.StoreLocal, 0), new(OpCode.LoadLocal, 1), new(OpCode.Return));
         foreach (var candidate in Artifacts(conditional, directory))
@@ -29,7 +29,7 @@ internal static class StoragePromotionChecks
                 $"O{candidate.OptimizationLevel}/{candidate.Stage}: the unselected arm was spuriously aliased.");
         }
 
-        var acrossStore = Program(new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0),
+        var acrossStore = Program(new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0, 1),
             new(OpCode.Pop), new(OpCode.Constant, 1), new(OpCode.StoreLocal, 0), new(OpCode.LoadStorage, 0),
             new(OpCode.InitializeLocal, 1), new(OpCode.Constant, 2), new(OpCode.StoreLocal, 0),
             new(OpCode.LoadLocal, 1), new(OpCode.Return));
@@ -39,16 +39,16 @@ internal static class StoragePromotionChecks
 
         var laterCapture = Program(new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0),
             new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 1),
-            new(OpCode.LoadCell, 0), new(OpCode.Pop), new(OpCode.LoadCell, 1), new(OpCode.StoreLocal, 0),
-            new(OpCode.LoadCell, 0), new(OpCode.InitializeLocal, 2), new(OpCode.Constant, 1),
+            new(OpCode.LoadCell, 0, 1), new(OpCode.Pop), new(OpCode.LoadLocal, 1), new(OpCode.StoreLocal, 0),
+            new(OpCode.LoadCell, 0, 1), new(OpCode.InitializeLocal, 2), new(OpCode.Constant, 1),
             new(OpCode.StoreLocal, 2), new(OpCode.LoadLocal, 0), new(OpCode.LoadLocal, 1), new(OpCode.Add), new(OpCode.Return));
         foreach (var candidate in Artifacts(laterCapture, directory))
             Check(await Execute(candidate, directory, "") is NumberValue { Data: 70 },
                 $"O{candidate.OptimizationLevel}/{candidate.Stage}: a later capture did not preserve the original outer Cell.");
 
-        var dead = Program(new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0),
+        var dead = Program(new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0, 1),
             new(OpCode.Pop), new(OpCode.LoadStorage, 0), new(OpCode.Pop), new(OpCode.LoadLocal, 0), new(OpCode.Return));
-        var reset = Program(new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0),
+        var reset = Program(new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0, 1),
             new(OpCode.Pop), new(OpCode.Constant, 1), new(OpCode.InitializeLocal, 0), new(OpCode.LoadStorage, 0), new(OpCode.Return));
         foreach (var (source, expected) in new[] { (dead, 30d), (reset, 40d) })
             foreach (var candidate in Artifacts(source, directory, includeUnoptimized: false))
@@ -63,7 +63,8 @@ internal static class StoragePromotionChecks
 
     private static Module Program(params Instruction[] code) =>
         new([new NumberValue(30), new NumberValue(40), new NumberValue(50)],
-            [new("main", 0, 3, code, TypeRef.Number)], OptimizationLevel: 0);
+            [new FunctionCode("main", 0, 3, code, TypeRef.Number) { CodeSignature = new([], 0, []) }],
+            OptimizationLevel: 0) { CodeTypes = [new(TypeKind.Number)] };
 
     private static IEnumerable<Module> Artifacts(Module source, string directory, bool includeUnoptimized = true)
     {

@@ -27,14 +27,16 @@ internal static class FunctionAnalysis
             features |= instruction.Op switch
             {
                 OpCode.JumpIfFalse or OpCode.JumpIfTrue => FunctionFeatures.Predicates | FunctionFeatures.Branch | Backedge(instruction.A, pc),
-                OpCode.Jump => FunctionFeatures.Branch | Backedge(instruction.A, pc),
+                OpCode.Jump or OpCode.JumpIfStaticReady => FunctionFeatures.Branch | Backedge(instruction.A, pc),
                 OpCode.IsType or OpCode.IsNull => FunctionFeatures.Predicates,
-                OpCode.MakeScope => FunctionFeatures.Scope,
-                OpCode.GetMember or OpCode.SetMember => FunctionFeatures.Fields,
+                OpCode.NewScope => FunctionFeatures.Scope,
+                OpCode.LoadField or OpCode.StoreField or OpCode.LoadStaticField or OpCode.StoreStaticField => FunctionFeatures.Fields,
                 OpCode.IteratorNext => FunctionFeatures.Iteration | FunctionFeatures.Branch | Backedge(instruction.B, pc),
                 OpCode.Call => FunctionFeatures.Call,
-                OpCode.NativeCall when instruction.Text == "storage.buffer_get" && ++indexedGets == 2 => FunctionFeatures.IndexedReads,
-                OpCode.NativeCall when instruction.Text == "storage.buffer_size" && ++indexedSizes == 2 => FunctionFeatures.IndexedReads,
+                OpCode.NativeCall when IndexedNativeEffect.Read(instruction.Text) == IndexedReadKind.Element && ++indexedGets == 2 =>
+                    FunctionFeatures.IndexedReads,
+                OpCode.NativeCall when IndexedNativeEffect.Read(instruction.Text) == IndexedReadKind.Count && ++indexedSizes == 2 =>
+                    FunctionFeatures.IndexedReads,
                 OpCode.Barrier when instruction.B == 0 && instruction.Text is null => FunctionFeatures.Directional,
                 _ => FunctionFeatures.None
             };

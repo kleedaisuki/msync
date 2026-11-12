@@ -7,12 +7,32 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import build
 from language_upgrade import product_assembly_files
 
 
 class PackageTests(unittest.TestCase):
+    def test_host_rids_keep_arm64_linux_local(self) -> None:
+        for system, machine, expected in (
+            ("Linux", "x86_64", "linux-x64"),
+            ("Linux", "aarch64", "linux-arm64"),
+            ("Linux", "ARM64", "linux-arm64"),
+            ("Windows", "AMD64", "win-x64"),
+            ("Windows", "ARM64", None),
+        ):
+            with (
+                self.subTest(system=system, machine=machine),
+                patch("build.platform.system", return_value=system),
+                patch("build.platform.machine", return_value=machine),
+            ):
+                if expected is None:
+                    with self.assertRaises(ValueError):
+                        build.host_rid()
+                else:
+                    self.assertEqual(build.host_rid(), expected)
+
     def test_component_provenance_uses_actual_project_assemblies(self) -> None:
         temporary: Path = build.ROOT / ".temp"
         temporary.mkdir(exist_ok=True)
@@ -96,12 +116,12 @@ class PackageTests(unittest.TestCase):
         temporary.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(dir=temporary) as name:
             root = Path(name)
-            stage = root / "msync-0.8.0-linux-x86_64"
-            (stage / "bin").mkdir(parents=True)
-            (stage / "bin/msync").write_bytes(b"native payload")
             output = root / "dist"
             output.mkdir()
-            for rid in build.RID_NAMES:
+            for rid, name in build.RID_NAMES.items():
+                stage = root / f"msync-0.8.0-{name}"
+                (stage / "bin").mkdir(parents=True)
+                (stage / "bin/msync").write_bytes(b"native payload")
                 first = build.archive_payload(
                     stage, output, rid, 1700000000
                 ).read_bytes()
@@ -112,7 +132,7 @@ class PackageTests(unittest.TestCase):
             files = sorted(output.iterdir())
             build.write_checksums(files, output / "SHA256SUMS")
             lines = (output / "SHA256SUMS").read_text().splitlines()
-            self.assertEqual(len(lines), 2)
+            self.assertEqual(len(lines), 3)
             for file, line in zip(files, lines, strict=True):
                 self.assertEqual(
                     line,

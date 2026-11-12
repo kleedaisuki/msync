@@ -1,0 +1,16 @@
+let Set = $std::containers::Set;
+let tree = Set::new(Number);
+let indices = $std::ranges::iota(0, 8192);
+let key = 0;
+let score = 0;
+for _ in indices {
+    key = (key + 40503) % 65536;
+    if Set::insert(tree, 2 * key) { score = score + 1; };
+};
+key = 0;
+for _ in indices {
+    key = (key + 40503) % 65536;
+    if Set::contains(tree, 2 * key) { score = score + 3; };
+    if not Set::contains(tree, 2 * key + 1) { score = score + 5; };
+};
+$std::io::println(score as String);

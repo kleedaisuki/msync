@@ -26,7 +26,7 @@ internal static class PreparationCode
             Instruction instruction = output[index];
             output[index] = instruction.Op switch
             {
-                OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue => instruction with { A = targets[instruction.A] },
+                OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.JumpIfStaticReady => instruction with { A = targets[instruction.A] },
                 OpCode.IteratorNext => instruction with { B = targets[instruction.B] },
                 _ => instruction
             };

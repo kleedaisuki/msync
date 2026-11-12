@@ -9,8 +9,11 @@ public sealed class ScopeLayout
 
     public ScopeLayout(IEnumerable<string> names) : this(names.ToArray()) { }
 
-    private ScopeLayout(string[] names)
+    public ScopeLayout(IEnumerable<string> names, int codeLayoutId) : this(names.ToArray(), codeLayoutId) { }
+
+    private ScopeLayout(string[] names, int codeLayoutId = -1)
     {
+        CodeLayoutId = codeLayoutId;
         this.names = names;
         if (names.Length > 4)
         {
@@ -31,6 +34,7 @@ public sealed class ScopeLayout
     }
 
     public IReadOnlyList<string> Names { get; }
+    public int CodeLayoutId { get; }
     public int Count => names.Length;
     internal bool IsField(int offset, string name) =>
         (uint)offset < (uint)names.Length && names[offset] == name;

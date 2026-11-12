@@ -8,7 +8,7 @@ internal static class GraphOptimization
 
     internal static FunctionCode Optimize(Module module, FunctionCode function, List<Value> constants,
         IReadOnlyList<InstructionEffect>? summaries = null, ConstantInterner? interner = null)
-        => OptimizeWithAnalysis(module, function, constants, summaries, interner, new());
+        => OptimizeWithAnalysis(module, function, constants, summaries, interner, new(module));
 
     internal static FunctionCode OptimizeWithAnalysis(Module module, FunctionCode function, List<Value> constants,
         IReadOnlyList<InstructionEffect>? summaries, ConstantInterner? interner, FunctionAnalysisContext context)
@@ -249,7 +249,7 @@ internal static class GraphOptimization
                 OpCode.PathJoin when left is PathValue path && right is PathValue or StringValue && (module.Stage == ArtifactStage.Executable || path.Connection?.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl) => PathSemantics.JoinValue(path, right),
                 OpCode.NativeCall => ResolveNative(node),
                 OpCode.Call when node.NativeName is not null => ResolveNative(node, 1),
-                OpCode.GetMember => ResolveMember(node),
+                OpCode.LoadField => ResolveMember(node),
                 OpCode.Qualify when left is ConnectionValue { Kind: ConnectionKind.Local or ConnectionKind.Ssh or ConnectionKind.Wsl } connection && (connection.Kind != ConnectionKind.Local || connection.Address.Length == 0) && right is PathValue path => PureEvaluation.Qualify(connection, path, module.Context),
                 _ => null
             };
@@ -279,10 +279,9 @@ internal static class GraphOptimization
             {
                 if (escapedScopes.Contains(allocation)) return null;
                 var scope = nodes[allocation];
-                var names = scope.Instruction.Text?.Split('\0', StringSplitOptions.RemoveEmptyEntries) ?? [];
-                var index = Array.IndexOf(names, node.Instruction.Text);
+                var index = ScopeOperands.Ordinal(module, node.Instruction, scope.Instruction.A);
                 if (index < 0) return null;
-                foreach (var write in nodes.Where(candidate => candidate.Reachable && candidate.Instruction.Op == OpCode.SetMember))
+                foreach (var write in nodes.Where(candidate => candidate.Reachable && candidate.Instruction.Op == OpCode.StoreField))
                 {
                     var targets = AllocationOrigins(write.Inputs[0], []);
                     if (targets is null || targets.Contains(allocation)) return null;
@@ -298,7 +297,7 @@ internal static class GraphOptimization
         {
             var allocations = AllocationOrigins(node.Inputs[0], []);
             return allocations is not null && allocations.All(index =>
-                (nodes[index].Instruction.Text?.Split('\0', StringSplitOptions.RemoveEmptyEntries) ?? []).Contains(node.Instruction.Text));
+                ScopeOperands.Ordinal(module, node.Instruction, nodes[index].Instruction.A) >= 0);
         }
 
         private static Value Bool(bool value) => value ? Value.True : Value.False;
@@ -412,8 +411,8 @@ internal static class GraphOptimization
             {
                 if (token < 0 || !seen.Add(token)) return;
                 var node = nodes[token / 2];
-                if (node.Instruction.Op == OpCode.MakeScope) escapedScopes.Add(token / 2);
-                if (node.Instruction.Op == OpCode.GetMember)
+                if (node.Instruction.Op == OpCode.NewScope) escapedScopes.Add(token / 2);
+                if (node.Instruction.Op == OpCode.LoadField)
                 {
                     var receivers = AllocationOrigins(node.Inputs[0], []);
                     if (receivers is not null)
@@ -421,8 +420,7 @@ internal static class GraphOptimization
                         foreach (var receiver in receivers)
                         {
                             var allocation = nodes[receiver];
-                            var names = allocation.Instruction.Text?.Split('\0', StringSplitOptions.RemoveEmptyEntries) ?? [];
-                            var field = Array.IndexOf(names, node.Instruction.Text);
+                            var field = ScopeOperands.Ordinal(module, node.Instruction, allocation.Instruction.A);
                             if (field < 0) continue;
                             foreach (var input in allocation.Inputs[field]) Visit(input);
                         }
@@ -431,7 +429,7 @@ internal static class GraphOptimization
                 }
                 foreach (var input in node.Inputs) foreach (var dependency in input) Visit(dependency);
             }
-            foreach (var node in nodes.Where(node => node.Reachable && node.Instruction.Op is OpCode.Call or OpCode.ProcessCall or OpCode.NativeCall or OpCode.LoadCell or OpCode.SetSingleton))
+            foreach (var node in nodes.Where(node => node.Reachable && node.Instruction.Op is OpCode.Call or OpCode.ProcessCall or OpCode.NativeCall or OpCode.LoadCell or OpCode.PublishStatic or OpCode.StoreStaticField))
                 foreach (var input in node.Inputs) foreach (var token in input) Visit(token);
         }
 
@@ -440,16 +438,18 @@ internal static class GraphOptimization
             for (var pc = 0; pc < nodes.Length; pc++)
             {
                 var node = nodes[pc];
-                if (!node.Reachable || node.Instruction.Op != OpCode.SetMember) continue;
+                if (!node.Reachable || node.Instruction.Op != OpCode.StoreField) continue;
                 var scopes = AllocationOrigins(node.Inputs[0], []);
                 if (scopes is null || !HasDeclaredMember(node)) { node.Root = true; continue; }
+                // Structural stores still admit the actual field payload even
+                // if this analysis can see the receiver's layout.
+                if (ScopeOperands.Projection(module, node.Instruction).Cases.Count == 0) node.Root = true;
                 foreach (var scope in scopes)
                 {
                     if (!scopeWrites.TryGetValue(scope, out var writes)) scopeWrites[scope] = writes = [];
                     writes.Add(pc);
                     var allocation = nodes[scope];
-                    var names = allocation.Instruction.Text?.Split('\0', StringSplitOptions.RemoveEmptyEntries) ?? [];
-                    var member = Array.IndexOf(names, node.Instruction.Text);
+                    var member = ScopeOperands.Ordinal(module, node.Instruction, allocation.Instruction.A);
                     foreach (var token in allocation.Inputs[member])
                     {
                         if (token < 0) continue;
@@ -470,7 +470,7 @@ internal static class GraphOptimization
                 if (token < 0) return null;
                 if (!seen.Add(token)) continue;
                 var node = nodes[token / 2];
-                if (node.Instruction.Op == OpCode.MakeScope) { allocations.Add(token / 2); continue; }
+                if (node.Instruction.Op == OpCode.NewScope) { allocations.Add(token / 2); continue; }
                 if (node.Instruction.Op is OpCode.LoadLocal or OpCode.LoadStorage && mutableSlots.Contains(node.Instruction.A)) return null;
                 if (node.Instruction.Op is not (OpCode.LoadLocal or OpCode.LoadStorage or OpCode.StoreLocal or OpCode.InitializeLocal or OpCode.Dup) || node.Inputs.Length != 1) return null;
                 var nested = AllocationOrigins(node.Inputs[0], seen);
@@ -497,8 +497,8 @@ internal static class GraphOptimization
             {
                 OpCode.Nop or OpCode.Constant or OpCode.Null or OpCode.True or OpCode.False or OpCode.LoadLocal or OpCode.LoadStorage or OpCode.StoreLocal or OpCode.InitializeLocal or OpCode.LoadCell or OpCode.Dup or OpCode.Pop => false,
                 OpCode.MakeClosure or OpCode.MakeRange or OpCode.MakeLazyRange or OpCode.DeferRange or OpCode.IsNull or OpCode.SelectPath => false,
-                OpCode.MakeScope => InstructionEffects.ScopeConstructionMayFail(node.Instruction),
-                OpCode.SetMember => false,
+                OpCode.NewScope => false,
+                OpCode.StoreField => false,
                 OpCode.NativeCall => InstructionEffects.NativeEffects(node.Instruction.Text) != InstructionEffect.None,
                 OpCode.PathJoin => !CompatiblePathOperands(node),
                 OpCode.Convert => Resolve(node.Inputs[0]) is not (PathValue or StringValue),
@@ -506,7 +506,7 @@ internal static class GraphOptimization
                 OpCode.Call when node.Instruction.B > 0 && summaries is not null && Resolve(node.Inputs[0]) is FunctionValue { NativeName: null } callee
                     && (callee.Captures?.Count ?? 0) <= module.Functions[node.Instruction.B - 1].LocalCount =>
                     (summaries[node.Instruction.B - 1] & ~InstructionEffect.Capture) != InstructionEffect.None,
-                OpCode.GetMember => !HasDeclaredMember(node),
+                OpCode.LoadField => !HasDeclaredMember(node),
                 OpCode.LoadBuiltin => node.Instruction.Text?.TrimStart('$') is not ("std" or "local" or "pwd" or "file" or "env" or "path" or "wsl"),
                 _ => true
             };
@@ -610,7 +610,7 @@ internal static class GraphOptimization
                 var instruction = emitted[index];
                 emitted[index] = instruction.Op switch
                 {
-                    OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse => instruction with { A = positions[instruction.A] },
+                    OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady => instruction with { A = positions[instruction.A] },
                     OpCode.IteratorNext => instruction with { B = positions[instruction.B] },
                     _ => instruction
                 };
@@ -641,6 +641,6 @@ internal static class GraphOptimization
             return new(OpCode.Constant, interner.Intern(value), Span: span);
         }
 
-        private static bool HasOutput(Instruction instruction) => instruction.Op == OpCode.Acquire ? instruction.A != 0 : instruction.Op is not (OpCode.Nop or OpCode.Pop or OpCode.StoreLocal or OpCode.InitializeLocal or OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.Return or OpCode.Barrier or OpCode.ExecutePlan);
+        private static bool HasOutput(Instruction instruction) => instruction.Op == OpCode.Acquire ? instruction.A != 0 : instruction.Op is not (OpCode.Nop or OpCode.Pop or OpCode.StoreLocal or OpCode.InitializeLocal or OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady or OpCode.Return or OpCode.Barrier or OpCode.ExecutePlan or OpCode.PublishStatic);
     }
 }

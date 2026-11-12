@@ -66,7 +66,7 @@ public static class Optimizer
                     && (features & (FunctionFeatures.Scope | FunctionFeatures.Fields)) == (FunctionFeatures.Scope | FunctionFeatures.Fields))
                     profile.Add(OptimizationProfile.Pass.Memory, start, scheduled, memory);
                 start = profile?.Start() ?? default;
-                var scalar = (features & FunctionFeatures.Scope) != 0 ? ScopeScalarization.Optimize(memory) : memory;
+                var scalar = (features & FunctionFeatures.Scope) != 0 ? ScopeScalarization.Optimize(context, memory) : memory;
                 if (profile is not null && (features & FunctionFeatures.Scope) != 0)
                     profile.Add(OptimizationProfile.Pass.ScopeScalarization, start, memory, scalar);
                 start = profile?.Start() ?? default;
@@ -166,7 +166,7 @@ public static class Optimizer
                     bool branching = level >= 2 && (features & FunctionFeatures.Branch) != 0;
                     bool indexedReads = level >= 2 && (features & FunctionFeatures.IndexedReads) != 0;
                     bool scalarLoops = level >= 2 && (features & FunctionFeatures.Backedge) != 0;
-                    var analysis = branching && (indexedReads || scalarLoops) ? new FunctionAnalysisContext() : null;
+                    var analysis = branching && (indexedReads || scalarLoops) ? new FunctionAnalysisContext(inlined) : null;
                     var start = profile?.Start() ?? default;
                     var normalized = (features & FunctionFeatures.Directional) != 0 ? DirectionalNormalization.Optimize(inlined, function) : function;
                     if (profile is not null && (features & FunctionFeatures.Directional) != 0)
@@ -178,16 +178,16 @@ public static class Optimizer
                         profile.Add(OptimizationProfile.Pass.GlobalRedundancy, start, normalized, available);
                     start = profile?.Start() ?? default;
                     var indexed = indexedReads
-                        ? IndexedMemoryOptimization.OptimizeWithAnalysis(available, constants, analysis,
+                        ? IndexedMemoryOptimization.OptimizeWithAnalysis(inlined, available, constants, analysis,
                             Calls(inlined), getIndexedSummaries ??= IndexedSummaries, index)
                         : available;
                     if (profile is not null && indexedReads)
                         profile.Add(OptimizationProfile.Pass.IndexedMemory, start, available, indexed);
                     start = profile?.Start() ?? default;
-                    var looped = scalarLoops ? NaturalLoopOptimization.Optimize(indexed, constants, constantInterner, level, analysis) : indexed;
+                    var looped = scalarLoops ? NaturalLoopOptimization.Optimize(inlined, indexed, constants, constantInterner, level, analysis) : indexed;
                     if (scalarLoops) profile?.Add(OptimizationProfile.Pass.NaturalLoops, start, indexed, looped);
                     start = profile?.Start() ?? default;
-                    var result = ValueNumbering.Eliminate(looped, constants);
+                    var result = ValueNumbering.Eliminate(inlined, looped, constants);
                     profile?.Add(OptimizationProfile.Pass.ValueNumbering, start, looped, result);
                     return result;
                 }
@@ -266,8 +266,8 @@ public static class Optimizer
         bool fields = false, allocation = false;
         foreach (var instruction in function.Instructions)
         {
-            fields |= instruction.Op is OpCode.GetMember or OpCode.SetMember;
-            allocation |= instruction.Op == OpCode.MakeScope;
+            fields |= instruction.Op is OpCode.LoadField or OpCode.StoreField;
+            allocation |= instruction.Op == OpCode.NewScope;
             if (fields && allocation) return true;
         }
         return false;

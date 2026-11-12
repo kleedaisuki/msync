@@ -1,0 +1,19 @@
+let io = $std::io;
+fn step(prior: Number, reading: Number) -> Number {
+    if reading < 0 { prior - reading * 2 } else {
+        if reading > prior { reading - prior } else { prior + reading }
+    }
+};
+fn estimate(prior: Number, reading: Number) -> Number {
+    let value = step(prior, reading);
+    if value > 64 { value - 32 } else { value + 4 }
+};
+let checksum = 0;
+let prior = 3;
+for line in io::stdin_lines() {
+    let reading = line as Number;
+    prior = estimate(prior, reading);
+    checksum = (checksum * 17 + prior) % 1000003;
+};
+io::println(prior as String);
+io::println(checksum as String);

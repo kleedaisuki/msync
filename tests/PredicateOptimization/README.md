@@ -20,9 +20,10 @@ invalidation. Actual `exists` inputs select both CFG arms. A saved predicate and
 ordinary copied Bool keep their value after a captured call changes the original
 cell; a predicate over the old value cannot refine the new location version.
 The returned-value boundary retains a copied payload rather than importing its
-callee's binding cell. Raw-location bytecode separately covers aliases joined
-through CFG edges and Range iteration retaining raw locations.
-`StoreLocal` mutates the shared cell while `InitializeLocal` detaches that slot.
+callee's binding cell. Location aliases can join through CFG edges, while Range
+items remain values. The iteration fixture instead carries Scopes whose typed
+fields share a captured location: a field store mutates the shared cell, but
+reinitializing a local from a field read changes only the copied value.
 Repeated calls at the same bytecode PC additionally check captured-cell flips,
 old-value predicates and CFG convergence across one to four loop iterations.
 Every expected Bool field is checked before optimization, after the pass, and

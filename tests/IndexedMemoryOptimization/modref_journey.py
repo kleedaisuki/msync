@@ -1,4 +1,4 @@
-"""Check exact callee mod/ref against actual Buffer reads and SQLite telemetry."""
+"""Check exact callee mod/ref against actual vector reads and SQLite telemetry."""
 
 from __future__ import annotations
 
@@ -16,83 +16,83 @@ HERE: Path = Path(__file__).resolve().parent
 ROOT: Path = HERE.parents[1]
 
 SETTER: str = """
-let Buffer = $std::storage::Buffer;
+let storage = $std::storage;
 fn helper(target, value: Number) {
-    Buffer::set(target, INDEX, value);
-    Buffer::size(target)
+    storage::vector_set(target, INDEX, value);
+    storage::vector_size(target)
 };
 """
 
 CROSS_CALL: str = """
-let values = Buffer::new([10, 20]);
+let values = storage::vector_new([10, 20]);
 let receiver = RECEIVER;
-let before = Buffer::get(values, 0);
+let before = storage::vector_get(values, 0);
 let marker = helper(receiver, 99);
-let after = Buffer::get(values, 0);
+let after = storage::vector_get(values, 0);
 $std::io::println((before + marker + after) as String);
 """
 
 READ_ONLY_JOIN: str = """
-let Buffer = $std::storage::Buffer;
+let storage = $std::storage;
 fn helper(target) {
     $std::io::read_line();
-    Buffer::size(target)
+    storage::vector_size(target)
 };
-let values = Buffer::new([10, 20]);
+let values = storage::vector_new([10, 20]);
 let line? = $std::io::read_line();
 let index = 0;
 let before = if line? {
-    Buffer::get(values, index)
+    storage::vector_get(values, index)
 } else {
     index = 1;
-    Buffer::get(values, index)
+    storage::vector_get(values, index)
 };
 let marker = helper(values);
-let after = Buffer::get(values, index);
+let after = storage::vector_get(values, index);
 $std::io::println((before + marker + after) as String);
 """
 
 LAZY_CALLBACK: str = """
-let Buffer = $std::storage::Buffer;
+let storage = $std::storage;
 fn helper(items) { $std::ranges::front(items) };
-let values = Buffer::new([10, 20]);
-let before = Buffer::get(values, 0);
+let values = storage::vector_new([10, 20]);
+let before = storage::vector_get(values, 0);
 let deferred = $std::ranges::transform([1], fn(item: Number) {
-    Buffer::set(values, 0, 99);
+    storage::vector_set(values, 0, 99);
     item
 });
 let marker = helper(deferred);
-let after = Buffer::get(values, 0);
+let after = storage::vector_get(values, 0);
 $std::io::println((before + marker + after) as String);
 """
 
 PARAMETER_ALIAS: str = (
     SETTER.replace("INDEX", "0")
-    .replace("Buffer::set", "$std::storage::Buffer::set")
-    .replace("Buffer::size", "$std::storage::Buffer::size")
+    .replace("storage::vector_set", "$std::storage::vector_set")
+    .replace("storage::vector_size", "$std::storage::vector_size")
     + """
 fn search(reader, writer) {
-    let before = $std::storage::Buffer::get(reader, 0);
+    let before = $std::storage::vector_get(reader, 0);
     let marker = helper(writer, 99);
-    let after = $std::storage::Buffer::get(reader, 0);
+    let after = $std::storage::vector_get(reader, 0);
     before + marker + after
 };
-let values = Buffer::new([10, 20]);
+let values = storage::vector_new([10, 20]);
 $std::io::println(search(values, values) as String);
 """
 )
 
 CAPTURED_WRITE: str = """
-let Buffer = $std::storage::Buffer;
-let values = Buffer::new([10, 20]);
+let storage = $std::storage;
+let values = storage::vector_new([10, 20]);
 let stable = values;
 fn helper(value: Number) {
-    Buffer::set(values, 1, value);
-    Buffer::size(values)
+    storage::vector_set(values, 1, value);
+    storage::vector_size(values)
 };
-let before = Buffer::get(stable, 0);
+let before = storage::vector_get(stable, 0);
 let marker = helper(99);
-let after = Buffer::get(stable, 0);
+let after = storage::vector_get(stable, 0);
 $std::io::println((before + marker + after) as String);
 """
 
@@ -108,7 +108,7 @@ class Case:
     inputs: tuple[tuple[str, str], ...]
     old_reads: int
     new_reads: int
-    native: str = "storage.buffer_get"
+    native: str = "storage.vector_get"
 
 
 @dataclass(frozen=True)
@@ -179,7 +179,7 @@ def disassemble(
     path: Path,
     helper: str,
     expected_gets: int,
-    native: str = "storage.buffer_get",
+    native: str = "storage.vector_get",
 ) -> None:
     ir: str = cli(binary, directory, level, "disassemble", str(path))
     targets: list[str] = re.findall(rf'^fn (@f\d+) "{helper}"\(', ir, re.MULTILINE)
@@ -205,8 +205,8 @@ def verify(
         disassemble(
             binary, directory, level, artifact, "helper", expected_gets, case.native
         )
-    for stdin, expected in case.inputs:
-        for route in (built.source, built.portable, built.executable):
+    for route in (built.source, built.portable, built.executable):
+        for stdin, expected in case.inputs:
             assert (
                 cli(binary, directory, level, "run", str(route), stdin=stdin)
                 == f"{expected}\n"
@@ -215,6 +215,8 @@ def verify(
                 level,
                 route,
             )
+        if route != built.executable:
+            route.unlink()
 
 
 def measured_calls(database: Path, record: str, label_key: str, label: str) -> int:
@@ -241,16 +243,18 @@ def verify_first_failure(binary: Path, directory: Path) -> None:
             binary, directory, 2, "run", str(route), db=database
         )
         assert run.returncode != 0 and run.stdout == "", (route, run)
-        assert "storage.buffer_get index 9 is outside" in run.stderr, (route, run)
+        assert "storage.vector_get index 9 is outside" in run.stderr, (route, run)
         assert (
-            measured_calls(database, "vm.native", "native.name", "storage.buffer_get")
+            measured_calls(database, "vm.native", "native.name", "storage.vector_get")
             == 1
         )
         assert (
-            measured_calls(database, "vm.native", "native.name", "storage.buffer_set")
+            measured_calls(database, "vm.native", "native.name", "storage.vector_set")
             == 0
         )
         assert measured_calls(database, "vm.function", "function.name", "helper") == 0
+        if route != built.executable:
+            route.unlink()
 
 
 def profile_loop(binary: Path, directory: Path, baseline: bool) -> dict[str, int]:
@@ -267,6 +271,8 @@ def profile_loop(binary: Path, directory: Path, baseline: bool) -> dict[str, int
         disassemble(
             binary, directory, level, artifact, "touch_other", 2 if baseline else 1
         )
+    loop.source.unlink()
+    loop.portable.unlink()
     database: Path = directory / "modref-loop.sqlite"
     assert (
         cli(binary, directory, level, "run", str(loop.executable), db=database)
@@ -274,7 +280,7 @@ def profile_loop(binary: Path, directory: Path, baseline: bool) -> dict[str, int
     )
     counts: dict[str, int] = {
         native: measured_calls(
-            database, "vm.native", "native.name", f"storage.buffer_{native}"
+            database, "vm.native", "native.name", f"storage.vector_{native}"
         )
         for native in ("get", "set", "size")
     }
@@ -318,9 +324,9 @@ def main() -> None:
             1,
         ),
         Case(
-            "fresh-disjoint-buffer",
+            "fresh-disjoint-vector",
             SETTER.replace("INDEX", "0")
-            + CROSS_CALL.replace("RECEIVER", "Buffer::new([40])"),
+            + CROSS_CALL.replace("RECEIVER", "storage::vector_new([40])"),
             (("", "21"),),
             2,
             1,
@@ -343,7 +349,7 @@ def main() -> None:
             (("", "6"),),
             3,
             2,
-            "storage.buffer_size",
+            "storage.vector_size",
         ),
         Case("lazy-callback", LAZY_CALLBACK, (("", "110"),), 2, 2),
     )

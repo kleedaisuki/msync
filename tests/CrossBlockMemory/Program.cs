@@ -5,6 +5,22 @@ using Msync.Core;
 using Msync.Runtime;
 using Module = Msync.Core.Module;
 
+const int Number = 0, Bool = 1, Null = 2, Any = 3, Item = 4, ItemOrOther = 5, NullableItem = 6, OpaqueScope = 7, Other = 8;
+const int ItemLayout = 0, OtherLayout = 1;
+const int ItemField = 0, OtherField = 1, MissingField = 2;
+CodeType[] types =
+[
+    new(TypeKind.Number), new(TypeKind.Bool), new(TypeKind.Null), new(TypeKind.Any),
+    new(TypeKind.Scope, ScopeLayouts: [ItemLayout]), new(TypeKind.Scope, ScopeLayouts: [ItemLayout, OtherLayout]),
+    new(TypeKind.Scope | TypeKind.Null, ScopeLayouts: [ItemLayout]), new(TypeKind.Scope),
+    new(TypeKind.Scope, ScopeLayouts: [OtherLayout])
+];
+CodeLayout[] layouts = [new([new("item", Number)]), new([new("other", Number)])];
+CodeFieldProjection[] projections =
+[
+    new("item", [new(ItemLayout, 0)]), new("other", [new(OtherLayout, 0)]), new("missing", [])
+];
+
 int checks = 0;
 void Check(bool condition, string message)
 {
@@ -37,6 +53,18 @@ Module RoundTrip(Module module)
 {
     using MemoryStream bytes = new(); Artifact.Write(module, bytes); bytes.Position = 0; return Artifact.Read(bytes);
 }
+FunctionCode Function(string name, int locals, int result, Instruction[] code, int[]? parameters = null, CodeCapture[]? captures = null)
+{
+    parameters ??= [];
+    captures ??= [];
+    return new(name, parameters.Length, locals, code, new(types[result].Kind), captures.Length,
+        parameters.Select(type => new TypeRef(types[type].Kind)).ToArray())
+    { CodeSignature = new(parameters, result, captures) };
+}
+Module Manual(Value[] constants, params FunctionCode[] functions) => new(constants, functions, OptimizationLevel: 0)
+{ CodeTypes = types, ScopeLayouts = layouts, FieldProjections = projections };
+bool LoadsField(Module module, Instruction instruction, string name) =>
+    instruction.Op == OpCode.LoadField && module.FieldProjections[instruction.A].Name == name;
 
 string root = Path.Combine(Environment.CurrentDirectory, ".temp", "cross-block-memory-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
@@ -82,18 +110,18 @@ try
         Module original = Compiler.Compile(example.Source, example.Name, 0);
         Module rewritten = Rewrite(original);
         if (example.Name is "readonly-helper" or "captured-readonly")
-            Check(rewritten.Functions[0].Instructions.All(instruction => instruction.Op != OpCode.GetMember || instruction.Text != "left"),
+            Check(rewritten.Functions[0].Instructions.All(instruction => !LoadsField(rewritten, instruction, "left")),
                 example.Name + ": readonly call invalidated unrelated cached field");
         if (example.Name is "partial-write" or "captured-partial-write")
         {
-            Check(rewritten.Functions[0].Instructions.All(instruction => instruction.Op != OpCode.GetMember || instruction.Text != "right"),
+            Check(rewritten.Functions[0].Instructions.All(instruction => !LoadsField(rewritten, instruction, "right")),
                 example.Name + ": a disjoint write invalidated the right field");
-            Check(rewritten.Functions[0].Instructions.Any(instruction => instruction.Op == OpCode.GetMember && instruction.Text == "left"),
+            Check(rewritten.Functions[0].Instructions.Any(instruction => LoadsField(rewritten, instruction, "left")),
                 example.Name + ": modified field was forwarded from a stale version");
         }
         if (example.Eliminate)
         {
-            Check(rewritten.Functions[0].Instructions.All(instruction => instruction.Op is not (OpCode.MakeScope or OpCode.GetMember or OpCode.SetMember)),
+            Check(rewritten.Functions[0].Instructions.All(instruction => instruction.Op is not (OpCode.NewScope or OpCode.LoadField or OpCode.StoreField)),
                 example.Name + ": cross-block object/field operation survived");
         }
         Module again = Rewrite(rewritten);
@@ -104,18 +132,21 @@ try
             string flag = Path.Combine(root, "flag");
             if (present) await File.WriteAllTextAsync(flag, "present"); else File.Delete(flag);
             string expected = await Execute(original);
+            if (example.Name == "captured-partial-write")
+                Check(expected == Snapshot(new NumberValue(present ? 34 : 23)),
+                    "The actual captured-field branch returned a stale value");
             if (example.Name is "branch-phi" or "loop-carried-field" or "readonly-helper" or "partial-write" or "captured-readonly" or "enumerated-write")
                 foreach (int level in new[] { 2, 3 })
                 {
                     Module production = Optimizer.Optimize(original, level);
                     Check(await Execute(production) == expected, example.Name + $": actual O{level} product callsite differs");
-                    if (example.Eliminate) Check(production.Functions[0].Instructions.All(instruction => instruction.Op is not (OpCode.MakeScope or OpCode.GetMember or OpCode.SetMember)),
+                    if (example.Eliminate) Check(production.Functions[0].Instructions.All(instruction => instruction.Op is not (OpCode.NewScope or OpCode.LoadField or OpCode.StoreField)),
                         example.Name + $": actual O{level} product callsite did not scalarize across CFG");
                     if (example.Name is "readonly-helper" or "captured-readonly")
-                        Check(production.Functions[0].Instructions.All(instruction => instruction.Op != OpCode.GetMember || instruction.Text != "left"),
+                        Check(production.Functions[0].Instructions.All(instruction => !LoadsField(production, instruction, "left")),
                             example.Name + $": actual O{level} product callsite did not forward readonly field");
                     if (example.Name == "partial-write")
-                        Check(production.Functions[0].Instructions.All(instruction => instruction.Op != OpCode.GetMember || instruction.Text != "right"),
+                        Check(production.Functions[0].Instructions.All(instruction => !LoadsField(production, instruction, "right")),
                             example.Name + $": actual O{level} product callsite invalidated disjoint field");
                 }
             Check(await Execute(rewritten) == expected, example.Name + ": direct result differs");
@@ -137,7 +168,7 @@ try
     Module lateBlock = lateOriginal with
     {
         Functions = lateOriginal.Functions.Select(function => (FunctionCode)blockScalarize.Invoke(null,
-            [lateOriginal, function, lateOriginal.Constants.ToList()])!).ToArray()
+            [lateOriginal, function])!).ToArray()
     };
     Check(await Execute(lateBlock) == await Execute(lateOriginal), "A first capture after an unrelated call lost the current Scope payload");
     foreach (int level in new[] { 2, 3 })
@@ -148,71 +179,86 @@ try
     Module earlyBlock = earlyOriginal with
     {
         Functions = earlyOriginal.Functions.Select(function => (FunctionCode)blockScalarize.Invoke(null,
-            [earlyOriginal, function, earlyOriginal.Constants.ToList()])!).ToArray()
+            [earlyOriginal, function])!).ToArray()
     };
     Check(await Execute(earlyBlock) == await Execute(earlyOriginal), "An already captured location lost its replacement Scope after an epoch");
 
-    Module scalarPhi = new([new NumberValue(3)], [new("scalar-phi", 1, 2,
-        [new(OpCode.LoadLocal, 0), new(OpCode.JumpIfFalse, 6), new(OpCode.Constant, 0), new(OpCode.MakeScope, 1, Text: "item"),
+    Module scalarPhi = Manual([new NumberValue(3)], Function("scalar-phi", 2, Number,
+        [new(OpCode.LoadLocal, 0), new(OpCode.JumpIfFalse, 6), new(OpCode.Constant, 0), new(OpCode.NewScope, ItemLayout),
          new(OpCode.StoreLocal, 1), new(OpCode.Jump, 8), new(OpCode.True), new(OpCode.StoreLocal, 1),
-         new(OpCode.LoadLocal, 1), new(OpCode.GetMember, Text: "item"), new(OpCode.Return)], TypeRef.Any, ParameterTypes: [TypeRef.Bool])], OptimizationLevel: 0);
+         new(OpCode.LoadLocal, 1), new(OpCode.AdmitScope, Item), new(OpCode.LoadField, ItemField), new(OpCode.Return)], parameters: [Bool]));
     Module scalarPhiTransformed = Rewrite(scalarPhi);
-    Check(scalarPhiTransformed.Functions[0].Instructions.Any(instruction => instruction.Op == OpCode.MakeScope),
+    Check(scalarPhiTransformed.Functions[0].Instructions.Any(instruction => instruction.Op == OpCode.NewScope),
         "A scalar/scope phi removed the potentially failing physical receiver");
     foreach (bool value in new[] { false, true })
     {
         Module wrapped = scalarPhi with
         {
-            Functions = [new("entry", 0, 0,
-                [new(OpCode.MakeClosure, 1), new(value ? OpCode.True : OpCode.False), new(OpCode.Call, 1, 2), new(OpCode.Return)], TypeRef.Any),
+            Functions = [Function("entry", 0, Number,
+                [new(OpCode.MakeClosure, 1), new(value ? OpCode.True : OpCode.False), new(OpCode.Call, 1, 2), new(OpCode.Return)]),
                 scalarPhi.Functions[0]]
         };
-        Check(await Execute(Rewrite(wrapped)) == await Execute(wrapped), "A scalar/scope merge changed a selected result/error");
+        string expected = await Execute(wrapped);
+        Check(value ? expected == Snapshot(new NumberValue(3)) : expected.StartsWith("error:", StringComparison.Ordinal),
+            "The scalar/Scope control did not select the intended result or error");
+        Check(await Execute(RoundTrip(Rewrite(wrapped))) == expected, "A scalar/Scope merge changed a selected result/error");
     }
 
-    Module duplicate = new([], [new("duplicate", 0, 1,
-        [new(OpCode.True), new(OpCode.False), new(OpCode.MakeScope, 2, Text: "item\0item"), new(OpCode.StoreLocal, 0),
-         new(OpCode.True), new(OpCode.JumpIfFalse, 8), new(OpCode.LoadLocal, 0), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)], TypeRef.Null)], OptimizationLevel: 0);
-    Check(await Execute(Rewrite(duplicate)) == await Execute(duplicate), "Duplicate-member construction error changed");
-    Module missing = new([], [new("missing", 0, 1,
-        [new(OpCode.True), new(OpCode.MakeScope, 1, Text: "item"), new(OpCode.StoreLocal, 0),
-         new(OpCode.True), new(OpCode.JumpIfFalse, 7), new(OpCode.LoadLocal, 0), new(OpCode.Pop),
-         new(OpCode.LoadLocal, 0), new(OpCode.GetMember, Text: "missing"), new(OpCode.Return)], TypeRef.Any)], OptimizationLevel: 0);
-    Check(await Execute(Rewrite(missing)) == await Execute(missing), "Missing-field selected error changed");
+    Module duplicate = Manual([], Function("duplicate", 0, Null,
+        [new(OpCode.Null), new(OpCode.Return)])) with { ScopeLayouts = [new([new("item", Number), new("item", Number)]), layouts[1]] };
+    try { Artifact.Validate(duplicate); Check(false, "Portable code admitted a duplicate-member layout"); }
+    catch (MsyncException error)
+    {
+        Check(error.Message.Contains("duplicate field name", StringComparison.Ordinal), "Unexpected duplicate-layout diagnostic");
+    }
+    Module missing = Manual([new NumberValue(1)],
+        Function("missing-entry", 0, Any, [new(OpCode.MakeClosure, 1), new(OpCode.Constant, 0),
+            new(OpCode.NewScope, ItemLayout), new(OpCode.Call, 1, 2), new(OpCode.Return)]),
+        Function("missing", 1, Any, [new(OpCode.LoadLocal, 0), new(OpCode.LoadField, MissingField), new(OpCode.Return)],
+            parameters: [OpaqueScope]));
+    Check(await Execute(RoundTrip(Rewrite(missing))) == "error:Scope has no member 'missing'",
+        "Missing-field selected error changed");
     Module persistent = Compiler.Compile("let box = scope { item: 1 }; if exists ./flag { box::item = 7; }; box::item", optimization: 0) with { PreserveLocals = true };
-    Check(ReferenceEquals(Rewrite(persistent).Functions[0], persistent.Functions[0]), "Persistent REPL storage was scalarized");
+    Module session = Optimizer.Optimize(persistent, 2);
+    Check(session.Functions[0].Instructions.SequenceEqual(persistent.Functions[0].Instructions),
+        "The optimizer admitted persistent REPL entry storage to scalarization");
 
-    Module rawCell = new([new NumberValue(1), new NumberValue(7)], [new("raw-cell", 0, 3,
-        [new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0), new(OpCode.Pop),
-         new(OpCode.LoadStorage, 0), new(OpCode.StoreLocal, 1), new(OpCode.LoadStorage, 1), new(OpCode.MakeScope, 1, Text: "item"),
+    Module rawCell = Manual([new NumberValue(1), new NumberValue(7)], Function("raw-cell", 3, Number,
+        [new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0, Number + 1), new(OpCode.Pop),
+         new(OpCode.LoadStorage, 0), new(OpCode.StoreLocal, 1), new(OpCode.LoadStorage, 1), new(OpCode.NewScope, ItemLayout),
          new(OpCode.StoreLocal, 2), new(OpCode.True), new(OpCode.JumpIfFalse, 16),
-         new(OpCode.LoadLocal, 2), new(OpCode.Constant, 1), new(OpCode.SetMember, Text: "item"), new(OpCode.Pop), new(OpCode.Jump, 16),
-         new(OpCode.LoadLocal, 0), new(OpCode.Return)], TypeRef.Number)], OptimizationLevel: 0);
-    Check(await Execute(Rewrite(rawCell)) == await Execute(rawCell), "Raw field-cell alias was copied into independent scalar storage");
+         new(OpCode.LoadLocal, 2), new(OpCode.Constant, 1), new(OpCode.StoreField, ItemField), new(OpCode.Pop), new(OpCode.Jump, 16),
+         new(OpCode.LoadLocal, 0), new(OpCode.Return)]));
+    Check(await Execute(RoundTrip(Rewrite(rawCell))) == Snapshot(new NumberValue(7)),
+        "Raw field-cell alias was copied into independent scalar storage");
 
-    Module replacedCell = new([new NumberValue(1), new NumberValue(2), new NumberValue(7)],
-        [new("replace-owner", 0, 3,
-            [new(OpCode.Constant, 0), new(OpCode.MakeScope, 1, Text: "item"), new(OpCode.InitializeLocal, 0),
-             new(OpCode.LoadLocal, 0), new(OpCode.InitializeLocal, 1), new(OpCode.LoadCell, 0), new(OpCode.MakeClosure, 1, 1),
+    Module replacedCell = Manual([new NumberValue(1), new NumberValue(2), new NumberValue(7)],
+        Function("replace-owner", 3, Number,
+            [new(OpCode.Constant, 0), new(OpCode.NewScope, ItemLayout), new(OpCode.InitializeLocal, 0),
+             new(OpCode.LoadLocal, 0), new(OpCode.InitializeLocal, 1), new(OpCode.LoadCell, 0, ItemOrOther + 1), new(OpCode.MakeClosure, 1, 1),
              new(OpCode.InitializeLocal, 2), new(OpCode.LoadLocal, 2), new(OpCode.Call, 0, 2), new(OpCode.Pop),
-             new(OpCode.LoadLocal, 0), new(OpCode.Constant, 2), new(OpCode.SetMember, Text: "other"), new(OpCode.Pop),
-             new(OpCode.LoadLocal, 1), new(OpCode.GetMember, Text: "item"), new(OpCode.Return)], TypeRef.Number),
-         new("replace", 0, 1,
-            [new(OpCode.Constant, 1), new(OpCode.MakeScope, 1, Text: "other"), new(OpCode.StoreLocal, 0), new(OpCode.Null), new(OpCode.Return)],
-            TypeRef.Null, CaptureCount: 1)], OptimizationLevel: 0);
-    Check(await Execute(Rewrite(replacedCell)) == await Execute(replacedCell), "A re-bound captured slot updated another instance's cached field");
+             new(OpCode.LoadLocal, 0), new(OpCode.AdmitScope, Other), new(OpCode.Constant, 2), new(OpCode.StoreField, OtherField), new(OpCode.Pop),
+             new(OpCode.LoadLocal, 1), new(OpCode.LoadField, ItemField), new(OpCode.Return)]),
+         Function("replace", 1, Null,
+            [new(OpCode.Constant, 1), new(OpCode.NewScope, OtherLayout), new(OpCode.StoreLocal, 0), new(OpCode.Null), new(OpCode.Return)],
+            captures: [new(ItemOrOther, true)]));
+    Check(await Execute(RoundTrip(Rewrite(replacedCell))) == Snapshot(new NumberValue(1)),
+        "A re-bound captured slot updated another instance's cached field");
 
     foreach (bool selected in new[] { false, true })
     {
-        Module nullableAlias = new([new NumberValue(1)],
-            [new("nullable-owner", 0, 1,
-                [new(OpCode.Constant, 0), new(OpCode.MakeScope, 1, Text: "item"), new(OpCode.StoreLocal, 0), new(OpCode.MakeClosure, 1),
+        Module nullableAlias = Manual([new NumberValue(1)],
+            Function("nullable-owner", 1, Number,
+                [new(OpCode.Constant, 0), new(OpCode.NewScope, ItemLayout), new(OpCode.StoreLocal, 0), new(OpCode.MakeClosure, 1),
                  new(OpCode.LoadLocal, 0), new(selected ? OpCode.True : OpCode.False), new(OpCode.Call, 2, 2),
-                 new(OpCode.GetMember, Text: "item"), new(OpCode.Return)], TypeRef.Any),
-             new("maybe", 2, 2,
+                 new(OpCode.AdmitScope, Item), new(OpCode.LoadField, ItemField), new(OpCode.Return)]),
+             Function("maybe", 2, NullableItem,
                 [new(OpCode.LoadLocal, 1), new(OpCode.JumpIfFalse, 4), new(OpCode.LoadLocal, 0), new(OpCode.Return), new(OpCode.Null), new(OpCode.Return)],
-                TypeRef.Scope.WithNull, ParameterTypes: [TypeRef.Scope, TypeRef.Bool])], OptimizationLevel: 0);
-        Check(await Execute(Rewrite(nullableAlias)) == await Execute(nullableAlias), "May-return alias erased the Null alternative and its selected error");
+                parameters: [Item, Bool]));
+        string expected = await Execute(nullableAlias);
+        Check(selected ? expected == Snapshot(new NumberValue(1)) : expected.StartsWith("error:", StringComparison.Ordinal),
+            "The nullable alias did not select the intended result or error");
+        Check(await Execute(RoundTrip(Rewrite(nullableAlias))) == expected, "May-return alias erased the Null alternative and its selected error");
     }
 
     const string copy = "let box = scope { payload: \"before\", target: ./result }; if exists ./flag { box::payload = \"你好 Klee\"; } else { box::payload = \"other branch\"; }; for item in [1, 2] { box::target = ./result; }; box::payload -> box::target;";

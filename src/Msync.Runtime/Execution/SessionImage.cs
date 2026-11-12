@@ -6,7 +6,7 @@ internal sealed class SessionImage(Module module)
 {
     public Module Module { get; private set; } = module;
     public int Generation { get; private set; }
-    public Dictionary<int, ScopeValue> Singletons { get; } = [];
+    public StaticScopeSection StaticScopes { get; } = new();
     public Task Ordering { get; set; } = Task.CompletedTask;
     public Interpreter? ActiveInterpreter { get; set; }
     private readonly Dictionary<BindingContext, Module> projections = [];
@@ -22,6 +22,7 @@ internal sealed class SessionImage(Module module)
 
     public void Publish(Module module)
     {
+        StaticScopes.Reserve(module.StaticScopes.Count);
         Module = module;
         projections.Clear();
         Generation++;

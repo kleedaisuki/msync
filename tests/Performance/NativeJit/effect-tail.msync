@@ -1,0 +1,25 @@
+let count? = $std::io::read_line();
+let initial? = $std::io::read_line();
+if count? or initial? {
+    $std::io::println("missing inputs");
+} else {
+    let n = count as Number;
+    let value = initial as Number;
+    let state = scope {
+        writes: 0
+    };
+    let observe = fn() {
+        state::writes
+    };
+    let i = 0;
+    loop {
+        if i >= n {
+            break;
+        };
+        state::writes = observe() + 1;
+        value = (value + i) * 0.5 - 0.25;
+        i = i + 1;
+    };
+    $std::io::println(value as String);
+    $std::io::println(observe() as String);
+};

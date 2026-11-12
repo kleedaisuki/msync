@@ -255,6 +255,7 @@ internal static class GlobalRedundancy
                     case OpCode.Dup: var duplicate = Pop(); state.Stack.Add(duplicate); state.Stack.Add(duplicate); break;
                     case OpCode.Pop: Pop(); break;
                     case OpCode.Jump: Next(instruction.A, state); break;
+                    case OpCode.JumpIfStaticReady: Next(instruction.A, state); Next(pc + 1, state); break;
                     case OpCode.JumpIfTrue:
                     case OpCode.JumpIfFalse:
                         var condition = Pop();
@@ -271,14 +272,16 @@ internal static class GlobalRedundancy
                         PopMany(instruction.A);
                         if ((InstructionEffects.NativeEffects(instruction.Text) & (InstructionEffect.Write | InstructionEffect.Invoke)) != 0) Invalidate(pc);
                         Unknown(pc, instruction.Text is { } native && NativeSignatures.TryGet(native, out var signature) ? signature.Result : TypeRef.Any); break;
-                    case OpCode.GetSingleton: Unknown(pc, new(TypeKind.Scope | TypeKind.Null)); break;
-                    case OpCode.SetSingleton: Pop(); Unknown(pc, TypeRef.Scope); break;
+                    case OpCode.LoadStaticScope: Unknown(pc, TypeRef.Scope); break;
+                    case OpCode.LoadStaticField: Unknown(pc, ScopeOperands.FieldType(module, instruction)); break;
+                    case OpCode.PublishStatic: PopMany(ScopeOperands.Construction(module, instruction).Fields.Count); Invalidate(pc); break;
                     case OpCode.LoadBuiltin: Unknown(pc, instruction.Text?.TrimStart('$') is "std" ? TypeRef.Scope : TypeRef.Connection); break;
-                    case OpCode.MakeScope: PopMany(instruction.A); Unknown(pc, TypeRef.Scope); break;
+                    case OpCode.NewScope: PopMany(ScopeOperands.Construction(module, instruction).Fields.Count); Unknown(pc, TypeRef.Scope); break;
                     case OpCode.MakeRange: case OpCode.MakeLazyRange: PopMany(instruction.A); Unknown(pc, new(TypeKind.Range)); break;
                     case OpCode.SpecializeClosure: Pop(); Unknown(pc, TypeRef.Function); break;
                     case OpCode.GetCapture: Pop(); Unknown(pc, storage: true); break;
-                    case OpCode.GetMember: Pop(); Unknown(pc); break;
+                    case OpCode.LoadField: Pop(); Unknown(pc, ScopeOperands.FieldType(module, instruction)); break;
+                    case OpCode.AdmitScope: state.Stack.Add(Pop() with { Type = TypeRef.Scope }); break;
                     case OpCode.Not: case OpCode.IsNull: Pop(); Unknown(pc, TypeRef.Bool); break;
                     case OpCode.Negate: Pop(); Unknown(pc, TypeRef.Number); break;
                     case OpCode.Convert: Pop(); Unknown(pc, instruction.Text == "Path" ? TypeRef.Path : TypeRef.String); break;
@@ -288,7 +291,8 @@ internal static class GlobalRedundancy
                         Invalidate(pc); Next(instruction.B, state); Unknown(pc); Next(pc + 1, state); break;
                     case OpCode.Acquire: if (instruction.A != 0) { var process = Pop(); state.Stack.Add(process); } Invalidate(pc); break;
                     case OpCode.RegexMatch: PopMany(instruction.Text is null ? 2 : 1); Unknown(pc, TypeRef.Bool); break;
-                    case OpCode.SetMember: PopMany(2); Invalidate(pc); state.Stack.Add(Literal(Value.Null, pc)); break;
+                    case OpCode.StoreStaticField:
+                    case OpCode.StoreField: PopMany(instruction.Op == OpCode.StoreField ? 2 : 1); Invalidate(pc); state.Stack.Add(Literal(Value.Null, pc)); break;
                     default:
                         PopMany(2);
                         Unknown(pc, instruction.Op is OpCode.Transfer or OpCode.LocalTransfer or OpCode.Equal or OpCode.NotEqual or OpCode.Less or OpCode.LessEqual or OpCode.Greater or OpCode.GreaterEqual or OpCode.IsType ? TypeRef.Bool
@@ -298,7 +302,7 @@ internal static class GlobalRedundancy
             }
             block.Output = state;
             var last = code[block.End - 1];
-            if (last.Op is not (OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.IteratorNext or OpCode.Return)) Next(block.End, state);
+            if (last.Op is not (OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady or OpCode.IteratorNext or OpCode.Return)) Next(block.End, state);
             return outgoing;
         }
 
@@ -382,7 +386,7 @@ internal static class GlobalRedundancy
                 }
                 else
                 {
-                    if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.IteratorNext)
+                    if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady or OpCode.IteratorNext)
                     {
                         var target = instruction.Op == OpCode.IteratorNext ? instruction.B : instruction.A;
                         var edge = new Edge(block, graph.BlockAt(target));

@@ -29,8 +29,13 @@ internal sealed partial class SemanticAnalyzer
         }
         SemanticValue? element = first.Element is null ? second.Element : second.Element is null
             ? first.Element : Join(first.Element, second.Element);
+        if (element is not null && (OpaqueElements(first) || OpaqueElements(second)))
+            element = WithoutLayoutFacts(element);
         var type = hir.Type(new HirType(runtime, Shape: scope?.Layout ?? -1,
-            Element: element?.Type.Value ?? -1));
+            Element: element?.Type.Value ?? -1)
+        {
+            ScopeDomain = HirScopeDomain.Join(hir.Types[first.Type.Value], hir.Types[second.Type.Value])
+        });
         var callables = Choices(first).Concat(Choices(second)).Distinct(SemanticCallableIdentity.Instance).ToImmutableArray();
         return new(type, first.Node, first.Literal == second.Literal ? first.Literal : null,
             callables, scope, element, EagerRange: first.EagerRange && second.EagerRange,
@@ -39,6 +44,17 @@ internal sealed partial class SemanticAnalyzer
             DeferredEffects: CombineDeferredEffects(first.DeferredEffects, second.DeferredEffects),
             IndexedAliases: payload?.IndexedAliases ?? JoinIndexedResources(first, second),
             OpenSessionCalls: CombineSessionCalls(first.OpenSessionCalls, second.OpenSessionCalls));
+    }
+
+    private bool OpaqueElements(SemanticValue value) => value.Element is null
+        && (Runtime(value).Kind & (TypeKind.Range | TypeKind.Storage)) != 0
+        && Runtime(value).Element?.Kind != TypeKind.Never;
+
+    private SemanticValue WithoutLayoutFacts(SemanticValue value)
+    {
+        var type = StructuralStorageType(value.Type);
+        var element = value.Element is { } item ? WithoutLayoutFacts(item) : null;
+        return type == value.Type && ReferenceEquals(element, value.Element) ? value : value with { Type = type, Element = element };
     }
 
     private static ImmutableDictionary<string, ImmutableArray<HirSourceRange>>? JoinFieldDefinitions(
@@ -152,7 +168,30 @@ internal sealed partial class SemanticAnalyzer
             if (hir.Types[definition.StorageType.Value].TypeParameter >= 0)
                 context.Substitutions[definition.StorageType] = type;
         }
+        type = StructuralStorageType(type);
         return definition.AdmitsNull ? Nullable(type) : type;
+    }
+
+    // Storage admission is structural. A later legal write can replace a
+    // value with a wider layout, including inside an admitted Range.
+    private HirTypeId StructuralStorageType(HirTypeId id)
+    {
+        var type = hir.Types[id.Value];
+        int element = type.Element < 0 ? -1 : StructuralStorageType(new(type.Element)).Value;
+        ImmutableArray<HirTypeId>.Builder? alternatives = null;
+        for (int i = 0; i < type.Alternatives.AsSpan().Length; i++)
+        {
+            var previous = type.Alternatives[i];
+            var structural = StructuralStorageType(previous);
+            if (structural != previous) (alternatives ??= type.Alternatives.ToBuilder())[i] = structural;
+        }
+        if (type.ScopeDomain.Count == 0 && element == type.Element && alternatives is null) return id;
+        return hir.Type(type with
+        {
+            ScopeDomain = default,
+            Element = element,
+            Alternatives = alternatives is null ? type.Alternatives : alternatives.MoveToImmutable()
+        });
     }
 
     private void Require(SemanticValue value, HirTypeId target, HirSourceRange source,

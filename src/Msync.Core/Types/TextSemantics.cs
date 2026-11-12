@@ -4,16 +4,18 @@ public static class TextSemantics
 {
     public static StringComparer Ordinal => ScalarOrdinalComparer.Instance;
 
-    public static int CompareOrdinal(string left, string right)
+    public static int CompareOrdinal(string left, string right) => CompareOrdinal(left.AsSpan(), right.AsSpan());
+
+    public static int CompareOrdinal(ReadOnlySpan<char> left, ReadOnlySpan<char> right)
     {
-        int common = left.AsSpan().CommonPrefixLength(right.AsSpan());
+        int common = left.CommonPrefixLength(right);
         if (common == Math.Min(left.Length, right.Length)) return left.Length.CompareTo(right.Length);
         char a = left[common], b = right[common];
         if (!char.IsHighSurrogate(a) && !char.IsHighSurrogate(b)) return a.CompareTo(b);
         return ScalarAt(left, common).CompareTo(ScalarAt(right, common));
     }
 
-    private static int ScalarAt(string value, int offset)
+    private static int ScalarAt(ReadOnlySpan<char> value, int offset)
     {
         char first = value[offset];
         return char.IsHighSurrogate(first) && offset + 1 < value.Length && char.IsLowSurrogate(value[offset + 1])

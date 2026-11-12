@@ -11,8 +11,6 @@ internal static class DemandLoadingChecks
     public static async Task Run(bool requireSelection = true, string? caseName = null)
     {
         const string listOnly = "let list = $std::containers::List::new([1, 2]); $std::containers::List::size(list)";
-        if (requireSelection && caseName is null or "selected-list")
-            CheckSelectedFamilies(Compiler.Compile(listOnly, "selected-list", 0));
         (string Name, string Source, string Expected)[] cases =
         [
             ("selected-list", listOnly, "2"),
@@ -77,6 +75,8 @@ internal static class DemandLoadingChecks
             Module portable = Compiler.Compile(source, name, level);
             foreach (Module program in Routes(portable))
             {
+                if (requireSelection && name == "selected-list" && level == 0)
+                    CheckSelectedFamilies(program);
                 Value result = await Interpreter.ExecuteAsync(program);
                 if (result.ToString() != expected)
                     throw new InvalidOperationException($"{name} O{level} {program.Stage}: expected {expected}, got {result}");
@@ -94,8 +94,9 @@ internal static class DemandLoadingChecks
         using StreamReader reader = new(stream);
         string source = reader.ReadToEnd();
         var declarations = Parser.Parse(source, "msync-stdlib:///0.8.0/containers.msync").Statements.OfType<ScopeDeclaration>().ToArray();
-        var operations = module.Functions.SelectMany(function => function.Instructions)
-            .Where(instruction => instruction.Op is OpCode.MakeClosure or OpCode.MakeScope or OpCode.SetSingleton)
+        var instructions = module.Functions.SelectMany(function => function.Instructions).ToArray();
+        var operations = instructions
+            .Where(instruction => instruction.Op is OpCode.MakeClosure or OpCode.NewScope or OpCode.PublishStatic)
             .Select(instruction => instruction.Span).OfType<Msync.Core.SourceSpan>()
             .Where(span => span.Source == "msync-stdlib:///0.8.0/containers.msync").ToArray();
         foreach (var declaration in declarations)
@@ -104,6 +105,10 @@ internal static class DemandLoadingChecks
             bool selected = declaration.Name is "List" or "SnapshotStorage";
             if (initialized != selected)
                 throw new InvalidOperationException($"List-only selection {(selected ? "lost" : "eagerly initialized")} family {declaration.Name}");
+            if (selected && !instructions.Any(instruction => instruction is { Op: OpCode.PublishStatic, Span: { } span }
+                && span.Source == "msync-stdlib:///0.8.0/containers.msync"
+                && span.Start == declaration.Span.Start && span.Length > 0))
+                throw new InvalidOperationException($"Selected family {declaration.Name} lost the source span of its typed static publication");
         }
     }
 

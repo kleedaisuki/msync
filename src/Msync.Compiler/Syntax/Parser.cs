@@ -559,9 +559,10 @@ public sealed class Parser
     private ForExpr For(SourceSpan start)
     {
         var pattern = ParsePattern(false);
+        bool nullable = Take(TokenKind.Question);
         if (!TakeWord("in")) Fail("Expected 'in' after the loop binding.");
         var values = Expression(header: true); var body = Block();
-        return new(pattern, values, body, SourceSpan.Cover(start, body.Span));
+        return new(pattern, values, body, SourceSpan.Cover(start, body.Span)) { Nullable = nullable };
     }
     private Pattern ParsePattern(bool matching)
     {

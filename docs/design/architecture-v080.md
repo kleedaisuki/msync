@@ -5,8 +5,10 @@ The current 0.8.1 semantic boundary is specified in
 organization-only acceptance near the end of this note remains a historical
 baseline, not the description of the former emission frontend as current code.
 The subsequent [contextual I/O backend](contextual-io-backend.md) defines the
-current executable-plan contract, including ephemeral filesystem observations,
-format 5, graph optimization and execution-only VM ownership.
+executable-plan contract, including ephemeral filesystem observations, graph
+optimization and execution-only VM ownership. The current format-6 typed
+place and capture representation is documented in
+[Scope spatial layout](object-spatial-layout.md).
 
 ## Scope and ownership
 
@@ -22,7 +24,7 @@ The root build uses .NET 10. The implementation boundaries are:
 | --- | --- | --- |
 | `Msync.Core` | Semantic types, values, typed bytecode, execution-plan data, artifact codec, instruction effects and block formation | Source parser, optimizer passes, authenticated sessions |
 | `Msync.Hir` | Immutable typed semantic programs, source/definition/location identities, HIR persistence/printing and pure bytecode lowering | Source binding, type inference, live session objects or native execution |
-| `Msync.Optimization` | Machine-independent passes, function/effect analyses, constant evaluation, contextual IR binding/lowering | Source syntax, filesystem observations or authenticated execution |
+| `Msync.Optimization` | Machine-independent passes and analyses, contextual bytecode binding/lowering, and pure execution-target preparation | Source syntax, filesystem observations, live frame state, executable pages or authenticated execution |
 | `Msync.Compiler` | Tokens/AST, lexical binding, type inference, refinement, specialization, semantic generations and editor observations | Bytecode emission, physical frame layout or executing filesystem/process effects |
 | `Msync.Runtime` | Contextual I/O backend, native operations, VM execution/scheduling and process/transfer lifetime | Source parsing or duplicating portable optimizer passes; VM does not assess plan freshness |
 | `Msync.Cli` | Commands, REPL, diagnostics, LSP transport and native process entrypoint | A second implementation of source semantics |
@@ -56,9 +58,9 @@ loading managed components at runtime.
 | --- | --- |
 | Core | `Types/`, `Values/`, `Bytecode/`, `Artifacts/`, `Native/`, `Context/`, `Diagnostics/` |
 | Hir | `Model/`, `Sealing/`, `Lowering/`, `Serialization/`, `Printing/` |
-| Optimization | `Pipeline/`, `Analysis/`, `Flow/`, `Memory/`, `Interprocedural/`, `Evaluation/`, `Contextual/` |
-| Compiler | Public compiler/session facades; `Syntax/`, `Semantics/`, `Editor/`, `StandardLibrary/`, `Diagnostics/` |
-| Runtime | `Planning/`, `Execution/`, `Scheduling/`, `Transfers/`, `Native/`, `Context/`, `Platform/`, `Text/`, `Generated/` |
+| Optimization | Portable passes under `Pipeline/`, `Analysis/`, `Flow/`, `Memory/`, `Interprocedural/` and `Evaluation/`; artifact transformations under `Contextual/`; process-local target preparation under `Execution/` |
+| Compiler | Public compiler/session facades; `Syntax/`, `Semantics/`, `Session/`, `Editor/`, `StandardLibrary/`, `Diagnostics/` |
+| Runtime | `Planning/`, `Execution/` (including `Tiering/`), `Scheduling/`, `Transfers/`, `Native/`, `Context/`, `Diagnostics/`, `Platform/`, `Text/`, `Generated/` |
 | CLI | `Program` routing; `Commands/`, `Terminal/`, `LanguageServer/`, `Artifacts/`, `Configuration/`, `Diagnostics/`, `Telemetry/` |
 
 Classes follow state ownership rather than file-count targets. `SourceBinder`
@@ -71,12 +73,12 @@ while `HirLoweringSession` owns their logical-to-physical layout. Pure
 `Compilation` emission partials and bytecode-producing editor probe path are
 removed, rather than retained as an alternate frontend.
 
-The session bridge is an integration owner: `SemanticSession` coordinates
-analysis, lowering and execution feedback, while its Values/Sites adapters use
-`HirLoweringLayout` to relate runtime values to semantic identities. Their
-current placement under `Semantics/` does not make those orchestration adapters
-part of source binding or type analysis. `SourceBinder` and `SemanticAnalyzer`
-do not allocate physical slots or emit bytecode.
+The `Msync.Compiler/Session/` bridge is an integration owner: `SemanticSession`
+coordinates analysis, lowering and execution feedback, while its Values/Sites
+adapters use `HirLoweringLayout` to relate runtime values to semantic identities.
+Session call obligations and their inference remain in `Semantics/`, not in
+the bridge that accepts runtime observations. `SourceBinder` and
+`SemanticAnalyzer` do not allocate physical slots or emit bytecode.
 
 Runtime `ExecutionSession`, `SessionImage` and `ResourceIndex` are independent
 owners rather than declarations appended to the interpreter. Opcode dispatch,
@@ -95,8 +97,23 @@ contracts, operation ordering and algorithm implementations are unchanged.
 `BlockBuilder.Form` and `InstructionEffects` live in Core because artifact
 loading and execution need bytecode structure and per-operation semantics.
 Function-level effect analysis and optimizer dependency caches live in
-Optimization. Contextual binding/lowering there transforms IR and captured
-context; it does not perform filesystem observations or authentication.
+Optimization. The shared stack-effect analysis lives in `Optimization/Analysis/`;
+portable passes need not depend on execution-target types. Keep the three
+backend owners distinct:
+
+| Owner | Input → output |
+| --- | --- |
+| `Optimization/Contextual/`, `Runtime/Planning/` | Portable code plus binding context → bound artifact and selected I/O recipes. Only Runtime planning observes the environment. |
+| `Msync.Optimization.Execution` | Final bytecode → process-local dispatch views, typed region recipes and worker plans. No live activation state, host addresses, or HIR. |
+| `Runtime/Execution/Tiering/`, `Runtime/Platform/` | Plans and selected activations → guards, tier selection, machine execution and continuation. Platform owns executable-page allocation/protection. |
+
+An execution recipe belongs with the compiler that derives it; mutable tier
+state, capture values, and continuation ownership belong with the VM. Use
+source boundaries rather than a new assembly unless a distinct consumer needs
+one: [RyuJIT's importer/EE boundary](https://github.com/dotnet/runtime/blob/v10.0.0/docs/design/coreclr/jit/ryujit-overview.md)
+illustrates the split without prescribing our deployment layout. This follows
+[Parnas's information-hiding criterion](https://doi.org/10.1145/361598.361623):
+separate independently changing decisions, not just consecutive calls.
 
 ```text
 *.msync
@@ -119,8 +136,8 @@ are not serialized into the file.
 
 Bytecode artifacts contain operations, types, constants, symbolic context and source
 locations, not source to evaluate later. Source locations are diagnostic data.
-The current binary contract is format 5, language 0.8.0 (semantic flags 3).
-Readers reject earlier C# formats 1/2/3/4; compatibility code and old builtin
+The current binary contract is format 6, language 0.8.0.
+Readers reject earlier C# formats 1 through 5; compatibility code and old builtin
 alias identities are not retained. Historical versioning discussions describe
 previous releases, not a requirement to maintain their readers.
 Relocatable artifacts capture no live authentication, filesystem snapshots,
@@ -128,9 +145,9 @@ handles or optimizer proofs about a previous execution. Executable artifacts
 capture contextual operations and selected observations, not remote credentials
 or a claim that external files still exist. VM executes the recorded graph;
 it does not compare observations with the environment or repair an obsolete
-plan. Unknown-effect continuations are prepared when selected with actual
-inputs, not as a staleness fallback. Planner state belongs to each selected
-frame/region rather than a shared mutable module.
+plan. Residual bytecode executes directly when its inputs become available;
+the VM does not call the planner. Planner state belongs to preparation,
+not to a shared mutable module.
 
 ## Language decisions
 

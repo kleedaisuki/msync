@@ -4,13 +4,13 @@ internal static class ValueNumbering
 {
     private readonly record struct Key(OpCode Op, string? Text, int Count, int Left, int Right, int Third);
 
-    internal static FunctionCode Eliminate(FunctionCode function, IReadOnlyList<Value> constants)
+    internal static FunctionCode Eliminate(Module module, FunctionCode function, IReadOnlyList<Value> constants)
     {
         var code = function.Instructions;
         var starts = new HashSet<int> { 0 };
         foreach (var instruction in code)
         {
-            if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue) starts.Add(instruction.A);
+            if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.JumpIfStaticReady) starts.Add(instruction.A);
             if (instruction.Op == OpCode.IteratorNext) starts.Add(instruction.B);
         }
         var numbers = new Dictionary<Value, int>(ValueRepresentation.Comparer);
@@ -55,8 +55,9 @@ internal static class ValueNumbering
             switch (instruction.Op)
             {
                 case OpCode.Nop: case OpCode.Barrier: break;
-                case OpCode.GetSingleton: stack.Add(next++); break;
-                case OpCode.SetSingleton: Pop(); stack.Add(next++); break;
+                case OpCode.LoadStaticScope: case OpCode.LoadStaticField: stack.Add(next++); break;
+                case OpCode.PublishStatic: PopMany(ScopeOperands.Construction(module, instruction).Fields.Count); Invalidate(); break;
+                case OpCode.StoreStaticField: Pop(); stack.Add(next++); Invalidate(); break;
                 case OpCode.Constant: stack.Add(Literal(constants[instruction.A])); break;
                 case OpCode.True: stack.Add(Literal(Value.True)); break;
                 case OpCode.False: stack.Add(Literal(Value.False)); break;
@@ -73,17 +74,26 @@ internal static class ValueNumbering
                 case OpCode.Pop: Pop(); break;
                 case OpCode.LoadBuiltin: case OpCode.LoadCell: case OpCode.LoadStorage: stack.Add(next++); break;
                 case OpCode.MakeClosure: PopMany(instruction.B); stack.Add(next++); break;
-                case OpCode.MakeScope: case OpCode.MakeRange: case OpCode.MakeLazyRange: PopMany(instruction.A); stack.Add(next++); break;
+                case OpCode.NewScope: PopMany(ScopeOperands.Construction(module, instruction).Fields.Count); stack.Add(next++); break;
+                case OpCode.MakeRange: case OpCode.MakeLazyRange: PopMany(instruction.A); stack.Add(next++); break;
                 case OpCode.Call: case OpCode.ProcessCall:
                     PopMany(instruction.A + 1); stack.Add(next++); Invalidate(); break;
                 case OpCode.NativeCall: PopMany(instruction.A); stack.Add(next++); Invalidate(); break;
-                case OpCode.GetMember: case OpCode.GetCapture: case OpCode.SpecializeClosure: case OpCode.GetIterator:
+                case OpCode.LoadField: case OpCode.GetCapture: case OpCode.SpecializeClosure: case OpCode.GetIterator:
                 case OpCode.SelectPath: case OpCode.DeferRange: Pop(); stack.Add(next++); break;
                 case OpCode.Acquire: if (instruction.A != 0) { Pop(); stack.Add(next++); } Invalidate(); break;
                 case OpCode.IteratorNext: stack.Add(next++); Invalidate(); break;
                 case OpCode.JumpIfTrue: case OpCode.JumpIfFalse: Pop(); Reset(); break;
-                case OpCode.Jump: case OpCode.Return: Reset(); break;
-                default: PopMany(2); stack.Add(next++); if (instruction.Op == OpCode.SetMember) Invalidate(); break;
+                case OpCode.Jump: case OpCode.JumpIfStaticReady: case OpCode.Return: Reset(); break;
+                case OpCode.AdmitScope: break;
+                default:
+                    if (ExecutionStackEffect.TryGet(module, instruction, stack.Count, out var effect))
+                    {
+                        PopMany(effect.Inputs);
+                        if (effect.ProducesValue) stack.Add(next++);
+                    }
+                    if (instruction.Op == OpCode.StoreField) Invalidate();
+                    break;
             }
         }
         if (replacements.Count == 0) return function;
@@ -100,7 +110,7 @@ internal static class ValueNumbering
                 output.Add(new(OpCode.LoadLocal, replacement.Slot, Span: instruction.Span));
                 continue;
             }
-            if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.IteratorNext) branches.Add(output.Count);
+            if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady or OpCode.IteratorNext) branches.Add(output.Count);
             output.Add(instruction);
             if (retained.TryGetValue(pc, out var slot))
             {

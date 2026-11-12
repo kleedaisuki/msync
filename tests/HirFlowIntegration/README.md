@@ -27,6 +27,16 @@ constraint, rather than turning an established Number into an apparent nullable
 value. Uninitialized standard-module cells are unassigned facts, not complete
 Scope schemas.
 
+A loop's flow graph can be solved before a local initializer seals its
+inferred carrier. A block-local constructor with an indexed Scope exposes
+this order: the pure projection can still have an unresolved standard-module
+capture, while the actual initializer has already proved a non-null Scope.
+Read-time reconciliation bounds a stale wider fact by the sealed local or
+field carrier. Matching semantic types take the ordinary path; a genuinely
+nullable carrier remains nullable. The focused
+`--case conditional_indexed_carrier` checks both cases. See the
+[scored CLI and artifact routes](../../artifacts/benchmarks/hir-conditional-carrier-v086/README.md).
+
 Logical binding cells and object fields have different invalidation domains.
 A known field write changes its field cell, not every private local that happens
 to reference a Scope. Unknown calls conservatively invalidate mutable captured

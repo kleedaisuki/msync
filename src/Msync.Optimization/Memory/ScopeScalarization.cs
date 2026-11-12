@@ -17,10 +17,11 @@ internal static class ScopeScalarization
         internal bool UnknownAlias;
     }
 
-    private sealed class Allocation(int position, IReadOnlyDictionary<string, Field> fields)
+    private sealed class Allocation(int position, int layout, Field[] fields)
     {
         internal readonly int Position = position;
-        internal readonly IReadOnlyDictionary<string, Field> Fields = fields;
+        internal readonly int Layout = layout;
+        internal readonly Field[] Fields = fields;
         internal bool Escaped;
         internal int EscapedAt;
     }
@@ -30,9 +31,9 @@ internal static class ScopeScalarization
     private sealed record Write(Allocation Allocation, Field Field);
     private sealed record Block(int Start, int End, int[] Successors);
 
-    internal static FunctionCode Optimize(FunctionCode function)
+    internal static FunctionCode Optimize(Module module, FunctionCode function)
     {
-        if (!function.Instructions.Any(instruction => instruction.Op == OpCode.MakeScope)) return function;
+        if (!function.Instructions.Any(instruction => instruction.Op == OpCode.NewScope)) return function;
         // A scalar slot represents one instance only while its allocation stays
         // within this CFG region. Live-out aliases keep the physical instance.
         var blocks = Blocks(function.Instructions);
@@ -81,8 +82,12 @@ internal static class ScopeScalarization
                 switch (instruction.Op)
                 {
                     case OpCode.Nop: case OpCode.Barrier: break;
-                    case OpCode.GetSingleton: stack.Add(new()); break;
-                    case OpCode.SetSingleton: Escape(Pop()); stack.Add(new()); break;
+                    case OpCode.LoadStaticScope:
+                    case OpCode.LoadStaticField: stack.Add(new()); break;
+                    case OpCode.PublishStatic:
+                        foreach (var item in PopMany(ScopeOperands.Construction(module, instruction).Fields.Count)) Escape(item);
+                        break;
+                    case OpCode.StoreStaticField: Escape(Pop()); Invalidate(); stack.Add(new()); break;
                     case OpCode.Constant:
                     case OpCode.Null:
                     case OpCode.True:
@@ -111,21 +116,21 @@ internal static class ScopeScalarization
                     case OpCode.Pop: Pop(); break;
                     case OpCode.Dup:
                         var duplicated = Pop(); stack.Add(duplicated); stack.Add(duplicated); break;
-                    case OpCode.MakeScope:
-                        var values = PopMany(instruction.A);
-                        foreach (var value in values) Escape(value);
-                        var names = instruction.Text?.Split('\0', StringSplitOptions.RemoveEmptyEntries) ?? [];
-                        var fields = new Dictionary<string, Field>(names.Length, StringComparer.Ordinal);
-                        bool unique = true;
-                        for (var index = 0; index < names.Length; index++)
-                            if (!fields.TryAdd(names[index], new(localsCount++, values[index], epoch))) { unique = false; break; }
-                        if (!unique) { stack.Add(new()); break; }
-                        var allocation = new Allocation(pc, fields);
-                        allocations.Add(pc, allocation); stack.Add(new(allocation)); break;
-                    case OpCode.GetMember:
-                        var receiver = Pop();
-                        if (receiver.Scope is { } readScope && readScope.Fields.TryGetValue(instruction.Text!, out var field))
+                    case OpCode.NewScope:
+                        var values = PopMany(ScopeOperands.Construction(module, instruction).Fields.Count);
+                        var fields = new Field[values.Length];
+                        for (int index = 0; index < fields.Length; index++)
                         {
+                            Escape(values[index]);
+                            fields[index] = new(localsCount++, values[index], epoch);
+                        }
+                        var allocation = new Allocation(pc, instruction.A, fields);
+                        allocations.Add(pc, allocation); stack.Add(new(allocation)); break;
+                    case OpCode.LoadField:
+                        var receiver = Pop();
+                        if (receiver.Scope is { } readScope && ScopeOperands.Ordinal(module, instruction, readScope.Layout) is >= 0 and var ordinal)
+                        {
+                            var field = readScope.Fields[ordinal];
                             var known = Known(readScope, field);
                             if (known) reads.Add(pc, new(readScope, field));
                             else Escape(receiver);
@@ -133,10 +138,14 @@ internal static class ScopeScalarization
                         }
                         else { Escape(receiver); stack.Add(new()); }
                         break;
-                    case OpCode.SetMember:
+                    case OpCode.StoreField:
                         var assigned = Pop(); var destination = Pop();
-                        if (destination.Scope is { } writeScope && writeScope.Fields.TryGetValue(instruction.Text!, out var target))
+                        // An exact ordinal alone does not prove a structural write's storage admission.
+                        if (ScopeOperands.Projection(module, instruction).Cases.Count != 0
+                            && destination.Scope is { } writeScope
+                            && ScopeOperands.Ordinal(module, instruction, writeScope.Layout) is >= 0 and var targetOrdinal)
                         {
+                            var target = writeScope.Fields[targetOrdinal];
                             Escape(assigned);
                             if (target.Value.Cell is { UnknownAlias: true }) Invalidate();
                             target.WrittenAt = epoch;
@@ -146,6 +155,9 @@ internal static class ScopeScalarization
                         }
                         else { Escape(destination); Escape(assigned); Invalidate(); }
                         stack.Add(new()); break;
+                    case OpCode.AdmitScope:
+                        // An admission that still executes must observe the actual Scope.
+                        var admitted = Pop(); Escape(admitted); stack.Add(admitted); break;
                     case OpCode.MakeClosure:
                         var captures = PopMany(instruction.B);
                         foreach (var value in captures) Escape(value);
@@ -178,7 +190,7 @@ internal static class ScopeScalarization
                         Invalidate(); break;
                     case OpCode.IteratorNext: stack.Add(new()); Invalidate(); break;
                     case OpCode.JumpIfFalse: case OpCode.JumpIfTrue: Escape(Pop()); break;
-                    case OpCode.Jump: break;
+                    case OpCode.JumpIfStaticReady: case OpCode.Jump: break;
                     case OpCode.Return: if (stack.Count > 0) Escape(Pop()); break;
                     case OpCode.GetIterator:
                     case OpCode.Not:
@@ -205,6 +217,7 @@ internal static class ScopeScalarization
         reads = reads.Where(pair => allocations.ContainsKey(pair.Value.Allocation.Position)).ToDictionary();
         writes = writes.Where(pair => allocations.ContainsKey(pair.Value.Allocation.Position)).ToDictionary();
         return Rewrite(function, allocations, reads, writes);
+
     }
 
     private static FunctionCode Rewrite(FunctionCode function, Dictionary<int, Allocation> allocations,
@@ -214,7 +227,7 @@ internal static class ScopeScalarization
         var positions = new int[code.Count + 1];
         var output = new List<Instruction>();
         var branches = new List<int>();
-        var slots = allocations.Values.SelectMany(allocation => allocation.Fields.Values.Select(field => field.Slot))
+        var slots = allocations.Values.SelectMany(allocation => allocation.Fields.Select(field => field.Slot))
             .Select((slot, index) => (slot, index))
             .ToDictionary(pair => pair.slot, pair => function.LocalCount + pair.index);
         for (var pc = 0; pc < code.Count; pc++)
@@ -223,10 +236,10 @@ internal static class ScopeScalarization
             var instruction = code[pc];
             if (allocations.TryGetValue(pc, out var allocation))
             {
-                foreach (var field in allocation.Fields.Values.Reverse()) output.Add(new(OpCode.InitializeLocal, slots[field.Slot], Span: instruction.Span));
+                foreach (var field in allocation.Fields.Reverse()) output.Add(new(OpCode.InitializeLocal, slots[field.Slot], Span: instruction.Span));
                 if (allocation.Escaped)
                 {
-                    foreach (var field in allocation.Fields.Values) output.Add(new(OpCode.LoadStorage, slots[field.Slot], Span: instruction.Span));
+                    foreach (var field in allocation.Fields) output.Add(new(OpCode.LoadStorage, slots[field.Slot], Span: instruction.Span));
                     output.Add(instruction);
                 }
                 else output.Add(new(OpCode.Null, Span: instruction.Span));
@@ -246,7 +259,7 @@ internal static class ScopeScalarization
                 if (!write.Allocation.Escaped) output.Add(new(OpCode.Null, Span: instruction.Span));
                 continue;
             }
-            if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.IteratorNext) branches.Add(output.Count);
+            if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady or OpCode.IteratorNext) branches.Add(output.Count);
             output.Add(instruction);
         }
         positions[^1] = output.Count;
@@ -264,9 +277,9 @@ internal static class ScopeScalarization
         for (var pc = 0; pc < code.Count; pc++)
         {
             var instruction = code[pc];
-            if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse) starts.Add(instruction.A);
+            if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady) starts.Add(instruction.A);
             if (instruction.Op == OpCode.IteratorNext) starts.Add(instruction.B);
-            if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.IteratorNext or OpCode.Return) starts.Add(pc + 1);
+            if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.JumpIfStaticReady or OpCode.IteratorNext or OpCode.Return) starts.Add(pc + 1);
         }
         var boundaries = starts.ToArray();
         return boundaries.Zip(boundaries.Skip(1), (start, end) =>
@@ -276,7 +289,7 @@ internal static class ScopeScalarization
             {
                 OpCode.Return => [],
                 OpCode.Jump => [last.A],
-                OpCode.JumpIfFalse or OpCode.JumpIfTrue => [last.A, end],
+                OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.JumpIfStaticReady => [last.A, end],
                 OpCode.IteratorNext => [last.B, end],
                 _ => end < code.Count ? [end] : []
             };
@@ -297,7 +310,7 @@ internal static class ScopeScalarization
             for (var pc = block.Start; pc < block.End; pc++)
             {
                 var instruction = code[pc];
-                if (instruction.Op is OpCode.LoadLocal or OpCode.LoadCell or OpCode.LoadStorage or OpCode.IteratorNext && !define.Contains(instruction.A)) use.Add(instruction.A);
+                if (instruction.Op is OpCode.LoadLocal or OpCode.LoadCell or OpCode.LoadStorage or OpCode.JumpIfStaticReady or OpCode.IteratorNext && !define.Contains(instruction.A)) use.Add(instruction.A);
                 if (instruction.Op is OpCode.StoreLocal or OpCode.InitializeLocal) define.Add(instruction.A);
             }
             uses.Add(block.Start, use); definitions.Add(block.Start, define);

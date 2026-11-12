@@ -25,7 +25,7 @@ public static partial class NativeRegistry
         {
             double start = FiniteNumber(args[0], name), stop = FiniteNumber(args[1], name), step = FiniteNumber(args[2], name);
             if (step == 0) throw new MsyncException("ranges.sequence requires a nonzero step");
-            return new(new RangeValue(NumberSequence(start, stop, step, token), TypeRef.Number));
+            return new(RangeValue.NumberSequence(start, stop, step, token));
         }
         RangeValue source = Range(args[0], name);
         if (name == "at") return ElementAt(source, Ordinal(args[1], name, false), token);
@@ -77,20 +77,6 @@ public static partial class NativeRegistry
         [EnumeratorCancellation] CancellationToken token)
     {
         for (long index = 0; index < count; index++) { token.ThrowIfCancellationRequested(); yield return value; }
-        await Task.CompletedTask;
-    }
-
-    private static async IAsyncEnumerable<Value> NumberSequence(double start, double stop, double step,
-        [EnumeratorCancellation] CancellationToken token)
-    {
-        for (double value = start; step > 0 ? value < stop : value > stop;)
-        {
-            token.ThrowIfCancellationRequested();
-            yield return new NumberValue(value);
-            double next = value + step;
-            if (next == value) throw new MsyncException("ranges.sequence step no longer advances the Number value");
-            value = next;
-        }
         await Task.CompletedTask;
     }
 
@@ -170,6 +156,40 @@ public static partial class NativeRegistry
             token.ThrowIfCancellationRequested();
             return SnapshotItem(snapshot, index);
         }
+        source = await DeferredRangeSource.Demand(source, token);
+        if (source.OwnedSnapshot is { } owned)
+        {
+            token.ThrowIfCancellationRequested();
+            return SnapshotItem(owned, index);
+        }
+        if (source.Items is NumberRangeItems numbers)
+        {
+            var cursor = numbers.Open(token);
+            long remaining = index;
+            while (cursor.TryNext(out double number))
+            {
+                token.ThrowIfCancellationRequested();
+                if (remaining-- == 0) return new NumberValue(number);
+            }
+            throw MissingIndex(index);
+        }
+        if (source.Items is StringRangeItems.Sync strings)
+        {
+            long remaining = index;
+            foreach (var slice in strings.Read())
+            {
+                token.ThrowIfCancellationRequested();
+                if (remaining-- == 0) return new StringValue(slice.ToOwnedString());
+            }
+            throw MissingIndex(index);
+        }
+        if (source.Items is StringRangeItems.Async stream)
+        {
+            long remaining = index;
+            await foreach (var slice in stream.Read.WithCancellation(token))
+                if (remaining-- == 0) return new StringValue(slice.ToOwnedString());
+            throw MissingIndex(index);
+        }
         long position = 0;
         await foreach (Value value in source.Items.WithCancellation(token))
             if (position++ == index) return value;
@@ -190,8 +210,19 @@ public static partial class NativeRegistry
     private static async ValueTask<Value> CountRange(RangeValue range, CancellationToken token)
     {
         if (range.SnapshotValues is { } snapshot) return new NumberValue(snapshot.Count);
+        range = await DeferredRangeSource.Demand(range, token);
+        if (range.OwnedSnapshot is { } owned) return new NumberValue(owned.Count);
         long count = 0;
-        await foreach (var _ in range.Items.WithCancellation(token)) count++;
+        if (range.Items is NumberRangeItems numbers)
+        {
+            var cursor = numbers.Open(token);
+            while (cursor.TryNext(out _)) { token.ThrowIfCancellationRequested(); count++; }
+        }
+        else if (range.Items is StringRangeItems.Sync strings)
+            foreach (var _ in strings.Read()) { token.ThrowIfCancellationRequested(); count++; }
+        else if (range.Items is StringRangeItems.Async stream)
+            await foreach (var _ in stream.Read.WithCancellation(token)) count++;
+        else await foreach (var _ in range.Items.WithCancellation(token)) count++;
         return new NumberValue(count);
     }
 
@@ -248,9 +279,49 @@ public static partial class NativeRegistry
 
     private static async ValueTask<Value> Materialized(RangeValue source, CancellationToken token)
     {
+        TypeRef itemType = source.ItemType;
+        source = await DeferredRangeSource.Demand(source, token);
+        if (source.Items is NumberRangeItems numbers)
+        {
+            if (numbers is NumberRangeItems.Snapshot snapshot)
+            {
+                if (snapshot.Count != 0) token.ThrowIfCancellationRequested();
+                return RangeValue.CopyNumberSnapshot(snapshot, itemType);
+            }
+            List<double> vector = [];
+            var cursor = numbers.Open(token);
+            while (cursor.TryNext(out double number))
+            {
+                token.ThrowIfCancellationRequested();
+                vector.Add(number);
+            }
+            return RangeValue.OwnNumberSnapshot(vector, itemType);
+        }
+        if (source.Items is StringRangeItems text)
+        {
+            if (text is StringRangeItems.Snapshot snapshot)
+            {
+                if (snapshot.Count != 0) token.ThrowIfCancellationRequested();
+                return RangeValue.CopyTextSnapshot(snapshot, itemType);
+            }
+            List<string> vector = [];
+            if (text is StringRangeItems.Sync strings)
+            {
+                foreach (var slice in strings.Read())
+                {
+                    token.ThrowIfCancellationRequested();
+                    vector.Add(slice.ToOwnedString());
+                }
+            }
+            else
+                await foreach (var slice in ((StringRangeItems.Async)text).Read.WithCancellation(token))
+                    vector.Add(slice.ToOwnedString());
+            return RangeValue.OwnTextSnapshot(vector, itemType);
+        }
+
         List<Value> values = [];
         await foreach (Value value in source.Items.WithCancellation(token)) values.Add(value);
-        return RangeValue.TakeSnapshotOwnership(values, source.ItemType);
+        return RangeValue.TakeSnapshotOwnership(values, itemType);
     }
 
     private static async IAsyncEnumerable<Value> Scanned(RangeValue source, Value initial, Value operation,

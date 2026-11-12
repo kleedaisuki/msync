@@ -4,8 +4,8 @@ namespace Msync.Core;
 
 public sealed record ScopeValue : Value, IReadOnlyDictionary<string, Value>
 {
-    private object fields;
-    private readonly int rowOffset;
+    private const int SharedLiteralFields = -1;
+    private ScopePayload payload;
     public bool Equals(ScopeValue? other) => ReferenceEquals(this, other);
     public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
 
@@ -13,7 +13,7 @@ public sealed record ScopeValue : Value, IReadOnlyDictionary<string, Value>
     {
         var names = new string[members.Count];
         Value[] values = new Value[members.Count];
-        fields = values;
+        payload = new(values);
         int index = 0;
         foreach (var member in members) { names[index] = member.Key; values[index++] = member.Value; }
         Layout = ScopeLayout.Own(names);
@@ -26,19 +26,35 @@ public sealed record ScopeValue : Value, IReadOnlyDictionary<string, Value>
     private ScopeValue(ScopeLayout layout, Value[] fields, int allocationSite)
     {
         Layout = layout;
-        this.fields = fields;
+        payload = new(fields);
         AllocationSite = allocationSite;
+    }
+
+    private ScopeValue(ScopeValue original) : base(original)
+    {
+        // A host record copy has always shared the original field storage.
+        // Detach that pair from other literal instances before sharing it.
+        if (Volatile.Read(ref original.payload.Offset) == SharedLiteralFields) original.DetachLiteralFields();
+        payload = original.payload;
+        Layout = original.Layout;
+        AllocationSite = original.AllocationSite;
     }
 
     internal static ScopeValue FromOwnedFields(ScopeLayout layout, Value[] fields, int allocationSite) =>
         new(layout, fields, allocationSite);
-    internal ScopeValue(ScopeLayout layout, PackedScopeStorage fields, int rowOffset)
+
+    internal static ScopeValue FromLiteralFields(ScopeLayout layout, Value[] fields, int allocationSite) =>
+        new(layout, new ScopePayload(fields, SharedLiteralFields), allocationSite);
+
+    internal ScopeValue(ScopeLayout layout, ScopePayload payload, int allocationSite)
     {
         Layout = layout;
-        this.fields = fields;
-        this.rowOffset = rowOffset;
+        this.payload = payload;
+        AllocationSite = allocationSite;
     }
-    internal bool IsPacked => fields is PackedScopeStorage;
+
+    internal ReadOnlySpan<Value?> RetainedReferences => payload.RetainedReferences;
+    internal bool IsPacked => payload.IsPacked;
     public ScopeValue(IReadOnlyDictionary<string, Value> members, int allocationSite) : this(members) => AllocationSite = allocationSite;
     public ScopeLayout Layout { get; }
     public IReadOnlyDictionary<string, Value> Members => this;
@@ -53,53 +69,41 @@ public sealed record ScopeValue : Value, IReadOnlyDictionary<string, Value>
         if (Layout.TryGetOffset(name, out int offset)) { value = GetField(offset); return true; }
         value = Value.Null; return false;
     }
-    public Value GetField(int offset) => Read(fields is Value[] direct ? direct[offset]
-        : ((PackedScopeStorage)fields).GetField(rowOffset, offset));
+    public Value GetField(int offset) => payload.GetField(offset);
+
     // Null denotes a raw numeric operand, not the language's Null value.
-    public Value? GetOperandField(int offset, out double number)
-    {
-        if (fields is PackedScopeStorage packed)
-        {
-            var value = packed.GetOperandField(rowOffset, offset, out number);
-            return value is null ? null : Read(value);
-        }
-        number = 0;
-        return Read(((Value[])fields)[offset]);
-    }
-    public bool TryGetNumber(int offset, out double number)
-    {
-        if (fields is PackedScopeStorage packed) return packed.TryGetNumber(rowOffset, offset, out number);
-        Value value = Read(((Value[])fields)[offset]);
-        if (value is NumberValue numeric) { number = numeric.Data; return true; }
-        number = 0;
-        return false;
-    }
+    public Value? GetOperandField(int offset, out double number) => payload.GetOperandField(offset, out number);
+    public bool TryGetNumber(int offset, out double number) => payload.TryGetNumber(offset, out number);
     public void SetNumber(int offset, double number)
     {
-        if (fields is PackedScopeStorage packed) { packed.SetNumber(rowOffset, offset, number); return; }
-        SetField(offset, new NumberValue(number));
+        if (Volatile.Read(ref payload.Offset) == SharedLiteralFields) DetachLiteralFields();
+        payload.SetNumber(offset, number);
     }
     public bool IsField(int offset, string name) => Layout.IsField(offset, name);
     public bool TryGetFieldOffset(string name, out int offset) => Layout.TryGetOffset(name, out offset);
     public bool TryGetFieldCell(int offset, out CellValue cell)
     {
-        CellValue? captured = fields is Value[] direct ? direct[offset] as CellValue
-            : ((PackedScopeStorage)fields).GetCell(offset);
-        cell = captured!;
-        return captured is not null;
+        cell = payload.GetCell(offset)!;
+        return cell is not null;
     }
     public void SetField(int offset, Value value)
     {
-        if (fields is PackedScopeStorage packed)
-        {
-            if (!packed.IsNumeric(offset)) { packed.SetField(offset, value); return; }
-            if (value is NumberValue number) { packed.SetNumber(rowOffset, offset, number.Data); return; }
-            fields = packed.Materialize(rowOffset);
-        }
-        Value[] direct = (Value[])fields;
-        if (direct[offset] is CellValue cell) cell.Data = value;
-        else direct[offset] = value;
+        if (Volatile.Read(ref payload.Offset) == SharedLiteralFields) DetachLiteralFields();
+        payload.SetField(offset, value);
     }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void DetachLiteralFields()
+    {
+        // Competing first writers must converge on one private array.
+        lock (this)
+        {
+            if (payload.Offset != SharedLiteralFields) return;
+            payload.DetachLiteral();
+            Volatile.Write(ref payload.Offset, 0);
+        }
+    }
+
     public void SetMember(string name, Value value)
     {
         if (!Layout.TryGetOffset(name, out int offset)) throw new MsyncException($"Scope has no member '{name}'");
@@ -111,7 +115,6 @@ public sealed record ScopeValue : Value, IReadOnlyDictionary<string, Value>
         for (int index = 0; index < values.Length; index++) values[index] = transform(GetField(index));
         return FromOwnedFields(Layout, values, AllocationSite);
     }
-    private static Value Read(Value value) => value is CellValue cell ? cell.Data : value;
     public Enumerator GetEnumerator() => new(this);
     IEnumerator<KeyValuePair<string, Value>> IEnumerable<KeyValuePair<string, Value>>.GetEnumerator() => GetEnumerator();
     System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();

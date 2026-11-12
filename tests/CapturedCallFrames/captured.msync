@@ -1,0 +1,14 @@
+let first = 10;
+let second = 5;
+fn step(amount: Number) {
+    global first;
+    global second;
+    first = first + amount;
+    second = second + first;
+    first - second
+};
+
+$std::io::println(step(3) as String);
+$std::io::println(step(2) as String);
+$std::io::println(first as String);
+$std::io::println(second as String);

@@ -66,15 +66,15 @@ fn count(state: Scope) {
 (count(scope { remaining: 8 }) as String) -> ./recursive.txt;
 
 let original = scope { text: "before" };
-let objects = $std::storage::Buffer::new([original]);
-let alias = $std::storage::Buffer::get(objects, 0);
+let objects = $std::storage::vector_new([original]);
+let alias = $std::storage::vector_get(objects, 0);
 alias::text = "shared";
 original::text -> ./indexed-alias.txt;
-let numbers = $std::storage::Buffer::new([]);
-let before = $std::storage::Buffer::snapshot(numbers);
-$std::storage::Buffer::push(numbers, 7);
+let numbers = $std::storage::vector_empty(Number);
+let before = $std::storage::vector_snapshot(numbers);
+$std::storage::vector_push(numbers, 7);
 ($std::ranges::size(before) as String) -> ./snapshot-before.txt;
-($std::storage::Buffer::get(numbers, 0) as String) -> ./first-write.txt;
+($std::storage::vector_get(numbers, 0) as String) -> ./typed-write.txt;
 let present_null = $std::data::Option::some(null);
 if $std::data::Option::is_some(present_null) and present_null::value is null {
     "present-null" -> ./present-null.txt;
@@ -150,7 +150,7 @@ OUTPUTS: dict[str, bytes] = {
     "recursive.txt": b"8",
     "indexed-alias.txt": b"shared",
     "snapshot-before.txt": b"0",
-    "first-write.txt": b"7",
+    "typed-write.txt": b"7",
     "present-null.txt": b"present-null",
     "singleton.txt": b"singleton",
     "fresh.txt": b"fresh",
@@ -176,11 +176,11 @@ NEGATIVE: tuple[tuple[str, str, tuple[DiagnosticFragment, ...]], ...] = (
     (
         "invalidated-member-proof",
         """
-let values = $std::storage::Buffer::new([
+let values = $std::storage::vector_new([
     scope { child?: scope { text: "ok" } }
 ]);
-let first = $std::storage::Buffer::get(values, 0);
-let alias = $std::storage::Buffer::get(values, 0);
+let first = $std::storage::vector_get(values, 0);
+let alias = $std::storage::vector_get(values, 0);
 if first::child is not null {
     alias::child = null;
     first::child::text;
@@ -260,6 +260,7 @@ def execute(binary: Path, parent: Path, levels: list[int]) -> int:
                         ),
                         "bind",
                     )
+                    artifact.unlink()
                     artifact = executable
                     assert not any((directory / name).exists() for name in OUTPUTS)
                 source.unlink()

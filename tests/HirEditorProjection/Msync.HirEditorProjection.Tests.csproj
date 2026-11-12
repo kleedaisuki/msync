@@ -9,11 +9,15 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="../../src/Msync.Compiler/Syntax/Ast.cs" Link="Syntax/Ast.cs" />
+    <Compile Include="../../src/Msync.Compiler/Syntax/LanguageTypes.cs;../../src/Msync.Compiler/Syntax/Lexer.cs;../../src/Msync.Compiler/Syntax/NameSyntax.cs;../../src/Msync.Compiler/Syntax/Parser.cs;../../src/Msync.Compiler/Syntax/TypeSyntaxFacts.cs" Link="Syntax/%(Filename)%(Extension)" />
     <Compile Include="../../src/Msync.Compiler/Diagnostics/Diagnostics.cs" Link="Diagnostics.cs" />
     <Compile Include="../../src/Msync.Compiler/Editor/SemanticSymbols.cs" Link="SemanticSymbols.cs" />
     <Compile Include="../../src/Msync.Compiler/Editor/EditorContext.cs" Link="EditorContext.cs" />
     <Compile Include="../../src/Msync.Compiler/Editor/SemanticObservationView.cs" Link="SemanticObservationView.cs" />
     <Compile Include="../../src/Msync.Compiler/Editor/SemanticValuePresenter.cs" Link="SemanticValuePresenter.cs" />
     <Compile Include="../../src/Msync.Compiler/Editor/EditorSemanticIndex.cs" Link="EditorSemanticIndex.cs" />
+    <Compile Include="../../src/Msync.Compiler/Editor/SemanticStandardCatalog.cs" Link="SemanticStandardCatalog.cs" />
+    <Compile Include="../../src/Msync.Compiler/StandardLibrary/*.cs" Link="StandardLibrary/%(Filename)%(Extension)" />
+    <EmbeddedResource Include="../../stdlib/*.msync" Link="Stdlib/%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

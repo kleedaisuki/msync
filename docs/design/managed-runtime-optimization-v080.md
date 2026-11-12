@@ -427,3 +427,212 @@ The ReturnedProcesses journeys separately check process publication,
 reassigned arguments and caller/session ownership. Disposable raw sample
 rows and exact scratch source for the alternative designs are in
 `.temp/frame-lane/`.
+
+## Runtime target boundary (November 11, 2026)
+
+The [tiered execution design](tiered-execution-v086.md) supersedes the
+recommendation to start with same-block fusion. It records the production
+private-number loop tier and the split between portable artifacts and
+process-local execution versions.
+
+### Split borrowed environments and live cells
+
+A standalone, exact-arity source call with no extra local slots can borrow
+both the suspended caller's normalized arguments and a VM-owned multi-value
+closure environment. Closures with two or more captures use a private
+read-only wrapper around the owned references; borrowing never aliases a
+host-supplied mutable list. A referenced Cell is not immutable. The old
+zero/one-capture representation remains valid, and the caller's argument
+roots remain live through work-owner join. Session execution and frames
+with additional locals continue to own private storage.
+
+The slot view detaches only when an operation replaces a physical reference
+or promotes a previously ordinary slot. Reading or writing through an
+existing Cell keeps the same location without copying either environment or
+arguments. `InitializeLocal` replaces the reference, including when it is
+a Cell, and therefore detaches before the replacement. On detachment the
+VM copies original references, not dereferenced payloads. Returned Process
+classification still examines original captures and caller arguments, not
+the detached or rebound frame. This keeps ownership separate from the
+physical frame convention. [LuaJIT upvalues](https://github.com/LuaJIT/LuaJIT/blob/v2.1/src/lj_obj.h)
+are another example of representing location identity separately from the
+payload; msync does not import LuaJIT's stack or open-upvalue lifetime model.
+
+SQLite `split_frames` is a subset of `borrowed_frames`; `detached_frames`
+records actual copies. Diagnostic entry spans distinguish
+`closure_and_caller` from the existing `caller_slice`. A native numeric
+region can now use the same slot view; committing a changed ordinary value
+uses the normal detachment path. A straight-line numeric continuation may
+read the immediate Number in a Cell it does not write. A writable Cell
+still fails the region's readiness guard, including aliases through two
+different slots. This works because no host effect executes between the
+read and use. It is not general Cell unboxing, native Cell mutation,
+or snapshotting a shared location across effects.
+
+The ordinary and split slot accesses specialize the same interpreter
+body on a value-type layout marker. The contiguous Native AOT accessor
+loads the biased array slot directly; the split accessor alone tests
+the capture boundary. Detaching a split frame makes its capture prefix
+empty without changing executable versions. The Linux assembly receipt
+shows both accessors; compared with the prior unified-layout build,
+the two specialized interpreter variants add approximately 56 KiB to
+the packaged executable.
+
+The [split frame receipt](../../artifacts/benchmarks/split-frames-v086/README.md)
+records the paired corpus, actual Win-x64 Wine replay, Process ownership
+tests, and no-telemetry paths. Standard signal takes 196,611 split calls
+and 196,482 native suffixes with one total detach; managed allocation
+drops from approximately 69.14 MB to 46.64 MB. Same-artifact child CPU
+pairs show a benefit on one seed and essentially neutral time on the
+other. The initial B+ wall slowdown does not reproduce in that repeat.
+
+### Borrowed numeric arguments
+
+The suspended caller keeps both its reference operands and its numeric
+sidecar alive until the callee and work-owner join have completed. In a
+borrowed call, a null reference slot still denotes a raw binary64 argument.
+An ordinary Cell argument is normalized once, as before; it is not
+reinterpreted as a raw numeric location. A distinct value-type frame layout
+handles the borrowed raw case, so ordinary contiguous and boxed split
+dispatch need no raw-slot tests.
+
+A canonical local load can put the argument straight into the callee's raw
+lane, and native readiness can read it without constructing a Value. A
+canonical return of that argument materializes it directly without creating
+a callee sidecar merely to box it. Storage reads and capture promotion
+materialize when they actually need an object; the suspended caller's
+representation may become boxed but its original argument value does not
+change. Detachment copies still-live inputs to private storage and does not
+materialize a dead numeric slot that the operation immediately replaces.
+Raw numbers cannot root Processes, so ownership traversal never boxes them
+just to check reachability. Reference inputs retain the original root
+semantics even when they follow a raw argument or are rebound by the callee.
+
+SQLite `raw_arguments` counts arguments actually lent in the raw lane, not
+all numeric arguments or optimized-away predicate calls. No return ABI,
+source/HIR requirement, or format-5 representation is changed.
+
+The [raw argument and bound text receipt](../../artifacts/benchmarks/raw-arguments-v086/README.md)
+records the combined corpus, Windows-branch replay and process/bit-exact
+tests. Signal lends 196,608 raw values per seed and avoids exactly that
+many Number boxes, with about 4.72 MB lower managed allocation. The first
+integrated same-artifact CPU repeat found a 4.2% / 7.1% Heap non-target cost.
+Its raw-argument count is zero. The frame's optional raw carrier now holds
+only the caller's sidecar reference. Observation counts the null numeric
+markers in the original borrowed slice before dispatch; telemetry-disabled
+calls do not maintain a second argument count. A bound Number-text target
+is consulted only at a ready text cast, using the active frame's image
+even if a nested session call refreshed the interpreter's current image.
+
+### Synchronous frame completion
+
+The interpreter still installs a fresh work owner before starting the
+frame. When dispatch completes successfully and that owner has no pending
+tasks or Processes, it restores the caller immediately and returns the
+original completed `ValueTask<Value>`. The common case does not initialize
+an additional async ownership state machine. This is a state reduction,
+not a claim that the old synchronous `ValueTask` allocated on the heap;
+see the [.NET async builder explanation](https://devblogs.microsoft.com/dotnet/how-async-await-really-works-in-csharp/).
+
+Suspended frames, faults, and successful frames that still own work share
+one asynchronous completion path. It transfers reachable Processes,
+joins non-escaping work, and restores both the interpreter's and the
+session's active-owner state in a finally block. Its roots are still the
+result, captures, session roots and **original** caller arguments, not
+values after parameter rebinding. A borrowed caller is not resumed
+between dispatch completion and this handoff. Neither bytecode format nor
+native-region continuation changes.
+
+The subsequent [ordinary-call ABI comparison](../../artifacts/benchmarks/call-abi-v086/README.md)
+separates this outer ownership finisher from the dispatcher itself.
+The canonical opcode loop is synchronous until a selected operation
+actually suspends. It then saves one activation continuation; the driver
+awaits the selected operation, updates the saved stack, and resumes at the
+original successor without replaying an admission, call, or iterator move.
+The same source-call continuation handles a native prefix that reaches
+a canonical effect. A separate scratch lazy-owner representation did not
+establish a common performance improvement and was not retained.
+
+The [completion receipt](../../artifacts/benchmarks/frame-completion-v086/README.md)
+records the final Linux Native AOT build, matching execution counters, and
+same-artifact comparisons. Signal keeps its allocation improvement and the
+ready text conversion lanes remain active. The fresh-CLI Heap result still
+varies by seed (+6.12% / −2.28% process CPU versus the pre-raw build in
+the targeted replay); the [attribution probe](../../artifacts/benchmarks/raw-arguments-v086/heap-attribution/README.md)
+rules out lost interpreter/JIT paths, not all startup and code-layout
+effects. B+ wall results also do not establish a general speedup.
+
+### Private Number local lane
+
+The bound execution targets now select a private numeric lane for standalone
+functions with a plausible repeated raw store, or several independent
+arithmetic stores. The selection is an amortization heuristic, not a
+runtime type proof or artifact restriction. Captured writes do not admit a
+frame. The actual stack representation still determines whether a store
+can stay raw, and a StoreLocal to an actual Cell always goes through the
+ordinary shared location. The contiguous and split boxed dispatchers do
+not take the raw-store path.
+
+A selected frame allocates its owned binary64 sidecar on the first raw
+write. The null reference marker denotes the raw lane, not language Null.
+An ordinary reference store replaces that marker. A borrowed activation
+must detach before replacing a local; any live raw arguments then move to
+the private copy without changing original caller locations. LoadStorage,
+LoadCell and the public Value return materialize when needed. The numeric
+interpreter and machine-code exits use the same commit path, including
+cancellation, without constructing a Number wrapper for every changed
+private slot. Persistent session frames stay canonical so externally
+inspectable roots and values need no flush recipe.
+
+Profile telemetry distinguishes `raw_local_writes` from
+`numeric_local_commits` (managed or native numeric region exits). Neither
+counts Cell writes or merely borrowed numeric inputs. See the
+[private-local receipt](../../artifacts/benchmarks/private-number-locals-v086/README.md)
+for joint and same-linked measurements. The analogous
+[HotSpot double local handlers](https://github.com/openjdk/jdk/blob/master/src/hotspot/cpu/x86/templateTable_x86.cpp)
+encode representation directly in their local operations; msync derives
+an optional execution layout without adding wire opcodes to format 5.
+
+The owned sidecar uses a separate numeric offset. New private arrays
+start at the function's first written local, not at slot zero; the
+reference layout and all logical slot IDs stay unchanged. Detaching a
+borrowed frame extends that suffix downward if an unboxed caller argument
+still lives below it. This copies the old bits without letting a native
+commit or a later materialization access a caller location. The opted-in
+`number_sidecar_arrays` and `number_sidecar_slots` totals expose carrier
+cost independently of Number boxes and logical writes.
+
+### Scope storage consumers
+
+A boxed `LoadStorage` operand is important when a field shares an actual
+Cell. But a raw local can carry its binary64 bits directly to the existing
+Scope allocator when the operand is used only by eligible Scope
+construction. The bound region importer identifies the definition and
+its consumers. Use requirements propagate from block parameters back to
+their incoming operands, including across backedges; Dup does not create a
+new definition. A generic consumer such as Return (including implicit
+return) keeps the original materializing path. A singleton Scope also
+declines because the allocator cannot use a numeric page for it.
+
+The usual producer shape is cheaper to prove: the final `A` loads of a
+consecutive LoadStorage run immediately before `MakeScope A` can be
+recognized in one scan, without constructing a CFG. Any earlier operand
+stays outside that proof; nonadjacent uses fall back to the region graph
+only when needed. The record-stream fixture saves another approximately
+49–50 kB of one-time execution allocation on the 512-row cold case.
+
+The load copies the value at the original PC, not at construction time.
+Effects and suspension between field evaluations cannot change the
+snapshot. Cells and other references remain the same objects and follow the
+canonical allocation path. The per-image result is computed only when
+an actual raw `LoadStorage` first needs it. No extra check is added to
+the boxed dispatch layouts. The `raw_scope_storage_loads` profile metric
+counts raw operand transport, not guaranteed box elimination: a multi-field
+row with fewer than two direct numeric fields can still use plain storage.
+
+This uses the same incoming-operand relation that
+[MLIR describes for block arguments](https://mlir.llvm.org/docs/LangRef/#blocks).
+It is not full partial escape analysis or deferred Scope allocation.
+The [measured row and corpus journeys](../../artifacts/benchmarks/scope-storage-consumers-v086/README.md)
+separate actual transport hits and allocations from fresh-process timing
+and from unrelated non-hit workloads.

@@ -26,6 +26,7 @@ internal sealed partial class SourceBinder
         {
             result = hir.Type(new HirType(TypeRef.Scope, Concept: concept));
         }
+        else if (nativeModule is not null && syntax.Name == "Storage") result = hir.Type(TypeRef.Storage);
         else if (LanguageTypes.TryResolve(syntax.Name, out var builtin))
         {
             if (syntax.Name == "Range" && syntax.Arguments.Count == 1)

@@ -22,6 +22,13 @@ python3 packaging/build.py --rid linux-x64 --smoke
 python3 scripts/check_local.py --journey cli
 ```
 
+Source scripts can run directly without a separate compilation step. On
+Linux x86-64 and ARM64, and on Windows x86-64, eligible hot numeric regions
+can promote to the VM's embedded native backend; no compiler installation
+is required at runtime. Set `MSYNC_JIT=off` to use the interpreter tiers. See the
+[execution tiers](docs/design/tiered-execution-v086.md#embedded-native-numeric-backend)
+for the supported operations and profile modes.
+
 The Python packaging command publishes the native executable, stages standard
 sources and license notices, checks version agreement, and produces a portable
 archive under `dist/`. Windows packaging uses `--rid win-x64` on Windows and can
@@ -418,9 +425,9 @@ The current checkout and packages contain only the C# implementation. Historical
 Rust sources, standard modules and tests remain available at the immutable
 [`v0.7.3` tag](https://github.com/kleedaisuki/msync/tree/v0.7.3); they are not a
 build or execution dependency. There is no legacy command or executable routing.
-Current bytecode artifacts use format 5; the earlier 0.8.1
-format-4 packages remain unchanged. Recompile earlier bytecode with the current
-compiler rather than treating it as the new plan representation. Scripts use
+Current bytecode artifacts use format 6 with portable layout and field-place
+tables. Recompile earlier artifacts from source; there is no old bytecode
+execution path. Typed HIR uses its independently versioned format 3. Scripts use
 `fn`, `let`, brace blocks and semicolons instead of
 `symbol`/`boolean`/`macro`, indentation, `:=`, and `=>` bindings. `async`, `await`,
 and `delete` are not language keywords; deletion is an ordinary native function.

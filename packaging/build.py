@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build Native AOT release payloads on the target operating system."""
+"""Build and stage Native AOT packages."""
 
 from __future__ import annotations
 
@@ -21,7 +21,11 @@ from collections.abc import Sequence
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-RID_NAMES = {"linux-x64": "linux-x86_64", "win-x64": "windows-x86_64"}
+RID_NAMES = {
+    "linux-x64": "linux-x86_64",
+    "linux-arm64": "linux-aarch64",
+    "win-x64": "windows-x86_64",
+}
 
 
 def command(arguments: Sequence[str], *, capture: bool = False) -> str:
@@ -52,11 +56,16 @@ def version(root: Path = ROOT) -> str:
 
 def host_rid() -> str:
     system = {"Linux": "linux", "Windows": "win"}.get(platform.system())
-    if system is None or platform.machine().lower() not in {"x86_64", "amd64"}:
-        raise ValueError(
-            "Official packages target native Linux x64 and Windows x64 hosts"
-        )
-    return f"{system}-x64"
+    architecture = {
+        "x86_64": "x64",
+        "amd64": "x64",
+        "aarch64": "arm64",
+        "arm64": "arm64",
+    }.get(platform.machine().lower())
+    rid = f"{system}-{architecture}"
+    if rid not in RID_NAMES:
+        raise ValueError("Packaging supports Linux x64/ARM64 and Windows x64 hosts")
+    return rid
 
 
 def tracked_files(pattern: str) -> list[Path]:
@@ -96,9 +105,16 @@ def copy_native_libraries(publish: Path, destination: Path) -> None:
         copy_file(library, destination / library.relative_to(publish))
 
 
-def stage_payload(publish: Path, stage: Path, rid: str, package_version: str) -> None:
+def stage_payload(
+    publish: Path,
+    stage: Path,
+    rid: str,
+    package_version: str,
+    runner: Path | None = None,
+) -> None:
     binary = publish / ("msync.exe" if rid.startswith("win-") else "msync")
-    reported = command([str(binary), "--version"], capture=True).strip()
+    prefix = [str(runner)] if runner else []
+    reported = command([*prefix, str(binary), "--version"], capture=True).strip()
     if reported != f"msync {package_version}":
         raise ValueError(f"Published executable version mismatch: {reported}")
     copy_file(binary, stage / "bin" / binary.name)
@@ -144,16 +160,12 @@ def stage_payload(publish: Path, stage: Path, rid: str, package_version: str) ->
     sdk_root = Path(sdk_line.split("[", 1)[1].rstrip("]")).parent
     for name in ("LICENSE.txt", "ThirdPartyNotices.txt"):
         copy_file(sdk_root / name, docs / "dotnet" / name)
-    install = (
-        ROOT
-        / "packaging"
-        / (
-            "windows/portable-readme.txt"
-            if rid.startswith("win-")
-            else "linux/INSTALL.md"
-        )
-    )
-    copy_file(install, stage / "INSTALL.md")
+    install = {
+        "win-x64": "windows/portable-readme.txt",
+        "linux-x64": "linux/INSTALL.md",
+        "linux-arm64": "linux/INSTALL-arm64.md",
+    }[rid]
+    copy_file(ROOT / "packaging" / install, stage / "INSTALL.md")
     payload = sorted(path for path in stage.rglob("*") if path.is_file())
     manifest = "".join(
         f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(stage).as_posix()}\n"
@@ -220,10 +232,20 @@ def build(
     skip_build: bool = False,
     iscc: Path | None = None,
     smoke: bool = False,
+    runner: Path | None = None,
 ) -> list[Path]:
-    if rid != host_rid():
+    host = host_rid()
+    cross_arm64 = host == "linux-x64" and rid == "linux-arm64"
+    if cross_arm64:
+        if not skip_build or runner is None:
+            raise ValueError(
+                "Cross-packaging Linux ARM64 needs --skip-build and --runner"
+            )
+        if runner.is_file():
+            runner = runner.resolve()
+    elif rid != host or runner is not None:
         raise ValueError(
-            "Native AOT packages must be built on their target operating system"
+            "Use the target host to build packages; --runner is for Linux ARM64 cross-packaging"
         )
     package_version = version()
     publish = ROOT / "artifacts/publish" / rid
@@ -248,7 +270,7 @@ def build(
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
     output.mkdir(parents=True, exist_ok=True)
-    stage_payload(publish, stage, rid, package_version)
+    stage_payload(publish, stage, rid, package_version, runner)
     binary = stage / "bin" / ("msync.exe" if rid.startswith("win-") else "msync")
     if smoke:
         command(
@@ -257,6 +279,7 @@ def build(
                 "packaging/smoke.py",
                 "--binary",
                 str(binary),
+                *(["--runner", str(runner)] if runner else []),
             ]
         )
     files = [archive_payload(stage, output, rid, epoch())]
@@ -289,6 +312,11 @@ def main() -> None:
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--iscc", type=Path)
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument(
+        "--runner",
+        type=Path,
+        help="Launcher executable for a prebuilt Linux ARM64 payload on Linux x64",
+    )
     parser.add_argument("--version", action="store_true")
     args = parser.parse_args()
     if args.version:
@@ -300,6 +328,7 @@ def main() -> None:
         skip_build=args.skip_build,
         iscc=args.iscc,
         smoke=args.smoke,
+        runner=args.runner,
     ):
         print(file)
 

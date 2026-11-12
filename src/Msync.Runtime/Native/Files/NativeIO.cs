@@ -14,7 +14,7 @@ public static partial class NativeRegistry
     {
         if (StandardIO(name, args, context, token) is { } standard) return await standard;
         PathValue path = context.AsPath(args[0]);
-        if (name == "read_lines") return new RangeValue(ReadLines(path, context, token), TypeRef.String);
+        if (name == "read_lines") return new RangeValue(new StringRangeItems.Async(ReadLines(path, context, token)), TypeRef.String);
         if (name == "read_bytes") return new RangeValue(ReadBytes(path, context, token), TypeRef.Number);
         if (name == "read_text")
         {
@@ -76,12 +76,12 @@ public static partial class NativeRegistry
             ? File.ResolveLinkTarget(local, returnFinalTarget: true)?.FullName ?? local : local;
     }
 
-    private static async IAsyncEnumerable<Value> ReadLines(PathValue path, RuntimeContext context,
+    private static async IAsyncEnumerable<TextSlice> ReadLines(PathValue path, RuntimeContext context,
         [EnumeratorCancellation] CancellationToken token)
     {
         await using IOInput input = OpenInput(path, context, token);
         using StreamReader reader = new(input.Stream, IOTextEncoding, true, context.BufferSize, leaveOpen: true);
-        while (await reader.ReadLineAsync(token) is { } line) yield return new StringValue(line);
+        while (await reader.ReadLineAsync(token) is { } line) yield return new TextSlice(line);
         await input.CompleteAsync(token);
     }
 

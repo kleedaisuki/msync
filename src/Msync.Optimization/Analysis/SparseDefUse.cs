@@ -26,7 +26,7 @@ internal sealed class SparseDefUse
     private uint epoch;
     private Dictionary<int, List<DefinitionUse>>? uses;
 
-    internal SparseDefUse(FunctionCode body, ControlFlowGraph graph)
+    internal SparseDefUse(Module module, FunctionCode body, ControlFlowGraph graph)
     {
         this.body = body;
         Graph = graph;
@@ -34,7 +34,7 @@ internal sealed class SparseDefUse
         exits = new StackExit[graph.Blocks.Count];
         visited = new uint[exits.Length];
         resolved = new bool[sites.Length];
-        symbols = ProjectStack();
+        symbols = ProjectStack(module);
         operands = new DefinitionSet[symbols.Length];
         for (int pc = 0; pc < sites.Length; pc++)
         {
@@ -172,7 +172,7 @@ internal sealed class SparseDefUse
         return result;
     }
 
-    private int[] ProjectStack()
+    private int[] ProjectStack(Module module)
     {
         if (exits.Length == 0) return [];
         List<int> symbols = [];
@@ -190,7 +190,9 @@ internal sealed class SparseDefUse
             for (int pc = range.Start; pc < range.End; pc++)
             {
                 var instruction = body.Instructions[pc];
-                int consumed = Consumed(instruction, prefix + tail.Count);
+                if (!ExecutionStackEffect.TryGet(module, instruction, prefix + tail.Count, out var effect))
+                    throw new InvalidOperationException($"No stack effect for {instruction.Op}.");
+                int consumed = effect.Inputs;
                 int start = symbols.Count;
                 if (HasLocalOperand(instruction.Op))
                 {
@@ -207,7 +209,7 @@ internal sealed class SparseDefUse
                     tail.RemoveRange(tailStart, tail.Count - tailStart);
                     prefix = Math.Min(prefix, startColumn);
                 }
-                int pushed = Pushed(instruction);
+                int pushed = instruction.Op == OpCode.Dup ? 2 : effect.ProducesValue ? 1 : 0;
                 for (int output = 0; output < pushed; output++) tail.Add(Output(pc, output));
             }
             var exit = exits[block] = new(prefix, tail.ToArray());
@@ -224,31 +226,4 @@ internal sealed class SparseDefUse
     private static bool HasLocalOperand(OpCode op) => op is OpCode.LoadLocal or OpCode.LoadCell
         or OpCode.LoadStorage or OpCode.IteratorNext;
 
-    private static int Consumed(Instruction instruction, int depth) => instruction.Op switch
-    {
-        OpCode.StoreLocal or OpCode.InitializeLocal or OpCode.Pop or OpCode.Dup or OpCode.SpecializeClosure
-            or OpCode.GetMember or OpCode.GetCapture or OpCode.Not or OpCode.IsNull or OpCode.Negate
-            or OpCode.GetIterator or OpCode.SelectPath or OpCode.Convert or OpCode.DeferRange
-            or OpCode.SetSingleton or OpCode.JumpIfFalse or OpCode.JumpIfTrue => 1,
-        OpCode.Return => depth == 0 ? 0 : 1,
-        OpCode.Acquire => instruction.A == 0 ? 0 : 1,
-        OpCode.MakeClosure or OpCode.ExecutePlan or OpCode.PlanResult => instruction.B,
-        OpCode.Call or OpCode.ProcessCall => instruction.A + 1,
-        OpCode.NativeCall or OpCode.MakeRange or OpCode.MakeLazyRange or OpCode.MakeScope => instruction.A,
-        OpCode.RegexMatch => instruction.Text is null ? 2 : 1,
-        OpCode.Qualify or OpCode.PathJoin or OpCode.Transfer or OpCode.LocalTransfer or OpCode.Equal
-            or OpCode.NotEqual or OpCode.Less or OpCode.LessEqual or OpCode.Greater or OpCode.GreaterEqual
-            or OpCode.IsType or OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide
-            or OpCode.Remainder or OpCode.SetMember => 2,
-        _ => 0
-    };
-
-    private static int Pushed(Instruction instruction) => instruction.Op switch
-    {
-        OpCode.Nop or OpCode.Pop or OpCode.StoreLocal or OpCode.InitializeLocal or OpCode.Jump
-            or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.Return or OpCode.Barrier or OpCode.ExecutePlan => 0,
-        OpCode.Acquire => instruction.A == 0 ? 0 : 1,
-        OpCode.Dup => 2,
-        _ => 1
-    };
 }

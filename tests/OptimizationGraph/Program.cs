@@ -34,7 +34,8 @@ try
 finally { Directory.Delete(root, recursive: true); }
 
 Module Program(Value[] constants, params Instruction[] instructions) => new(constants,
-    [new("main", 0, 4, instructions, TypeRef.Any)]);
+    [new FunctionCode("main", 0, 4, instructions, TypeRef.Any) { CodeSignature = new([], 0, []) }])
+{ CodeTypes = [new(TypeKind.Any)] };
 
 Module RoundTrip(Module module)
 {
@@ -129,38 +130,32 @@ async Task SemanticChecks()
     await Differential("transfer-chain", Compiler.Compile("\"Klee\\n世界\" -> ./a; ./a -> ./b; ./b -> ./c", "transfer-chain", 0), writes: true);
     await Differential("call-transfer", Compiler.Compile("fn write(value, destination) { value -> destination }; write(\"actual bytes\", ./result)", "call-transfer", 0), writes: true);
 
-    // These are valid bytecode inputs whose selected operation throws. Removing
-    // a discarded value must not erase the operation's runtime diagnostic.
-    await Differential("missing-member", Program([], new(OpCode.MakeScope, 0, Text: ""), new(OpCode.GetMember, Text: "missing"), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)));
-    await Differential("duplicate-scope", Program([], new(OpCode.True), new(OpCode.False), new(OpCode.MakeScope, 2, Text: "field\0field"), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)));
-    await Differential("duplicate-large-scope", Program([], new(OpCode.True), new(OpCode.True), new(OpCode.True), new(OpCode.True), new(OpCode.True),
-        new(OpCode.True), new(OpCode.MakeScope, 6, Text: "a\0b\0c\0d\0e\0a"), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)));
-    await Differential("unselected-duplicate-scope", Program([], new(OpCode.False), new(OpCode.JumpIfFalse, 7), new(OpCode.True), new(OpCode.False),
-        new(OpCode.MakeScope, 2, Text: "field\0field"), new(OpCode.Pop), new(OpCode.Jump, 7), new(OpCode.Null), new(OpCode.Return)));
-    await Differential("duplicate-scope-callee", new Module([new FunctionValue(1)],
-        [new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Call, 0, 2), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)], TypeRef.Null),
-            new("bad", 0, 0, [new(OpCode.True), new(OpCode.False), new(OpCode.MakeScope, 2, Text: "field\0field"), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)], TypeRef.Null)], OptimizationLevel: 0));
+    // Duplicate layouts now fail artifact intake. SameSuccessorChecks uses a
+    // legal opaque field to keep checking selected runtime failures.
     await Differential("constant-closure-mutable-capture", new Module(
-        [new FunctionValue(1, [new ScopeValue(new Dictionary<string, Value> { ["count"] = new NumberValue(0) })]), new NumberValue(1)],
-        [new("main", 0, 1, [new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.LoadLocal, 0), new(OpCode.Call, 0, 2),
-            new(OpCode.Pop), new(OpCode.LoadLocal, 0), new(OpCode.Call, 0, 2), new(OpCode.Return)], TypeRef.Number),
-            new("increment", 0, 2, [new(OpCode.LoadLocal, 0), new(OpCode.GetMember, Text: "count"), new(OpCode.Constant, 1), new(OpCode.Add),
-                new(OpCode.InitializeLocal, 1), new(OpCode.LoadLocal, 0), new(OpCode.LoadLocal, 1), new(OpCode.SetMember, Text: "count"),
-                new(OpCode.Pop), new(OpCode.LoadLocal, 1), new(OpCode.Return)], TypeRef.Number, CaptureCount: 1)], OptimizationLevel: 0), expectedValue: "Number:2");
-    await Differential("specialized-frame-capacity", new Module([new FunctionValue(2, [Value.True, Value.False, Value.Null])],
-        [new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Call, 0, 2), new(OpCode.Return)], TypeRef.Null),
-            new("small", 0, 0, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null),
-            new("captured", 0, 3, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, CaptureCount: 3)], OptimizationLevel: 0));
+        [new FunctionValue(1, [new ScopeValue(new ScopeLayout(["count"], 0), [new NumberValue(0)])]), new NumberValue(1)],
+        [new FunctionCode("main", 0, 1, [new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.LoadLocal, 0), new(OpCode.Call, 0, 2),
+            new(OpCode.Pop), new(OpCode.LoadLocal, 0), new(OpCode.Call, 0, 2), new(OpCode.Return)], TypeRef.Number)
+            { CodeSignature = new([], 0, []) },
+            new FunctionCode("increment", 0, 3, [new(OpCode.LoadLocal, 0), new(OpCode.AdmitScope, 1), new(OpCode.InitializeLocal, 2),
+                new(OpCode.LoadLocal, 2), new(OpCode.LoadField), new(OpCode.Constant, 1), new(OpCode.Add),
+                new(OpCode.InitializeLocal, 1), new(OpCode.LoadLocal, 2), new(OpCode.LoadLocal, 1), new(OpCode.StoreField),
+                new(OpCode.Pop), new(OpCode.LoadLocal, 1), new(OpCode.Return)], TypeRef.Number, CaptureCount: 1)
+            { CodeSignature = new([], 0, [new(1, false)]) }], OptimizationLevel: 0)
+        {
+            CodeTypes = [new(TypeKind.Number), new(TypeKind.Scope, ScopeLayouts: [0])],
+            ScopeLayouts = [new([new("count", 0)])], FieldProjections = [new("count", [new(0, 0)])]
+        }, expectedValue: "Number:2");
+    RejectMismatchedCaptureAbi();
     await Differential("invalid-regex", Program([new StringValue("text")], new(OpCode.Constant, 0), new(OpCode.RegexMatch, Text: "["), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)));
-    await Differential("ieee-signed-zero", Program([new NumberValue(1), new NumberValue(0)],
-        new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Divide),
-        new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Negate), new(OpCode.Divide),
-        new(OpCode.MakeScope, 2, Text: "positive\0negative"), new(OpCode.Return)),
+    await Differential("ieee-signed-zero", Compiler.Compile(
+        "scope { positive: 1 / 0, negative: 1 / (- 0) }", "ieee-signed-zero", 0),
         expectedValue: "Scope:negative=Number:-Infinity;positive=Number:Infinity");
-    await Differential("raw-cell-alias", new Module([], [new("alias", 0, 2,
-        [new(OpCode.True), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0), new(OpCode.InitializeLocal, 1),
+    await Differential("raw-cell-alias", new Module([], [new FunctionCode("alias", 0, 2,
+        [new(OpCode.True), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0, 1), new(OpCode.InitializeLocal, 1),
          new(OpCode.LoadLocal, 0), new(OpCode.JumpIfFalse, 10), new(OpCode.False), new(OpCode.StoreLocal, 1),
-         new(OpCode.LoadLocal, 0), new(OpCode.Return), new(OpCode.False), new(OpCode.Return)], TypeRef.Bool)], OptimizationLevel: 0),
+         new(OpCode.LoadLocal, 0), new(OpCode.Return), new(OpCode.False), new(OpCode.Return)], TypeRef.Bool)
+        { CodeSignature = new([], 0, []) }], OptimizationLevel: 0) { CodeTypes = [new(TypeKind.Bool)] },
         expectedValue: "Bool:False");
     await Differential("ieee-division", Program([new NumberValue(1), new NumberValue(0)], new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Divide), new(OpCode.Return)));
 
@@ -182,6 +177,29 @@ async Task SemanticChecks()
         string source = $"let x = {a}; let y = {b}; let select = x < y; if select {{ (x + y) * {c} }} else {{ (x - y) * {c} }}";
         await Differential("generated-" + sample, Compiler.Compile(source, "generated", 0), expectedValue: "Number:" + ((a < b ? a + b : a - b) * c).ToString(CultureInfo.InvariantCulture));
     }
+}
+
+void RejectMismatchedCaptureAbi()
+{
+    Module malformed = new([new FunctionValue(2, [Value.True, Value.False, Value.Null])],
+    [
+        new FunctionCode("main", 0, 0, [new(OpCode.Constant), new(OpCode.Call, 0, 2), new(OpCode.Return)], TypeRef.Null)
+            { CodeSignature = new([], 0, []) },
+        new FunctionCode("small", 0, 0, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null)
+            { CodeSignature = new([], 0, []) },
+        new FunctionCode("captured", 0, 3, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, CaptureCount: 3)
+            { CodeSignature = new([], 0, [new(1, false), new(1, false), new(0, false)]) }
+    ], OptimizationLevel: 0) { CodeTypes = [new(TypeKind.Null), new(TypeKind.Bool)] };
+    using MemoryStream bytes = new();
+    Artifact.WriteProduced(malformed, bytes);
+    bytes.Position = 0;
+    try { _ = Artifact.Read(bytes); }
+    catch (MsyncException error) when (error.Message.Contains("capture", StringComparison.OrdinalIgnoreCase))
+    {
+        assertions++;
+        return;
+    }
+    throw new InvalidOperationException("The reader accepted a call targeting a different capture ABI.");
 }
 
 async Task EliminationChecks()
@@ -229,12 +247,13 @@ async Task MutableChecks()
 
     await Differential("mutable-callee-fresh-location", new Module(
         [new FunctionValue(1), new FunctionValue(2), new FunctionValue(3), new StringValue("A"), new StringValue("B"), new StringValue("C")],
-        [new("main", 0, 2, [new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0), new(OpCode.InitializeLocal, 1),
+        [new FunctionCode("main", 0, 2, [new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0, 2), new(OpCode.InitializeLocal, 1),
             new(OpCode.Constant, 1), new(OpCode.InitializeLocal, 0), new(OpCode.Constant, 2), new(OpCode.StoreLocal, 1),
-            new(OpCode.LoadLocal, 0), new(OpCode.Call, 0), new(OpCode.Return)], TypeRef.String),
-            new("a", 0, 0, [new(OpCode.Constant, 3), new(OpCode.Return)], TypeRef.String),
-            new("b", 0, 0, [new(OpCode.Constant, 4), new(OpCode.Return)], TypeRef.String),
-            new("c", 0, 0, [new(OpCode.Constant, 5), new(OpCode.Return)], TypeRef.String)], OptimizationLevel: 0), expectedValue: "String:B");
+            new(OpCode.LoadLocal, 0), new(OpCode.Call, 0), new(OpCode.Return)], TypeRef.String) { CodeSignature = new([], 0, []) },
+            new FunctionCode("a", 0, 0, [new(OpCode.Constant, 3), new(OpCode.Return)], TypeRef.String) { CodeSignature = new([], 0, []) },
+            new FunctionCode("b", 0, 0, [new(OpCode.Constant, 4), new(OpCode.Return)], TypeRef.String) { CodeSignature = new([], 0, []) },
+            new FunctionCode("c", 0, 0, [new(OpCode.Constant, 5), new(OpCode.Return)], TypeRef.String) { CodeSignature = new([], 0, []) }],
+        OptimizationLevel: 0) { CodeTypes = [new(TypeKind.String), new(TypeKind.Function)] }, expectedValue: "String:B");
     Module direct = Optimizer.Optimize(Compiler.Compile("let action = fn { 42 }; action()", "direct-target", 0), 1);
     Require(direct.Functions.Count == 1 && direct.Functions[0].Instructions.All(instruction => instruction.Op is OpCode.Constant or OpCode.Return),
         "Ordinary unaliased call target lost its inlining proof");
@@ -285,8 +304,10 @@ async Task ValueNumberingChecks()
     // An empty operand stack at Return supplies Null. A stack
     // splice must materialize Null rather than stealing a caller operand.
     Module emptyReturn = new([new NumberValue(7)],
-    [new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.MakeClosure, 1), new(OpCode.Call), new(OpCode.Pop), new(OpCode.Return)], TypeRef.Number),
-     new("empty-return", 0, 0, [new(OpCode.Return)], TypeRef.Null)]);
+    [new FunctionCode("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.MakeClosure, 1), new(OpCode.Call), new(OpCode.Pop), new(OpCode.Return)], TypeRef.Number)
+        { CodeSignature = new([], 0, []) },
+     new FunctionCode("empty-return", 0, 0, [new(OpCode.Return)], TypeRef.Null) { CodeSignature = new([], 1, []) }])
+    { CodeTypes = [new(TypeKind.Number), new(TypeKind.Null)] };
     await Differential("empty-return", emptyReturn, expectedValue: "Number:7");
 }
 
@@ -311,6 +332,7 @@ async Task DirectionalTransfers()
         instructions.Add(new(OpCode.Transfer)); instructions.Add(new(OpCode.Pop));
         instructions.Add(new(OpCode.Null)); instructions.Add(new(OpCode.Return));
         await Differential("directional-bytes-" + sample++, new Module(constants,
-            [new("directional-bytes", 0, 0, instructions, TypeRef.Null)], OptimizationLevel: 0), writes: true, expectedValue: "null");
+            [new FunctionCode("directional-bytes", 0, 0, instructions, TypeRef.Null) { CodeSignature = new([], 0, []) }],
+            OptimizationLevel: 0) { CodeTypes = [new(TypeKind.Null)] }, writes: true, expectedValue: "null");
     }
 }

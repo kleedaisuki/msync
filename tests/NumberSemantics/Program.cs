@@ -93,6 +93,9 @@ try
             Require(actual.SequenceEqual(expected), operation + " sequence mismatch");
         }
     }
+    await NumericRangePayloadChecks.Run(root, Require);
+    await NumericTierChecks.Run(root, Require);
+    await PredicateTargetChecks.Run(root, Require);
     Console.WriteLine($"Number semantics: {assertions} contracts passed across source, mso, mexe and lazy native ranges.");
 }
 finally { Directory.Delete(root, recursive: true); }

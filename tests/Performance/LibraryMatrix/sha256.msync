@@ -1,8 +1,8 @@
-let constants = $std::storage::Buffer::new([ROUND_CONSTANTS]);
+let constants = $std::storage::vector_new([ROUND_CONSTANTS]);
 
 scope Sha {
-    bits: $std::storage::Buffer::new([AND_NIBBLES]),
-    word: fn(buffer, index: Number) -> Number { $std::storage::Buffer::get(buffer, index) },
+    bits: $std::storage::vector_new([AND_NIBBLES]),
+    word: fn(words, index: Number) -> Number { $std::storage::vector_get(words, index) },
 
     bit_and: fn(left: Number, right: Number) -> Number {
         let a = left;
@@ -31,8 +31,8 @@ scope Sha {
 
 };
 
-let input = $std::storage::Buffer::new([INPUT_WORDS]);
-let w = $std::storage::Buffer::new($std::ranges::repeat(0, 64));
+let input = $std::storage::vector_new([INPUT_WORDS]);
+let w = $std::storage::vector_new($std::ranges::repeat(0, 64));
 let h0 = 1779033703;
 let h1 = 3144134277;
 let h2 = 1013904242;
@@ -47,7 +47,7 @@ loop {
     if base == WORD_COUNT { break; };
     let i = 0;
     loop {
-        $std::storage::Buffer::set(w, i, Sha::word(input, base + i));
+        $std::storage::vector_set(w, i, Sha::word(input, base + i));
         i = i + 1;
         if i == 16 { break; };
     };
@@ -56,7 +56,7 @@ loop {
         let y = Sha::word(w, i - 2);
         let s0 = Sha::xor3(Sha::rotr(x, 128), Sha::rotr(x, 262144), Sha::shr(x, 8));
         let s1 = Sha::xor3(Sha::rotr(y, 131072), Sha::rotr(y, 524288), Sha::shr(y, 1024));
-        $std::storage::Buffer::set(w, i, (Sha::word(w, i - 16) + s0 + Sha::word(w, i - 7) + s1) % modulus);
+        $std::storage::vector_set(w, i, (Sha::word(w, i - 16) + s0 + Sha::word(w, i - 7) + s1) % modulus);
         i = i + 1;
         if i == 64 { break; };
     };

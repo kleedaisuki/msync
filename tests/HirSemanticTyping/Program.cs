@@ -8,6 +8,16 @@ if (args.Contains("--recursive-captures", StringComparer.Ordinal))
     await RecursiveCaptureChecks.Run();
     return;
 }
+if (args.Contains("--direct-native-projection", StringComparer.Ordinal))
+{
+    await DirectNativeProjectionChecks.Run();
+    return;
+}
+if (args.Contains("--scope-layout-domains", StringComparer.Ordinal))
+{
+    await ScopeLayoutDomainChecks.Run();
+    return;
+}
 
 int checks = 0;
 bool metadataOnly = args.Contains("--meta", StringComparer.Ordinal);
@@ -26,6 +36,7 @@ if (conceptPendingOnly)
     const string contract = "concept Order { sample?: typename Self, less: fn(a: Self, b: Self) -> Bool }; fn need(value: Order) { value }; ";
     const string policy = "let policy = scope { Self: Number, sample?: null, less: fn(a: Number, b: Number) { a < b } }; ";
     await Number(contract + policy + "need(policy); policy::sample = 3; policy::sample", 3);
+    await Number(contract + "let policy = scope { sample?: null, less: fn(a: Number, b: Number) { a < b } }; need(policy); policy::sample = 3; policy::sample", 3);
     RejectCarrier(contract + policy + "let alias = policy; need(policy); alias::sample = true;");
     RejectCarrier(contract + policy + "fn wrap(value) { need(value); value }; wrap(policy); wrap(policy); policy::sample = true;");
     await Boolean(contract + policy + "$std::meta::is_invocable(fn { need(policy) }); policy::sample = true; policy::sample", true);
@@ -76,52 +87,54 @@ if (rangeIdentityOnly || rangeViewsOnly)
 {
     if (!rangeViewsOnly)
     {
-        await Number("native fn ranges.identity(values: Range) -> Range; let buffer = $std::storage::Buffer::new([1]); $std::storage::Buffer::push(ranges.identity(buffer), 2)", 1);
-        await Number("let buffer = $std::storage::Buffer::new([1]); $std::storage::Buffer::push($std::ranges::identity(buffer), 2)", 1);
-        await Number("let buffer = $std::storage::Buffer::new([1]); $std::storage::Buffer::push($std::ranges::all(buffer), 2)", 1);
-        await Number("let child = $std::storage::Buffer::new([1]); let rows = $std::storage::Buffer::new([scope { items: child }]); let view = $std::ranges::reverse(rows); let row = $std::ranges::first(view); $std::storage::Buffer::push(row::items, 2)", 1);
+        await Numbers("native fn ranges.identity(values: Range) -> Range; ranges.identity([1, 2])", [1, 2]);
+        await Numbers("$std::ranges::identity([1, 2])", [1, 2]);
+        await Numbers("$std::ranges::all([1, 2])", [1, 2]);
+        await Number("let child = $std::storage::vector_new([1]); let rows = $std::storage::vector_new([scope { items: child }]); let view = $std::ranges::reverse($std::storage::vector_snapshot(rows)); let row = $std::ranges::first(view); $std::storage::vector_push(row::items, 2); $std::storage::vector_size(child)", 2);
     }
-    Reject("let buffer = $std::storage::Buffer::new([1]); $std::storage::Buffer::push($std::ranges::reverse(buffer), 2)", "E0222");
-    Reject("let buffer = $std::storage::Buffer::new([1]); $std::storage::Buffer::push($std::ranges::filter(buffer, fn(value) { true }), 2)", "E0222");
-    Reject("let buffer = $std::storage::Buffer::new([1]); $std::storage::Buffer::push($std::ranges::materialize(buffer), 2)", "E0222");
+    const string snapshot = "let values = $std::storage::vector_new([1]); let saved = $std::storage::vector_snapshot(values); ";
+    Reject(snapshot + "$std::storage::vector_push($std::ranges::reverse(saved), 2)", "E0203");
+    Reject(snapshot + "$std::storage::vector_push($std::ranges::filter(saved, fn(value) { true }), 2)", "E0203");
+    Reject(snapshot + "$std::storage::vector_push($std::ranges::materialize(saved), 2)", "E0203");
+    Reject(snapshot + "$std::ranges::identity(values)", "E0203");
     Console.WriteLine($"PASS {checks} native Range identity journeys");
     return;
 }
 if (indexedFreshOnly)
 {
-    const string native = "native fn buffer_new(initial: Range) -> Range; native fn buffer_get(items: Range, index: Number) -> Scope; native fn buffer_push(items: Range, value) -> Number; ";
-    await Number(native + "let rows = buffer_new([scope { children: buffer_new([1]) }]); buffer_push(buffer_get(rows, 0)::children, 3)", 1);
-    await Number(native + "fn source() { [scope { children: buffer_new([1]) }] }; let rows = buffer_new(source()); buffer_push(buffer_get(rows, 0)::children, 3)", 1);
+    await Number("let rows = $std::storage::vector_new([scope { children: $std::storage::vector_new([1]) }]); $std::storage::vector_push($std::storage::vector_get(rows, 0)::children, 3)", 1);
+    await Number("fn source() { [scope { children: $std::storage::vector_new([1]) }] }; let rows = $std::storage::vector_new(source()); $std::storage::vector_push($std::storage::vector_get(rows, 0)::children, 3)", 1);
     Console.WriteLine($"PASS {checks} fresh deferred resource graph journeys");
     return;
 }
 if (indexedCurrentOnly)
 {
-    await Text("let buffer = $std::storage::Buffer::new([]); $std::storage::Buffer::push(buffer, 42); $std::meta::type_name(decltype(buffer))", "Range<Number>");
-    await Text("let buffer = $std::storage::Buffer::new([]); let alias = buffer; let holder = scope { items: alias }; $std::storage::Buffer::push(buffer, 42); $std::meta::type_name(decltype(holder::items))", "Range<Number>");
-    await Text("let buffer = $std::storage::Buffer::new([]); let snapshot = $std::storage::Buffer::snapshot(buffer); $std::storage::Buffer::push(buffer, 42); $std::meta::type_name(decltype(snapshot))", "Range<Never>");
-    await Number("let buffer = $std::storage::Buffer::new([]); $std::storage::Buffer::push(buffer, 42); let sum = 0; for value in buffer { sum = sum + value; }; sum", 42);
-    Console.WriteLine($"PASS {checks} indexed current-type HIR journeys");
+    await Text("let values = $std::storage::vector_empty(Number); $std::meta::type_name(decltype(values))", "Storage<Number>");
+    await Text("let values = $std::storage::vector_empty(Number); let alias = values; let holder = scope { items: alias }; $std::storage::vector_push(values, 42); $std::meta::type_name(decltype(holder::items))", "Storage<Number>");
+    await Text("let values = $std::storage::vector_empty(Number); let saved = $std::storage::vector_snapshot(values); $std::storage::vector_push(values, 42); $std::meta::type_name(decltype(saved))", "Range<Number>");
+    await Number("let values = $std::storage::vector_empty(Number); $std::storage::vector_push(values, 42); let sum = 0; for value in $std::storage::vector_snapshot(values) { sum = sum + value; }; sum", 42);
+    Reject("let values = $std::storage::vector_empty(Number); for value in values { value; };", "E0203");
+    Console.WriteLine($"PASS {checks} fixed indexed carrier HIR journeys");
     return;
 }
 if (indexedCastOnly)
 {
-    const string buffers = "let paths = $std::storage::Buffer::new([./first]); let texts = $std::storage::Buffer::new([\"first\"]); let rows = $std::storage::Buffer::new([scope { items: paths }, scope { items: texts }]); ";
-    await PathResult(buffers + "$std::storage::Buffer::push($std::storage::Buffer::get(rows, 0)::items, \"./next\"); $std::storage::Buffer::get(paths, 1)", "./next");
-    await Text(buffers + "$std::storage::Buffer::push($std::storage::Buffer::get(rows, 1)::items, ./next); $std::storage::Buffer::get(texts, 1)", "./next");
-    await PathResult(buffers + "$std::storage::Buffer::set($std::storage::Buffer::get(rows, 0)::items, 0, \"./next\"); $std::storage::Buffer::get(paths, 0)", "./next");
-    await Text(buffers + "$std::storage::Buffer::insert($std::storage::Buffer::get(rows, 1)::items, 0, ./next); $std::storage::Buffer::get(texts, 0)", "./next");
+    const string vectors = "let paths = $std::storage::vector_new([./first]); let texts = $std::storage::vector_new([\"first\"]); let rows = $std::storage::vector_new([scope { items: paths }, scope { items: texts }]); ";
+    await PathResult(vectors + "$std::storage::vector_push($std::storage::vector_get(rows, 0)::items, \"./next\"); $std::storage::vector_get(paths, 1)", "./next");
+    await Text(vectors + "$std::storage::vector_push($std::storage::vector_get(rows, 1)::items, ./next); $std::storage::vector_get(texts, 1)", "./next");
+    await PathResult(vectors + "$std::storage::vector_set($std::storage::vector_get(rows, 0)::items, 0, \"./next\"); $std::storage::vector_get(paths, 0)", "./next");
+    await Text(vectors + "$std::storage::vector_insert($std::storage::vector_get(rows, 1)::items, 0, ./next); $std::storage::vector_get(texts, 0)", "./next");
     await IndexedIdentity();
     Console.WriteLine($"PASS {checks} indexed target conversion journeys");
     return;
 }
 if (resourceUnionOnly)
 {
-    await Number("native fn buffer_new(initial: Range) -> Range; native fn buffer_get(items: Range, index: Number) -> Scope; native fn buffer_push(items: Range, value) -> Number; let first = scope { children: buffer_new([1]) }; let second = scope { children: buffer_new([2]) }; let nodes = buffer_new([first, second]); buffer_push(buffer_get(nodes, 0)::children, 3)", 1);
-    await Number("native fn buffer_new(initial: Range) -> Range; native fn buffer_get(items: Range, index: Number) -> Scope; native fn buffer_push(items: Range, value) -> Number; let first = scope { children: buffer_new([1]) }; let second = scope { children: buffer_new([2]) }; let nodes = buffer_new([first, second]); fn select(nodes, index: Number) { buffer_get(nodes, index)::children }; buffer_push(select(nodes, 0), 3)", 1);
-    await Boolean("let state = scope { changed: false }; let rows = $std::storage::Buffer::new([scope { children: $std::storage::Buffer::new([1]) }]); fn choose(rows) { state::changed = true; $std::storage::Buffer::get(rows, 0)::children }; let selected = choose(rows); state::changed", true);
-    await Number("let first = scope { children: $std::storage::Buffer::new([1]) }; let second = scope { children: $std::storage::Buffer::new([2]) }; let rows = $std::storage::Buffer::new([first, second]); let selector = 0; fn choose(rows) { $std::storage::Buffer::get(rows, selector)::children }; $std::storage::Buffer::push(choose(rows), { selector = 1; 3 }); $std::storage::Buffer::size(first::children)", 2);
-    Reject("let candidate = if $std::fs::exists(./resource-choice) { $std::storage::Buffer::new([1]) } else { [2] }; $std::storage::Buffer::push(candidate, 3)", "E0222");
+    await Number("let first = scope { children: $std::storage::vector_new([1]) }; let second = scope { children: $std::storage::vector_new([2]) }; let nodes = $std::storage::vector_new([first, second]); $std::storage::vector_push($std::storage::vector_get(nodes, 0)::children, 3)", 1);
+    await Number("let first = scope { children: $std::storage::vector_new([1]) }; let second = scope { children: $std::storage::vector_new([2]) }; let nodes = $std::storage::vector_new([first, second]); fn select(nodes, index: Number) { $std::storage::vector_get(nodes, index)::children }; $std::storage::vector_push(select(nodes, 0), 3)", 1);
+    await Boolean("let state = scope { changed: false }; let rows = $std::storage::vector_new([scope { children: $std::storage::vector_new([1]) }]); fn choose(rows) { state::changed = true; $std::storage::vector_get(rows, 0)::children }; let selected = choose(rows); state::changed", true);
+    await Number("let first = scope { children: $std::storage::vector_new([1]) }; let second = scope { children: $std::storage::vector_new([2]) }; let rows = $std::storage::vector_new([first, second]); let selector = 0; fn choose(rows) { $std::storage::vector_get(rows, selector)::children }; $std::storage::vector_push(choose(rows), { selector = 1; 3 }); $std::storage::vector_size(first::children)", 2);
+    Reject("let candidate = if $std::fs::exists(./resource-choice) { $std::storage::vector_new([1]) } else { [2] }; $std::storage::vector_push(candidate, 3)", "E0203");
     Console.WriteLine($"PASS {checks} indexed resource union HIR journeys");
     return;
 }
@@ -195,18 +208,12 @@ await Number("native fn enumerate_from(values: Range, index: Number) -> Range; n
 await Numbers("$std::ranges::repeat(4, 2)", [4, 4]);
 await Numbers("native fn scan(values: Range, initial: Number, operation: Function) -> Range; scan([1, 2], 0, fn(a, b) { a + b })", [1, 3]);
 await Boolean("native fn is_same(first: Type, second: Type) -> Bool; is_same(decltype(3), Number)", true);
-const string indexed = """
-    native fn buffer_new(initial: Range) -> Range;
-    native fn buffer_get(items: Range, index: Number) -> Number;
-    native fn buffer_set(items: Range, index: Number, value?) -> Null;
-    native fn buffer_snapshot(items: Range) -> Range;
-    """;
-await Number(indexed + "let items = buffer_new([1]); buffer_set(items, 0, 7); buffer_get(items, 0)", 7);
-await Numbers(indexed + "let items = buffer_new([1]); let saved = buffer_snapshot(items); buffer_set(items, 0, 7); saved", [1]);
-Reject(indexed + "let items = buffer_new([1]); buffer_set(items, 0, true)", "E0203");
-await Boolean(indexed + "let first = scope { red: false }; let second = scope { red: false }; let items = buffer_new([first, second]); let a = buffer_get(items, 0); let b = buffer_get(items, 1); a::red = true; if b::red { true } else { false }", false);
-await Boolean(indexed + "let first = scope { red: false }; let items = buffer_new([first]); let a = buffer_get(items, 0); let b = buffer_get(items, 0); a::red = true; b::red = false; if a::red { true } else { false }", false);
-await Boolean(indexed + "let first = scope { red: false }; let items = buffer_new([first]); let a = buffer_get(items, 0); a::red = true; if first::red { true } else { false }", true);
+await Number("let items = $std::storage::vector_new([1]); $std::storage::vector_set(items, 0, 7); $std::storage::vector_get(items, 0)", 7);
+await Numbers("let items = $std::storage::vector_new([1]); let saved = $std::storage::vector_snapshot(items); $std::storage::vector_set(items, 0, 7); saved", [1]);
+Reject("let items = $std::storage::vector_new([1]); $std::storage::vector_set(items, 0, true)", "E0203");
+await Boolean("let first = scope { red: false }; let second = scope { red: false }; let items = $std::storage::vector_new([first, second]); let a = $std::storage::vector_get(items, 0); let b = $std::storage::vector_get(items, 1); a::red = true; if b::red { true } else { false }", false);
+await Boolean("let first = scope { red: false }; let items = $std::storage::vector_new([first]); let a = $std::storage::vector_get(items, 0); let b = $std::storage::vector_get(items, 0); a::red = true; b::red = false; if a::red { true } else { false }", false);
+await Boolean("let first = scope { red: false }; let items = $std::storage::vector_new([first]); let a = $std::storage::vector_get(items, 0); a::red = true; if first::red { true } else { false }", true);
 Console.WriteLine($"PASS {checks} typed HIR type/operator/native contracts");
 
 async Task<Value> Execute(string source, ArtifactStage stage, int optimizationLevel = 0)
@@ -271,21 +278,23 @@ async Task IndexedIdentity()
     async ValueTask<Value> Invoke(string operation, params Value[] values) =>
         await NativeRegistry.InvokeAsync("storage." + operation, values, context,
             static (_, _, _) => throw new InvalidOperationException("Storage must not invoke a callback."));
-    var buffer = (RangeValue)await Invoke("buffer_new", new RangeValue(Array.Empty<Value>(), new(TypeKind.Never)));
-    var snapshot = (RangeValue)await Invoke("buffer_snapshot", buffer);
-    int before = buffer.GetHashCode();
-    HashSet<RangeValue> identities = [buffer];
-    _ = await Invoke("buffer_push", buffer, new StringValue("first"));
-    Check(buffer.ItemType == TypeRef.String && snapshot.ItemType.Kind == TypeKind.Never,
-        "First-write inference must not change an earlier snapshot carrier.");
-    Check(buffer.GetHashCode() == before && identities.Contains(buffer),
-        "First-write inference must retain Buffer hash identity.");
-    _ = await Invoke("buffer_push", buffer, new PathValue("./next", context.WorkingDirectory));
-    Check(await Invoke("buffer_get", buffer, new NumberValue(1)) is StringValue { Data: "./next" },
-        "The actual Buffer target owns the Path-to-String conversion.");
-    var nullable = (RangeValue)await Invoke("buffer_new", new RangeValue(new Value[] { Value.Null, new StringValue("first") }, TypeRef.String.WithNull));
-    _ = await Invoke("buffer_push", nullable, new PathValue("./next", context.WorkingDirectory));
-    Check(await Invoke("buffer_get", nullable, new NumberValue(2)) is StringValue { Data: "./next" },
+    var owner = (StorageValue)await Invoke("vector_empty", new TypeValue(TypeRef.String));
+    var snapshot = (RangeValue)await Invoke("vector_snapshot", owner);
+    int before = owner.GetHashCode();
+    HashSet<StorageValue> identities = [owner];
+    _ = await Invoke("vector_push", owner, new StringValue("first"));
+    Check(owner.ElementType == TypeRef.String && snapshot.ItemType == TypeRef.String,
+        "The carrier is established before the first write, including on an empty snapshot.");
+    await using (var items = snapshot.Items.GetAsyncEnumerator())
+        Check(!await items.MoveNextAsync(), "An existing snapshot must not observe a later append.");
+    Check(owner.GetHashCode() == before && identities.Contains(owner),
+        "Mutation must retain the owner's hash identity.");
+    _ = await Invoke("vector_push", owner, new PathValue("./next", context.WorkingDirectory));
+    Check(await Invoke("vector_get", owner, new NumberValue(1)) is StringValue { Data: "./next" },
+        "The actual vector target owns the Path-to-String conversion.");
+    var nullable = (StorageValue)await Invoke("vector_new", new RangeValue(new Value[] { Value.Null, new StringValue("first") }, TypeRef.String.WithNull));
+    _ = await Invoke("vector_push", nullable, new PathValue("./next", context.WorkingDirectory));
+    Check(await Invoke("vector_get", nullable, new NumberValue(2)) is StringValue { Data: "./next" },
         "Null admission must not remove the target's text conversion.");
 }
 async Task Numbers(string source, double[] expected)

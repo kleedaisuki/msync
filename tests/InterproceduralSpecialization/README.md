@@ -6,6 +6,8 @@ outcomes, actual file bytes, and both binary stages. Every baseline explicitly
 uses optimization level zero; interpreter binding must not accidentally
 optimize the oracle.
 
+The format-6 Release suite passes 190 contracts.
+
 The pass is intended for levels 2 and 3 after graph cleanup. In particular,
 effectful functions cannot be replaced by ordinary instruction inlining because
 their return owns pending jobs. A known control argument can nevertheless select
@@ -13,10 +15,11 @@ a smaller callable body while retaining that invocation boundary.
 
 The call-site analysis proves the actual callee is a nonnative closure, follows
 its current lexical value and ordinary function-dispatch mapping, and then uses
-the explicit specialization target. `Call.B` alone is not such a proof: a native
-callee retains native dispatch even when that field names another function.
-Captured cells and mutable Scope members invalidate their value facts; values
-already evaluated on the operand stack retain ordinary value semantics.
+the explicit specialization target. `Call.B` alone is not such a proof:
+ordinary calls can dispatch a native value, while a selected direct source
+specialization on a native value fails without calling the unrelated source
+body. Captured cells and mutable Scope members invalidate their value facts;
+values already evaluated on the operand stack retain ordinary value semantics.
 
 Only parameters with no writes, raw storage references, or captures can receive
 literal substitution. Their concrete storage type must match the literal type;
@@ -36,9 +39,10 @@ prove callable identity or permit semantic reuse. This is an optimization
 profitability policy, not a source-language limit.
 
 The tests cover a transfer-producing argument that is removed from the callee's
-input layout, a selected argument failure, capture layout, parameter mutation,
-native dispatch precedence, mutable member identity, escaping range callbacks,
-signed zero/NaN payloads, and many distinct control values under repeated
+input layout, an unused but selected failing cast with its original source span,
+capture layout, parameter mutation, native dispatch precedence, mutable member
+identity, escaping range callbacks, signed zero and both IEEE NaN branch
+selection and payload retention, and many distinct control values under repeated
 optimization. The integrated residual assertions also require removal of the
 unescaped original callable body and its unselected branch constant. A local
 `SpecializeClosure` changes only the consumed callee value, retaining actual
@@ -64,12 +68,11 @@ summaries, aggregate specialization and inlining reuse discovery when they
 read the same revision. Inlining checks cheap policy gates before computing
 eligibility, at most once per callee in a wave. SCC membership uses one
 shared iterative graph algorithm; it is not inferred from backedges on an
-active DFS path. The closed-module capture bound establishes which frame
-slots cannot hold extra imported captures; open or compound constant roots
-fall back to explicit initialization. Argument normalization preserves
-`CopyArguments`' dereference semantics for raw Cells. A producer proof for
-straight-line results can remove normalization; a declared Number type alone
-cannot.
+active DFS path. Format-6 fixtures declare value versus location captures and
+the reader rejects a direct specialization with an incompatible capture
+prefix, or a raw location passed as an ordinary argument. Valid call tests
+separately pass a value read from a Cell, rebind through a captured location,
+and hold an already evaluated callee across an argument's alias mutation.
 
 The lattice and worklist follow the separation in
 [LLVM CalledValuePropagation](https://llvm.org/docs/doxygen/CalledValuePropagation_8cpp_source.html).

@@ -42,11 +42,40 @@ and separators as literals, with optional sign and surrounding whitespace.
 require the text `true` or `false` rather than implicit nonempty truthiness.
 Only Path/String conversion is implicit.
 
+A bound executable can recognize `cast` sites whose immediately preceding
+type operand is an exact Number constant and which have no incoming branch
+that could bypass that operand. Ready String and Path operands at those
+sites use the same numeric parser and original failure location without a
+generic argument array. A deferred or Cell-backed operand remains on the
+canonical path. The parser's short signed ASCII decimal path must account for
+the entire input; all other spellings use the ordinary
+invariant parser and literal fallback. The stack VM returns a Number value
+at this boundary rather than allocating an unboxed numeric sidecar that a
+short consumer would immediately rebox. No portable instruction or language
+conversion rule is changed.
+
 `$std::math::is_integer` tests finite integral Numbers; `is_safe_integer` also
 requires magnitude at most 2^53-1. The named values `nan`, `infinity`, `epsilon`
 (distance from 1 to the next greater binary64 value), `max_safe_integer`,
 `min_positive` (smallest positive subnormal), and `max_value` make the carrier's
 bounds discoverable without requiring users to construct host-specific text.
+
+`$std::bits` owns the exact unsigned 32-bit domain: AND, OR, XOR, complement,
+left/right shifts, sign-extending right shift, both rotates, population and
+leading/trailing zero counts, and byte reversal. A logical right shift fills
+high bits with zero; the sign-extending variant interprets the high bit as
+the sign and returns the unsigned result pattern.
+A word is an integral Number in 0..4294967295, and a count is an integral
+Number in 0..31. Invalid operands fail at the selected call; values are not
+truncated, wrapped, or silently masked. Both input zeros denote the zero
+word, and zero results are positive zero. These operations have exact
+Number results and do not introduce a new type, integer operators, or a
+change to ordinary binary64 arithmetic.
+
+Portable bytecode represents these as typed native calls, not target machine
+instructions. Binding associates each call with a primitive operation and its
+register representation. Generic and raw stack execution share the same input
+admission, with no operation-name dispatch in the bound path.
 
 Lazy range counts and indices (`take`, `drop`, `stride`, `step`, `repeat`, `at`,
 `chunk`, `slide`) use one finite, integral, nonnegative Int64-domain contract;
@@ -63,6 +92,136 @@ NaN/signed-zero distinctions, casts, wide lazy counts, invalid discrete inputs
 and generated finite sequence models. The historical investigation below records
 the baseline defects that motivated this change; its observations are not the
 new language contract.
+
+## Select a numeric representation, not a universal slot
+
+The guest value contract and the machine representation are separate. Format 6
+serializes Number constants as their binary64 bits. Source operations still
+observe binary64 rounding, NaN, signed zero, and the original evaluation order.
+Native operations may use exact unsigned words or signed ordinals internally
+without adding a source-visible Number type or changing old artifacts.
+
+The intended variant has an explicit carrier at each *execution value*:
+
+| Carrier | Establishing fact | Keep through | Convert at |
+| --- | --- | --- | --- |
+| `F64` | Ordinary Number operands, binary64 literals, or a proved numeric column | Floating arithmetic, homogeneous locals and snapshots | Generic reference interfaces that observe a Number value |
+| `U32` | A word operation's checked entry or prior word result | Further word operations, shifts, rotates and typed stores | Ordinary Number arithmetic or an F64-only interchange boundary; conversion is exact |
+| `I64Ordinal` | Finite integral domain below 2^63; nonnegative where the producer requires it | Cursor indices, counts, pointer/offset arithmetic | A public Number result, with its existing binary64 semantics |
+
+Attach the choice to a definition and its calling convention, not to every
+Number object. Preserve a homogeneous carrier through typed block parameters,
+locals, and returns. If word and F64 paths join at an ordinary Number consumer,
+convert on the word edge instead of introducing a dynamic tag. A discriminator
+is necessary only for an actually polymorphic storage or boundary that
+preserves the distinct alternatives; then store primitive payloads inline and
+split the tag lane if the workload benefits. Do not steal NaN bits for the tag:
+the current constant/artifact representation preserves those bits. The
+[Julia isbits-union layout](https://docs.julialang.org/en/v1.3-dev/devdocs/isbitsunionarrays/)
+illustrates storing primitive alternatives inline and putting a tag only where
+an alternative is genuinely needed. It does not require tagging known F64
+arrays or registers.
+
+Numeric intrinsics should lower from typed native signatures to explicit bound
+operations. Subsequent operations consume the carrier of their inputs, not
+another name lookup or a repeat of word admission. An unknown public Number
+supplies F64 to a checked intrinsic boundary. If execution returns to the
+portable continuation, materialize only its live guest values. If a future
+source contract gives Number arbitrary exact integer behavior beyond binary64
+precision, version that contract separately: literal parsing, arithmetic,
+comparison, hashing, text, and wire constants would all need explicit rules.
+It is not a private representation optimization.
+
+### Bound Word32 transport
+
+The managed dispatcher, including with guest JIT disabled, retains zero-extended
+UInt32 bits in the same untagged eight-byte sidecar used for F64. Binding derives
+the carrier from canonical execution definitions and uses, not source text:
+exact Word32 operations and the fixed arena root, child, parent and allocation
+operations establish word results. A private local can retain words when every
+definition that reaches a read is a word and no capture, storage or iterator
+operation can observe that slot. Unobserved initialization stores do not become
+carrier facts.
+
+Bound stack edges carry raw words only to a proven consumer within the block.
+Opaque consumers, function boundaries and stack joins receive F64; a mixed
+local does not change representation, so ordinary negative zero survives. The
+dedicated raw-word frame specialization does not add a tag or a representation
+branch to ordinary F64 frames. When a primitive needs its canonical path
+because an operand is still deferred, it widens only its actual word arguments;
+this neither forces nor replays the producer. Normal suspension retains the
+selected dispatcher. A native or contextual continuation entering at a nonzero
+PC instead receives canonical locals. The selected operation still owns
+admission: an unsigned word may exceed the shift-count or arena index domain.
+
+`tests/Msync.EndToEnd/managed_word_transport_journey.py` checks these boundaries
+with a linked arena, independent bit arithmetic, a mixed word/F64 join with
+signed zero, selected failure spans, and a child process gated on real stdin.
+It exercises source and detached portable/bound artifacts and requires actual
+word movement counters while guest native worker entries remain zero.
+
+### Native sequence and snapshot carrier
+
+`ranges.sequence` (including `iota`) now produces a scalar numeric descriptor.
+Its synchronous cursor stores the original f64 start/stop/step and advances
+only on demand. `ranges.materialize` consumes that cursor into an owned
+contiguous f64 vector, with no per-element object or side tag. The host
+[`List<double>` implementation](https://github.com/dotnet/runtime/blob/main/src/libraries/System.Private.CoreLib/src/System/Collections/Generic/List.cs)
+owns an array, so this is an actual primitive lane, not a generic Value list
+with a type hint. Re-materializing an owned primitive snapshot publishes a
+distinct Range descriptor over the immutable backing. The view retains no
+managed element references or upstream producer.
+
+The bytecode VM takes the primitive cursor directly for `for` and writes raw
+F64 to its existing numeric lane. Its cursor cannot suspend or own an external
+resource, so it never enters the asynchronous iterator registry. `ranges.at`
+and `ranges.size` use the same cursor when they must traverse a sequence;
+snapshots keep random indexing. Generic host enumeration and artifact
+serialization use the existing boxed projection. Arbitrary lazy
+callbacks, host-provided Value sequences, and Range
+elements with owning references retain their canonical behavior; they are not
+silently converted based on the advertised item type. This slice implements
+F64 collection transport, not a claim that ordinary arithmetic, native
+primitives, or function ABIs already carry every numeric alternative end to
+end.
+
+Ordinary source wrappers such as `iota` are lazy producer calls. A transparent
+deferred source therefore carries its memoized producer explicitly, rather than
+forcing all callers through an `IAsyncEnumerable<Value>` projection. Opening a
+loop does not resolve it. The first actual `IteratorNext` chooses the cursor
+carrier from the resolved source, and an incomplete producer stores that
+original instruction and cursor in the dispatcher continuation. Eager
+terminals demand the same source directly. This is based on the source
+implementation's transparency, not the spelling of the wrapper or an
+assumption that every Range's optional Resolve function is interchangeable
+with enumerating its Items. A first Native AOT comparison that recognized raw
+sequence and snapshot sources but left ordinary lazy wrappers on the generic
+projection path did not change the large `iota` workload's allocations; the
+actual producer handoff is required for the representation to survive
+composition.
+
+The cursor retains the producer's cancellation separately from the consumer's
+and cannot replay a selected element. Leaving a sequence after its first item
+does not advance it; asking for the next item still detects an addition that
+rounds back to the current Number. `tests/Msync.EndToEnd/native_number_range_journey.py`
+checks this distinction, exact ordinal totals, descending fractional iteration,
+and signed zero across actual source and both detached artifact routes.
+
+The Linux x64 Native AOT comparison uses a 250,000-value `iota`, two snapshot
+declarations, two `for` traversals, and independent count/index/sum checks.
+Guest JIT is off and both hosts execute the same existing `.mexe`. The
+[wrapper control](../../artifacts/benchmarks/tiered-execution-v086/native-number-range-boxed-wrapper.json)
+was 337.9 → 340.3 ms wall median and 32.49 → 32.48 MB of profiled execution
+allocation. With the
+[producer demand handoff](../../artifacts/benchmarks/tiered-execution-v086/native-number-range-demand.json),
+the nine alternating pairs are 349.0 → 91.7 ms (no telemetry), and a separate
+profile measures 32,465,944 → 4,285,176 managed bytes. VM `number_boxes`
+remains three: the old per-element boxes were produced by the generic Range
+iterator rather than by materializing a VM operand slot. The managed
+Number suite passed 882 contracts, including genuinely suspended ordinary
+and primitive producers through both serialized image routes; each has one
+observed producer wait and exactly one selected read. The 108 Range adaptor,
+lookup and filtered-transfer contracts also pass.
 
 ## Historical baseline before this upgrade
 

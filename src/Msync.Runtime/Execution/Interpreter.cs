@@ -1,5 +1,6 @@
 using System.Globalization;
 using Msync.Core;
+using Msync.Optimization.Execution;
 
 namespace Msync.Runtime;
 
@@ -8,11 +9,12 @@ public sealed partial class Interpreter
     private Module module;
     private readonly RuntimeContext context;
     private readonly RuntimeProfile? profile;
+    private readonly StaticScopeSection staticScopes;
     private readonly ContextualResources planResources;
     private readonly SemaphoreSlim slots;
     private readonly int transferConcurrency;
     private readonly HashSet<IAsyncDisposable> iterators;
-    private readonly Dictionary<string, IReadOnlyDictionary<int, int>> dispatchTables = [];
+    private readonly Dictionary<string, FunctionDispatch.Operand> dispatchTables = [];
     private int failedTransfers;
     private int callDepth;
     public int FailedTransfers => failedTransfers;
@@ -21,7 +23,8 @@ public sealed partial class Interpreter
     public Interpreter(Module module, ExecutionOptions? options, CancellationToken cancellationToken)
         : this(module, options, null, cancellationToken) { }
     internal Interpreter(Module module, ExecutionOptions? options, Interpreter? previous,
-        CancellationToken cancellationToken = default, ContextualResources? transferredResources = null)
+        CancellationToken cancellationToken = default, ContextualResources? transferredResources = null,
+        StaticScopeSection? staticScopes = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         planResources = transferredResources ?? previous?.planResources ?? new(default, options?.Timeline);
@@ -33,7 +36,14 @@ public sealed partial class Interpreter
         iterators = previous?.iterators ?? [];
         context = new(options, module.Context);
         profile = options?.Profile;
-        try { this.module = Binding.Relocate(module, ImageContext); }
+        this.staticScopes = staticScopes ?? new();
+        try
+        {
+            this.module = Binding.Relocate(module, ImageContext);
+            this.staticScopes.Reserve(this.module.StaticScopes.Count);
+            executionTargets = ExecutionTargets.For(this.module, directSourceCalls: NumericLoop.NativeEnabled
+                && !this.module.PreserveLocals && context.Timeline is null && profile?.ObservesInstructionSites != true);
+        }
         catch
         {
             if (previous is null && transferredResources is null) planResources.DisposeAsync().AsTask().GetAwaiter().GetResult();
@@ -97,10 +107,23 @@ public sealed partial class Interpreter
     {
         RefreshSessionImage();
         var function = module.Functions[functionIndex];
+        RequireExecutable(function, null);
         RequireArity(function, arguments.Count);
+        if (arguments.Count != 0)
+        {
+            var places = CurrentPlaces;
+            foreach (var parameter in places.Parameters(functionIndex))
+                places.AdmitArgument(parameter, arguments[parameter.Position], null);
+        }
         var locals = InitializeFrame(function, captures);
         for (var i = 0; i < arguments.Count; i++) locals[function.CaptureCount + i] = arguments[i];
         return RunCodeAsync(functionIndex, locals, 0, cancellationToken, captures, arguments);
+    }
+
+    private static void RequireExecutable(FunctionCode function, SourceSpan? span)
+    {
+        if (function.CodeSignature?.IsTemplate == true)
+            throw new MsyncException("The selected callable requires a compiled specialization.", span);
     }
 
     private ValueTask<Value> RunStackFunctionAsync<TFrame>(int functionIndex, FunctionValue callee, int count,
@@ -109,15 +132,17 @@ public sealed partial class Interpreter
         var function = module.Functions[functionIndex];
         var captures = callee.Captures ?? [];
         int captured = captures.Count;
-        // The caller cannot pop this slice until the callee's work has joined.
-        // A single capture fits in the now-dead callee operand; the argument
-        // slice still describes the caller's original, once-normalized roots.
-        if (sessionImage is null && captured <= 1 && captured == function.CaptureCount
-            && count == function.ParameterCount && function.LocalCount == count + captured)
+        // The caller keeps the normalized argument roots until ownership
+        // joins. A single capture fits in the dead callee operand; larger
+        // VM-owned environments retain their separate immutable storage.
+        if (sessionImage is null && (captured <= 1 || captures is ClosureCaptures)
+            && captured == function.CaptureCount && count == function.ParameterCount
+            && function.LocalCount == count + captured)
         {
-            var borrowed = operands.BorrowArguments(count, captured == 0 ? null : captures[0]);
+            int inline = captured == 1 ? 1 : 0;
+            var borrowed = operands.BorrowArguments(count, inline == 0 ? null : captures[0], out var raw);
             return RunCodeAsync(functionIndex, (Value[])borrowed.Array!, 0, cancellationToken, captures,
-                callerArguments: borrowed, borrowedAt: borrowed.Offset - captured);
+                callerArguments: borrowed, borrowedAt: borrowed.Offset - inline, raw: raw);
         }
         var locals = InitializeFrame(function, captures);
         var arguments = operands.CopyArguments(count, locals, function.CaptureCount);
@@ -140,22 +165,24 @@ public sealed partial class Interpreter
     }
     private ValueTask<Value> RunCodeAsync(int functionIndex, Value[] locals, int startInstruction,
         CancellationToken cancellationToken, IReadOnlyList<Value>? captures = null, IReadOnlyList<Value>? arguments = null,
-        ArraySegment<Value?> callerArguments = default, int borrowedAt = -1) =>
+        ArraySegment<Value?> callerArguments = default, int borrowedAt = -1, double[]? raw = null) =>
         context.Timeline is { } timeline
-            ? RunObservedCodeAsync(timeline, functionIndex, locals, startInstruction, cancellationToken, captures, arguments, callerArguments, borrowedAt)
-            : RunCodeCoreAsync(functionIndex, locals, startInstruction, cancellationToken, captures, arguments, callerArguments, borrowedAt);
+            ? RunObservedCodeAsync(timeline, functionIndex, locals, startInstruction, cancellationToken, captures, arguments, callerArguments, borrowedAt, raw)
+            : RunCodeCoreAsync(functionIndex, locals, startInstruction, cancellationToken, captures, arguments, callerArguments, borrowedAt, raw);
 
     private async ValueTask<Value> RunObservedCodeAsync(RuntimeTimeline timeline, int functionIndex, Value[] locals,
         int startInstruction, CancellationToken cancellationToken, IReadOnlyList<Value>? captures,
-        IReadOnlyList<Value>? arguments, ArraySegment<Value?> callerArguments, int borrowedAt)
+        IReadOnlyList<Value>? arguments, ArraySegment<Value?> callerArguments, int borrowedAt, double[]? raw)
     {
         int localCount = borrowedAt < 0 ? locals.Length : module.Functions[functionIndex].LocalCount;
         using var span = BeginFrame(timeline, functionIndex, startInstruction, localCount);
-        span.SetAttribute("frame.storage", borrowedAt < 0 ? "private" : "caller_slice");
+        span.SetAttribute("frame.storage", borrowedAt < 0 ? "private"
+            : captures is ClosureCaptures ? "closure_and_caller" : "caller_slice");
+        if (raw is not null) span.SetMetric("frame.raw_arguments", CountRawArguments(callerArguments));
         RuntimeFrameTrace trace = new(timeline);
         try
         {
-            Value value = await RunCodeCoreAsync(functionIndex, locals, startInstruction, cancellationToken, captures, arguments, callerArguments, borrowedAt, trace);
+            Value value = await RunCodeCoreAsync(functionIndex, locals, startInstruction, cancellationToken, captures, arguments, callerArguments, borrowedAt, raw, trace);
             span.SetAttribute("frame.exit", "return");
             return value;
         }
@@ -183,9 +210,12 @@ public sealed partial class Interpreter
         return span;
     }
 
-    private async ValueTask<Value> RunCodeCoreAsync(int functionIndex, Value[] locals, int startInstruction,
+    private readonly record struct FrameOwnership(Interpreter? Active, Interpreter? Outer,
+        WorkOwner Previous, WorkOwner Caller, bool HasCaller);
+
+    private ValueTask<Value> RunCodeCoreAsync(int functionIndex, Value[] locals, int startInstruction,
         CancellationToken cancellationToken, IReadOnlyList<Value>? captures, IReadOnlyList<Value>? arguments,
-        ArraySegment<Value?> callerArguments, int borrowedAt, RuntimeFrameTrace? trace = null)
+        ArraySegment<Value?> callerArguments, int borrowedAt, double[]? raw, RuntimeFrameTrace? trace = null)
     {
         var active = sessionImage?.ActiveInterpreter;
         var outer = active is not null && !ReferenceEquals(active, this) ? active : null;
@@ -195,38 +225,80 @@ public sealed partial class Interpreter
         callDepth++;
         if (sessionImage is { } session) session.ActiveInterpreter = this;
         currentOwner = default;
+
+        ValueTask<Value> pending;
+        try
+        {
+            pending = RunOwnedCodeAsync(functionIndex, locals, startInstruction, cancellationToken, trace,
+                borrowedAt, borrowedAt < 0 ? null : captures as ClosureCaptures, raw, callerArguments);
+        }
+        catch (Exception error)
+        {
+            pending = ValueTask.FromException<Value>(error);
+        }
+        // Most guest calls finish here. A suspended or effect-owning frame
+        // keeps its argument roots until the asynchronous finish completes.
+        if (pending.IsCompletedSuccessfully && !FrameHasWork())
+        {
+            RestoreFrameOwner(active, outer, previous, caller);
+            return pending;
+        }
+        return FinishFrameAsync(pending, new(active, outer, previous, caller, hasCaller),
+            functionIndex, locals, captures, arguments, callerArguments, trace);
+    }
+
+    private bool FrameHasWork() => currentOwner.Processes is { Count: > 0 } || currentOwner.Tasks is { Count: > 0 };
+
+    private async ValueTask<Value> FinishFrameAsync(ValueTask<Value> pending, FrameOwnership ownership, int functionIndex,
+        Value[] locals, IReadOnlyList<Value>? captures, IReadOnlyList<Value>? arguments, ArraySegment<Value?> callerArguments,
+        RuntimeFrameTrace? trace)
+    {
+        var caller = ownership.Caller;
         Value? result = null;
         try
         {
-            result = await RunOwnedCodeAsync(functionIndex, locals, startInstruction, cancellationToken, trace, borrowedAt);
+            result = await pending;
             return result;
         }
         finally
         {
             try
             {
-                if (currentOwner.Processes is { Count: > 0 } || currentOwner.Tasks is { Count: > 0 })
+                if (FrameHasWork())
                 {
                     var roots = sessionImage is not null && functionIndex == module.EntryPoint ? module.SessionRoots : null;
-                    // The calling frame stays suspended until ownership has been resolved.
-                    // Inspect the original arguments, not possibly rebound parameters.
+                    // The suspended caller still owns the original argument locations.
                     if (callerArguments.Count != 0 && currentOwner.Processes is { Count: > 0 })
                         arguments = MaterializeArgumentRoots(callerArguments);
-                    PromoteReturnedProcesses(result, roots, locals, captures, arguments, ref caller, hasCaller);
+                    PromoteReturnedProcesses(result, roots, locals, captures, arguments, ref caller, ownership.HasCaller);
                     var joined = JoinOwnerAsync(currentOwner);
                     await (trace?.Observe(joined, "ownership_join") ?? joined);
                 }
             }
             finally
             {
-                currentOwner = outer is null ? caller : previous;
-                if (outer is not null) outer.currentOwner = caller;
-                callDepth--;
-                if (sessionImage is { } image) image.ActiveInterpreter = active;
+                RestoreFrameOwner(ownership.Active, ownership.Outer, ownership.Previous, caller);
             }
         }
     }
 
+    private void RestoreFrameOwner(Interpreter? active, Interpreter? outer, WorkOwner previous, WorkOwner caller)
+    {
+        currentOwner = outer is null ? caller : previous;
+        if (outer is not null) outer.currentOwner = caller;
+        callDepth--;
+        if (sessionImage is { } image) image.ActiveInterpreter = active;
+    }
+
+    private static int CountRawArguments(ArraySegment<Value?> arguments)
+    {
+        int count = 0;
+        foreach (var value in arguments.AsSpan())
+            if (value is null) count++;
+        return count;
+    }
+
+    // Unboxed numeric arguments cannot root a Process.
     private static Value[] MaterializeArgumentRoots(ArraySegment<Value?> arguments)
     {
         var values = new Value[arguments.Count];

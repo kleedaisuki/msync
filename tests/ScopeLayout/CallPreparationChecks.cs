@@ -6,6 +6,13 @@ using Module = Msync.Core.Module;
 
 internal static class CallPreparationChecks
 {
+    private const int Number = 0, String = 1, Null = 2, PathType = 3, Process = 4;
+    private static readonly CodeType[] Types =
+    [
+        new(TypeKind.Number), new(TypeKind.String), new(TypeKind.Null),
+        new(TypeKind.Path), new(TypeKind.Process)
+    ];
+
     internal static async Task Run()
     {
         int checks = 0;
@@ -40,10 +47,13 @@ internal static class CallPreparationChecks
             Directory.CreateDirectory(work);
             Module raw = new([new PathValue("./trace.txt"), new StringValue("once"), new NumberValue(17),
                 new NumberValue(99), new FunctionValue(2, [])],
-                [new("entry", 0, 0, [new(OpCode.Constant, 4), new(OpCode.Call, B: dispatch ? 3 : 2, Text: dispatch ? "2:1" : null), new(OpCode.Return)], TypeRef.Number),
+                [new("entry", 0, 0, [new(OpCode.Constant, 4), new(OpCode.Call, B: dispatch ? 3 : 2, Text: dispatch ? "2:1" : null), new(OpCode.Return)], TypeRef.Number)
+                    { CodeSignature = new([], Number, []) },
                  new("selected", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.NativeCall, 2, Text: "io.append_text"),
-                    new(OpCode.Pop), new(OpCode.Constant, 2), new(OpCode.Return)], TypeRef.Number),
-                 new("identity", 0, 0, [new(OpCode.Constant, 3), new(OpCode.Return)], TypeRef.Number)], OptimizationLevel: 0);
+                    new(OpCode.Pop), new(OpCode.Constant, 2), new(OpCode.Return)], TypeRef.Number)
+                    { CodeSignature = new([], Number, []) },
+                 new("identity", 0, 0, [new(OpCode.Constant, 3), new(OpCode.Return)], TypeRef.Number)
+                    { CodeSignature = new([], Number, []) }], OptimizationLevel: 0) { CodeTypes = Types };
             Check(!ContextualBackend.NeedsPreparation(raw.Functions[1]), "The selected opaque native fixture unexpectedly needs planning.");
             Module program = Prepare(raw, work, route);
             Check(!File.Exists(Path.Combine(work, "trace.txt")), "Preparation executed selected opaque I/O.");
@@ -64,16 +74,19 @@ internal static class CallPreparationChecks
                 new NumberValue(1), new StringValue("missing")];
             Module program = new(constants,
                 [new("entry", 0, 0,
-                    [new(OpCode.Constant, 0), new(OpCode.GetMember, Text: "stdout"), new(OpCode.Constant, 1),
+                    [new(OpCode.Constant, 0), new(OpCode.NativeCall, 1, Text: "process.stdout"), new(OpCode.Constant, 1),
                      new(OpCode.Transfer), new(OpCode.Pop), new(OpCode.Constant, 2), new(OpCode.Constant, 1),
-                     new(OpCode.Call, A: 1, B: 2), new(OpCode.Return)], TypeRef.String),
+                     new(OpCode.Call, A: 1, B: 2), new(OpCode.Return)], TypeRef.String)
+                    { CodeSignature = new([], String, []) },
                  new("observe", 1, 2,
                     [new(OpCode.LoadLocal, 0), new(OpCode.Constant, 3), new(OpCode.Add), new(OpCode.StoreLocal, 0),
                      new(OpCode.LoadLocal, 1), new(OpCode.NativeCall, 1, Text: "fs.exists"), new(OpCode.JumpIfFalse, 10),
                      new(OpCode.LoadLocal, 1), new(OpCode.NativeCall, 1, Text: "io.read_text"), new(OpCode.Return),
                      new(OpCode.Constant, 4), new(OpCode.Return)],
-                    TypeRef.String, CaptureCount: 1, ParameterTypes: [TypeRef.Path])],
-                Stage: ArtifactStage.Executable, Context: new(work, work), OptimizationLevel: 0) { ExecutionPlans = [] };
+                    TypeRef.String, CaptureCount: 1, ParameterTypes: [TypeRef.Path])
+                    { CodeSignature = new([PathType], String, [new(Number, true)]) }],
+                Stage: ArtifactStage.Executable, Context: new(work, work), OptimizationLevel: 0)
+                { CodeTypes = Types, ExecutionPlans = [] };
             // The held live process is a runtime fixture, never an artifact payload.
             Task<Value> execution = Interpreter.ExecuteAsync(program, new(WorkingDirectory: work)).AsTask();
             bool prefixVisible = counter.Data is NumberValue { Data: 1 };
@@ -101,15 +114,18 @@ internal static class CallPreparationChecks
             Module program = new([process, new PathValue("./first.txt"), new PathValue("./second.txt"),
                 counter, new FunctionValue(1, []), new NumberValue(1)],
                 [new("entry", 0, 1,
-                    [new(OpCode.Constant, 0), new(OpCode.GetMember, Text: "stdout"), new(OpCode.Constant, 1),
+                    [new(OpCode.Constant, 0), new(OpCode.NativeCall, 1, Text: "process.stdout"), new(OpCode.Constant, 1),
                      new(OpCode.Transfer), new(OpCode.Pop), new(OpCode.Constant, 4), new(OpCode.Constant, 0),
                      new(OpCode.Call, A: 1, B: 2), new(OpCode.Pop), new(OpCode.Constant, 3), new(OpCode.InitializeLocal, 0),
                      new(OpCode.LoadLocal, 0), new(OpCode.Constant, 5), new(OpCode.Add), new(OpCode.StoreLocal, 0),
-                     new(OpCode.Null), new(OpCode.Return)], TypeRef.Null),
+                     new(OpCode.Null), new(OpCode.Return)], TypeRef.Null)
+                    { CodeSignature = new([], Null, []) },
                  new("copy_then_return_process", 1, 1,
                     [new(OpCode.Constant, 1), new(OpCode.Constant, 2), new(OpCode.Transfer), new(OpCode.Pop),
-                     new(OpCode.LoadLocal, 0), new(OpCode.Return)], TypeRef.Process, ParameterTypes: [TypeRef.Process])],
-                Stage: ArtifactStage.Executable, Context: new(work, work), OptimizationLevel: 0) { ExecutionPlans = [] };
+                     new(OpCode.LoadLocal, 0), new(OpCode.Return)], TypeRef.Process, ParameterTypes: [TypeRef.Process])
+                    { CodeSignature = new([Process], Process, []) }],
+                Stage: ArtifactStage.Executable, Context: new(work, work), OptimizationLevel: 0)
+                { CodeTypes = Types, ExecutionPlans = [] };
             Task<Value> execution = Interpreter.ExecuteAsync(program, new(WorkingDirectory: work)).AsTask();
             bool callerAdvanced = counter.Data is NumberValue { Data: 1 };
             bool executionPending = !execution.IsCompleted;
@@ -152,13 +168,16 @@ internal static class CallPreparationChecks
                 new NumberValue(1), new StringValue(observeSibling ? "missing" : "unselected"), counter,
                 new PathValue(observeSibling ? "./ready.txt" : "./held.txt"), new StringValue("ready")],
                 [new("entry", 0, 2,
-                    [new(OpCode.Constant, 0), new(OpCode.GetMember, Text: "stdout"), new(OpCode.Constant, 1),
+                    [new(OpCode.Constant, 0), new(OpCode.NativeCall, 1, Text: "process.stdout"), new(OpCode.Constant, 1),
                      new(OpCode.Transfer), new(OpCode.Pop), new(OpCode.Constant, 2), new(OpCode.Constant, 6),
                      new(OpCode.Call, A: 1, B: 2), new(OpCode.StoreLocal, 1), new(OpCode.Constant, 5),
                      new(OpCode.InitializeLocal, 0), new(OpCode.LoadLocal, 0), new(OpCode.Constant, 3),
-                     new(OpCode.Add), new(OpCode.StoreLocal, 0), new(OpCode.LoadLocal, 1), new(OpCode.Return)], TypeRef.String),
-                 new("observe_selected", 1, 2, body, TypeRef.String, CaptureCount: 1, ParameterTypes: [TypeRef.Path])],
-                Stage: ArtifactStage.Executable, Context: new(work, work), OptimizationLevel: 0) { ExecutionPlans = [] };
+                     new(OpCode.Add), new(OpCode.StoreLocal, 0), new(OpCode.LoadLocal, 1), new(OpCode.Return)], TypeRef.String)
+                    { CodeSignature = new([], String, []) },
+                 new("observe_selected", 1, 2, body, TypeRef.String, CaptureCount: 1, ParameterTypes: [TypeRef.Path])
+                    { CodeSignature = new([PathType], String, [new(Number, true)]) }],
+                Stage: ArtifactStage.Executable, Context: new(work, work), OptimizationLevel: 0)
+                { CodeTypes = Types, ExecutionPlans = [] };
             Task<Value> execution = Interpreter.ExecuteAsync(program, new(WorkingDirectory: work)).AsTask();
             bool callerAdvanced = counter.Data is NumberValue { Data: 2 };
             bool executionPending = !execution.IsCompleted;

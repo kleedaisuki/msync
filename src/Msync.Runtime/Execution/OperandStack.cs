@@ -1,5 +1,7 @@
 using System.Runtime.CompilerServices;
 using Msync.Core;
+using Msync.Optimization;
+using Msync.Optimization.Execution;
 
 namespace Msync.Runtime;
 
@@ -13,6 +15,10 @@ internal struct OperandStack<TFrame>(TFrame frame) where TFrame : struct, Runtim
     public Value this[int index] => items[index] ?? BoxNumber(index);
     public Value Peek(int depth) => this[Count - depth - 1];
     public Value? PeekReference(int depth) => items[Count - depth - 1];
+    public bool HasRawTop => items[Count - 1] is null;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public double PopRawNumber() => numbers[--Count];
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool TryPeekNumber(int depth, out double number)
@@ -40,6 +46,56 @@ internal struct OperandStack<TFrame>(TFrame frame) where TFrame : struct, Runtim
         if (Count >= numbers.Length) GrowNumbers();
         items[Count] = null;
         numbers[Count++] = number;
+    }
+
+    // Only a bound WordTransport edge can read this slot. The carrier
+    // reuses the primitive stack storage as bits, without a runtime tag.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void AddWord32(uint word) => AddWordPayload(BitConverter.Int64BitsToDouble(word));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void AddWordPayload(double payload)
+    {
+        AddNumber(payload);
+        frame.ManagedWordEdge();
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryPeekWord32(int depth, out uint word)
+    {
+        int index = Count - depth - 1;
+        switch (items[index])
+        {
+            case null: word = (uint)BitConverter.DoubleToInt64Bits(numbers[index]); return true;
+            // A selected producer can have returned through the canonical
+            // invocation path, so a materialized exact result is also valid.
+            case NumberValue value: word = (uint)value.Data; return true;
+            default: word = 0; return false;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryPeekWordPayload(out double payload)
+    {
+        int index = Count - 1;
+        switch (items[index])
+        {
+            case null: payload = numbers[index]; return true;
+            case NumberValue value: payload = BitConverter.Int64BitsToDouble((uint)value.Data); return true;
+            default: payload = 0; return false;
+        }
+    }
+
+    internal void WidenWordArguments(int count, WordTransport transport)
+    {
+        int mask = (int)transport & 15;
+        int start = Count - count;
+        for (int position = 0; mask != 0; position++, mask >>= 1)
+        {
+            int index = start + position;
+            if ((mask & 1) != 0 && items[index] is null)
+                numbers[index] = (uint)BitConverter.DoubleToInt64Bits(numbers[index]);
+        }
     }
 
     public void Duplicate()
@@ -95,15 +151,16 @@ internal struct OperandStack<TFrame>(TFrame frame) where TFrame : struct, Runtim
         return new(items, start, count);
     }
 
-    public ArraySegment<Value?> BorrowArguments(int count, Value? capture)
+    public ArraySegment<Value?> BorrowArguments(int count, Value? capture, out double[]? raw)
     {
         int start = Count - count;
         if (capture is not null) items[start - 1] = capture;
+        raw = null;
         for (int index = start; index < Count; index++)
         {
-            Value? value = items[index];
-            if (value is CellValue cell) value = cell.Data;
-            items[index] = value ?? BoxNumber(index);
+            var value = items[index];
+            if (value is null) raw = numbers;
+            else if (value is CellValue cell) items[index] = cell.Data;
         }
         return new(items, start, count);
     }
@@ -115,12 +172,27 @@ internal struct OperandStack<TFrame>(TFrame frame) where TFrame : struct, Runtim
         if (arguments != 0) Array.Clear(items, Count, arguments);
     }
 
-    public ScopeValue PopScope(ScopeAllocator allocator, ScopeLayout layout, int count, int allocationSite)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void CompleteNumberCall(int arguments, double result)
+    {
+        Count -= arguments;
+        int index = Count - 1;
+        if (index >= numbers.Length) GrowNumbers();
+        numbers[index] = result;
+        items[index] = null;
+        if (arguments == 1) items[Count] = null;
+        else if (arguments != 0) Array.Clear(items, Count, arguments);
+    }
+
+    public ScopeValue PopScope(ScopeAllocator allocator, ScopeLayout layout, int count, int allocationSite) =>
+        new(layout, PopScopePayload(allocator, layout, count, allocationSite), allocationSite);
+
+    internal ScopePayload PopScopePayload(ScopeAllocator allocator, ScopeLayout layout, int count, int allocationSite)
     {
         int start = Count - count;
         ReadOnlySpan<double> numeric = start < numbers.Length
             ? numbers.AsSpan(start, Math.Min(count, numbers.Length - start)) : [];
-        ScopeValue value = allocator.CreateFromOperands(layout, items.AsSpan(start, count), numeric, allocationSite);
+        ScopePayload value = allocator.CreatePayload(layout, items.AsSpan(start, count), numeric, allocationSite);
         Array.Clear(items, start, count);
         Count = start;
         return value;

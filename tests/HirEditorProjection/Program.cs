@@ -73,8 +73,8 @@ SemanticValueId cycleA = new(values.Count);
 values.Add(new(scope, Members: [new("self", cycleA), new("leaf", num)]));
 SemanticValueId cycleB = new(values.Count);
 values.Add(new(scope, Members: [new("self", cycleB), new("leaf", str)]));
-SemanticValueId alias = Add(new(function, NativeName: "storage.buffer_get",
-    Signature: "native fn buffer_get(items: Range, index: Number) -> Number", Documentation: "Indexed element lookup."));
+SemanticValueId alias = Add(new(function, NativeName: "storage.vector_get",
+    Signature: "native fn vector_get(owner: Storage, index: Number) -> Number", Documentation: "Indexed element lookup."));
 SemanticValueId native = Add(new(function, NativeName: "meta.is_invocable"));
 SemanticValueId path = Add(new(builder.Type(TypeRef.Path), Path: new("./file", "/origin", new(ConnectionKind.Ssh, "forge"))));
 
@@ -125,7 +125,10 @@ Require(presenter.Describe("optional_union", [optionalUnion]).Members!.Single().
 Require(presenter.Describe("callable_or_scope", [functionOrScope]).Members is null,
     "A Function-or-Scope union does not expose Scope-only members");
 Require(presenter.Describe("process", [childProcess]).Members!.Select(item => item.Name).SequenceEqual(["stdout", "stderr", "exit_code", "success"]), "Process fields require no extra HIR type entries");
-Require(presenter.Describe("get", [alias]).Signature.StartsWith("native fn get(items:", StringComparison.Ordinal), "Native aliases retain actual parameter names");
+Require(presenter.Describe("get", [alias]).Signature.StartsWith("native fn get(owner:", StringComparison.Ordinal), "Native aliases retain actual parameter names");
+Require(SemanticStandardCatalog.ModuleMembers("storage").Any(member =>
+    member.Name == "vector_get" && member.Signature.StartsWith("fn vector_get(owner: Storage", StringComparison.Ordinal)),
+    "Standard storage completion exposes the indexed owner parameter");
 Require(nativeQueries == 0, "Provided native documentation does not reload source");
 Require(presenter.Describe("check", [native]).Signature == "native fn check(callee, ...arguments) -> Bool", "Metadata-backed native alias signature");
 Require(presenter.Describe("check", [native]).Description.Contains("without executing", StringComparison.Ordinal), "Native query description");

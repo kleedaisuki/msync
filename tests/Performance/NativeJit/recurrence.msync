@@ -1,0 +1,32 @@
+fn accumulate(count: Number, initial: Number) {
+    let i = 0;
+    let value = initial;
+    let wraps = 0;
+    loop {
+        if i >= count {
+            break;
+        };
+        if value < 4 {
+            value = value * 1.0000000001 + 0.125;
+        } else {
+            value = value * 0.9375 - 1;
+            wraps = wraps + 1;
+        };
+        i = i + 1;
+    };
+    scope {
+        value: value,
+        wraps: wraps
+    }
+};
+
+let count? = $std::io::read_line();
+let initial? = $std::io::read_line();
+if count? or initial? {
+    $std::io::println("missing inputs");
+} else {
+    $std::io::println("armed");
+    let result = accumulate(count as Number, initial as Number);
+    $std::io::println(result::value as String);
+    $std::io::println(result::wraps as String);
+};

@@ -11,7 +11,7 @@ internal sealed partial class SemanticAnalyzer
     private SemanticInputSchema CodeSchema(IReadOnlyList<SemanticValue> arguments,
         IReadOnlyList<SemanticValue> captures, SemanticContext caller)
     {
-        SemanticContext context = new(new(-1)) { Queries = new(), DeferredReads = caller.DeferredReads };
+        SemanticContext context = new(new(-1));
         FormalInput input = new(this, caller, context, keyOnly: true);
         SemanticValue[] parameters = new SemanticValue[arguments.Count];
         SemanticValue[] environment = new SemanticValue[captures.Count];
@@ -75,7 +75,7 @@ internal sealed partial class SemanticAnalyzer
                     if (scope.Region >= 0) regions[scope.Region] = region;
                     var sources = scope.Aliases.IsDefaultOrEmpty ? (scope.Region >= 0 ? ImmutableHashSet.Create(scope.Region) : [])
                         : scope.Aliases.ToImmutableHashSet();
-                    if (summary || scope.Dynamic) scopeViews.Add((region, sources));
+                    if (!keyOnly && (summary || scope.Dynamic)) scopeViews.Add((region, sources));
                     var symbolic = scope with
                     {
                         Region = region,
@@ -199,7 +199,7 @@ internal sealed partial class SemanticAnalyzer
                     ? caller.Values.GetValueOrDefault(capture.Source, capture.Value) : capture.Value,
                     capture.Mode == HirCaptureMode.Location ? roles.Capture(source) : roles.ValueCapture(role, source));
                 formal.Values[source] = captured;
-                formal.Storage[source] = owner.StorageType(capture.Source, caller);
+                if (!keyOnly) formal.Storage[source] = owner.StorageType(capture.Source, caller);
                 captures.Add(capture with { Source = source, Value = captured });
             }
             var result = callable with { Captures = captures.MoveToImmutable() };
@@ -307,6 +307,9 @@ internal sealed partial class SemanticAnalyzer
                 });
             }
             Locations[source] = target;
+            // Key encoding uses the normalized location identity and current
+            // value, not the facts needed to analyze a body in that location.
+            if (keyOnly) return target;
             if (caller.CallableContracts.TryGetValue(source, out var contracts)) formal.CallableContracts[target] = contracts;
             if (caller.Definitions.TryGetValue(source, out var definition)) formal.Definitions[target] = definition;
             else if (owner.CanonicalDefinition(source) is { } canonical) formal.Definitions[target] = canonical;

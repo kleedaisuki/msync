@@ -5,6 +5,8 @@ using Module = Msync.Core.Module;
 
 internal static class InvalidationChecks
 {
+    private const int Boolean = 0, Nil = 1, Result = 2;
+
     internal static async Task<int> Run(string directory, Func<Module, Module> optimize)
     {
         int checks = 0;
@@ -63,7 +65,7 @@ internal static class InvalidationChecks
         List<Instruction> code = Unknown();
         code.AddRange([new(OpCode.LoadLocal, 0), new(OpCode.InitializeLocal, 1),
             new(OpCode.LoadLocal, 0), new(OpCode.Not), new(OpCode.InitializeLocal, 2),
-            new(OpCode.LoadCell, 0), new(OpCode.MakeClosure, 1, 1), new(OpCode.Call, 0, 2), new(OpCode.Pop),
+            new(OpCode.LoadCell, 0, Boolean + 1), new(OpCode.MakeClosure, 1, 1), new(OpCode.Call, 0, 2), new(OpCode.Pop),
             new(OpCode.LoadLocal, 2)]);
         int branch = code.Count;
         code.Add(new(OpCode.JumpIfFalse));
@@ -73,8 +75,8 @@ internal static class InvalidationChecks
         code[branch] = code[branch] with { A = code.Count };
         code.AddRange([new(OpCode.LoadLocal, 0), new(OpCode.InitializeLocal, 3)]);
         code[join] = code[join] with { A = code.Count };
-        Finish(code, "current\0copy\0saved", 3, 1, 2);
-        return Module(code, 4, new("change", 0, 1,
+        var layout = Finish(code, ["current", "copy", "saved"], 3, 1, 2);
+        return Module(code, 4, layout, new("change", 0, 1,
             [new(OpCode.False), new(OpCode.StoreLocal, 0), new(OpCode.Null), new(OpCode.Return)],
             TypeRef.Null, CaptureCount: 1));
     }
@@ -83,12 +85,12 @@ internal static class InvalidationChecks
     {
         List<Instruction> code = Unknown();
         code.AddRange([new(OpCode.LoadLocal, 0), new(OpCode.InitializeLocal, 2),
-            new(OpCode.LoadCell, 0), new(OpCode.MakeClosure, 1, 1), new(OpCode.Call, 0, 2),
+            new(OpCode.LoadCell, 0, Boolean + 1), new(OpCode.MakeClosure, 1, 1), new(OpCode.Call, 0, 2),
             new(OpCode.InitializeLocal, 1), new(present ? OpCode.False : OpCode.True),
             new(initialize ? OpCode.InitializeLocal : OpCode.StoreLocal, 1)]);
-        Finish(code, "current\0copy\0returned", 0, 2, 1);
-        return Module(code, 3, new("raw-return", 0, 1,
-            [new(OpCode.LoadStorage, 0), new(OpCode.Return)], TypeRef.Bool, CaptureCount: 1));
+        var layout = Finish(code, ["current", "copy", "returned"], 0, 2, 1);
+        return Module(code, 3, layout, new("read-capture", 0, 1,
+            [new(OpCode.LoadLocal, 0), new(OpCode.Return)], TypeRef.Bool, CaptureCount: 1));
     }
 
     private static Module JoinedAlias()
@@ -98,27 +100,26 @@ internal static class InvalidationChecks
             new(OpCode.Constant, 0), new(OpCode.NativeCall, 1, Text: "fs.exists")];
         int branch = code.Count;
         code.Add(new(OpCode.JumpIfFalse));
-        code.Add(new(OpCode.LoadCell, 0));
+        code.Add(new(OpCode.LoadCell, 0, Boolean + 1));
         int join = code.Count;
         code.Add(new(OpCode.Jump));
         code[branch] = code[branch] with { A = code.Count };
-        code.Add(new(OpCode.LoadCell, 1));
+        code.Add(new(OpCode.LoadCell, 1, Boolean + 1));
         code[join] = code[join] with { A = code.Count };
         code.AddRange([new(OpCode.InitializeLocal, 2), new(OpCode.False), new(OpCode.StoreLocal, 2)]);
-        Finish(code, "first\0second\0copy", 0, 1, 3);
-        return Module(code, 4);
+        return Module(code, 4, Finish(code, ["first", "second", "copy"], 0, 1, 3));
     }
 
     private static Module DirectAlias(bool capture, bool initialize, bool present)
     {
         List<Instruction> code = Unknown();
-        code.AddRange([new(OpCode.LoadLocal, 0), new(OpCode.InitializeLocal, 2), new(OpCode.LoadCell, 0)]);
+        code.AddRange([new(OpCode.LoadLocal, 0), new(OpCode.InitializeLocal, 2), new(OpCode.LoadCell, 0, Boolean + 1)]);
         if (capture) code.AddRange([new(OpCode.MakeClosure, 1, 1), new(OpCode.GetCapture, 0)]);
         else code.AddRange([new(OpCode.Pop), new(OpCode.LoadStorage, 0)]);
         code.AddRange([new(OpCode.InitializeLocal, 1), new(present ? OpCode.False : OpCode.True),
             new(initialize ? OpCode.InitializeLocal : OpCode.StoreLocal, 1)]);
-        Finish(code, "current\0copy\0alias", 0, 2, 1);
-        return Module(code, 3, capture ? new("capture-holder", 0, 1,
+        var layout = Finish(code, ["current", "copy", "alias"], 0, 2, 1);
+        return Module(code, 3, layout, capture ? new("capture-holder", 0, 1,
             [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, CaptureCount: 1) : null);
     }
 
@@ -126,22 +127,32 @@ internal static class InvalidationChecks
     {
         List<Instruction> code = [new(OpCode.True), new(OpCode.InitializeLocal, 0),
             new(OpCode.LoadLocal, 0), new(OpCode.InitializeLocal, 3)];
-        for (int index = 0; index < count; index++) code.Add(new(OpCode.LoadCell, 0));
+        // Range items are values. Each row's typed field can still capture
+        // the same location, and a value read from it must not inherit that alias.
+        for (int index = 0; index < count; index++)
+            code.AddRange([new(OpCode.LoadCell, 0, Boolean + 1), new(OpCode.NewScope, 1)]);
         code.AddRange([new(OpCode.MakeRange, count), new(OpCode.GetIterator), new(OpCode.InitializeLocal, 1)]);
         int header = code.Count;
         code.Add(new(OpCode.IteratorNext, 1));
-        code.AddRange([new(OpCode.InitializeLocal, 2), new(OpCode.False),
-            new(initialize ? OpCode.InitializeLocal : OpCode.StoreLocal, 2), new(OpCode.Jump, header)]);
+        if (initialize)
+            code.AddRange([new(OpCode.LoadField, 0), new(OpCode.InitializeLocal, 2),
+                new(OpCode.False), new(OpCode.InitializeLocal, 2)]);
+        else code.AddRange([new(OpCode.False), new(OpCode.StoreField, 0), new(OpCode.Pop)]);
+        code.Add(new(OpCode.Jump, header));
         code[header] = code[header] with { B = code.Count };
-        Finish(code, "current\0copy", 0, 3);
-        return Module(code, 4);
+        var layout = Finish(code, ["current", "copy"], 0, 3);
+        return Module(code, 4, layout) with
+        {
+            ScopeLayouts = [layout, new([new("value", Boolean)])],
+            FieldProjections = [new("value", [new(1, 0)])]
+        };
     }
 
     private static Module RepeatedCall(int count)
     {
         List<Instruction> code = [new(OpCode.True), new(OpCode.InitializeLocal, 0),
             new(OpCode.LoadLocal, 0), new(OpCode.InitializeLocal, 4),
-            new(OpCode.LoadCell, 0), new(OpCode.MakeClosure, 1, 1), new(OpCode.InitializeLocal, 1),
+            new(OpCode.LoadCell, 0, Boolean + 1), new(OpCode.MakeClosure, 1, 1), new(OpCode.InitializeLocal, 1),
             new(OpCode.False), new(OpCode.InitializeLocal, 5), new(OpCode.False), new(OpCode.InitializeLocal, 6)];
         for (int index = 0; index < count; index++) code.Add(new(OpCode.True));
         code.AddRange([new(OpCode.MakeRange, count), new(OpCode.GetIterator), new(OpCode.InitializeLocal, 2)]);
@@ -160,8 +171,8 @@ internal static class InvalidationChecks
         code[join] = code[join] with { A = code.Count };
         code.Add(new(OpCode.Jump, header));
         code[header] = code[header] with { B = code.Count };
-        Finish(code, "current\0copy\0saved", 6, 4, 5);
-        return Module(code, 7, new("flip", 0, 1,
+        var layout = Finish(code, ["current", "copy", "saved"], 6, 4, 5);
+        return Module(code, 7, layout, new("flip", 0, 1,
             [new(OpCode.LoadLocal, 0), new(OpCode.Not), new(OpCode.StoreLocal, 0),
                 new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, CaptureCount: 1));
     }
@@ -169,17 +180,25 @@ internal static class InvalidationChecks
     private static List<Instruction> Unknown() =>
         [new(OpCode.Constant, 0), new(OpCode.NativeCall, 1, Text: "fs.exists"), new(OpCode.InitializeLocal, 0)];
 
-    private static void Finish(List<Instruction> code, string fields, params int[] slots)
+    private static CodeLayout Finish(List<Instruction> code, string[] fields, params int[] slots)
     {
         foreach (int slot in slots) code.Add(new(OpCode.LoadLocal, slot));
-        code.Add(new(OpCode.MakeScope, slots.Length, Text: fields));
+        code.Add(new(OpCode.NewScope, 0));
         code.Add(new(OpCode.Return));
+        return new(fields.Select(name => new CodeField(name, Boolean)).ToArray());
     }
 
-    private static Module Module(List<Instruction> code, int locals, FunctionCode? callee = null) =>
-        new([new PathValue("./probe")], callee is null
-            ? [new("entry", 0, locals, code, TypeRef.Scope)]
-            : [new("entry", 0, locals, code, TypeRef.Scope), callee], OptimizationLevel: 0);
+    private static Module Module(List<Instruction> code, int locals, CodeLayout layout, FunctionCode? callee = null)
+    {
+        var entry = new FunctionCode("entry", 0, locals, code, TypeRef.Scope) { CodeSignature = new([], Result, []) };
+        return new([new PathValue("./probe")], callee is null ? [entry]
+            : [entry, callee with { CodeSignature = new([], callee.ReturnType == TypeRef.Bool ? Boolean : Nil, [new(Boolean, true)]) }],
+            OptimizationLevel: 0)
+        {
+            CodeTypes = [new(TypeKind.Bool), new(TypeKind.Null), new(TypeKind.Scope, ScopeLayouts: [0])],
+            ScopeLayouts = [layout]
+        };
+    }
 
     private static Module RoundTrip(Module module)
     {

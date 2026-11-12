@@ -5,7 +5,7 @@
 - The current product is the .NET 10 Native AOT implementation in `src/Msync.*`.
   The retired Rust implementation is available in Git history at `v0.7.3`, not
   in this checkout or a product compatibility path. Current readers accept
-  bytecode artifact format 5 only; formats 1/2/3/4 and historical Rust artifacts are
+  bytecode artifact format 6 only; formats 1–5 and historical Rust artifacts are
   rejected, not reinterpreted or delegated to another executable.
 - Braces own blocks, `;` discards values, and a block tail is its result.
   Binding values are mutable but inferred/declared storage types are immutable;
@@ -36,7 +36,8 @@
   Endpoint qualification retains raw path
   provenance; path separators follow the selected endpoint's grammar, so a
   POSIX backslash is filename data even on a Windows interpreter.
-- `.mso` contains machine-independent typed bytecode. `.mexe` additionally carries
+- `.mso` contains machine-independent typed bytecode, including actual layout
+  domains, symbolic field places, static slots and capture contracts. `.mexe` additionally carries
   contextual execution graphs and continuation recipes, never AST/debug-source
   replay. Format version and language-semantic version are independent. Backend
   preparation may observe selected filesystem state, compute known control flow
@@ -77,7 +78,7 @@
   See [the schedule contract](docs/design/affine-layout-optimization.md).
 - Source compilation is `Analyze -> Typed HIR -> HirLowerer -> Optimizer`.
   `Msync.Hir` depends only on Core and owns immutable semantic tables, pure
-  bytecode lowering and independently versioned `.mhir` format 1. Exported
+  bytecode lowering and independently versioned `.mhir` format 3. Exported
   standalone HIR can be inspected and lowered without its source files; source
   text is optional diagnostic data, never replay input. Binding and semantic
   analysis do not emit bytecode. `SemanticSession` separately integrates
@@ -158,7 +159,7 @@
   source/compiler/editor/runtime entrypoints. User-declared lexical names are
   still ordinary values. Preserve source-owned operand diagnostics. Historical
   capability negotiation in [the old type contract](docs/design/type-system-v065.md)
-  does not impose old-format compatibility on current format 5.
+  does not impose old-format compatibility on current format 6.
 - An implicit finite Range transfer is one selected transfer operation, not an
   implicit source-level `for`. Normal collision preflight can precede writes;
   failed multi-file work may be retried without a persistent rollback protocol.
@@ -193,7 +194,9 @@
   evaluate arguments once on demand, including source functions returning
   ranges. Explicit eager snapshots (`materialize`, `environment.variables`)
   propagate their eagerness through source functions instead of replaying
-  mutable inputs. Collections remain Range/Scope/Fn compositions, not new types.
+  mutable inputs. Collection algorithms remain source compositions; Set and
+  Heap own noniterable indexed allocations and publish Range at sequence
+  boundaries.
   See [the library inventory](docs/design/stdlib-v080.md).
 - Installed editor navigation uses versioned `msync-stdlib` virtual source
   documents backed by the same embedded bytes as compilation. Compare URI
@@ -216,10 +219,11 @@
   Qualified standard concepts are compile-time declarations, not runtime Scope
   fields. `$std::meta` dependent queries do not execute their operands and must
   isolate specialization, storage constraints and mutable indexed metadata.
-- Indexed storage is an explicitly mutable Range resource. Snapshots freeze
-  membership, not referenced objects. First-write carrier inference must update
-  the live runtime Range across REPL submissions without changing earlier
-  snapshots or hashed identities. See [indexed storage](docs/design/indexed-storage-v080.md)
+- Indexed owners have fixed element carriers and no iterator capability.
+  Set allocates and releases owner-relative row indices; Heap owns a dense
+  vector. BTree and BPlusTree share a stable page allocator. Snapshots freeze
+  membership, not referenced objects; Range is not a mutable owner.
+  See [indexed storage](docs/design/indexed-storage-v080.md)
   and [ordered containers](docs/design/ordered-containers-v080.md).
 - Returned values do not alias a callee's private binding cell. Deferred free
   reads and immediate callee-body flow are different phases; retain future

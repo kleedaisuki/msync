@@ -28,13 +28,39 @@ await Number("let changed = false; let represented = Number; loop { if changed {
 await Number("let count = 0; for represented in [Number, String] { if represented is Number { count = count + 1; } }; count", 1);
 await Number("fn check(state) { if 3 is state::represented { 1 } else { 7 } }; let state = scope { represented: Number, changed: false }; loop { if state::changed { break check(state); } else { state::represented = String; state::changed = true; } }", 7);
 await Number("fn invoke(state) { state::operation() }; let state = scope { operation: fn { 1 }, changed: false }; loop { if state::changed { break invoke(state); } else { state::operation = fn { 7 }; state::changed = true; } }", 7);
-const string buffer = "native fn buffer_new(values: Range) -> Range; native fn buffer_get(values: Range, index: Number) -> Number;";
-await Number(buffer + "let changed = false; let value: Scope = scope { items: buffer_new([4]), first: true }; loop { if changed { break buffer_get(value::items, 0); } else { value = scope { items: value::items, second: false }; changed = true; } }", 4);
-await Number(buffer + "let old = buffer_new([1]); let changed = false; let value: Scope = scope { items: old, first: true }; loop { if changed { break buffer_get(value::items, 0) + buffer_get(old, 0); } else { value = scope { items: buffer_new([7]), second: false }; changed = true; } }", 8);
-const string indexedBranch = "native fn buffer_new(values: Range) -> Range; native fn buffer_get(values: Range, index: Number) -> Number; native fn buffer_push(values: Range, value?) -> Number; native fn is_nan(value: Number) -> Bool;";
-await Number(indexedBranch + "let items = buffer_new([]); if is_nan(0) { buffer_push(items, 1); } else { buffer_push(items, 2); }; buffer_get(items, 0)", 2);
-await Number(indexedBranch + "if decltype({ let items = buffer_new([]); if is_nan(0) { buffer_push(items, 1); } else { buffer_push(items, 2); }; buffer_get(items, 0) }) is Number { 7 } else { 1 }", 7);
-Reject(indexedBranch + "let items = buffer_new([]); if is_nan(0) { buffer_push(items, 1); } else { buffer_push(items, true); }; buffer_push(items, 2)", "E0203");
+const string conditionalIndexedCarrier = """
+    fn conditional_indexed_carrier() {
+        scope {
+            nodes: $std::storage::vector_new([scope { payload: [7], next: 0 }]),
+            index: 1
+        }
+    };
+    fn conditional_indexed_read(self) {
+        let index = self::index;
+        let total = 0;
+        loop {
+            if index == 0 { break; };
+            let row? = indexed_row(self);
+            total = total + $std::ranges::front(row::payload);
+            index = row::next;
+        };
+        total
+    };
+    if true {
+        let instance = conditional_indexed_carrier();
+        conditional_indexed_read(instance)
+    } else { 0 }
+    """;
+await Number("fn indexed_row(self) { $std::storage::vector_get(self::nodes, 0) }; "
+    + conditionalIndexedCarrier.Replace("let row? =", "let row =", StringComparison.Ordinal), 7);
+Reject("fn indexed_row(self) { if $std::io::read_line() is null { null } else { $std::storage::vector_get(self::nodes, 0) } }; "
+    + conditionalIndexedCarrier, "E0201");
+await Number("let changed = false; let value: Scope = scope { items: $std::storage::vector_new([4]), first: true }; loop { if changed { break $std::storage::vector_get(value::items, 0); } else { value = scope { items: value::items, second: false }; changed = true; } }", 4);
+await Number("let old = $std::storage::vector_new([1]); let changed = false; let value: Scope = scope { items: old, first: true }; loop { if changed { break $std::storage::vector_get(value::items, 0) + $std::storage::vector_get(old, 0); } else { value = scope { items: $std::storage::vector_new([7]), second: false }; changed = true; } }", 8);
+const string indexedBranch = "native fn is_nan(value: Number) -> Bool;";
+await Number(indexedBranch + "let items = $std::storage::vector_empty(Number); if is_nan(0) { $std::storage::vector_push(items, 1); } else { $std::storage::vector_push(items, 2); }; $std::storage::vector_get(items, 0)", 2);
+await Number(indexedBranch + "if decltype({ let items = $std::storage::vector_empty(Number); if is_nan(0) { $std::storage::vector_push(items, 1); } else { $std::storage::vector_push(items, 2); }; $std::storage::vector_get(items, 0) }) is Number { 7 } else { 1 }", 7);
+Reject(indexedBranch + "let items = $std::storage::vector_empty(Number); if is_nan(0) { $std::storage::vector_push(items, 1); } else { $std::storage::vector_push(items, true); }; $std::storage::vector_push(items, 2)", "E0203");
 await Number("native fn is_nan(value: Number) -> Bool; let value?: Scope = null; let changed = false; loop { if value is null { if changed { break 7; } else { value = if is_nan(0) { scope { first: 1 } } else { scope { second: 2 } }; changed = true; } } else { value = null; } }", 7);
 const string snapshotCalls = "native fn materialize(values: Range) -> Range; native fn first(values: Range) -> Number; native fn all(values: Range) -> Range;";
 await Number(snapshotCalls + "let values = [1]; fn freeze_field() { let state = scope { items: values }; state::items = materialize(values); state::items }; let saved = freeze_field(); values = [9]; first(saved)", 1);

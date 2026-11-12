@@ -19,16 +19,29 @@ public static partial class NativeRegistry
             "to_lowercase" => new StringValue(UnicodeCasing.ToLower(first)),
             "to_uppercase" => new StringValue(UnicodeCasing.ToUpper(first)),
             "replace" => new StringValue(first.Replace(Text(args[1]), Text(args[2]), StringComparison.Ordinal)),
-            "split" => new RangeValue(Split(first, Text(args[1])).Select(part => (Value)new StringValue(part)), TypeRef.String),
+            "split" => RangeValue.TextSlices(Split(first, Text(args[1]))),
             "empty" => Bool(first.Length == 0),
             "equal" => Bool(first == Text(args[1])),
             _ => ExtendedStringOperation(name, args)
         };
     }
 
-    private static IEnumerable<string> Split(string text, string separator)
+    private static IEnumerable<TextSlice> Split(string text, string separator)
     {
-        if (separator.Length != 0) return text.Split(separator, StringSplitOptions.None);
-        return Enumerable.Repeat("", 1).Concat(text.EnumerateRunes().Select(rune => rune.ToString())).Append("");
+        if (separator.Length == 0)
+        {
+            yield return new TextSlice("");
+            foreach (var slice in Characters(text)) yield return slice;
+            yield return new TextSlice("");
+            yield break;
+        }
+
+        int start = 0;
+        while (text.IndexOf(separator, start, StringComparison.Ordinal) is >= 0 and var match)
+        {
+            yield return new TextSlice(text, start, match - start);
+            start = match + separator.Length;
+        }
+        yield return new TextSlice(text, start, text.Length - start);
     }
 }

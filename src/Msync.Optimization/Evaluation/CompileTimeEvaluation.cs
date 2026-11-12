@@ -48,9 +48,9 @@ internal static class CompileTimeEvaluation
                 sites.Add(pc);
             }
             if (instruction.Op == OpCode.IteratorNext && instruction.B <= pc) return false;
-            if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue && instruction.A < code.Count)
+            if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.JumpIfStaticReady && instruction.A < code.Count)
                 (incoming[instruction.A] ??= []).Add(pc);
-            if (instruction.Op is not (OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue) || instruction.A > pc) continue;
+            if (instruction.Op is not (OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.JumpIfStaticReady) || instruction.A > pc) continue;
             var header = instruction.A;
             if (header < 2 || code[header].Op != OpCode.IteratorNext || code[header - 2].Op != OpCode.GetIterator
                 || code[header - 1] is not { Op: OpCode.StoreLocal } store || store.A != code[header].A) return false;

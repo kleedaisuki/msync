@@ -114,7 +114,7 @@ internal sealed partial class SemanticAnalyzer
         ApplyDeferredEffects(sequence, context);
         HirFor iteration = hir.Fors[node.Data];
         SemanticContext bodyContext = ForkFlow(context);
-        bodyContext.FlowAnalysis = PrepareFlow(id, context);
+        bodyContext.FlowAnalysis = PrepareFlow(id, context, sequence);
         HirLocationId item = bodyContext.Location(iteration.Item);
         SemanticValue element = sequence.Element ?? new(hir.Type(Runtime(sequence).Element ?? TypeRef.Any), HirNodeId.None);
         bodyContext.Values[item] = element;
@@ -294,7 +294,14 @@ internal sealed partial class SemanticAnalyzer
             context.Values[context.Location(new(node.Data))] = value;
             return;
         }
-        if (node.Kind != HirKind.MemberRead || Subject(program.Children(expression)[0], context)?.Scope is not { } scope) return;
+        if (node.Kind != HirKind.MemberRead) return;
+        HirNodeId receiver = program.Children(expression)[0];
+        if (Subject(receiver, context) is not { Scope: { } scope } subject) return;
+        if (scope.Region < 0)
+        {
+            SetSubject(receiver, subject with { Scope = scope with { Fields = scope.Fields.SetItem(node.Text!, value) } }, context);
+            return;
+        }
         if (context.Objects.TryGetValue(scope.Region, out var latest)) scope = latest;
         context.Objects[scope.Region] = scope with { Fields = scope.Fields.SetItem(node.Text!, value) };
         if (scope.Locations.TryGetValue(node.Text!, out var location)) context.Values[location] = value;

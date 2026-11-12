@@ -1,0 +1,17 @@
+let count? = $std::io::read_line();
+let initial? = $std::io::read_line();
+if count? or initial? {
+    $std::io::println("missing inputs");
+} else {
+    let n = count as Number;
+    let value = initial as Number;
+    let i = 0;
+    loop {
+        if i >= n {
+            break;
+        };
+        value = (value * -1.75 + 0.5) % 7.25;
+        i = i + 1;
+    };
+    $std::io::println(value as String);
+};

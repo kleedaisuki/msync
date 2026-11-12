@@ -30,7 +30,7 @@ public static class EffectAnalysis
                     or OpCode.Divide or OpCode.Remainder or OpCode.Less or OpCode.LessEqual or OpCode.Greater or OpCode.GreaterEqual or OpCode.Equal or OpCode.NotEqual
                     or OpCode.IsType or OpCode.PathJoin or OpCode.NativeCall)
                     summaries[index] |= InstructionEffect.MayFail;
-                if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue && instruction.A <= pc)
+                if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.JumpIfStaticReady && instruction.A <= pc)
                     summaries[index] |= InstructionEffect.Diverge;
             }
         }

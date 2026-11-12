@@ -85,11 +85,14 @@ public static partial class NativeSignatures
         RegisterTextPaths(result);
         RegisterIOProcess(result);
         RegisterMath(result);
+        RegisterBits(result);
         RegisterIteration(result);
         RegisterEnvironment(result);
         RegisterRegex(result);
         RegisterTextBuilder(result);
-        RegisterStorage(result);
+        RegisterVectorStorage(result);
+        RegisterArena(result);
+        RegisterSlots(result);
         RegisterMeta(result);
         RegisterShell(result);
         foreach (var (name, signature) in result.ToArray())

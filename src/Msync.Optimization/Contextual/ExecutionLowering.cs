@@ -39,7 +39,7 @@ public static class ExecutionLowering
             rewritten ??= instructions.ToArray();
             rewritten[index] = instruction;
         }
-        var targets = instructions.SelectMany(i => i.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue ? [i.A] : i.Op == OpCode.IteratorNext ? new[] { i.B } : []).ToHashSet();
+        var targets = instructions.SelectMany(i => i.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.JumpIfStaticReady ? [i.A] : i.Op == OpCode.IteratorNext ? new[] { i.B } : []).ToHashSet();
         void Fold(int index, int operands, Value? result)
         {
             if (!fold || result is null || index < operands || targets.Contains(index)) return;
@@ -138,7 +138,7 @@ public static class ExecutionLowering
         positions[code.Length] = position;
         var compact = code.Where(i => i.Op != OpCode.Nop).Select(i => i.Op switch
         {
-            OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue => i with { A = positions[i.A] },
+            OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.JumpIfStaticReady => i with { A = positions[i.A] },
             OpCode.IteratorNext => i with { B = positions[i.B] },
             _ => i
         }).ToArray();

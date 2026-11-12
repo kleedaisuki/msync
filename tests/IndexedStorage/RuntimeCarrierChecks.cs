@@ -18,28 +18,32 @@ internal static class RuntimeCarrierChecks
         async Task<Value> Native(string operation, params Value[] arguments) => await NativeRegistry.InvokeAsync(
             "storage." + operation, arguments, context,
             (_, _, _) => throw new InvalidOperationException("Storage operations do not invoke callbacks"));
-        RangeValue buffer = (RangeValue)await Native("buffer_new", new RangeValue(Array.Empty<Value>(), never));
-        RangeValue alias = buffer;
-        RangeValue before = (RangeValue)await Native("buffer_snapshot", buffer);
-        HashSet<Value> identities = [buffer];
-        int originalHash = buffer.GetHashCode();
-        await Native("buffer_push", alias, new NumberValue(4));
-        Check(buffer.ItemType == TypeRef.Number && buffer.Type == new TypeRef(TypeKind.Range, TypeRef.Number), "First write resolves the runtime carrier");
-        Check(alias.ItemType == TypeRef.Number && ReferenceEquals(alias, buffer), "Aliases observe one carrier solution");
-        Check(before.ItemType == never, "A prior empty snapshot keeps its carrier");
-        Check(buffer.GetHashCode() == originalHash && identities.Contains(buffer), "Carrier inference preserves hashed identities");
-        RangeValue after = (RangeValue)await Native("buffer_snapshot", buffer);
-        Check(after.ItemType == TypeRef.Number, "Snapshot publishes the solved carrier");
-        await Native("buffer_clear", buffer);
-        Check(buffer.ItemType == TypeRef.Number, "Clearing does not reopen a solved carrier");
+        StorageValue owner = (StorageValue)await Native("vector_empty", new TypeValue(TypeRef.Number));
+        StorageValue alias = owner;
+        RangeValue before = (RangeValue)await Native("vector_snapshot", owner);
+        HashSet<Value> identities = [owner];
+        int originalHash = owner.GetHashCode();
+        await Native("vector_push", alias, new NumberValue(4));
+        Check(owner.ElementType == TypeRef.Number && owner.Type == new TypeRef(TypeKind.Storage, TypeRef.Number),
+            "The typed constructor establishes a noniterable carrier");
+        Check(await Native("vector_get", owner, new NumberValue(0)) is NumberValue { Data: 4 },
+            "Aliases observe a shared storage owner");
+        Check(before.ItemType == TypeRef.Number, "An empty snapshot retains its declared element type");
+        Check(owner.GetHashCode() == originalHash && identities.Contains(owner), "Mutation does not change owner identity");
+        RangeValue after = (RangeValue)await Native("vector_take", owner);
+        Check(after.ItemType == TypeRef.Number, "The moved snapshot keeps its declared carrier");
+        Check(await Native("vector_size", owner) is NumberValue { Data: 0 }, "Taking a snapshot empties the same owner");
+        Check(owner.ElementType == TypeRef.Number, "Taking membership does not change the carrier");
         Check(await Count(after) == 1 && await Count(before) == 0, "Snapshots retain independent membership");
 
-        RangeValue inserted = (RangeValue)await Native("buffer_new", new RangeValue(Array.Empty<Value>(), never));
-        await Native("buffer_insert", inserted, new NumberValue(0), new StringValue("text"));
-        Check(inserted.ItemType == TypeRef.String, "An insertion can resolve an empty carrier");
-        RangeValue typed = (RangeValue)await Native("buffer_new", new RangeValue(Array.Empty<Value>(), TypeRef.Path));
-        await Native("buffer_push", typed, new PathValue("./item"));
-        Check(typed.ItemType == TypeRef.Path, "A supplied carrier does not change");
+        StorageValue inserted = (StorageValue)await Native("vector_empty", new TypeValue(TypeRef.String));
+        await Native("vector_insert", inserted, new NumberValue(0), new StringValue("text"));
+        Check(await Native("vector_remove", inserted, new NumberValue(0)) is StringValue { Data: "text" },
+            "Indexed insertion and removal share the same owner");
+        StorageValue typed = (StorageValue)await Native("vector_empty", new TypeValue(TypeRef.Path));
+        await Native("vector_push", typed, new StringValue("./item"));
+        Check(await Native("vector_get", typed, new NumberValue(0)) is PathValue,
+            "A string is converted into the selected Path carrier");
 
         var sharedItems = new RangeValue(Array.Empty<Value>(), TypeRef.Number).Items;
         RangeValue ordinary = new(sharedItems, TypeRef.Number);
@@ -74,14 +78,14 @@ internal static class RuntimeCarrierChecks
         catch (MsyncException error) { Check(error.Message.Contains("found no matching item", StringComparison.Ordinal), "Empty head diagnostic"); }
 
         const string source = """
-            let buffer = $std::storage::Buffer::new([]);
-            let before = $std::storage::Buffer::snapshot(buffer);
-            let alias = buffer;
-            $std::storage::Buffer::push(alias, 4);
+            let owner = $std::storage::vector_empty(Number);
+            let before = $std::storage::vector_snapshot(owner);
+            let alias = owner;
+            $std::storage::vector_push(alias, 4);
             scope {
-                items: buffer,
+                items: owner,
                 before: before,
-                after: $std::storage::Buffer::snapshot(buffer),
+                after: $std::storage::vector_snapshot(owner),
             }
             """;
         foreach (int level in new[] { 0, 2, 3 })
@@ -91,16 +95,16 @@ internal static class RuntimeCarrierChecks
                 new(Environment.CurrentDirectory, Environment.CurrentDirectory))) })
             {
                 ScopeValue result = (ScopeValue)await Interpreter.ExecuteAsync(image);
-                RangeValue items = (RangeValue)result["items"];
+                StorageValue items = (StorageValue)result["items"];
                 RangeValue prior = (RangeValue)result["before"];
                 RangeValue following = (RangeValue)result["after"];
-                Check(items.ItemType == TypeRef.Number && items.Type.Element == TypeRef.Number, $"Actual runtime type O{level} {image.Stage}");
-                Check(prior.ItemType == never && following.ItemType == TypeRef.Number, $"Snapshot runtime types O{level} {image.Stage}");
+                Check(items.ElementType == TypeRef.Number && items.Type.Kind == TypeKind.Storage, $"Actual runtime type O{level} {image.Stage}");
+                Check(prior.ItemType == TypeRef.Number && following.ItemType == TypeRef.Number, $"Snapshot runtime types O{level} {image.Stage}");
                 Check(await Count(following) == 1 && await Count(prior) == 0, $"Consumed snapshots O{level} {image.Stage}");
             }
 
             CompilerSession compiler = new(optimization: level);
-            ExecutionSession execution = new();
+            await using ExecutionSession execution = new();
             async Task<Value> Submit(string text)
             {
                 Module submission = compiler.Compile(text);
@@ -108,17 +112,17 @@ internal static class RuntimeCarrierChecks
                 compiler.AcceptSubmission(execution.GetLocalValue);
                 return result;
             }
-            RangeValue live = (RangeValue)await Submit("let buffer = $std::storage::Buffer::new([]); buffer");
-            RangeValue priorSubmission = (RangeValue)await Submit("let saved = $std::storage::Buffer::snapshot(buffer); saved");
-            RangeValue afterSubmission = (RangeValue)await Submit("let alias = buffer; $std::storage::Buffer::push(alias, 8); buffer");
-            Check(ReferenceEquals(live, afterSubmission) && live.ItemType == TypeRef.Number,
-                $"An already created REPL Range receives its carrier O{level}");
-            Check(priorSubmission.ItemType == never && await Count(priorSubmission) == 0,
+            StorageValue live = (StorageValue)await Submit("let owner = $std::storage::vector_empty(Number); owner");
+            RangeValue priorSubmission = (RangeValue)await Submit("let saved = $std::storage::vector_snapshot(owner); saved");
+            StorageValue afterSubmission = (StorageValue)await Submit("let alias = owner; $std::storage::vector_push(alias, 8); owner");
+            Check(ReferenceEquals(live, afterSubmission) && live.ElementType == TypeRef.Number,
+                $"A REPL alias preserves the existing typed owner O{level}");
+            Check(priorSubmission.ItemType == TypeRef.Number && await Count(priorSubmission) == 0,
                 $"An earlier REPL snapshot remains empty O{level}");
             try
             {
-                _ = compiler.Compile("$std::storage::Buffer::push(buffer, true);");
-                throw new InvalidOperationException("A solved buffer accepted a different payload type");
+                _ = compiler.Compile("$std::storage::vector_push(owner, true);");
+                throw new InvalidOperationException("A fixed vector accepted a different payload type");
             }
             catch (CompileException) { checks++; }
         }

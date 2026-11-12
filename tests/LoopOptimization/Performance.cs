@@ -13,7 +13,8 @@ internal static class LoopPerformance
         var baseline = Compiler.Compile(source, "loop-performance", 0);
         var constants = baseline.Constants.ToList();
         var method = typeof(Optimizer).Assembly.GetType("Msync.Optimization.LoopOptimization")!.GetMethod("Optimize", BindingFlags.NonPublic | BindingFlags.Static)!;
-        var loop = baseline with { Functions = baseline.Functions.Select(function => (FunctionCode)method.Invoke(null, [baseline, function, constants, 3])!).ToArray() };
+        var loop = baseline with { Functions = baseline.Functions.Select(function => (FunctionCode)method.Invoke(null, [baseline, function, constants, 3])!).ToArray(),
+            Constants = constants };
         var full = Optimizer.Optimize(baseline, 3);
         var context = new BindingContext(Environment.CurrentDirectory, HostContext.HomeDirectory);
         Msync.Core.Module[] modules = [Binding.Bind(baseline, context), Binding.Bind(loop, context), Binding.Bind(full, context)];

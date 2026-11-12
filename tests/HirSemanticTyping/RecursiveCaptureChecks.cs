@@ -20,7 +20,19 @@ internal static class RecursiveCaptureChecks
                 ("let first = fn { 0 }; fn set(value) { if value > 0 { first = fn { value }; }; }; set(4); let saved = first; set(7); saved() + first()", 11),
                 ("let first = fn { 0 }; fn set(value) { if value > 0 { first = fn { value }; }; }; set(4); first = fn { 8 }; set(-1); first()", 8),
                 ("fn apply(operation, value) { operation(value) }; fn inc(value) { value + 1 }; apply(fn(value) { apply(inc, value) }, 4)", 5),
-                ("let op = fn { 1 }; fn read() { op() }; read(); op = fn { 7 }; read()", 7)
+                ("let op = fn { 1 }; fn read() { op() }; read(); op = fn { 7 }; read()", 7),
+                ("""
+                    let input = $std::storage::vector_new([1]);
+                    let separate = $std::storage::vector_new([5]);
+                    fn update(a, b) {
+                        $std::storage::vector_set(a, 0, 9);
+                        $std::storage::vector_get(b, 0)
+                    };
+                    let disjoint = update(input, separate);
+                    let aliased = update(input, input);
+                    let separate_again = update(input, separate);
+                    100 * disjoint + 10 * aliased + separate_again
+                    """, 595)
             })
             {
                 HirModule hir = Compiler.Analyze(source, "recursive-captures.msync");

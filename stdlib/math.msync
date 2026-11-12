@@ -1,4 +1,4 @@
-# Number operations use binary64, with no integer casts or implicit truthiness.
+# Ordinary Number arithmetic uses binary64, with no implicit truthiness.
 native fn abs(value: Number) -> Number;
 native fn floor(value: Number) -> Number;
 native fn ceil(value: Number) -> Number;

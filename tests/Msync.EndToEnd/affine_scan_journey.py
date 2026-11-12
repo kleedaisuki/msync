@@ -141,7 +141,7 @@ for value in values { squares = squares + value * value; };
     "indirect-walk": (
         PREFIX
         + """
-let nodes = $std::storage::Buffer::new([
+let nodes = $std::storage::vector_new([
     scope { value: seed, next: 2 },
     scope { value: seed + 1, next: 0 },
     scope { value: seed + 2, next: -1 },
@@ -150,7 +150,7 @@ let index = 1;
 let total = 0;
 loop {
     if index < 0 { break; };
-    let node = $std::storage::Buffer::get(nodes, index);
+    let node = $std::storage::vector_get(nodes, index);
     total = total + node::value;
     index = node::next;
 };
@@ -193,6 +193,7 @@ def run_case(
         if route == "mexe":
             artifact = work / "scans.mexe"
             execute(binary, work, ["bind-ir", str(portable), "-o", str(artifact)])
+            portable.unlink()
         assert not any((work / name).exists() for name in expected), (
             "Preparation wrote an output."
         )

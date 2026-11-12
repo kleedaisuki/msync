@@ -9,5 +9,6 @@ public enum OpCode : byte
     RegexMatch, GetIterator, IteratorNext, Add, Subtract, Multiply, Divide,
     Negate, ProcessCall, SetMember, SpecializeClosure, Nop, SelectPath, Convert, LocalTransfer, MakeLazyRange, DeferRange,
     LoadCell, GetCapture, Barrier, Acquire, InitializeLocal, LoadStorage, Remainder, GetSingleton, SetSingleton,
-    ExecutePlan, PlanResult
+    ExecutePlan, PlanResult, NewScope, LoadField, StoreField, AdmitScope,
+    JumpIfStaticReady, PublishStatic, LoadStaticScope, LoadStaticField, StoreStaticField
 }

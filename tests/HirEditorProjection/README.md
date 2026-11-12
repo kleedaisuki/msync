@@ -1,7 +1,8 @@
 # Immutable HIR editor projections
 
-This executable links only the HIR/Core references and the editor view/index/
-presenter source. It contains no semantic compiler, bytecode lowerer, mutable
+This executable links HIR/Core and the editor view/index/presenter source.
+Module completion uses the same parser and embedded standard-source catalog as
+the product. It contains no semantic compiler, bytecode lowerer, mutable
 `Info`/`Frame` graph or runtime evaluator. Hand-built semantic generations make
 the presentation boundary independently exercisable while the new binder is
 being integrated.
@@ -31,9 +32,12 @@ the shared product during parallel work. The initial isolated run passed 37
 contracts with zero warnings. The subsequent four retention checks keep the
 editor view alive while verifying that the original module and its 8,192-node
 arena can be reclaimed; generic result types remain available after their bodies
-are released. The total is 41 contracts. Dependency hashes are recorded under
+are released. That snapshot had 41 contracts. Dependency hashes are recorded under
 `.temp/hir-editor-projection/reference/SHA256SUMS`.
 
 `tests/Msync.EndToEnd/hir_editor_journey.py` separately checks the real LSP
-protocol. Semantic architecture is established here; the external journey
-checks that editor behavior survives its integration into the native host.
+protocol. Its storage hover checks distinguish the fixed carrier of an owner
+from its current membership: an empty typed vector and the same vector after
+an append both present `Storage<Number>`, while its published snapshot is a
+`Range<Number>`. The semantic editor tests also cover a union of distinct
+owner carriers and retain Null admission after a non-null write.
