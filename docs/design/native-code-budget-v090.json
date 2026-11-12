@@ -1,0 +1,3482 @@
+{
+  "scope": "Fixed current product C# under src and language standard library under stdlib, excluding build bin/obj, vendor, tests, docs, caches and tools. The checked-in Unicode generated data is counted but fixed: deleting or relocating it gives no reduction credit. Net new product code in any destination is added to the final count; moving code does not qualify.",
+  "baseline_head": "f3bd9d5d2045ebedf50c72e37236c2ba6f742c41",
+  "baseline_worktree_includes_uncommitted_v090_migration": true,
+  "counting": "cloc code lines excludes comments/blanks; also retain physical lines and content hashes. Minification, hiding code in strings/generated files, moving to excluded paths, changing extension, removing features/tests do not count.",
+  "cloc_version": "2.04",
+  "files": {
+    "src/Msync.Cli/Artifacts/ArtifactCommands.cs": {
+      "sha256": "cf9aa179b77dc8e2a5e3615f8280c37a65ed035ecb8b328e6841041fe3570d3e",
+      "bytes": 445,
+      "physical_lines": 12,
+      "nonblank_lines": 11,
+      "code_lines": 11,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Cli/Artifacts/ArtifactDisassembly.cs": {
+      "sha256": "ef8acdda679cf74e9372e261353574a3efd9ccbbaf7e75afc7e818fb8d270aa3",
+      "bytes": 2519,
+      "physical_lines": 53,
+      "nonblank_lines": 50,
+      "code_lines": 50,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Cli/Artifacts/ArtifactDisassemblyResult.cs": {
+      "sha256": "82b1fb574a5832763ffe87a620c74257b46b845ba5bbd7bce9809e9a7e7f2c80",
+      "bytes": 992,
+      "physical_lines": 28,
+      "nonblank_lines": 26,
+      "code_lines": 26,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Cli/Artifacts/HirArtifactRenderer.cs": {
+      "sha256": "eee8fa555eb64694da15df1e9adddf69771960f246189e907daff0266f078470",
+      "bytes": 3478,
+      "physical_lines": 79,
+      "nonblank_lines": 74,
+      "code_lines": 74,
+      "comment_lines": 0,
+      "blank_lines": 5
+    },
+    "src/Msync.Cli/Artifacts/NativeArtifactRenderer.ExecutionPlans.cs": {
+      "sha256": "ce166acc10efb48e40f5951509f45ccc6ec7a103ccfe91f14dd8d94b3e6ea15f",
+      "bytes": 5074,
+      "physical_lines": 104,
+      "nonblank_lines": 91,
+      "code_lines": 91,
+      "comment_lines": 0,
+      "blank_lines": 13
+    },
+    "src/Msync.Cli/Artifacts/NativeArtifactRenderer.cs": {
+      "sha256": "117975673f5d12fd284367782ef6111740263013ddc593508b0e2e453f8275a7",
+      "bytes": 20509,
+      "physical_lines": 316,
+      "nonblank_lines": 297,
+      "code_lines": 295,
+      "comment_lines": 2,
+      "blank_lines": 19
+    },
+    "src/Msync.Cli/Commands/CommandOptions.cs": {
+      "sha256": "b31f0801b6253cdfa363b07c73fc2fd9a22958a6a745b72491ba9cc80df75bad",
+      "bytes": 5970,
+      "physical_lines": 96,
+      "nonblank_lines": 89,
+      "code_lines": 89,
+      "comment_lines": 0,
+      "blank_lines": 7
+    },
+    "src/Msync.Cli/Commands/CommandPipeline.cs": {
+      "sha256": "559148970f95a24846ebf57c099ef364834231e7a3f0719b8aedeb4be3f61296",
+      "bytes": 2957,
+      "physical_lines": 67,
+      "nonblank_lines": 59,
+      "code_lines": 59,
+      "comment_lines": 0,
+      "blank_lines": 8
+    },
+    "src/Msync.Cli/Commands/HirCommands.cs": {
+      "sha256": "fd45c08055fa07c8fb255987de16d8dcb5ec85e6ae47f0952872b7afbfbd83e7",
+      "bytes": 641,
+      "physical_lines": 18,
+      "nonblank_lines": 14,
+      "code_lines": 14,
+      "comment_lines": 0,
+      "blank_lines": 4
+    },
+    "src/Msync.Cli/Commands/NativeCommandPipeline.cs": {
+      "sha256": "3a57639cbd176a4d6c64a9d7a2408947e60b1268b342a8e2b2bc6323819a2323",
+      "bytes": 8701,
+      "physical_lines": 178,
+      "nonblank_lines": 166,
+      "code_lines": 166,
+      "comment_lines": 0,
+      "blank_lines": 12
+    },
+    "src/Msync.Cli/Commands/Reference/SkillReference.Library.cs": {
+      "sha256": "35b128f081de7fa6633aea5ac3679a2735d49e17270ea6c77b91e69ede8e249c",
+      "bytes": 5475,
+      "physical_lines": 112,
+      "nonblank_lines": 103,
+      "code_lines": 103,
+      "comment_lines": 0,
+      "blank_lines": 9
+    },
+    "src/Msync.Cli/Commands/Reference/SkillReference.cs": {
+      "sha256": "906e11ed87de4cd3f3ba1a731ae60cddb6b3e461d2c33917af1ad90e42f545e1",
+      "bytes": 5442,
+      "physical_lines": 108,
+      "nonblank_lines": 97,
+      "code_lines": 97,
+      "comment_lines": 0,
+      "blank_lines": 11
+    },
+    "src/Msync.Cli/Commands/Reference/TerminalHelp.cs": {
+      "sha256": "a9171a13b50edcfd7de75c19577f4afefdd234ace9e3257cd494f7e49545d311",
+      "bytes": 20197,
+      "physical_lines": 234,
+      "nonblank_lines": 226,
+      "code_lines": 226,
+      "comment_lines": 0,
+      "blank_lines": 8
+    },
+    "src/Msync.Cli/Commands/SourceCommands.cs": {
+      "sha256": "fc7a7b73ccbaa183d9811ef32a9541f1e1d553f4cb191f46f9e4666cf8ca3db9",
+      "bytes": 844,
+      "physical_lines": 22,
+      "nonblank_lines": 20,
+      "code_lines": 20,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Cli/Configuration/Configuration.cs": {
+      "sha256": "a9773f80b72ae94aa19d1d4763ea41358bb8a8f5c1796eb8ec734c11a14b6b9d",
+      "bytes": 11423,
+      "physical_lines": 220,
+      "nonblank_lines": 203,
+      "code_lines": 203,
+      "comment_lines": 0,
+      "blank_lines": 17
+    },
+    "src/Msync.Cli/Configuration/ConfigurationTomlContext.cs": {
+      "sha256": "262d608d966f8d65cbfd843f38fdd26381aa8133b0eba12e4c21725189a33349",
+      "bytes": 328,
+      "physical_lines": 12,
+      "nonblank_lines": 10,
+      "code_lines": 10,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Cli/Configuration/Setting.cs": {
+      "sha256": "e5854df5274a48e4b9f0e9681e56a3995e9b92172da2fd31bdce0b4ca2f3cf19",
+      "bytes": 84,
+      "physical_lines": 4,
+      "nonblank_lines": 2,
+      "code_lines": 2,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Cli/Diagnostics/SourceSnapshot.cs": {
+      "sha256": "fadaf7ed5b379a7bb9196ebf9366809556301325771108d4c15baa7064437835",
+      "bytes": 97,
+      "physical_lines": 4,
+      "nonblank_lines": 2,
+      "code_lines": 2,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Cli/Diagnostics/TerminalPresentation.cs": {
+      "sha256": "aa2760ec0b7866786000c20e8097b182b582f5c88cff63ad4609ee9f63629545",
+      "bytes": 11960,
+      "physical_lines": 251,
+      "nonblank_lines": 230,
+      "code_lines": 230,
+      "comment_lines": 0,
+      "blank_lines": 21
+    },
+    "src/Msync.Cli/LanguageServer/Analysis/EditorDocument.cs": {
+      "sha256": "143d5472a728243e10953240a5d953e13ae3d4e96a936b050200a8a433b38d12",
+      "bytes": 656,
+      "physical_lines": 16,
+      "nonblank_lines": 13,
+      "code_lines": 13,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Cli/LanguageServer/Analysis/LanguageServer.Analysis.cs": {
+      "sha256": "19abffc8a5149ebb3eed8e04e795d53dba84d1614ed6450b832a6a02931b2aaa",
+      "bytes": 16018,
+      "physical_lines": 326,
+      "nonblank_lines": 308,
+      "code_lines": 308,
+      "comment_lines": 0,
+      "blank_lines": 18
+    },
+    "src/Msync.Cli/LanguageServer/Analysis/LanguageServer.AnalysisQueue.cs": {
+      "sha256": "701abf56f6567ba2ea14b691930f0349f4fef4ec5c6dd2c105c8a36068dcdf64",
+      "bytes": 4459,
+      "physical_lines": 122,
+      "nonblank_lines": 112,
+      "code_lines": 109,
+      "comment_lines": 3,
+      "blank_lines": 10
+    },
+    "src/Msync.Cli/LanguageServer/Diagnostics/LanguageServerObservation.cs": {
+      "sha256": "572d83860038ef0b23acc4869af5fb1c94760b74b4248e5aac49f11e9bc4e7f9",
+      "bytes": 5605,
+      "physical_lines": 112,
+      "nonblank_lines": 100,
+      "code_lines": 98,
+      "comment_lines": 2,
+      "blank_lines": 12
+    },
+    "src/Msync.Cli/LanguageServer/Features/LanguageServer.Artifacts.cs": {
+      "sha256": "2332d3531bb822ed7117a70170cba90dce59f8281f96c6e0e00667dfd5359564",
+      "bytes": 3440,
+      "physical_lines": 77,
+      "nonblank_lines": 70,
+      "code_lines": 70,
+      "comment_lines": 0,
+      "blank_lines": 7
+    },
+    "src/Msync.Cli/LanguageServer/Features/LanguageServer.Builtins.cs": {
+      "sha256": "df86c1cc9aacb34246eab25b75744b621f1317340d1448766ec303426fbb1539",
+      "bytes": 1048,
+      "physical_lines": 23,
+      "nonblank_lines": 21,
+      "code_lines": 21,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Cli/LanguageServer/Features/LanguageServer.Completion.cs": {
+      "sha256": "370fc941fd3302b8b150ce13242ca3dc1f72b992996a2c5a208df2cff331da3d",
+      "bytes": 5573,
+      "physical_lines": 104,
+      "nonblank_lines": 96,
+      "code_lines": 96,
+      "comment_lines": 0,
+      "blank_lines": 8
+    },
+    "src/Msync.Cli/LanguageServer/Features/LanguageServer.Insight.cs": {
+      "sha256": "696e8c9f535d237482460bf595f9f59f0bde6d5925b48e20aa5bc4212d4f19b1",
+      "bytes": 6178,
+      "physical_lines": 84,
+      "nonblank_lines": 79,
+      "code_lines": 79,
+      "comment_lines": 0,
+      "blank_lines": 5
+    },
+    "src/Msync.Cli/LanguageServer/Features/LanguageServer.SemanticTokens.cs": {
+      "sha256": "51ff4c48b300924ed7fa0f481a586d291871f3a4a50493170fc6fb655dbe12f3",
+      "bytes": 8859,
+      "physical_lines": 171,
+      "nonblank_lines": 159,
+      "code_lines": 157,
+      "comment_lines": 2,
+      "blank_lines": 12
+    },
+    "src/Msync.Cli/LanguageServer/Features/LanguageServer.Symbols.cs": {
+      "sha256": "87d5b366101bdb70599ae2be4edc0689fa66a94012461e2d6200f7ed5038d4f9",
+      "bytes": 2215,
+      "physical_lines": 49,
+      "nonblank_lines": 46,
+      "code_lines": 46,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Cli/LanguageServer/Features/LanguageServer.Types.cs": {
+      "sha256": "215cfaebfa418c48a2be7488f48093d4f68aca9e5616b32b688311246f4bea45",
+      "bytes": 1415,
+      "physical_lines": 34,
+      "nonblank_lines": 31,
+      "code_lines": 31,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Cli/LanguageServer/LanguageServer.Authentication.cs": {
+      "sha256": "7006ddd558c86c01b11b41d0f4d0858a57c0558a0f674d37dc5bf301437407d5",
+      "bytes": 4431,
+      "physical_lines": 101,
+      "nonblank_lines": 93,
+      "code_lines": 93,
+      "comment_lines": 0,
+      "blank_lines": 8
+    },
+    "src/Msync.Cli/LanguageServer/LanguageServer.cs": {
+      "sha256": "d05cd73fe6b3f5912a49c2fc03902029bbbe2b48345186147bd2b618fcf551ae",
+      "bytes": 10125,
+      "physical_lines": 167,
+      "nonblank_lines": 155,
+      "code_lines": 155,
+      "comment_lines": 0,
+      "blank_lines": 12
+    },
+    "src/Msync.Cli/LanguageServer/LanguageServerHost.cs": {
+      "sha256": "2b29bf5d5d30e0582952ba90cd207f0fa24cdf83dcb80865b07ad3b85fcd7e66",
+      "bytes": 1585,
+      "physical_lines": 34,
+      "nonblank_lines": 31,
+      "code_lines": 30,
+      "comment_lines": 1,
+      "blank_lines": 3
+    },
+    "src/Msync.Cli/LanguageServer/Protocol/JsonRpcTransport.cs": {
+      "sha256": "471460b7b4b69e7a7e47734495db294a07d8127e7b77b0c56e91621b635248df",
+      "bytes": 1511,
+      "physical_lines": 41,
+      "nonblank_lines": 37,
+      "code_lines": 37,
+      "comment_lines": 0,
+      "blank_lines": 4
+    },
+    "src/Msync.Cli/LanguageServer/Protocol/LanguageServer.Locations.cs": {
+      "sha256": "f3ffaf40aac26887daec0a9393ed26b70509bb7a149e84c6b810a2819d0affa5",
+      "bytes": 1126,
+      "physical_lines": 29,
+      "nonblank_lines": 25,
+      "code_lines": 25,
+      "comment_lines": 0,
+      "blank_lines": 4
+    },
+    "src/Msync.Cli/LanguageServer/Protocol/LanguageServerJson.cs": {
+      "sha256": "cc529c172889e8074a2889ea63cdb185ac0c4a948e29e2907080b25bb1a51f65",
+      "bytes": 162,
+      "physical_lines": 6,
+      "nonblank_lines": 4,
+      "code_lines": 4,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Cli/LanguageServer/Protocol/SourceText.cs": {
+      "sha256": "fe6011b35328db4c4ae11eca3a067ddc41226f9f05fb698b4481cba0d8e42c49",
+      "bytes": 1604,
+      "physical_lines": 47,
+      "nonblank_lines": 40,
+      "code_lines": 40,
+      "comment_lines": 0,
+      "blank_lines": 7
+    },
+    "src/Msync.Cli/Program.cs": {
+      "sha256": "357d29ad10b34a29cb25eeea3b4600ef40898b7c9cd73facd67faba753281a9b",
+      "bytes": 9045,
+      "physical_lines": 153,
+      "nonblank_lines": 146,
+      "code_lines": 146,
+      "comment_lines": 0,
+      "blank_lines": 7
+    },
+    "src/Msync.Cli/Telemetry/ITelemetrySink.cs": {
+      "sha256": "90c1c4afdeb5ad9ca4e0cc91f7d4b395c688ebfaad362e53dca98cd87db8abc9",
+      "bytes": 166,
+      "physical_lines": 7,
+      "nonblank_lines": 6,
+      "code_lines": 6,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Cli/Telemetry/JsonTelemetrySink.cs": {
+      "sha256": "cdcaaf44e4dbb2dbcc2f82f9c8267b2303f91fefaaa3f5578916eb27b735c59c",
+      "bytes": 821,
+      "physical_lines": 21,
+      "nonblank_lines": 19,
+      "code_lines": 19,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Cli/Telemetry/SqliteTelemetrySink.cs": {
+      "sha256": "fe99ad84d207bfe5fbba656545a8e5dba8bd125e21f2943e0f1a0778a653acc7",
+      "bytes": 8818,
+      "physical_lines": 138,
+      "nonblank_lines": 128,
+      "code_lines": 128,
+      "comment_lines": 0,
+      "blank_lines": 10
+    },
+    "src/Msync.Cli/Telemetry/TelemetryLevel.cs": {
+      "sha256": "5e7d9202f1e83da7399cc1124cbf16390436d009fd72ab1cf00c889d13632c22",
+      "bytes": 792,
+      "physical_lines": 25,
+      "nonblank_lines": 22,
+      "code_lines": 22,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Cli/Telemetry/TelemetryModels.cs": {
+      "sha256": "6611b764565ec37af239058e24deb941a547b74a95a82e5df94ee6713674529c",
+      "bytes": 776,
+      "physical_lines": 16,
+      "nonblank_lines": 13,
+      "code_lines": 13,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Cli/Telemetry/TelemetryPolicy.cs": {
+      "sha256": "3455a9df33f47be16f7a9df1dc2447d64c2a6e1922c96320c929036f8202fc48",
+      "bytes": 940,
+      "physical_lines": 17,
+      "nonblank_lines": 16,
+      "code_lines": 16,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Cli/Telemetry/TelemetrySession.cs": {
+      "sha256": "c17e22c57bb3b5dad8218b4931358bab1f74db3fc276f4466164fadfb5c0bf1a",
+      "bytes": 14762,
+      "physical_lines": 294,
+      "nonblank_lines": 269,
+      "code_lines": 268,
+      "comment_lines": 1,
+      "blank_lines": 25
+    },
+    "src/Msync.Cli/Telemetry/TelemetrySpan.cs": {
+      "sha256": "e139b214a0cb2ddb533b00529aea385327f2eab29898184233bb7537006a25ba",
+      "bytes": 5635,
+      "physical_lines": 111,
+      "nonblank_lines": 99,
+      "code_lines": 99,
+      "comment_lines": 0,
+      "blank_lines": 12
+    },
+    "src/Msync.Cli/Terminal/Authentication/SshPromptBroker.cs": {
+      "sha256": "a7c6fe9b81297a0702adf16dc59d929e99c841204465d29678edf57e1176f972",
+      "bytes": 6083,
+      "physical_lines": 129,
+      "nonblank_lines": 118,
+      "code_lines": 116,
+      "comment_lines": 2,
+      "blank_lines": 11
+    },
+    "src/Msync.Cli/Terminal/Authentication/SshTerminalPrompt.cs": {
+      "sha256": "701edfaa90f33d7e90b2d29f203b863c6b7f4e48e84dfba54706bc1854bc2d81",
+      "bytes": 893,
+      "physical_lines": 17,
+      "nonblank_lines": 16,
+      "code_lines": 16,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Cli/Terminal/Completion/BuiltinCompletion.cs": {
+      "sha256": "72c5f76356263aa7b4cc2016a60eecee90d3943777afc96cbd6161b433711516",
+      "bytes": 8256,
+      "physical_lines": 144,
+      "nonblank_lines": 133,
+      "code_lines": 133,
+      "comment_lines": 0,
+      "blank_lines": 11
+    },
+    "src/Msync.Cli/Terminal/Completion/CaretCompletionItem.cs": {
+      "sha256": "0f57f3b50dbe34fbc4dee256bd341e959b8371bd7bb7058f93d492b2646b239b",
+      "bytes": 662,
+      "physical_lines": 13,
+      "nonblank_lines": 11,
+      "code_lines": 11,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Cli/Terminal/Completion/RemoteDirectoryCompletion.cs": {
+      "sha256": "52fffdf2adad40a565779644d2e2ad8b72981b502f0814e042beeaf07d2d52b0",
+      "bytes": 11215,
+      "physical_lines": 265,
+      "nonblank_lines": 243,
+      "code_lines": 241,
+      "comment_lines": 2,
+      "blank_lines": 22
+    },
+    "src/Msync.Cli/Terminal/Completion/SourceCompletion.cs": {
+      "sha256": "26b1a8d125452c007e11ace300fdef01b49c2130b0b8c66d9f772e6eca47f518",
+      "bytes": 21735,
+      "physical_lines": 407,
+      "nonblank_lines": 382,
+      "code_lines": 381,
+      "comment_lines": 1,
+      "blank_lines": 25
+    },
+    "src/Msync.Cli/Terminal/Completion/SshHostCatalog.cs": {
+      "sha256": "adb2acc445d6ca14d4ef6f603b1b946f03fcc191ba7c4ac3c0be6d25de68ee70",
+      "bytes": 10016,
+      "physical_lines": 220,
+      "nonblank_lines": 205,
+      "code_lines": 203,
+      "comment_lines": 2,
+      "blank_lines": 15
+    },
+    "src/Msync.Cli/Terminal/Completion/TypeCompletion.cs": {
+      "sha256": "33a85334f8aa9cc5230c14a02c86f59fba7637dd21ee8b2894bba50195d91883",
+      "bytes": 3141,
+      "physical_lines": 61,
+      "nonblank_lines": 57,
+      "code_lines": 57,
+      "comment_lines": 0,
+      "blank_lines": 4
+    },
+    "src/Msync.Cli/Terminal/Presentation/ConsoleEncodingScope.cs": {
+      "sha256": "e3668ff9189ba49248dceb09d33f372aa673a472a5a63ddca8d6fc8b4b75d6ef",
+      "bytes": 632,
+      "physical_lines": 17,
+      "nonblank_lines": 14,
+      "code_lines": 14,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Cli/Terminal/Presentation/ForegroundLineInput.cs": {
+      "sha256": "c47ab1fafb7b8ca324b999cd156e7e28df517398b0c11449221402512c1c4e5a",
+      "bytes": 2209,
+      "physical_lines": 60,
+      "nonblank_lines": 55,
+      "code_lines": 55,
+      "comment_lines": 0,
+      "blank_lines": 5
+    },
+    "src/Msync.Cli/Terminal/Presentation/PromptSyntax.cs": {
+      "sha256": "3fea1c2706e14b50568d80a0ff2fc553a0c3c3f96ed5575ce7ae7d302c33c70c",
+      "bytes": 17591,
+      "physical_lines": 289,
+      "nonblank_lines": 274,
+      "code_lines": 274,
+      "comment_lines": 0,
+      "blank_lines": 15
+    },
+    "src/Msync.Cli/Terminal/Presentation/RedirectedTextInput.cs": {
+      "sha256": "d793bbd7506d54175e42c1a5fca0421886ed2470717b9288d53ec93c31d5bb17",
+      "bytes": 954,
+      "physical_lines": 26,
+      "nonblank_lines": 20,
+      "code_lines": 19,
+      "comment_lines": 1,
+      "blank_lines": 6
+    },
+    "src/Msync.Cli/Terminal/Presentation/TerminalProgramInput.cs": {
+      "sha256": "aee5d3335216c9bcb53770dfc62dd356fc21d3cc071208dbc6791fb86fe26e66",
+      "bytes": 1439,
+      "physical_lines": 40,
+      "nonblank_lines": 36,
+      "code_lines": 35,
+      "comment_lines": 1,
+      "blank_lines": 4
+    },
+    "src/Msync.Cli/Terminal/Repl/CancellableConsoleInput.cs": {
+      "sha256": "03c213e96c6fa38981789177c939026377cdf15b9ca9442b069e21b6a1898c67",
+      "bytes": 3622,
+      "physical_lines": 94,
+      "nonblank_lines": 86,
+      "code_lines": 86,
+      "comment_lines": 0,
+      "blank_lines": 8
+    },
+    "src/Msync.Cli/Terminal/Repl/InteractivePrompt.cs": {
+      "sha256": "f67f3dba8a4bda1163e6af5b70fd4b55273190c45abcf8ab1cdbb2f8c6dfdc20",
+      "bytes": 16719,
+      "physical_lines": 275,
+      "nonblank_lines": 250,
+      "code_lines": 249,
+      "comment_lines": 1,
+      "blank_lines": 25
+    },
+    "src/Msync.Cli/Terminal/Repl/ReplSession.cs": {
+      "sha256": "94b69ea5dc6f699937501e2c8cc7e34306a8a38b851ace9ca77d209ffae92445",
+      "bytes": 12200,
+      "physical_lines": 268,
+      "nonblank_lines": 250,
+      "code_lines": 250,
+      "comment_lines": 0,
+      "blank_lines": 18
+    },
+    "src/Msync.Cli/Terminal/Repl/SubmissionSyntax.cs": {
+      "sha256": "f6973414532e2d4dc36e9eae2aae961cff63458ea71b015da8de2c2e42b66f93",
+      "bytes": 615,
+      "physical_lines": 24,
+      "nonblank_lines": 20,
+      "code_lines": 20,
+      "comment_lines": 0,
+      "blank_lines": 4
+    },
+    "src/Msync.Cli/Terminal/Repl/TerminalInput.cs": {
+      "sha256": "f11f19c140efae5dfebea30bb7560ba03dc74f27033eb454974ecc1dab38ab4b",
+      "bytes": 209,
+      "physical_lines": 6,
+      "nonblank_lines": 3,
+      "code_lines": 3,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Compiler/Compiler.cs": {
+      "sha256": "011accf4082d11aaee4ed41eaa8f93b4a18076bb091584f4f7938abdfcf2520b",
+      "bytes": 3279,
+      "physical_lines": 65,
+      "nonblank_lines": 54,
+      "code_lines": 54,
+      "comment_lines": 0,
+      "blank_lines": 11
+    },
+    "src/Msync.Compiler/CompilerSession.cs": {
+      "sha256": "58849b5c8ca8cf65998ff6ed3f626dd55a16d755144ab35f3c5ebffe9384f677",
+      "bytes": 2458,
+      "physical_lines": 71,
+      "nonblank_lines": 56,
+      "code_lines": 56,
+      "comment_lines": 0,
+      "blank_lines": 15
+    },
+    "src/Msync.Compiler/Diagnostics/Diagnostics.cs": {
+      "sha256": "07dfadd545985c3fd0dd5dba595b536c241d37c2d11a0c0c85b0929e00f2cd37",
+      "bytes": 2004,
+      "physical_lines": 42,
+      "nonblank_lines": 37,
+      "code_lines": 37,
+      "comment_lines": 0,
+      "blank_lines": 5
+    },
+    "src/Msync.Compiler/Editor/EditorAnalysis.cs": {
+      "sha256": "4249117057391894ef5eef03eff727d677150220c37aa03cc22a49a51a0b5cca",
+      "bytes": 5628,
+      "physical_lines": 95,
+      "nonblank_lines": 90,
+      "code_lines": 90,
+      "comment_lines": 0,
+      "blank_lines": 5
+    },
+    "src/Msync.Compiler/Editor/EditorAnalysisSession.cs": {
+      "sha256": "7dadad64753a0b9882bae9a52a92b36c945f9871117dcc97f125320b61a4fe52",
+      "bytes": 4747,
+      "physical_lines": 78,
+      "nonblank_lines": 72,
+      "code_lines": 71,
+      "comment_lines": 1,
+      "blank_lines": 6
+    },
+    "src/Msync.Compiler/Editor/EditorCompiler.cs": {
+      "sha256": "f91ad76ceae1bd1fd434ee10bed11a05d998b5e75b8cfb0bb574c127081d3426",
+      "bytes": 1624,
+      "physical_lines": 37,
+      "nonblank_lines": 32,
+      "code_lines": 32,
+      "comment_lines": 0,
+      "blank_lines": 5
+    },
+    "src/Msync.Compiler/Editor/EditorContext.cs": {
+      "sha256": "c1695e95ff325b19fa2f1bfe982bdc5a9b19178f95fe9b4ca84c50ceabb7b75c",
+      "bytes": 679,
+      "physical_lines": 17,
+      "nonblank_lines": 14,
+      "code_lines": 14,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Compiler/Editor/EditorOccurrences.cs": {
+      "sha256": "8db1ce6e35e10269a71cb5e2b7a3af831d9b2e03e42a2b14eb2054d5786723ac",
+      "bytes": 2892,
+      "physical_lines": 60,
+      "nonblank_lines": 52,
+      "code_lines": 50,
+      "comment_lines": 2,
+      "blank_lines": 8
+    },
+    "src/Msync.Compiler/Editor/EditorPrefix.cs": {
+      "sha256": "a3ae51a3c77e3d74129f4cca8b3a66cea3df19c683b7188c14f7d84bfcd774b7",
+      "bytes": 6327,
+      "physical_lines": 109,
+      "nonblank_lines": 101,
+      "code_lines": 97,
+      "comment_lines": 4,
+      "blank_lines": 8
+    },
+    "src/Msync.Compiler/Editor/EditorSemanticIndex.cs": {
+      "sha256": "230f101bec426efe7f1e323f7e350e15042fa25640ad5193ea622d6d63cea495",
+      "bytes": 11529,
+      "physical_lines": 213,
+      "nonblank_lines": 192,
+      "code_lines": 192,
+      "comment_lines": 0,
+      "blank_lines": 21
+    },
+    "src/Msync.Compiler/Editor/EditorSourceMap.cs": {
+      "sha256": "703b6558cc02705744388ef560579b0d009007c024163cc483e2c428666a8b14",
+      "bytes": 6152,
+      "physical_lines": 128,
+      "nonblank_lines": 118,
+      "code_lines": 115,
+      "comment_lines": 3,
+      "blank_lines": 10
+    },
+    "src/Msync.Compiler/Editor/EditorSymbols.cs": {
+      "sha256": "bafe24473fd1a849b9b3bd1d98d48356f991a0477604ec5cc99c35901c7cd6a4",
+      "bytes": 4636,
+      "physical_lines": 89,
+      "nonblank_lines": 85,
+      "code_lines": 85,
+      "comment_lines": 0,
+      "blank_lines": 4
+    },
+    "src/Msync.Compiler/Editor/EditorSyntaxIndex.cs": {
+      "sha256": "ba86fd1335c399a838a5930d170416894b0b76c7a7552ca941e85a3d5a46849b",
+      "bytes": 10848,
+      "physical_lines": 181,
+      "nonblank_lines": 172,
+      "code_lines": 172,
+      "comment_lines": 0,
+      "blank_lines": 9
+    },
+    "src/Msync.Compiler/Editor/EditorTypeNames.cs": {
+      "sha256": "65d32c4ba915a5d57388d30fa5a1ae18275a639a68db1be20e661e21d00694da",
+      "bytes": 728,
+      "physical_lines": 21,
+      "nonblank_lines": 19,
+      "code_lines": 19,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Compiler/Editor/SemanticEditorCompiler.cs": {
+      "sha256": "0e28e31600cc1ca7dc08ba8704309c1a9c8fb32140fc6eee60017b1bfd33af40",
+      "bytes": 975,
+      "physical_lines": 24,
+      "nonblank_lines": 21,
+      "code_lines": 21,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Compiler/Editor/SemanticObservationBuilder.Facts.cs": {
+      "sha256": "2808e9bae1f2f70bff5878b9ad24c3c6d6f1aa99c23d148e3270df2ddb1126bb",
+      "bytes": 6514,
+      "physical_lines": 142,
+      "nonblank_lines": 129,
+      "code_lines": 126,
+      "comment_lines": 3,
+      "blank_lines": 13
+    },
+    "src/Msync.Compiler/Editor/SemanticObservationBuilder.Paths.cs": {
+      "sha256": "13ff79ea21470f19be356244250be0f74ef810cddaec47aacc94df46892d8d87",
+      "bytes": 15964,
+      "physical_lines": 299,
+      "nonblank_lines": 279,
+      "code_lines": 277,
+      "comment_lines": 2,
+      "blank_lines": 20
+    },
+    "src/Msync.Compiler/Editor/SemanticObservationBuilder.Returns.cs": {
+      "sha256": "d14455322bc6e6d3bb1e685f36b2a5abf2f4d19f100eaaf48bc21f9a3b28a217",
+      "bytes": 2803,
+      "physical_lines": 60,
+      "nonblank_lines": 56,
+      "code_lines": 56,
+      "comment_lines": 0,
+      "blank_lines": 4
+    },
+    "src/Msync.Compiler/Editor/SemanticObservationBuilder.Session.cs": {
+      "sha256": "b1fd451a80808240b58e81e1b13f0a5ea6c81ddb7465b44429d4f77fecec6e59",
+      "bytes": 1536,
+      "physical_lines": 31,
+      "nonblank_lines": 29,
+      "code_lines": 27,
+      "comment_lines": 2,
+      "blank_lines": 2
+    },
+    "src/Msync.Compiler/Editor/SemanticObservationBuilder.cs": {
+      "sha256": "405183c3b1f3c45c234b84bcc81f5d450458ce15eae920bdb7bc07bc2429018c",
+      "bytes": 32627,
+      "physical_lines": 573,
+      "nonblank_lines": 536,
+      "code_lines": 532,
+      "comment_lines": 4,
+      "blank_lines": 37
+    },
+    "src/Msync.Compiler/Editor/SemanticObservationView.cs": {
+      "sha256": "a3f0742aabd6bdc6b8ab71ff89c45142ae73dda2226f880f55bcca239db5bada",
+      "bytes": 9653,
+      "physical_lines": 179,
+      "nonblank_lines": 156,
+      "code_lines": 153,
+      "comment_lines": 3,
+      "blank_lines": 23
+    },
+    "src/Msync.Compiler/Editor/SemanticStandardCatalog.cs": {
+      "sha256": "745a03862c67501a901ce66fbbac666cb37f0334f978df96f3c615a6b1b57abe",
+      "bytes": 8818,
+      "physical_lines": 157,
+      "nonblank_lines": 144,
+      "code_lines": 142,
+      "comment_lines": 2,
+      "blank_lines": 13
+    },
+    "src/Msync.Compiler/Editor/SemanticSymbols.cs": {
+      "sha256": "6eafea6cd063fce4544f25c7fe48606fddcbc9b3f09e18a4852457684654a20b",
+      "bytes": 1092,
+      "physical_lines": 21,
+      "nonblank_lines": 18,
+      "code_lines": 18,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Compiler/Editor/SemanticValuePresenter.cs": {
+      "sha256": "bcf82690d80266482f7d52ae3b72e56a9f451b4e51d2b264df4e85b26544cc4d",
+      "bytes": 16502,
+      "physical_lines": 283,
+      "nonblank_lines": 259,
+      "code_lines": 259,
+      "comment_lines": 0,
+      "blank_lines": 24
+    },
+    "src/Msync.Compiler/NativeCompilerSession.cs": {
+      "sha256": "f5d2ed50ba4d039f618e370ee58c7b70006843dbdac55309a23385df866c08bd",
+      "bytes": 388,
+      "physical_lines": 12,
+      "nonblank_lines": 9,
+      "code_lines": 9,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Compiler/Semantics/AssemblyInfo.cs": {
+      "sha256": "65d025ba8570ed32c1fe0c185d17a0e5c88ec99ebbaee4b05a99323caccfe169",
+      "bytes": 161,
+      "physical_lines": 4,
+      "nonblank_lines": 3,
+      "code_lines": 3,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Compiler/Semantics/BoundCallableWrites.cs": {
+      "sha256": "d9916c39f06898b649564a64c44bad0ffd7b500b4de81e306d7741176c4a3de3",
+      "bytes": 21294,
+      "physical_lines": 464,
+      "nonblank_lines": 428,
+      "code_lines": 425,
+      "comment_lines": 3,
+      "blank_lines": 36
+    },
+    "src/Msync.Compiler/Semantics/BoundProgram.cs": {
+      "sha256": "111fae9a7f9f8d7a40b9c1d2a18e3a675c9c71687cb16ae79189e9e4c032d399",
+      "bytes": 8874,
+      "physical_lines": 155,
+      "nonblank_lines": 146,
+      "code_lines": 146,
+      "comment_lines": 0,
+      "blank_lines": 9
+    },
+    "src/Msync.Compiler/Semantics/FlowFacts.cs": {
+      "sha256": "96dc539184261f4655c9020fafc9f7e6694945eea46cd1329818d67a5568ba36",
+      "bytes": 12753,
+      "physical_lines": 272,
+      "nonblank_lines": 238,
+      "code_lines": 235,
+      "comment_lines": 3,
+      "blank_lines": 34
+    },
+    "src/Msync.Compiler/Semantics/FlowGraph.cs": {
+      "sha256": "61f02d340cedbfff014f09b70ceac4d553e4f367112d0f8203de92c9c2c95768",
+      "bytes": 5829,
+      "physical_lines": 114,
+      "nonblank_lines": 106,
+      "code_lines": 104,
+      "comment_lines": 2,
+      "blank_lines": 8
+    },
+    "src/Msync.Compiler/Semantics/FlowProgramView.cs": {
+      "sha256": "c186bcea5901c73ccfb0f1adc34f1ff6d55a1a5c6d82d6d501d19d58ea5eebda",
+      "bytes": 2223,
+      "physical_lines": 48,
+      "nonblank_lines": 44,
+      "code_lines": 44,
+      "comment_lines": 0,
+      "blank_lines": 4
+    },
+    "src/Msync.Compiler/Semantics/HirFlowGraphBuilder.cs": {
+      "sha256": "82a274e65315023f8ab2c181cabef9381921237aab12c0714b0fa41667307924",
+      "bytes": 13304,
+      "physical_lines": 302,
+      "nonblank_lines": 282,
+      "code_lines": 281,
+      "comment_lines": 1,
+      "blank_lines": 20
+    },
+    "src/Msync.Compiler/Semantics/HirFlowTypeAlgebra.cs": {
+      "sha256": "c3bbf171028a8b28fba0f98a4dd3337f4c66c71e514f1eca5590595d5a278883",
+      "bytes": 8637,
+      "physical_lines": 174,
+      "nonblank_lines": 163,
+      "code_lines": 161,
+      "comment_lines": 2,
+      "blank_lines": 11
+    },
+    "src/Msync.Compiler/Semantics/HirNativeResultTypes.cs": {
+      "sha256": "5c1ae8d1034608d6cdb1c4d4925541b6fa6d88163d5b83e3508ea2180271d045",
+      "bytes": 1978,
+      "physical_lines": 40,
+      "nonblank_lines": 35,
+      "code_lines": 35,
+      "comment_lines": 0,
+      "blank_lines": 5
+    },
+    "src/Msync.Compiler/Semantics/HirTypeProjection.Recursive.cs": {
+      "sha256": "54e3d6eb6f048c84be4381c57548d639db9212c30dfdd3d67aecc184580a4f7c",
+      "bytes": 4143,
+      "physical_lines": 91,
+      "nonblank_lines": 86,
+      "code_lines": 86,
+      "comment_lines": 0,
+      "blank_lines": 5
+    },
+    "src/Msync.Compiler/Semantics/HirTypeProjection.cs": {
+      "sha256": "36d6bfe8715f74f43f2027a22cc4458ef48d06f9058f64f4b719308f033d5445",
+      "bytes": 18497,
+      "physical_lines": 347,
+      "nonblank_lines": 336,
+      "code_lines": 334,
+      "comment_lines": 2,
+      "blank_lines": 11
+    },
+    "src/Msync.Compiler/Semantics/ProcessCapabilities.cs": {
+      "sha256": "7e2ac9fc299252b0bb4675072ec3db6b60ccd5196edd9e5c8c4df60d1a0f81dc",
+      "bytes": 348,
+      "physical_lines": 9,
+      "nonblank_lines": 7,
+      "code_lines": 7,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.Aggregates.cs": {
+      "sha256": "c62ab722545266761debe88187c14894981c95a2ffb591b8e98b26cc2ba18ea2",
+      "bytes": 14043,
+      "physical_lines": 257,
+      "nonblank_lines": 245,
+      "code_lines": 243,
+      "comment_lines": 2,
+      "blank_lines": 12
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.CallPolicy.cs": {
+      "sha256": "385d9fcba1c9098a3ebc3ca119ffc41eda53bfec657476458bf9dd37698115c5",
+      "bytes": 42246,
+      "physical_lines": 706,
+      "nonblank_lines": 680,
+      "code_lines": 673,
+      "comment_lines": 7,
+      "blank_lines": 26
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.Callables.cs": {
+      "sha256": "13818fd2df95e8fab0175b766f7616c4907f21601b6327dc266eacdfe6b01e4b",
+      "bytes": 11772,
+      "physical_lines": 204,
+      "nonblank_lines": 194,
+      "code_lines": 192,
+      "comment_lines": 2,
+      "blank_lines": 10
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.ClosedContracts.cs": {
+      "sha256": "1d57af9aab4d32ea254e10b2281e61c43d1dd0dcd95608c3f4f4240bbde4516c",
+      "bytes": 3598,
+      "physical_lines": 62,
+      "nonblank_lines": 57,
+      "code_lines": 55,
+      "comment_lines": 2,
+      "blank_lines": 5
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.Concepts.cs": {
+      "sha256": "45ef459a1e6a5bed805f0e55fb3aa98c0ab9fbba64bcb1f63f7ca5b322c6289b",
+      "bytes": 15921,
+      "physical_lines": 296,
+      "nonblank_lines": 279,
+      "code_lines": 274,
+      "comment_lines": 5,
+      "blank_lines": 17
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.DeferredReads.cs": {
+      "sha256": "899a7643bb8536b62df8bd9ea905d8bb236707b0a146186498beb269caa51afd",
+      "bytes": 12176,
+      "physical_lines": 225,
+      "nonblank_lines": 214,
+      "code_lines": 210,
+      "comment_lines": 4,
+      "blank_lines": 11
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.Flow.cs": {
+      "sha256": "4d4c4b61b740e77c722d374878fceb2334fd7693f5a9ac8f61683047ea5b1f62",
+      "bytes": 25159,
+      "physical_lines": 494,
+      "nonblank_lines": 465,
+      "code_lines": 465,
+      "comment_lines": 0,
+      "blank_lines": 29
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.FlowPreparation.cs": {
+      "sha256": "7de60d88b9b9914cc76ac7708ff8d2151fd8cd0182fbcad999ba145d251a36bf",
+      "bytes": 14876,
+      "physical_lines": 269,
+      "nonblank_lines": 260,
+      "code_lines": 255,
+      "comment_lines": 5,
+      "blank_lines": 9
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.FlowTypes.cs": {
+      "sha256": "8e7fdde5af0dd4687d5fc540064df852163eb3a6ad6f34f8ee7e7a61fb6cbc30",
+      "bytes": 3703,
+      "physical_lines": 78,
+      "nonblank_lines": 72,
+      "code_lines": 72,
+      "comment_lines": 0,
+      "blank_lines": 6
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.FormalInput.cs": {
+      "sha256": "fc291bfbf108195bed79e1b5d4e9dfe1df091c3b217ff7c5646a161f59319b43",
+      "bytes": 18782,
+      "physical_lines": 328,
+      "nonblank_lines": 309,
+      "code_lines": 301,
+      "comment_lines": 8,
+      "blank_lines": 19
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.FutureDomains.cs": {
+      "sha256": "66af607a0fdece5bb066b29a21472ce1bd8c181786e2fdcc257cce187e9bd5a3",
+      "bytes": 6625,
+      "physical_lines": 115,
+      "nonblank_lines": 110,
+      "code_lines": 110,
+      "comment_lines": 0,
+      "blank_lines": 5
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.ImmediateCalls.cs": {
+      "sha256": "0f2cf0e677c13f41ddc6a1124d78b7cbd814933a12c4cedb5d4444cd5d803ba6",
+      "bytes": 7805,
+      "physical_lines": 146,
+      "nonblank_lines": 132,
+      "code_lines": 126,
+      "comment_lines": 6,
+      "blank_lines": 14
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.Instantiation.cs": {
+      "sha256": "f51b3062c77b09a1d3c52e538f1a7e9ba53a2396943d4bb57cfd15cde6d590a1",
+      "bytes": 31957,
+      "physical_lines": 547,
+      "nonblank_lines": 531,
+      "code_lines": 520,
+      "comment_lines": 11,
+      "blank_lines": 16
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.InvocationProjection.cs": {
+      "sha256": "632bfb576fe4d28f27039e88684459497ddcc8bcbab2e705203e5bd7f9b0afdd",
+      "bytes": 39564,
+      "physical_lines": 699,
+      "nonblank_lines": 670,
+      "code_lines": 665,
+      "comment_lines": 5,
+      "blank_lines": 29
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.Keys.cs": {
+      "sha256": "d5b28a57079b8fcd19453ee5483949c2ee19f24b25c0e5886d7158d8f43f9f00",
+      "bytes": 16065,
+      "physical_lines": 316,
+      "nonblank_lines": 300,
+      "code_lines": 289,
+      "comment_lines": 11,
+      "blank_lines": 16
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.MetaDescriptors.cs": {
+      "sha256": "bd47d489c7a4989f0706bb11ed78a4d622f5c22ef5e3cf8099a985485ccb2ea3",
+      "bytes": 6668,
+      "physical_lines": 131,
+      "nonblank_lines": 121,
+      "code_lines": 120,
+      "comment_lines": 1,
+      "blank_lines": 10
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.Native.cs": {
+      "sha256": "d36e47e304cd0dd63e80a00fc138a55722afb6b7c9eb26359bbe1baa1d8dafbf",
+      "bytes": 25861,
+      "physical_lines": 440,
+      "nonblank_lines": 416,
+      "code_lines": 415,
+      "comment_lines": 1,
+      "blank_lines": 24
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.NativeFormat.cs": {
+      "sha256": "98e93df46a21c07c4350faa7674c27d0cdcd103d83470e1ebbad142041112a81",
+      "bytes": 2202,
+      "physical_lines": 51,
+      "nonblank_lines": 48,
+      "code_lines": 48,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.NativeMeta.cs": {
+      "sha256": "69f59d0393248a925472298b059d19f4c74df1494ae41aba56884078cb041705",
+      "bytes": 11565,
+      "physical_lines": 208,
+      "nonblank_lines": 192,
+      "code_lines": 192,
+      "comment_lines": 0,
+      "blank_lines": 16
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.Operations.cs": {
+      "sha256": "daf030517a6751b1e7788813e613f6b968b14c4aee019b74c4f1d3a1512bc16f",
+      "bytes": 22248,
+      "physical_lines": 381,
+      "nonblank_lines": 369,
+      "code_lines": 367,
+      "comment_lines": 2,
+      "blank_lines": 12
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.RecursiveTypes.cs": {
+      "sha256": "49e89e22869487e1361d51f7823dd5ebf622f0b1b49716066c3cf95b26df14cf",
+      "bytes": 5459,
+      "physical_lines": 104,
+      "nonblank_lines": 96,
+      "code_lines": 96,
+      "comment_lines": 0,
+      "blank_lines": 8
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.ResultGraph.cs": {
+      "sha256": "aeda8e3a5520bcb344d89a603a67c602e355d56c33d6a5ea242b724ca4c9e31a",
+      "bytes": 8045,
+      "physical_lines": 144,
+      "nonblank_lines": 137,
+      "code_lines": 135,
+      "comment_lines": 2,
+      "blank_lines": 7
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.SessionCalls.cs": {
+      "sha256": "d116e2259b1c18aa6a2168c641a905d17be516db8e207857777d439b54a1bebe",
+      "bytes": 16395,
+      "physical_lines": 286,
+      "nonblank_lines": 263,
+      "code_lines": 260,
+      "comment_lines": 3,
+      "blank_lines": 23
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.SingletonFlow.cs": {
+      "sha256": "db35297edbe3803e0e45ee432c1921991586f826b2d6156c884fdb7246aee883",
+      "bytes": 5066,
+      "physical_lines": 99,
+      "nonblank_lines": 94,
+      "code_lines": 92,
+      "comment_lines": 2,
+      "blank_lines": 5
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.Standard.cs": {
+      "sha256": "b726633eddbb32f7ee6abc29a40341128d6380e964822e26ff602021ec16794f",
+      "bytes": 5900,
+      "physical_lines": 120,
+      "nonblank_lines": 112,
+      "code_lines": 111,
+      "comment_lines": 1,
+      "blank_lines": 8
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.Storage.cs": {
+      "sha256": "7b628eeb9301da76ce2d872e1847100f73808a80c8ad47a11a13c937acb6af87",
+      "bytes": 6671,
+      "physical_lines": 139,
+      "nonblank_lines": 127,
+      "code_lines": 123,
+      "comment_lines": 4,
+      "blank_lines": 12
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.Types.cs": {
+      "sha256": "edd0eac896a8ffb8bc1a159af9f3e8498f2e850ba76c7fe48a42096befb6bd0f",
+      "bytes": 23446,
+      "physical_lines": 425,
+      "nonblank_lines": 394,
+      "code_lines": 392,
+      "comment_lines": 2,
+      "blank_lines": 31
+    },
+    "src/Msync.Compiler/Semantics/SemanticAnalyzer.cs": {
+      "sha256": "19199b84f66b0065d5698523b3c00db60bd05627488e3f749ee582ea726e574d",
+      "bytes": 10685,
+      "physical_lines": 207,
+      "nonblank_lines": 190,
+      "code_lines": 189,
+      "comment_lines": 1,
+      "blank_lines": 17
+    },
+    "src/Msync.Compiler/Semantics/SemanticArena.cs": {
+      "sha256": "4723127110419745861884fe077d5b7a77c7c38915d9136e0f088ffef418940c",
+      "bytes": 3321,
+      "physical_lines": 62,
+      "nonblank_lines": 59,
+      "code_lines": 57,
+      "comment_lines": 2,
+      "blank_lines": 3
+    },
+    "src/Msync.Compiler/Semantics/SemanticCallableIdentity.cs": {
+      "sha256": "78b21aecf1a315aad39c794c71e0a20b91fe6b4b954de7143f524b3da12e9034",
+      "bytes": 4117,
+      "physical_lines": 85,
+      "nonblank_lines": 79,
+      "code_lines": 77,
+      "comment_lines": 2,
+      "blank_lines": 6
+    },
+    "src/Msync.Compiler/Semantics/SemanticContext.Snapshots.cs": {
+      "sha256": "e450359a69c3cff2f0b95fdf403a4c89efcdeb6b0823e57b01cb69c2b81e7e4b",
+      "bytes": 537,
+      "physical_lines": 21,
+      "nonblank_lines": 20,
+      "code_lines": 20,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Compiler/Semantics/SemanticControl.cs": {
+      "sha256": "04bc5f29b9234a154482db21ea8b429d399e3db35b5d7333e0ca6e3f24872755",
+      "bytes": 269,
+      "physical_lines": 9,
+      "nonblank_lines": 7,
+      "code_lines": 7,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Compiler/Semantics/SemanticDiagnosticFactory.cs": {
+      "sha256": "0e518725dec4a45688806f921eb221e362ca8c2602ac9c8235bce27de786910a",
+      "bytes": 6647,
+      "physical_lines": 114,
+      "nonblank_lines": 103,
+      "code_lines": 103,
+      "comment_lines": 0,
+      "blank_lines": 11
+    },
+    "src/Msync.Compiler/Semantics/SemanticFacts.cs": {
+      "sha256": "6b47cba9a6f561755c5e55dc55af74493ed0954ba780f2be7121726c64fb777a",
+      "bytes": 3493,
+      "physical_lines": 86,
+      "nonblank_lines": 81,
+      "code_lines": 75,
+      "comment_lines": 6,
+      "blank_lines": 5
+    },
+    "src/Msync.Compiler/Semantics/SemanticInputRoles.cs": {
+      "sha256": "302047a244374f190b18396b0411dd2da145024809f37aae73032a59dd004122",
+      "bytes": 2056,
+      "physical_lines": 43,
+      "nonblank_lines": 37,
+      "code_lines": 37,
+      "comment_lines": 0,
+      "blank_lines": 6
+    },
+    "src/Msync.Compiler/Semantics/SemanticInstanceCache.cs": {
+      "sha256": "0dedf78c01bb1ef72d2fe7ce43be17c31dd0aa28f48f77229780aae899219efa",
+      "bytes": 1707,
+      "physical_lines": 48,
+      "nonblank_lines": 39,
+      "code_lines": 37,
+      "comment_lines": 2,
+      "blank_lines": 9
+    },
+    "src/Msync.Compiler/Semantics/SemanticOutput.cs": {
+      "sha256": "72fd7ed41ef02059ee5c1e2a6f1b38f86869602b127f3cea578f7ca50d74d2ce",
+      "bytes": 2769,
+      "physical_lines": 83,
+      "nonblank_lines": 81,
+      "code_lines": 80,
+      "comment_lines": 1,
+      "blank_lines": 2
+    },
+    "src/Msync.Compiler/Semantics/SemanticRuntimeObservation.cs": {
+      "sha256": "4994bac47c28f20325571e316ac955151c1d30917229cd4beed75dad6bc0d874",
+      "bytes": 470,
+      "physical_lines": 9,
+      "nonblank_lines": 7,
+      "code_lines": 7,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Compiler/Semantics/SemanticSessionDispatch.cs": {
+      "sha256": "6e3448db1a6c5c28833e581b522ed59bbca524b1ef3695b016930a8484fc1bc1",
+      "bytes": 3757,
+      "physical_lines": 75,
+      "nonblank_lines": 64,
+      "code_lines": 62,
+      "comment_lines": 2,
+      "blank_lines": 11
+    },
+    "src/Msync.Compiler/Semantics/SemanticValue.cs": {
+      "sha256": "0689a51e1116fa4d29f3fa12dd24392e9d5d39fab7f157b79320bb3cc24d91b9",
+      "bytes": 9050,
+      "physical_lines": 161,
+      "nonblank_lines": 146,
+      "code_lines": 146,
+      "comment_lines": 0,
+      "blank_lines": 15
+    },
+    "src/Msync.Compiler/Semantics/SemanticWriteEvents.cs": {
+      "sha256": "ab738e293971cc97383066d7146eec96a458af2927c645a4280d89f97c503eb0",
+      "bytes": 3933,
+      "physical_lines": 74,
+      "nonblank_lines": 63,
+      "code_lines": 60,
+      "comment_lines": 3,
+      "blank_lines": 11
+    },
+    "src/Msync.Compiler/Semantics/SourceBinder.Expressions.cs": {
+      "sha256": "3de314207a65cac838beca804dd88ed14b40725bb24d33401b8e8421d7070b9a",
+      "bytes": 15520,
+      "physical_lines": 306,
+      "nonblank_lines": 293,
+      "code_lines": 293,
+      "comment_lines": 0,
+      "blank_lines": 13
+    },
+    "src/Msync.Compiler/Semantics/SourceBinder.Flow.cs": {
+      "sha256": "560cd449020a1c0f451764d670af5a69a8bb960ea507ead77ccd266fac441b1e",
+      "bytes": 5345,
+      "physical_lines": 124,
+      "nonblank_lines": 114,
+      "code_lines": 114,
+      "comment_lines": 0,
+      "blank_lines": 10
+    },
+    "src/Msync.Compiler/Semantics/SourceBinder.Functions.cs": {
+      "sha256": "5d1d5ec25821f66b3b665d72c5aea6466494c53e4fb99aa9ab2bddfa40f90bf5",
+      "bytes": 10961,
+      "physical_lines": 191,
+      "nonblank_lines": 183,
+      "code_lines": 183,
+      "comment_lines": 0,
+      "blank_lines": 8
+    },
+    "src/Msync.Compiler/Semantics/SourceBinder.Types.cs": {
+      "sha256": "9192c6972984acd8f333e50b2d49eb609b17e936ea1b6de6c240fdf295776db2",
+      "bytes": 6698,
+      "physical_lines": 137,
+      "nonblank_lines": 132,
+      "code_lines": 132,
+      "comment_lines": 0,
+      "blank_lines": 5
+    },
+    "src/Msync.Compiler/Semantics/SourceBinder.cs": {
+      "sha256": "2dcb5699620a23a1107c628c532491f2b5b4675d25f2fc72d0a3bd848fb01b20",
+      "bytes": 19433,
+      "physical_lines": 393,
+      "nonblank_lines": 369,
+      "code_lines": 369,
+      "comment_lines": 0,
+      "blank_lines": 24
+    },
+    "src/Msync.Compiler/Semantics/StandardBindingDemand.cs": {
+      "sha256": "5ad3f85659723785df88612bf36ae20a324d8f7cc5bfa70644608a3a960989bb",
+      "bytes": 4838,
+      "physical_lines": 114,
+      "nonblank_lines": 102,
+      "code_lines": 99,
+      "comment_lines": 3,
+      "blank_lines": 12
+    },
+    "src/Msync.Compiler/Session/NativeSemanticSessionValues.cs": {
+      "sha256": "8e7978bcbb910a91eb2666f159e66dc91407db70c76ad4027750001f54115323",
+      "bytes": 10774,
+      "physical_lines": 189,
+      "nonblank_lines": 180,
+      "code_lines": 176,
+      "comment_lines": 4,
+      "blank_lines": 9
+    },
+    "src/Msync.Compiler/Session/SemanticSession.cs": {
+      "sha256": "6e44247786b77557045da8001f0ddfd7187a0600121cc7cc6f7e668b40a7e3ad",
+      "bytes": 6669,
+      "physical_lines": 136,
+      "nonblank_lines": 124,
+      "code_lines": 121,
+      "comment_lines": 3,
+      "blank_lines": 12
+    },
+    "src/Msync.Compiler/Session/SemanticSessionSites.cs": {
+      "sha256": "6a5462f9a8779e8b6402a877048858460ac959ec890a618b2e43f87dd74888f4",
+      "bytes": 667,
+      "physical_lines": 21,
+      "nonblank_lines": 18,
+      "code_lines": 18,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Compiler/StandardLibrary/StandardSource.cs": {
+      "sha256": "0e7e8348b85a49d5098e7c02b823836f47c94471d2577e5844a9510cc622970b",
+      "bytes": 681,
+      "physical_lines": 21,
+      "nonblank_lines": 19,
+      "code_lines": 19,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Compiler/StandardLibrary/StandardSourceCatalog.cs": {
+      "sha256": "e0199faa2bef71f9c9d38d02565060b16abfe4ff5331c7039836326ff22cf82c",
+      "bytes": 719,
+      "physical_lines": 20,
+      "nonblank_lines": 17,
+      "code_lines": 17,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Compiler/Syntax/Ast.cs": {
+      "sha256": "39912c093bbcf6887664018f4e1b4321800f07a5e00250529a9aec891e938848",
+      "bytes": 6855,
+      "physical_lines": 129,
+      "nonblank_lines": 125,
+      "code_lines": 125,
+      "comment_lines": 0,
+      "blank_lines": 4
+    },
+    "src/Msync.Compiler/Syntax/Formatter.cs": {
+      "sha256": "696250735c5ce62b985f56307a8bdc48d6010bad6b16eb87733755f3910df02e",
+      "bytes": 16326,
+      "physical_lines": 345,
+      "nonblank_lines": 343,
+      "code_lines": 343,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Compiler/Syntax/LanguageTypes.cs": {
+      "sha256": "dabb9f799bfd9a06877c0aa769ae7dc8b3ec036c9ecc2e935a839af1bd71af18",
+      "bytes": 1032,
+      "physical_lines": 22,
+      "nonblank_lines": 18,
+      "code_lines": 18,
+      "comment_lines": 0,
+      "blank_lines": 4
+    },
+    "src/Msync.Compiler/Syntax/Lexer.cs": {
+      "sha256": "de612bc115614237a03970260523f96456e22b6e628c02bb007d1adde7b23e88",
+      "bytes": 8838,
+      "physical_lines": 173,
+      "nonblank_lines": 169,
+      "code_lines": 169,
+      "comment_lines": 0,
+      "blank_lines": 4
+    },
+    "src/Msync.Compiler/Syntax/NameSyntax.cs": {
+      "sha256": "ca193aebecdf506ba61cc3c8a01ea8ee93fabb25fc7b78dc3bb11d0e29a02f56",
+      "bytes": 661,
+      "physical_lines": 16,
+      "nonblank_lines": 14,
+      "code_lines": 14,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Compiler/Syntax/Parser.cs": {
+      "sha256": "78367c9873db93be11c1caec00d7a1b0d71c58052a8b9d8aca62b30b3bd4d3f1",
+      "bytes": 31256,
+      "physical_lines": 617,
+      "nonblank_lines": 604,
+      "code_lines": 603,
+      "comment_lines": 1,
+      "blank_lines": 13
+    },
+    "src/Msync.Compiler/Syntax/SyntaxTraversal.cs": {
+      "sha256": "4ee3e6d281135819a0d6f4e335220aa8cf4f46f82d201e43764f4274e4677c1d",
+      "bytes": 2513,
+      "physical_lines": 48,
+      "nonblank_lines": 47,
+      "code_lines": 47,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Compiler/Syntax/TypeSyntaxFacts.cs": {
+      "sha256": "918bca0debc7448a02c29a71a57e415a10b769141ffa331598385c99d4963361",
+      "bytes": 1837,
+      "physical_lines": 40,
+      "nonblank_lines": 37,
+      "code_lines": 37,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Core/Artifacts/ArtifactContract.cs": {
+      "sha256": "ee318bbddb14323e85dd5329cbcc87dc2f452068ddd3e44d601f64e13c42794c",
+      "bytes": 243,
+      "physical_lines": 5,
+      "nonblank_lines": 4,
+      "code_lines": 4,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Artifacts/BindingContext.cs": {
+      "sha256": "25ced026ec2bc836bf62eb42579e383d879b4eb38279837bd964dbb52e67ef91",
+      "bytes": 134,
+      "physical_lines": 3,
+      "nonblank_lines": 2,
+      "code_lines": 2,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Artifacts/FunctionDispatch.cs": {
+      "sha256": "764c70a69a7fef39e267a3fe20f604a52061943dee36a9a21bbd8f752b32a967",
+      "bytes": 2436,
+      "physical_lines": 54,
+      "nonblank_lines": 46,
+      "code_lines": 44,
+      "comment_lines": 2,
+      "blank_lines": 8
+    },
+    "src/Msync.Core/Artifacts/LanguageContract.cs": {
+      "sha256": "c52d71dfa74c18d9c44708a5686e57c984875d656313ba99ee436e6c805980b1",
+      "bytes": 107,
+      "physical_lines": 6,
+      "nonblank_lines": 5,
+      "code_lines": 5,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Artifacts/LegacyV6Data.cs": {
+      "sha256": "a3121360e15d3357c04d8babecad42bf5b1c7f7a760437af5cde883baaf81737",
+      "bytes": 4014,
+      "physical_lines": 62,
+      "nonblank_lines": 57,
+      "code_lines": 56,
+      "comment_lines": 1,
+      "blank_lines": 5
+    },
+    "src/Msync.Core/Artifacts/LegacyV6NativeSignatures.Arena.cs": {
+      "sha256": "5f33ba548f3af9275e761027dd7cab1f667467d7064fd28f8d84cc32e59dcaf0",
+      "bytes": 1118,
+      "physical_lines": 17,
+      "nonblank_lines": 16,
+      "code_lines": 16,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Artifacts/LegacyV6NativeSignatures.Slots.cs": {
+      "sha256": "0c2e26df1fda7ad6abe1b668bbd176e7d61275b203e7b441c32ff97fead5ba5c",
+      "bytes": 715,
+      "physical_lines": 13,
+      "nonblank_lines": 12,
+      "code_lines": 12,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Artifacts/LegacyV6NativeSignatures.VectorStorage.cs": {
+      "sha256": "0879ab29fa18898ff42bdf27c8d9026625dcce5c77efea7c681ec62f88aeeb91",
+      "bytes": 1084,
+      "physical_lines": 16,
+      "nonblank_lines": 15,
+      "code_lines": 15,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Artifacts/LegacyV6NativeSignatures.cs": {
+      "sha256": "503a069ef02032ff38df9f8ed2f7b9d13a1dc07fd1f8598703be19a72800666a",
+      "bytes": 1091,
+      "physical_lines": 19,
+      "nonblank_lines": 17,
+      "code_lines": 16,
+      "comment_lines": 1,
+      "blank_lines": 2
+    },
+    "src/Msync.Core/Artifacts/LegacyV6Reader.cs": {
+      "sha256": "8b23d6b68b52b0222ebede1fa91132090e4fe51c6e911d3ef88e2e2cc1cf9158",
+      "bytes": 11686,
+      "physical_lines": 221,
+      "nonblank_lines": 212,
+      "code_lines": 212,
+      "comment_lines": 0,
+      "blank_lines": 9
+    },
+    "src/Msync.Core/Artifacts/LegacyV6Validation.cs": {
+      "sha256": "e7ed40f31bf4aeb1b6303e3b7a3f832b94d60b46f822a5ed84939dab93c8993c",
+      "bytes": 10355,
+      "physical_lines": 161,
+      "nonblank_lines": 158,
+      "code_lines": 158,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Core/Artifacts/NativeArtifact.Compact.Instructions.cs": {
+      "sha256": "f2204cba474f2524fece18ccd67ee48363684cc9cf9c4139b46a9d11ca04f5c3",
+      "bytes": 6734,
+      "physical_lines": 118,
+      "nonblank_lines": 110,
+      "code_lines": 110,
+      "comment_lines": 0,
+      "blank_lines": 8
+    },
+    "src/Msync.Core/Artifacts/NativeArtifact.Compact.Primitives.cs": {
+      "sha256": "26348b3d521daaab0ace965a147d2a33f69f0fef3bc34a8e7187f8fdd35ef266",
+      "bytes": 7797,
+      "physical_lines": 183,
+      "nonblank_lines": 170,
+      "code_lines": 170,
+      "comment_lines": 0,
+      "blank_lines": 13
+    },
+    "src/Msync.Core/Artifacts/NativeArtifact.Compact.cs": {
+      "sha256": "9e8cfc380aed683505516407cc342b5f799d28aa91a02c83846a92f6320b2f34",
+      "bytes": 16392,
+      "physical_lines": 274,
+      "nonblank_lines": 255,
+      "code_lines": 255,
+      "comment_lines": 0,
+      "blank_lines": 19
+    },
+    "src/Msync.Core/Artifacts/NativeArtifact.Disassembly.cs": {
+      "sha256": "fe89830ba1778c506780c7374018d66d080d04d4521cdc8529e8034e70e71184",
+      "bytes": 15188,
+      "physical_lines": 240,
+      "nonblank_lines": 226,
+      "code_lines": 226,
+      "comment_lines": 0,
+      "blank_lines": 14
+    },
+    "src/Msync.Core/Artifacts/NativeArtifact.Flow.cs": {
+      "sha256": "51b315a89e1b8f136e4f1efe8d210bd0656be5f363bd166b1f54d0f09fbf5f8f",
+      "bytes": 7767,
+      "physical_lines": 148,
+      "nonblank_lines": 144,
+      "code_lines": 142,
+      "comment_lines": 2,
+      "blank_lines": 4
+    },
+    "src/Msync.Core/Artifacts/NativeArtifact.Plans.cs": {
+      "sha256": "b85cb280c51a8b6c047fe8ca1004fc7dd09077bdac0c4168c99360a1ec0ab9a7",
+      "bytes": 10074,
+      "physical_lines": 191,
+      "nonblank_lines": 180,
+      "code_lines": 180,
+      "comment_lines": 0,
+      "blank_lines": 11
+    },
+    "src/Msync.Core/Artifacts/NativeArtifact.Pointers.cs": {
+      "sha256": "4306cf71ef1ae42eb4bc77b46c285d5b1864aec39138a0fa45c4f48c4f986bb2",
+      "bytes": 11131,
+      "physical_lines": 197,
+      "nonblank_lines": 186,
+      "code_lines": 185,
+      "comment_lines": 1,
+      "blank_lines": 11
+    },
+    "src/Msync.Core/Artifacts/NativeArtifact.Validation.cs": {
+      "sha256": "073812723fb19fb993848bf6efd2c2c1db507e55a043cbe7915668478a4753a3",
+      "bytes": 45706,
+      "physical_lines": 700,
+      "nonblank_lines": 672,
+      "code_lines": 671,
+      "comment_lines": 1,
+      "blank_lines": 28
+    },
+    "src/Msync.Core/Artifacts/NativeArtifact.cs": {
+      "sha256": "9f814fb63e9f3e2918e52a2d0be9c4e042ea7a503e9e2c07a774c2eb974db983",
+      "bytes": 21317,
+      "physical_lines": 419,
+      "nonblank_lines": 382,
+      "code_lines": 380,
+      "comment_lines": 2,
+      "blank_lines": 37
+    },
+    "src/Msync.Core/Artifacts/NativeHistoricalBindings.cs": {
+      "sha256": "0d11ab2d7c3a3bd1df23a3badc411b2981e8f34b2cea948726ce19b529baae38",
+      "bytes": 5159,
+      "physical_lines": 92,
+      "nonblank_lines": 85,
+      "code_lines": 83,
+      "comment_lines": 2,
+      "blank_lines": 7
+    },
+    "src/Msync.Core/Artifacts/NativeLegacyV6Importer.Builtins.cs": {
+      "sha256": "76afff3308c11bca921676fe3a9d78c6b209fb1e9959986cd6e6fbbb847f5f54",
+      "bytes": 1419,
+      "physical_lines": 26,
+      "nonblank_lines": 25,
+      "code_lines": 25,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Artifacts/NativeLegacyV6Importer.Compact.cs": {
+      "sha256": "4afab00b7fef82b301d2e95c254c78f0a65f26178b23ae159e6b9ddc6661abd4",
+      "bytes": 2179,
+      "physical_lines": 46,
+      "nonblank_lines": 45,
+      "code_lines": 45,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Artifacts/NativeLegacyV6Importer.Fields.cs": {
+      "sha256": "451540af85d8821fc4fdba15b8ed24d6eff58a08a7eaa4388e557f2e18cf4347",
+      "bytes": 3748,
+      "physical_lines": 63,
+      "nonblank_lines": 62,
+      "code_lines": 62,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Artifacts/NativeLegacyV6Importer.Function.cs": {
+      "sha256": "2af536aa01324ba23e961fa1e71845246251f5c805dd78e3dfaa051e85d8d26d",
+      "bytes": 19179,
+      "physical_lines": 276,
+      "nonblank_lines": 271,
+      "code_lines": 270,
+      "comment_lines": 1,
+      "blank_lines": 5
+    },
+    "src/Msync.Core/Artifacts/NativeLegacyV6Importer.HostShapes.cs": {
+      "sha256": "e44d6675f5dd53791ec823c3a5cc0dbcc736f3c1c87d9e956e13a9e6f11972bf",
+      "bytes": 2088,
+      "physical_lines": 35,
+      "nonblank_lines": 32,
+      "code_lines": 32,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Core/Artifacts/NativeLegacyV6Importer.Metadata.cs": {
+      "sha256": "b58a4ac6b3a18667596ac4dcb1b0cfbd81f5764f9d457518fbd1a54d68a1d96e",
+      "bytes": 6741,
+      "physical_lines": 110,
+      "nonblank_lines": 109,
+      "code_lines": 109,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Artifacts/NativeLegacyV6Importer.Ops.cs": {
+      "sha256": "666e286322b3e6e85bb94f1363968202c97f1e218757067239eabc949fde0afc",
+      "bytes": 30594,
+      "physical_lines": 391,
+      "nonblank_lines": 389,
+      "code_lines": 389,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Core/Artifacts/NativeLegacyV6Importer.RangeMetadata.cs": {
+      "sha256": "0425dcf7d29f0e710ced7be64113ed39c8bb5d2ba03b5e8e60ab0f45582e7690",
+      "bytes": 5214,
+      "physical_lines": 85,
+      "nonblank_lines": 84,
+      "code_lines": 84,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Artifacts/NativeLegacyV6Importer.Storage.cs": {
+      "sha256": "9ace739d068c976bc8c62d45ce0205a0953f71295f39039debdbe01448278cb5",
+      "bytes": 31855,
+      "physical_lines": 436,
+      "nonblank_lines": 427,
+      "code_lines": 427,
+      "comment_lines": 0,
+      "blank_lines": 9
+    },
+    "src/Msync.Core/Artifacts/NativeLegacyV6Importer.StorageAdapters.cs": {
+      "sha256": "74d39837910cf571a2ae834fd4acfd3a842d56ffcc69f87754db7bcf8673f147",
+      "bytes": 6313,
+      "physical_lines": 102,
+      "nonblank_lines": 99,
+      "code_lines": 99,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Core/Artifacts/NativeLegacyV6Importer.cs": {
+      "sha256": "947b1c585de5f5392896e283bacb7fbb27aa97577d845086236ef1d8aa5ab168",
+      "bytes": 10853,
+      "physical_lines": 190,
+      "nonblank_lines": 179,
+      "code_lines": 178,
+      "comment_lines": 1,
+      "blank_lines": 11
+    },
+    "src/Msync.Core/Artifacts/SessionDispatchTable.cs": {
+      "sha256": "38772ac91bfe8cb5a8b1494874acacba5f7b90063be1a014f4d9f6218c1a4e26",
+      "bytes": 273,
+      "physical_lines": 5,
+      "nonblank_lines": 4,
+      "code_lines": 2,
+      "comment_lines": 2,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Artifacts/TransferPlanContract.cs": {
+      "sha256": "e6ceb7384fc76dcee5d1530b638f74e52aa983d9770327ff46475d4229c1a8b3",
+      "bytes": 448,
+      "physical_lines": 23,
+      "nonblank_lines": 19,
+      "code_lines": 19,
+      "comment_lines": 0,
+      "blank_lines": 4
+    },
+    "src/Msync.Core/Connections/ConnectionKind.cs": {
+      "sha256": "38ce3057f65b3f998d2099700dd919d65eaae7ced48aa91185df7364a10572e5",
+      "bytes": 102,
+      "physical_lines": 3,
+      "nonblank_lines": 2,
+      "code_lines": 2,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Context/BarrierDirection.cs": {
+      "sha256": "b0d5f6990da02e88dfad9188c39a680644a5a2cfd95335af2d9a03e22811cdcf",
+      "bytes": 89,
+      "physical_lines": 7,
+      "nonblank_lines": 6,
+      "code_lines": 6,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Context/HostContext.cs": {
+      "sha256": "0d799fcc574acd992966922318270a709a67e291920077aa57980f8421a86d42",
+      "bytes": 312,
+      "physical_lines": 7,
+      "nonblank_lines": 6,
+      "code_lines": 6,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Context/ProductVersion.cs": {
+      "sha256": "82478ce834744c8c7a13bc3499a7885e8117adce0439a02f6eeb068a86d3845d",
+      "bytes": 170,
+      "physical_lines": 6,
+      "nonblank_lines": 5,
+      "code_lines": 5,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Diagnostics/CompilationSize.Native.cs": {
+      "sha256": "ee78e6468bf27340e8d579b709f5784b9ed30ec19976ed1be8c92b74a5de838a",
+      "bytes": 669,
+      "physical_lines": 21,
+      "nonblank_lines": 18,
+      "code_lines": 18,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Core/Diagnostics/CompilationTrace.cs": {
+      "sha256": "e9a4fc89fdc6bc26e9af00156501e345655edd0ee19cf3616a3ad97df9f00a07",
+      "bytes": 2283,
+      "physical_lines": 47,
+      "nonblank_lines": 39,
+      "code_lines": 38,
+      "comment_lines": 1,
+      "blank_lines": 8
+    },
+    "src/Msync.Core/Diagnostics/MsyncException.cs": {
+      "sha256": "e3f28ac7ef8990861717ea28622644b3ac6171649f6706afc1915caf598ac44d",
+      "bytes": 242,
+      "physical_lines": 7,
+      "nonblank_lines": 6,
+      "code_lines": 6,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Diagnostics/SourceSpan.cs": {
+      "sha256": "27aedbf1cddb61d1429041d4b8961cad6bdbe2a6e09b278515107f885b0fc973",
+      "bytes": 103,
+      "physical_lines": 3,
+      "nonblank_lines": 2,
+      "code_lines": 2,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Native/NativeSignature.cs": {
+      "sha256": "9520497038029130dc8ec021101f1e5f18f863716da945184e823ed02a9c3c65",
+      "bytes": 1690,
+      "physical_lines": 35,
+      "nonblank_lines": 33,
+      "code_lines": 33,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Core/Native/NativeSignatures.Bits.cs": {
+      "sha256": "ab70cb3947608f04105ea7946ac5ea4605959c7b22e21cdc3781f923bd92cd65",
+      "bytes": 1274,
+      "physical_lines": 28,
+      "nonblank_lines": 26,
+      "code_lines": 26,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Core/Native/NativeSignatures.Cast.cs": {
+      "sha256": "e193f72f7ab6640519b940caad329e00e978df3be4b95c512b51f6a4fc31a78b",
+      "bytes": 2256,
+      "physical_lines": 46,
+      "nonblank_lines": 41,
+      "code_lines": 41,
+      "comment_lines": 0,
+      "blank_lines": 5
+    },
+    "src/Msync.Core/Native/NativeSignatures.Environment.cs": {
+      "sha256": "cacf3ce0d22a28443fc1a27a64b74192e6e4b6c650dcb4dc2a67ec60d07d1cc5",
+      "bytes": 1656,
+      "physical_lines": 26,
+      "nonblank_lines": 25,
+      "code_lines": 25,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Native/NativeSignatures.IOProcess.cs": {
+      "sha256": "ac8f9c466c3c96e46aa4453e9a6be0bee14f91d5c850e2cf29844f62136239b4",
+      "bytes": 3380,
+      "physical_lines": 48,
+      "nonblank_lines": 47,
+      "code_lines": 45,
+      "comment_lines": 2,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Native/NativeSignatures.Iteration.cs": {
+      "sha256": "6439b61a4dd5672fc5e7cd013b2ed1d621ff640cf5ffdb0e79a48febcc904a34",
+      "bytes": 362,
+      "physical_lines": 8,
+      "nonblank_lines": 7,
+      "code_lines": 7,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Native/NativeSignatures.Math.cs": {
+      "sha256": "01fa75ab3144bff8d10b74f01cc2c116febda92fb0dd8624064042eb1286a5e2",
+      "bytes": 1488,
+      "physical_lines": 27,
+      "nonblank_lines": 25,
+      "code_lines": 25,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Core/Native/NativeSignatures.Meta.cs": {
+      "sha256": "ee80d279a5f098f3119b8ef9c969716e9c83397e398ae76234de044e3cc44c4f",
+      "bytes": 2483,
+      "physical_lines": 35,
+      "nonblank_lines": 34,
+      "code_lines": 34,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Native/NativeSignatures.Ranges.cs": {
+      "sha256": "aa5d5aefd65d14e8d47f0364b299f55ce36af08e9bcbff236a3d91aaddff6d03",
+      "bytes": 2861,
+      "physical_lines": 41,
+      "nonblank_lines": 40,
+      "code_lines": 40,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Native/NativeSignatures.Regex.cs": {
+      "sha256": "655ffe29bebcdf503daefb9642fb7da6bc5439de7e721cd9ad850561626fd884",
+      "bytes": 925,
+      "physical_lines": 17,
+      "nonblank_lines": 16,
+      "code_lines": 16,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Native/NativeSignatures.Shell.cs": {
+      "sha256": "bca374173042efb241a97a718c9ce68a39e5054f51fef1ecb8b1b98541fb81dc",
+      "bytes": 982,
+      "physical_lines": 17,
+      "nonblank_lines": 16,
+      "code_lines": 16,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Native/NativeSignatures.TextBuilder.cs": {
+      "sha256": "7baee053ff5710c2999adf41a1aa7f0019dfb41f2da23192b5002aa3d987a648",
+      "bytes": 801,
+      "physical_lines": 15,
+      "nonblank_lines": 14,
+      "code_lines": 14,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Native/NativeSignatures.TextPaths.cs": {
+      "sha256": "f21ba1310843d7e9a55a8bbdb0529488cd240ab3e6df9a983506722f7b611f94",
+      "bytes": 1640,
+      "physical_lines": 23,
+      "nonblank_lines": 22,
+      "code_lines": 22,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Native/NativeSignatures.cs": {
+      "sha256": "74243597eeb56302344b5f69106d25fbb698a9b1f075da571cf6fd8eedf4a76d",
+      "bytes": 9133,
+      "physical_lines": 124,
+      "nonblank_lines": 121,
+      "code_lines": 121,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Core/NativeModel/Analysis/NativeAllocationSafety.cs": {
+      "sha256": "2b2d10741192114014775cf4ce2191af81609ffdcde2d030110267ed4c9a5a52",
+      "bytes": 607,
+      "physical_lines": 16,
+      "nonblank_lines": 14,
+      "code_lines": 14,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Core/NativeModel/Analysis/NativeControlFlow.cs": {
+      "sha256": "0f8150bdce3336dc88cd0a46db7910b392222547be373077b72c8634a6613fe9",
+      "bytes": 4188,
+      "physical_lines": 95,
+      "nonblank_lines": 88,
+      "code_lines": 88,
+      "comment_lines": 0,
+      "blank_lines": 7
+    },
+    "src/Msync.Core/NativeModel/Analysis/NativeEscapeAnalysis.cs": {
+      "sha256": "24a744f7ba7939150e96a478bbf39275bd4b625052e33de9ed3b70646b7fa321",
+      "bytes": 6692,
+      "physical_lines": 139,
+      "nonblank_lines": 129,
+      "code_lines": 128,
+      "comment_lines": 1,
+      "blank_lines": 10
+    },
+    "src/Msync.Core/NativeModel/Analysis/NativeInstructionFacts.cs": {
+      "sha256": "73398ad1e4d4fb1b6d23771f34625cdee94ddd93d34efd525438bccbd8bfc3ca",
+      "bytes": 4740,
+      "physical_lines": 75,
+      "nonblank_lines": 64,
+      "code_lines": 64,
+      "comment_lines": 0,
+      "blank_lines": 11
+    },
+    "src/Msync.Core/NativeModel/NativeBuiltinLayouts.cs": {
+      "sha256": "284d9cce01a0149a2b75153594585b6b29842a583fa57da060f3c8c04ee2f63c",
+      "bytes": 2759,
+      "physical_lines": 46,
+      "nonblank_lines": 40,
+      "code_lines": 40,
+      "comment_lines": 0,
+      "blank_lines": 6
+    },
+    "src/Msync.Core/NativeModel/NativeCode.cs": {
+      "sha256": "5503f915467c247cb3d64ba6f6fbbf38fb802901a48f09b967acd447bc08abb3",
+      "bytes": 4440,
+      "physical_lines": 127,
+      "nonblank_lines": 112,
+      "code_lines": 111,
+      "comment_lines": 1,
+      "blank_lines": 15
+    },
+    "src/Msync.Core/NativeModel/NativeDescriptors.cs": {
+      "sha256": "80f2ea2692b98b649c098fd49138c6633f55b11e52245feea34409ea7ae385ac",
+      "bytes": 13661,
+      "physical_lines": 276,
+      "nonblank_lines": 257,
+      "code_lines": 256,
+      "comment_lines": 1,
+      "blank_lines": 19
+    },
+    "src/Msync.Core/NativeModel/NativeKind.cs": {
+      "sha256": "fa9e863104abce1f024a9ced8888b56630728cdc625899c1f40470c6b6004f07",
+      "bytes": 158,
+      "physical_lines": 7,
+      "nonblank_lines": 6,
+      "code_lines": 6,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/NativeModel/NativePlans.cs": {
+      "sha256": "90ff4b391fc681bf91cd100904d352a9c366f4aece91b142573406c4c62e56be",
+      "bytes": 2098,
+      "physical_lines": 43,
+      "nonblank_lines": 36,
+      "code_lines": 35,
+      "comment_lines": 1,
+      "blank_lines": 7
+    },
+    "src/Msync.Core/NativeModel/NativeRoot.cs": {
+      "sha256": "0fd51d02cd53be6cfbd169a47f4455ed5b65594f9a7bf82b6daa00668855ab4b",
+      "bytes": 583,
+      "physical_lines": 16,
+      "nonblank_lines": 14,
+      "code_lines": 13,
+      "comment_lines": 1,
+      "blank_lines": 2
+    },
+    "src/Msync.Core/NativeModel/NativeStorage.cs": {
+      "sha256": "fb16ecae7024e57382922da1d632c5234b6dad6ce45aecbdfaff18a24f3bbb27",
+      "bytes": 20760,
+      "physical_lines": 385,
+      "nonblank_lines": 373,
+      "code_lines": 372,
+      "comment_lines": 1,
+      "blank_lines": 12
+    },
+    "src/Msync.Core/NativeModel/NativeType.cs": {
+      "sha256": "7fa03579f2e53aade9b549656a949915428b97cf34eec99c5746bd86eb81fcbf",
+      "bytes": 12881,
+      "physical_lines": 261,
+      "nonblank_lines": 255,
+      "code_lines": 254,
+      "comment_lines": 1,
+      "blank_lines": 6
+    },
+    "src/Msync.Core/NativeModel/NativeTypeRelations.cs": {
+      "sha256": "d4125bd79f05edb502dce21dd4863e6c08688f8c0c66509a47e21ddf2c385392",
+      "bytes": 2808,
+      "physical_lines": 58,
+      "nonblank_lines": 54,
+      "code_lines": 53,
+      "comment_lines": 1,
+      "blank_lines": 4
+    },
+    "src/Msync.Core/NativeModel/NativeValue.cs": {
+      "sha256": "2f0ab98c35844bddb6a463b346d3cecf8cca4664a5b8cbc8c097709e6a4f17d6",
+      "bytes": 9717,
+      "physical_lines": 185,
+      "nonblank_lines": 177,
+      "code_lines": 177,
+      "comment_lines": 0,
+      "blank_lines": 8
+    },
+    "src/Msync.Core/Processes/IProcessControl.cs": {
+      "sha256": "41b51c6608570ab51b1e14d6ca744f41e3902a5d14b51bfda88ec8284385cd57",
+      "bytes": 303,
+      "physical_lines": 11,
+      "nonblank_lines": 10,
+      "code_lines": 10,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Types/MetaTypes.cs": {
+      "sha256": "d1bf49203936fd52093740fdc837f9a3d145377a41263006477d20b2e6abdd8c",
+      "bytes": 4086,
+      "physical_lines": 82,
+      "nonblank_lines": 73,
+      "code_lines": 73,
+      "comment_lines": 0,
+      "blank_lines": 9
+    },
+    "src/Msync.Core/Types/NumberSemantics.cs": {
+      "sha256": "2a03437895d37b7f1b7bb3659819a470a0feb907ab69c80005c887e1321ffa7e",
+      "bytes": 307,
+      "physical_lines": 8,
+      "nonblank_lines": 7,
+      "code_lines": 6,
+      "comment_lines": 1,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Types/NumberSyntax.cs": {
+      "sha256": "249dd0cbf875b9efd17c52433e9f654fb7577c7175400299b193011b092d3a1a",
+      "bytes": 2190,
+      "physical_lines": 48,
+      "nonblank_lines": 43,
+      "code_lines": 43,
+      "comment_lines": 0,
+      "blank_lines": 5
+    },
+    "src/Msync.Core/Types/PathSemantics.Native.cs": {
+      "sha256": "3b60ae7346d28302c512d89d7bc130a48a83a8f823cd0d267f5383650897288a",
+      "bytes": 2510,
+      "physical_lines": 59,
+      "nonblank_lines": 47,
+      "code_lines": 47,
+      "comment_lines": 0,
+      "blank_lines": 12
+    },
+    "src/Msync.Core/Types/TextFormat.cs": {
+      "sha256": "89ef0b08d3f8dcbf39afbe2ae27319dcd427c6ffd43e80339c5fba8f3bab7599",
+      "bytes": 7832,
+      "physical_lines": 169,
+      "nonblank_lines": 152,
+      "code_lines": 150,
+      "comment_lines": 2,
+      "blank_lines": 17
+    },
+    "src/Msync.Core/Types/TextSemantics.cs": {
+      "sha256": "6e136f2355beb5015e74a7a8ea9280fd88ff16084c12d6243a863de584b53b12",
+      "bytes": 1674,
+      "physical_lines": 40,
+      "nonblank_lines": 33,
+      "code_lines": 33,
+      "comment_lines": 0,
+      "blank_lines": 7
+    },
+    "src/Msync.Core/Types/TextSlice.cs": {
+      "sha256": "12dafefdeb18c91b063749d374a11804962de682171571a4eb0526c01fb70e16",
+      "bytes": 315,
+      "physical_lines": 8,
+      "nonblank_lines": 7,
+      "code_lines": 7,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Types/TypeKind.cs": {
+      "sha256": "1ea7f9bc1898474e130f1f599c861338a75d90bf7c6f53a1d79d667adb44cf9f",
+      "bytes": 374,
+      "physical_lines": 10,
+      "nonblank_lines": 9,
+      "code_lines": 9,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Core/Types/TypeRef.cs": {
+      "sha256": "16dd99ce9fc9c87f62e2978ed4590b0d356b4afa76d5502858bc07777c01775e",
+      "bytes": 4329,
+      "physical_lines": 92,
+      "nonblank_lines": 89,
+      "code_lines": 89,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Hir/Lowering/HirLoweringLayout.cs": {
+      "sha256": "c647da803d71a86c3862ca6f26d3a7c02e4012499024049a8f6ba95a7eeee365",
+      "bytes": 1303,
+      "physical_lines": 24,
+      "nonblank_lines": 20,
+      "code_lines": 20,
+      "comment_lines": 0,
+      "blank_lines": 4
+    },
+    "src/Msync.Hir/Lowering/HirLoweringMap.cs": {
+      "sha256": "40ed7c998ca73537df7043c962773039d80d8a818a315ac1edd98f7e8a2f8053",
+      "bytes": 987,
+      "physical_lines": 19,
+      "nonblank_lines": 16,
+      "code_lines": 15,
+      "comment_lines": 1,
+      "blank_lines": 3
+    },
+    "src/Msync.Hir/Lowering/NativeHirLowerer.Aggregates.cs": {
+      "sha256": "77de8684553e4b923350d9fd920dd960987ac1f01e146ae2383db0fdc98e4191",
+      "bytes": 12689,
+      "physical_lines": 234,
+      "nonblank_lines": 219,
+      "code_lines": 219,
+      "comment_lines": 0,
+      "blank_lines": 15
+    },
+    "src/Msync.Hir/Lowering/NativeHirLowerer.Compatibility.cs": {
+      "sha256": "b1a607e6c7c249b798ecb8887b93e2c49c12c744d41ed50bf1886e17ce75d477",
+      "bytes": 11639,
+      "physical_lines": 200,
+      "nonblank_lines": 181,
+      "code_lines": 181,
+      "comment_lines": 0,
+      "blank_lines": 19
+    },
+    "src/Msync.Hir/Lowering/NativeHirLowerer.Control.cs": {
+      "sha256": "981a455561053fa28ae517f9d319fd6977946a1d6225a397a0cd57383ba04739",
+      "bytes": 11806,
+      "physical_lines": 257,
+      "nonblank_lines": 242,
+      "code_lines": 242,
+      "comment_lines": 0,
+      "blank_lines": 15
+    },
+    "src/Msync.Hir/Lowering/NativeHirLowerer.Function.cs": {
+      "sha256": "8365ea5b1b2e47002c4d20d2cead21a8c669ed86b0430cf844a2d86ae226bf2c",
+      "bytes": 18063,
+      "physical_lines": 343,
+      "nonblank_lines": 329,
+      "code_lines": 329,
+      "comment_lines": 0,
+      "blank_lines": 14
+    },
+    "src/Msync.Hir/Lowering/NativeHirLowerer.NativeLayouts.cs": {
+      "sha256": "b5fbca02ad76142c6cc9d38cc30e078dce8d53c266be8bb230ad00a4a779e224",
+      "bytes": 3934,
+      "physical_lines": 82,
+      "nonblank_lines": 75,
+      "code_lines": 74,
+      "comment_lines": 1,
+      "blank_lines": 7
+    },
+    "src/Msync.Hir/Lowering/NativeHirLowerer.Types.cs": {
+      "sha256": "08cd6868ba3458776212a7fd0f40e850d5ce622f26ba0780fd222f52ad1386d3",
+      "bytes": 15525,
+      "physical_lines": 309,
+      "nonblank_lines": 287,
+      "code_lines": 285,
+      "comment_lines": 2,
+      "blank_lines": 22
+    },
+    "src/Msync.Hir/Lowering/NativeHirLowerer.cs": {
+      "sha256": "9c9c345e611956be9902347fa43788adc8b61dcc7cf35b967cdc38b1b25332da",
+      "bytes": 19233,
+      "physical_lines": 336,
+      "nonblank_lines": 320,
+      "code_lines": 320,
+      "comment_lines": 0,
+      "blank_lines": 16
+    },
+    "src/Msync.Hir/Model/HirBuilder.Allocations.cs": {
+      "sha256": "4c794b818b59b0aac25082d75213eb86474b0f3a9e6a550154184740ab051c28",
+      "bytes": 1006,
+      "physical_lines": 28,
+      "nonblank_lines": 25,
+      "code_lines": 25,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Hir/Model/HirBuilder.RecursiveLayouts.cs": {
+      "sha256": "cd3b7c1e898cf41ddb840f4eb92f503874cc5811f93a33e01bd383dabc799a2d",
+      "bytes": 1380,
+      "physical_lines": 36,
+      "nonblank_lines": 31,
+      "code_lines": 31,
+      "comment_lines": 0,
+      "blank_lines": 5
+    },
+    "src/Msync.Hir/Model/HirBuilder.ScopeLayouts.cs": {
+      "sha256": "10db52896b8a2cfa9c95a40c17f15b6be5de18a6caf92d0aeb2ff9fb886f213d",
+      "bytes": 2685,
+      "physical_lines": 68,
+      "nonblank_lines": 62,
+      "code_lines": 60,
+      "comment_lines": 2,
+      "blank_lines": 6
+    },
+    "src/Msync.Hir/Model/HirBuilder.Transaction.cs": {
+      "sha256": "6d4799fd0d621fe76590fbf765e5bf162fc4c43a103a0de19e0848b6fcfed3b2",
+      "bytes": 6748,
+      "physical_lines": 149,
+      "nonblank_lines": 137,
+      "code_lines": 134,
+      "comment_lines": 3,
+      "blank_lines": 12
+    },
+    "src/Msync.Hir/Model/HirBuilder.cs": {
+      "sha256": "444bf0804c05d8113bd6e2640d8099c48a7366730ce85461d1e77c60fe54e5f7",
+      "bytes": 4648,
+      "physical_lines": 90,
+      "nonblank_lines": 86,
+      "code_lines": 86,
+      "comment_lines": 0,
+      "blank_lines": 4
+    },
+    "src/Msync.Hir/Model/HirModule.cs": {
+      "sha256": "f287a49c67e170fded182cc1b6e27eb0e2aecc13aedd1c62cab0586a9dab8a30",
+      "bytes": 5807,
+      "physical_lines": 107,
+      "nonblank_lines": 101,
+      "code_lines": 99,
+      "comment_lines": 2,
+      "blank_lines": 6
+    },
+    "src/Msync.Hir/Model/HirNode.cs": {
+      "sha256": "d948a2b51ccd49625fb1f9a62a69c566cd168ed8273faaa81b86266466dcc4a8",
+      "bytes": 1227,
+      "physical_lines": 31,
+      "nonblank_lines": 27,
+      "code_lines": 26,
+      "comment_lines": 1,
+      "blank_lines": 4
+    },
+    "src/Msync.Hir/Model/HirScopeDomain.cs": {
+      "sha256": "f3f9eb00c0e27eb7d7449f9f31f5a09525739b0543eeed4f5316e4735d6b4147",
+      "bytes": 2443,
+      "physical_lines": 64,
+      "nonblank_lines": 53,
+      "code_lines": 52,
+      "comment_lines": 1,
+      "blank_lines": 11
+    },
+    "src/Msync.Hir/Model/Ids.cs": {
+      "sha256": "675e7f64c7be82c70a0956f46dfe75106c798a5065beae4b2ddbc8897e35bbfa",
+      "bytes": 939,
+      "physical_lines": 22,
+      "nonblank_lines": 20,
+      "code_lines": 20,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Hir/Printing/HirPrinter.cs": {
+      "sha256": "aa8bc46112a8ef062cdef24ac9194c54809f3d2857bf80e0871853cbbfdef858",
+      "bytes": 18612,
+      "physical_lines": 250,
+      "nonblank_lines": 234,
+      "code_lines": 234,
+      "comment_lines": 0,
+      "blank_lines": 16
+    },
+    "src/Msync.Hir/Sealing/HirSealer.cs": {
+      "sha256": "4cf8c7e02dc4921e57b59f8569ac7cfc7fdbd309254f6f8bbba5a731ca9ac099",
+      "bytes": 9837,
+      "physical_lines": 206,
+      "nonblank_lines": 186,
+      "code_lines": 185,
+      "comment_lines": 1,
+      "blank_lines": 20
+    },
+    "src/Msync.Hir/Serialization/HirArtifact.cs": {
+      "sha256": "30b5ea71e355111ce816417ed7f8e154483883d53a1099c106f3e3ddcb1bb061",
+      "bytes": 3256,
+      "physical_lines": 79,
+      "nonblank_lines": 70,
+      "code_lines": 69,
+      "comment_lines": 1,
+      "blank_lines": 9
+    },
+    "src/Msync.Hir/Serialization/HirBinaryReader.cs": {
+      "sha256": "ae2e55fc58c50a06d1585a17968d72d1160d472792cd9e300edacd52edc58861",
+      "bytes": 11115,
+      "physical_lines": 227,
+      "nonblank_lines": 210,
+      "code_lines": 210,
+      "comment_lines": 0,
+      "blank_lines": 17
+    },
+    "src/Msync.Hir/Serialization/HirBinaryWriter.cs": {
+      "sha256": "df32a894157fa254b4288f1104ee100b0c7ee0450b192eb196bdbb01fa354070",
+      "bytes": 7465,
+      "physical_lines": 171,
+      "nonblank_lines": 149,
+      "code_lines": 149,
+      "comment_lines": 0,
+      "blank_lines": 22
+    },
+    "src/Msync.Hir/Serialization/HirValidation.cs": {
+      "sha256": "8d2ecc7445ddfee97c7aac1e74be78fd0171e718aa435207ae5419151f6192f1",
+      "bytes": 21217,
+      "physical_lines": 352,
+      "nonblank_lines": 337,
+      "code_lines": 337,
+      "comment_lines": 0,
+      "blank_lines": 15
+    },
+    "src/Msync.Optimization/GlobalUsings.cs": {
+      "sha256": "1d15e3b6c30bdbaf7521eab47b2a4199cfa20db537d80cda867289d0d204a944",
+      "bytes": 25,
+      "physical_lines": 1,
+      "nonblank_lines": 1,
+      "code_lines": 1,
+      "comment_lines": 0,
+      "blank_lines": 0
+    },
+    "src/Msync.Optimization/NativeModel/NativeAddressAnalysis.cs": {
+      "sha256": "e545208feca7a591022f049cc68f62751bcc8f19c600954073f01d40681fa44f",
+      "bytes": 7187,
+      "physical_lines": 166,
+      "nonblank_lines": 150,
+      "code_lines": 148,
+      "comment_lines": 2,
+      "blank_lines": 16
+    },
+    "src/Msync.Optimization/NativeModel/NativeCodeRelocation.cs": {
+      "sha256": "d3b50bc33f805cb77e0b4a9322db2bce203fe3d7a9870ad8502aa6a22a23c4a1",
+      "bytes": 1036,
+      "physical_lines": 25,
+      "nonblank_lines": 22,
+      "code_lines": 22,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Optimization/NativeModel/NativeConstantFolding.cs": {
+      "sha256": "6932df29101653c89e170dbeed5922a33786b3ee70166bf1cdd805cc1c5f984c",
+      "bytes": 5085,
+      "physical_lines": 92,
+      "nonblank_lines": 86,
+      "code_lines": 86,
+      "comment_lines": 0,
+      "blank_lines": 6
+    },
+    "src/Msync.Optimization/NativeModel/NativeControlOptimization.cs": {
+      "sha256": "d63fc89ccfda408d142c9cac9c51d2fea38975c0b18fe86540c9798e9c0fc7a3",
+      "bytes": 2412,
+      "physical_lines": 64,
+      "nonblank_lines": 59,
+      "code_lines": 59,
+      "comment_lines": 0,
+      "blank_lines": 5
+    },
+    "src/Msync.Optimization/NativeModel/NativeDeadMemory.cs": {
+      "sha256": "f80062a02ae49b032f417f81a0df1e6f8374f947475c023682498b3fc8543755",
+      "bytes": 4604,
+      "physical_lines": 83,
+      "nonblank_lines": 75,
+      "code_lines": 75,
+      "comment_lines": 0,
+      "blank_lines": 8
+    },
+    "src/Msync.Optimization/NativeModel/NativeFrameCells.cs": {
+      "sha256": "2e3ecfe7c53654c69d127539e2f3688eacb3b9afef8ab45dabdde66c2fa1cc25",
+      "bytes": 2533,
+      "physical_lines": 48,
+      "nonblank_lines": 43,
+      "code_lines": 42,
+      "comment_lines": 1,
+      "blank_lines": 5
+    },
+    "src/Msync.Optimization/NativeModel/NativeGlobalFacts.cs": {
+      "sha256": "8f82a06d2b18011eb4bb68531d087e5fecfe60115c3ad93571646a3a21a55e6a",
+      "bytes": 5081,
+      "physical_lines": 97,
+      "nonblank_lines": 90,
+      "code_lines": 90,
+      "comment_lines": 0,
+      "blank_lines": 7
+    },
+    "src/Msync.Optimization/NativeModel/NativeGlobalMemory.cs": {
+      "sha256": "84535ccf60d30be8608fbe072f0e4bb838f116d17c40d66cc76d7061a6e8874a",
+      "bytes": 6838,
+      "physical_lines": 112,
+      "nonblank_lines": 105,
+      "code_lines": 105,
+      "comment_lines": 0,
+      "blank_lines": 7
+    },
+    "src/Msync.Optimization/NativeModel/NativeInlining.cs": {
+      "sha256": "0eab7a29671498cf5c0bdc7b60156e58f9497645c4de0b94c93026309157c145",
+      "bytes": 13209,
+      "physical_lines": 250,
+      "nonblank_lines": 233,
+      "code_lines": 233,
+      "comment_lines": 0,
+      "blank_lines": 17
+    },
+    "src/Msync.Optimization/NativeModel/NativeKnownCalls.cs": {
+      "sha256": "108a7a8e0649af5e13b79e53389fb1097b366c7c6dcc7691c35ea9c8795aad7f",
+      "bytes": 12321,
+      "physical_lines": 207,
+      "nonblank_lines": 192,
+      "code_lines": 191,
+      "comment_lines": 1,
+      "blank_lines": 15
+    },
+    "src/Msync.Optimization/NativeModel/NativeLiveness.cs": {
+      "sha256": "4c794301995f02cc43b2492b51f9c9b3f94aae04c22163efbc8869d121ff4ea5",
+      "bytes": 2072,
+      "physical_lines": 39,
+      "nonblank_lines": 36,
+      "code_lines": 36,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Optimization/NativeModel/NativeLocalOptimization.cs": {
+      "sha256": "5dbdf1583ca2c6a9bbea0bc1b660ff7a05da6aaeb5e981b019b5eace7f81025e",
+      "bytes": 17043,
+      "physical_lines": 301,
+      "nonblank_lines": 276,
+      "code_lines": 274,
+      "comment_lines": 2,
+      "blank_lines": 25
+    },
+    "src/Msync.Optimization/NativeModel/NativeOptimizationProfile.cs": {
+      "sha256": "6b10e8ab1b345cef55092a10b8cfe604309c260a67a386ef761cf2f0cd9b5252",
+      "bytes": 2751,
+      "physical_lines": 62,
+      "nonblank_lines": 54,
+      "code_lines": 54,
+      "comment_lines": 0,
+      "blank_lines": 8
+    },
+    "src/Msync.Optimization/NativeModel/NativeOptimizer.cs": {
+      "sha256": "08d656ebc32470e756030a87584adafbc84af6604a11fe014618513c44eaeef3",
+      "bytes": 12791,
+      "physical_lines": 227,
+      "nonblank_lines": 216,
+      "code_lines": 216,
+      "comment_lines": 0,
+      "blank_lines": 11
+    },
+    "src/Msync.Optimization/NativeModel/NativeRegisterAllocation.cs": {
+      "sha256": "d5e771c504e46d64a144e5d8f5478a9acac312069611afcc4234e8bb3a7bebfe",
+      "bytes": 5999,
+      "physical_lines": 100,
+      "nonblank_lines": 94,
+      "code_lines": 92,
+      "comment_lines": 2,
+      "blank_lines": 6
+    },
+    "src/Msync.Runtime/Context/ExecutionOptions.cs": {
+      "sha256": "a3469f557c55ec045972acedcd14b24425591ef62ae077b03ce1b58d7e0ed247",
+      "bytes": 711,
+      "physical_lines": 15,
+      "nonblank_lines": 13,
+      "code_lines": 13,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Runtime/Diagnostics/RuntimeObservation.cs": {
+      "sha256": "52745860955fa54da9b2b451db52401bb81246cd53078ac82d121ae11e90b4ea",
+      "bytes": 201,
+      "physical_lines": 3,
+      "nonblank_lines": 2,
+      "code_lines": 2,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Runtime/Diagnostics/RuntimeProfile.Native.cs": {
+      "sha256": "de8c1bff1b1942997b88af749346d883d43dc868b2a8ba346d16076e1606c51c",
+      "bytes": 13892,
+      "physical_lines": 287,
+      "nonblank_lines": 276,
+      "code_lines": 276,
+      "comment_lines": 0,
+      "blank_lines": 11
+    },
+    "src/Msync.Runtime/Diagnostics/RuntimeProfile.cs": {
+      "sha256": "de9c3752902b36fb6847ddbd9c0ee973f204fe88ca6b9dae83c9e63f3c45eb93",
+      "bytes": 767,
+      "physical_lines": 23,
+      "nonblank_lines": 17,
+      "code_lines": 16,
+      "comment_lines": 1,
+      "blank_lines": 6
+    },
+    "src/Msync.Runtime/Diagnostics/RuntimeTimeline.cs": {
+      "sha256": "d15cc667a75e69dd1023778a9ba339d536b76386bb220e9cff4f51b78bb0656a",
+      "bytes": 4487,
+      "physical_lines": 114,
+      "nonblank_lines": 98,
+      "code_lines": 97,
+      "comment_lines": 1,
+      "blank_lines": 16
+    },
+    "src/Msync.Runtime/Generated/UnicodeCasingData.cs": {
+      "sha256": "6790d53124e6d9c7e8ce1d1441594066722622faf74d51ea17f57064fea59533",
+      "bytes": 102867,
+      "physical_lines": 1060,
+      "nonblank_lines": 1052,
+      "code_lines": 1049,
+      "comment_lines": 3,
+      "blank_lines": 8
+    },
+    "src/Msync.Runtime/Native/Files/NativePath.cs": {
+      "sha256": "c3246c83799922d019620e7416abd7972ca64831d1639dbeac4c399976d2de19",
+      "bytes": 6810,
+      "physical_lines": 165,
+      "nonblank_lines": 147,
+      "code_lines": 147,
+      "comment_lines": 0,
+      "blank_lines": 18
+    },
+    "src/Msync.Runtime/Native/Processes/LocalProcessControl.cs": {
+      "sha256": "5f4f60ecc209077accae83fc8c87184eccfe1447957e2c675b94ab341fcadb8a",
+      "bytes": 2698,
+      "physical_lines": 70,
+      "nonblank_lines": 68,
+      "code_lines": 68,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Runtime/Native/Processes/RemoteProcessControl.cs": {
+      "sha256": "8d70254bce36f77624c956b3425d52236a666eed102ac186253c44bed7e33c58",
+      "bytes": 5818,
+      "physical_lines": 141,
+      "nonblank_lines": 135,
+      "code_lines": 135,
+      "comment_lines": 0,
+      "blank_lines": 6
+    },
+    "src/Msync.Runtime/Native/Word32.cs": {
+      "sha256": "3c1efd59b4c7ee3ed93e2fe2b8528496d20b5861a89d9a358dc93acfd8368544",
+      "bytes": 2984,
+      "physical_lines": 65,
+      "nonblank_lines": 55,
+      "code_lines": 54,
+      "comment_lines": 1,
+      "blank_lines": 10
+    },
+    "src/Msync.Runtime/NativeModel/FrameAllocation.cs": {
+      "sha256": "30f0570b25bdaacd259cd59fdb6cf70804188086b8d722ad55172e1794a299fb",
+      "bytes": 2070,
+      "physical_lines": 45,
+      "nonblank_lines": 40,
+      "code_lines": 40,
+      "comment_lines": 0,
+      "blank_lines": 5
+    },
+    "src/Msync.Runtime/NativeModel/NativeBuiltins.Boolean.cs": {
+      "sha256": "00e5c1d1c5173bfef4a9edfd18c830c592a59cdb8af1d33be1f84b67c4231feb",
+      "bytes": 661,
+      "physical_lines": 18,
+      "nonblank_lines": 16,
+      "code_lines": 16,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Runtime/NativeModel/NativeBuiltins.Cast.cs": {
+      "sha256": "9ceb8249b595b8e2a2e7940598842e7d9c2bc03ce9c8dc7bcc9a6080d06cafad",
+      "bytes": 4089,
+      "physical_lines": 78,
+      "nonblank_lines": 69,
+      "code_lines": 69,
+      "comment_lines": 0,
+      "blank_lines": 9
+    },
+    "src/Msync.Runtime/NativeModel/NativeBuiltins.Environment.cs": {
+      "sha256": "65cac907ee7423084ba488a60264dcc77a8394c65e324a847f6fcfeb68ab0ee6",
+      "bytes": 2187,
+      "physical_lines": 34,
+      "nonblank_lines": 31,
+      "code_lines": 31,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Runtime/NativeModel/NativeBuiltins.IO.cs": {
+      "sha256": "4a9e2b60361f29406da47d66b03aec46a2db8a999591e16a63c95813c7c3c8c9",
+      "bytes": 12492,
+      "physical_lines": 238,
+      "nonblank_lines": 224,
+      "code_lines": 224,
+      "comment_lines": 0,
+      "blank_lines": 14
+    },
+    "src/Msync.Runtime/NativeModel/NativeBuiltins.Math.cs": {
+      "sha256": "deaf3a8456c43ba9e4250c71e792a417b18c81a15fec9337f8499e5116cd7fdc",
+      "bytes": 3588,
+      "physical_lines": 83,
+      "nonblank_lines": 78,
+      "code_lines": 78,
+      "comment_lines": 0,
+      "blank_lines": 5
+    },
+    "src/Msync.Runtime/NativeModel/NativeBuiltins.Meta.cs": {
+      "sha256": "14ebc2b1856c7b4eef69a32c530f0c9cfdf6d321e45295ba946a238b4c9d130a",
+      "bytes": 6019,
+      "physical_lines": 88,
+      "nonblank_lines": 81,
+      "code_lines": 81,
+      "comment_lines": 0,
+      "blank_lines": 7
+    },
+    "src/Msync.Runtime/NativeModel/NativeBuiltins.Path.cs": {
+      "sha256": "e29643e080c0c6df5f4c9f18418301236c0667aade1dbf620b54305e9d4a1529",
+      "bytes": 3440,
+      "physical_lines": 59,
+      "nonblank_lines": 54,
+      "code_lines": 53,
+      "comment_lines": 1,
+      "blank_lines": 5
+    },
+    "src/Msync.Runtime/NativeModel/NativeBuiltins.Ranges.Algorithms.cs": {
+      "sha256": "49ab7358ef0fe917aa92e7112f09925d728f1d9ec5523d46811596a79edd3277",
+      "bytes": 14017,
+      "physical_lines": 246,
+      "nonblank_lines": 228,
+      "code_lines": 228,
+      "comment_lines": 0,
+      "blank_lines": 18
+    },
+    "src/Msync.Runtime/NativeModel/NativeBuiltins.Ranges.cs": {
+      "sha256": "a24325b7a675696eed6f52b181f9a5e3558add4e610b7a66e8cc06ecbf5d23ce",
+      "bytes": 13015,
+      "physical_lines": 229,
+      "nonblank_lines": 212,
+      "code_lines": 212,
+      "comment_lines": 0,
+      "blank_lines": 17
+    },
+    "src/Msync.Runtime/NativeModel/NativeBuiltins.Regex.cs": {
+      "sha256": "3f57c850f90e4f2e232578259a7ab6b8d4d1a7c2c82abaadd607846eca47f915",
+      "bytes": 3153,
+      "physical_lines": 61,
+      "nonblank_lines": 54,
+      "code_lines": 54,
+      "comment_lines": 0,
+      "blank_lines": 7
+    },
+    "src/Msync.Runtime/NativeModel/NativeBuiltins.Shell.cs": {
+      "sha256": "d4150333ab23d9847c88c2deb0f9a2774beb70cc07d84a8084704f594d18af0e",
+      "bytes": 4405,
+      "physical_lines": 86,
+      "nonblank_lines": 77,
+      "code_lines": 77,
+      "comment_lines": 0,
+      "blank_lines": 9
+    },
+    "src/Msync.Runtime/NativeModel/NativeBuiltins.String.Unicode.cs": {
+      "sha256": "f62ab78b5feaba1cb58a7c021673f86a3a6141542b8cccea017254e524c75ef8",
+      "bytes": 7177,
+      "physical_lines": 167,
+      "nonblank_lines": 151,
+      "code_lines": 151,
+      "comment_lines": 0,
+      "blank_lines": 16
+    },
+    "src/Msync.Runtime/NativeModel/NativeBuiltins.String.cs": {
+      "sha256": "a6b4fa69abcb35f1103cc1496ea2edf8ee412f4cac8f2c01d7b7b965d765046a",
+      "bytes": 2020,
+      "physical_lines": 48,
+      "nonblank_lines": 44,
+      "code_lines": 44,
+      "comment_lines": 0,
+      "blank_lines": 4
+    },
+    "src/Msync.Runtime/NativeModel/NativeBuiltins.Text.cs": {
+      "sha256": "c834eb186e247c8a81fa480cf3f0ffc1d7a9be393a7701116b8e23541adcf02c",
+      "bytes": 10810,
+      "physical_lines": 255,
+      "nonblank_lines": 236,
+      "code_lines": 235,
+      "comment_lines": 1,
+      "blank_lines": 19
+    },
+    "src/Msync.Runtime/NativeModel/NativeBuiltins.cs": {
+      "sha256": "ec714f6552246f9cf9604ad0cf998df292b32a6e6cd89db8c5ba96e83c313c7b",
+      "bytes": 7844,
+      "physical_lines": 138,
+      "nonblank_lines": 125,
+      "code_lines": 124,
+      "comment_lines": 1,
+      "blank_lines": 13
+    },
+    "src/Msync.Runtime/NativeModel/NativeExecutionSession.cs": {
+      "sha256": "2ea09e5c7c526f20ee3c42261780739ebf9d4567b4e856feaddfebd5e44d866f",
+      "bytes": 1462,
+      "physical_lines": 34,
+      "nonblank_lines": 28,
+      "code_lines": 27,
+      "comment_lines": 1,
+      "blank_lines": 6
+    },
+    "src/Msync.Runtime/NativeModel/NativeFrame.cs": {
+      "sha256": "422953e005fd67ce41ae0e8b48000d69c9ba4870cbc2489510388dd69bb0e48b",
+      "bytes": 5067,
+      "physical_lines": 120,
+      "nonblank_lines": 106,
+      "code_lines": 105,
+      "comment_lines": 1,
+      "blank_lines": 14
+    },
+    "src/Msync.Runtime/NativeModel/NativeHostIO.Archive.cs": {
+      "sha256": "ebffef3e188b31adaeb878f60a3656e7c9a4f3343503de11d6f7212b56fbdd47",
+      "bytes": 4824,
+      "physical_lines": 97,
+      "nonblank_lines": 94,
+      "code_lines": 94,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Runtime/NativeModel/NativeHostIO.Completion.cs": {
+      "sha256": "31482567d3a93981100d0633cf96ef7a26a68354b34c51561023d63fbb478665",
+      "bytes": 379,
+      "physical_lines": 11,
+      "nonblank_lines": 9,
+      "code_lines": 9,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Runtime/NativeModel/NativeHostIO.FileSystem.cs": {
+      "sha256": "67e55181a1c11b288c87cb335e4faea28188b3423da3c0c5250106999707b91d",
+      "bytes": 20679,
+      "physical_lines": 351,
+      "nonblank_lines": 334,
+      "code_lines": 332,
+      "comment_lines": 2,
+      "blank_lines": 17
+    },
+    "src/Msync.Runtime/NativeModel/NativeHostIO.Planned.cs": {
+      "sha256": "dc9e88c26700062a5548b41334b4e2428e0ab3c42986c6fa9aa0214bed9cb1c5",
+      "bytes": 12054,
+      "physical_lines": 198,
+      "nonblank_lines": 189,
+      "code_lines": 189,
+      "comment_lines": 0,
+      "blank_lines": 9
+    },
+    "src/Msync.Runtime/NativeModel/NativeHostIO.Processes.cs": {
+      "sha256": "ece76cb7246fea9113b4a9a8f0882cd0f5bc3121cb02eb2ba503677470562a55",
+      "bytes": 9974,
+      "physical_lines": 189,
+      "nonblank_lines": 181,
+      "code_lines": 181,
+      "comment_lines": 0,
+      "blank_lines": 8
+    },
+    "src/Msync.Runtime/NativeModel/NativeHostIO.Protocol.cs": {
+      "sha256": "8b9d4f660282c100b0e1f94b7b90b59063fd5194e6a6a7ee8bcc41ae92a1a022",
+      "bytes": 29510,
+      "physical_lines": 543,
+      "nonblank_lines": 510,
+      "code_lines": 271,
+      "comment_lines": 239,
+      "blank_lines": 33
+    },
+    "src/Msync.Runtime/NativeModel/NativeHostIO.Remote.cs": {
+      "sha256": "f96bff679c3425710670cc78924a36e64bad7f767ec8a693aabd5fdb9b96c1e6",
+      "bytes": 18086,
+      "physical_lines": 312,
+      "nonblank_lines": 300,
+      "code_lines": 300,
+      "comment_lines": 0,
+      "blank_lines": 12
+    },
+    "src/Msync.Runtime/NativeModel/NativeHostIO.RemoteFileSystem.cs": {
+      "sha256": "55129407ef7068d326eb09ac4c48c6182cf12c940a3abe9110e5ea4aea21d455",
+      "bytes": 8429,
+      "physical_lines": 117,
+      "nonblank_lines": 110,
+      "code_lines": 110,
+      "comment_lines": 0,
+      "blank_lines": 7
+    },
+    "src/Msync.Runtime/NativeModel/NativeHostIO.StandardIO.cs": {
+      "sha256": "adb5e2ce86981686a0a0980aed828be099643d67392ffcc4898ca7d4632d2011",
+      "bytes": 3277,
+      "physical_lines": 75,
+      "nonblank_lines": 65,
+      "code_lines": 64,
+      "comment_lines": 1,
+      "blank_lines": 10
+    },
+    "src/Msync.Runtime/NativeModel/NativeHostIO.cs": {
+      "sha256": "70b2a31b1d470f33939c8587f8f57726250508860d1a35e504a29545e27d143f",
+      "bytes": 13572,
+      "physical_lines": 264,
+      "nonblank_lines": 252,
+      "code_lines": 252,
+      "comment_lines": 0,
+      "blank_lines": 12
+    },
+    "src/Msync.Runtime/NativeModel/NativeImage.cs": {
+      "sha256": "b7943f25509f25869544d58fb1f1e5cd188ef86ecbd7cfe1ec0446976da0f3a0",
+      "bytes": 11311,
+      "physical_lines": 223,
+      "nonblank_lines": 203,
+      "code_lines": 203,
+      "comment_lines": 0,
+      "blank_lines": 20
+    },
+    "src/Msync.Runtime/NativeModel/NativeInterpreter.Aggregates.cs": {
+      "sha256": "32f16b3d7153c83a304ae519fa91326364b4bd92dc62c01b501db43bface5394",
+      "bytes": 18054,
+      "physical_lines": 322,
+      "nonblank_lines": 298,
+      "code_lines": 298,
+      "comment_lines": 0,
+      "blank_lines": 24
+    },
+    "src/Msync.Runtime/NativeModel/NativeInterpreter.Arguments.cs": {
+      "sha256": "c0c347277f8449519b938c96d0b47a914cf65179357eb7238e9c37dcde9a7bd7",
+      "bytes": 1828,
+      "physical_lines": 36,
+      "nonblank_lines": 33,
+      "code_lines": 33,
+      "comment_lines": 0,
+      "blank_lines": 3
+    },
+    "src/Msync.Runtime/NativeModel/NativeInterpreter.Context.cs": {
+      "sha256": "fe670ed65e6a757b7753ac2161b44ef5d1fa895c7b50d1b72e9ceea19677e238",
+      "bytes": 1866,
+      "physical_lines": 46,
+      "nonblank_lines": 40,
+      "code_lines": 39,
+      "comment_lines": 1,
+      "blank_lines": 6
+    },
+    "src/Msync.Runtime/NativeModel/NativeInterpreter.Effects.cs": {
+      "sha256": "4a4ff69ad91e4d0b0f467e8b17d78c4334d4622b42372587569fa07d5e47e893",
+      "bytes": 16135,
+      "physical_lines": 268,
+      "nonblank_lines": 252,
+      "code_lines": 252,
+      "comment_lines": 0,
+      "blank_lines": 16
+    },
+    "src/Msync.Runtime/NativeModel/NativeInterpreter.NativeCalls.cs": {
+      "sha256": "7f4fcef78f5ee16a852a8cf31be368ef902b7f3af5dea61d48920f3b9633b0d9",
+      "bytes": 2793,
+      "physical_lines": 45,
+      "nonblank_lines": 40,
+      "code_lines": 40,
+      "comment_lines": 0,
+      "blank_lines": 5
+    },
+    "src/Msync.Runtime/NativeModel/NativeInterpreter.Operators.cs": {
+      "sha256": "275df1ed30d458f05229032e708376ebde4090541d95c9ec60a8e4c1118cf281",
+      "bytes": 13223,
+      "physical_lines": 213,
+      "nonblank_lines": 190,
+      "code_lines": 190,
+      "comment_lines": 0,
+      "blank_lines": 23
+    },
+    "src/Msync.Runtime/NativeModel/NativeInterpreter.Plans.cs": {
+      "sha256": "b10a1be05d404b1b9f7caf8f8615c8f1ea6a8f347d8120a29f35b936b9975b97",
+      "bytes": 3506,
+      "physical_lines": 61,
+      "nonblank_lines": 56,
+      "code_lines": 56,
+      "comment_lines": 0,
+      "blank_lines": 5
+    },
+    "src/Msync.Runtime/NativeModel/NativeInterpreter.RangeItems.cs": {
+      "sha256": "cc18a949eae49fcbe0de0dc5dac7ce8e66007e65596b47dc3d70929651fa0b8f",
+      "bytes": 9766,
+      "physical_lines": 183,
+      "nonblank_lines": 167,
+      "code_lines": 167,
+      "comment_lines": 0,
+      "blank_lines": 16
+    },
+    "src/Msync.Runtime/NativeModel/NativeInterpreter.RangePrimitives.cs": {
+      "sha256": "5edb62bab5a43c9960a27cfdb7404136dab5d2b34a039bec6001050af4a2e292",
+      "bytes": 14125,
+      "physical_lines": 238,
+      "nonblank_lines": 223,
+      "code_lines": 223,
+      "comment_lines": 0,
+      "blank_lines": 15
+    },
+    "src/Msync.Runtime/NativeModel/NativeInterpreter.Steps.cs": {
+      "sha256": "595138abef75cd6ace00f6d8182941c0bfc5a9d559f9e68abc8ce3f6ccfac19b",
+      "bytes": 8507,
+      "physical_lines": 175,
+      "nonblank_lines": 153,
+      "code_lines": 152,
+      "comment_lines": 1,
+      "blank_lines": 22
+    },
+    "src/Msync.Runtime/NativeModel/NativeInterpreter.TailCalls.cs": {
+      "sha256": "6dde6056a6dac1b1f9e513921862a2f8a7637474352c59416679195776d364ed",
+      "bytes": 4310,
+      "physical_lines": 91,
+      "nonblank_lines": 82,
+      "code_lines": 81,
+      "comment_lines": 1,
+      "blank_lines": 9
+    },
+    "src/Msync.Runtime/NativeModel/NativeInterpreter.Telemetry.cs": {
+      "sha256": "c185a5de72cb5de5cc7651a12c6c424fb287458f3b7752b0d368c6087e7d6172",
+      "bytes": 7645,
+      "physical_lines": 156,
+      "nonblank_lines": 141,
+      "code_lines": 140,
+      "comment_lines": 1,
+      "blank_lines": 15
+    },
+    "src/Msync.Runtime/NativeModel/NativeInterpreter.cs": {
+      "sha256": "7b6edd3469e02dadc7856bb8cfc73edaa08253ff38768485a14cb5eb6bff3c06",
+      "bytes": 26844,
+      "physical_lines": 469,
+      "nonblank_lines": 443,
+      "code_lines": 440,
+      "comment_lines": 3,
+      "blank_lines": 26
+    },
+    "src/Msync.Runtime/NativeModel/NativePreparation.Transfers.cs": {
+      "sha256": "f77957c90a5bb47cb38fd1aec38d18047294a7a7d93a1df5c8205b1235d3ba7f",
+      "bytes": 12601,
+      "physical_lines": 236,
+      "nonblank_lines": 225,
+      "code_lines": 221,
+      "comment_lines": 4,
+      "blank_lines": 11
+    },
+    "src/Msync.Runtime/NativeModel/NativePreparation.Values.cs": {
+      "sha256": "e9263f9397f51a78d37eca5d6115b9b373423901ded8c014333f62529e8fcb4b",
+      "bytes": 11314,
+      "physical_lines": 227,
+      "nonblank_lines": 214,
+      "code_lines": 214,
+      "comment_lines": 0,
+      "blank_lines": 13
+    },
+    "src/Msync.Runtime/NativeModel/NativePreparation.cs": {
+      "sha256": "755fdda88601106e1b81aaaba69153f1a973c57a215503eba847fcf5b906d76c",
+      "bytes": 15778,
+      "physical_lines": 279,
+      "nonblank_lines": 265,
+      "code_lines": 263,
+      "comment_lines": 2,
+      "blank_lines": 14
+    },
+    "src/Msync.Runtime/NativeModel/NativeResult.cs": {
+      "sha256": "8b42973928df1fcb57ad7f50d0a82e7fc63b53017da35d4cfb6d3999f93ffe63",
+      "bytes": 8524,
+      "physical_lines": 177,
+      "nonblank_lines": 157,
+      "code_lines": 157,
+      "comment_lines": 0,
+      "blank_lines": 20
+    },
+    "src/Msync.Runtime/NativeModel/NativeRuntimeContext.cs": {
+      "sha256": "5f30282c331a1d5b267670773528f8ad74f3bb9cb6c1755791620c563683b746",
+      "bytes": 6025,
+      "physical_lines": 129,
+      "nonblank_lines": 120,
+      "code_lines": 120,
+      "comment_lines": 0,
+      "blank_lines": 9
+    },
+    "src/Msync.Runtime/NativeModel/NativeTransferGraph.cs": {
+      "sha256": "d7f790c5c6b8aa7e052204be8d2fcfa81f8820bfa496039f5c2529bd091829f0",
+      "bytes": 8886,
+      "physical_lines": 178,
+      "nonblank_lines": 167,
+      "code_lines": 167,
+      "comment_lines": 0,
+      "blank_lines": 11
+    },
+    "src/Msync.Runtime/NativeModel/NativeWork.cs": {
+      "sha256": "c6c59f43fc443c599da2a56384d8f05f979b4e6d4158d307491efbc222d30a75",
+      "bytes": 7296,
+      "physical_lines": 151,
+      "nonblank_lines": 141,
+      "code_lines": 140,
+      "comment_lines": 1,
+      "blank_lines": 10
+    },
+    "src/Msync.Runtime/NativeModel/Tiering/NativeCompiledFunction.cs": {
+      "sha256": "c0cc55ae586f565c58d9f5c401d9ed2eeff851c5cd5def2c8a5e05082fcfcf69",
+      "bytes": 5189,
+      "physical_lines": 81,
+      "nonblank_lines": 76,
+      "code_lines": 76,
+      "comment_lines": 0,
+      "blank_lines": 5
+    },
+    "src/Msync.Runtime/NativeModel/Tiering/NativeExecutionImage.cs": {
+      "sha256": "026a21299fb16e442e8a698aa286645684849aec88774a5774fee9c9158e8ae7",
+      "bytes": 10390,
+      "physical_lines": 219,
+      "nonblank_lines": 209,
+      "code_lines": 209,
+      "comment_lines": 0,
+      "blank_lines": 10
+    },
+    "src/Msync.Runtime/NativeModel/Tiering/NativeInterpreter.LinkedSteps.cs": {
+      "sha256": "902b76a25d143b6ee435427c7019439ede05b11a4fe2bdba6022ef5cd29cd434",
+      "bytes": 19901,
+      "physical_lines": 288,
+      "nonblank_lines": 239,
+      "code_lines": 239,
+      "comment_lines": 0,
+      "blank_lines": 49
+    },
+    "src/Msync.Runtime/NativeModel/Tiering/NativeInterpreter.Tiering.cs": {
+      "sha256": "6e28810f21a48f130628dd296a89253cc80d16fb3802b9f0bbd22da044f61781",
+      "bytes": 14731,
+      "physical_lines": 281,
+      "nonblank_lines": 263,
+      "code_lines": 263,
+      "comment_lines": 0,
+      "blank_lines": 18
+    },
+    "src/Msync.Runtime/NativeModel/Tiering/NativeMachineCode.cs": {
+      "sha256": "f9f34fbcf48f8d7a51726c5bac1dba80f1926a8a70e2dffc554aa9ba3c64f859",
+      "bytes": 21672,
+      "physical_lines": 392,
+      "nonblank_lines": 375,
+      "code_lines": 375,
+      "comment_lines": 0,
+      "blank_lines": 17
+    },
+    "src/Msync.Runtime/NativeModel/Tiering/NativeSpeculation.cs": {
+      "sha256": "d1a554c2b467fa4393e6b486e48fe521edbf9a4ce6cecdcaa065af410c32bac3",
+      "bytes": 1030,
+      "physical_lines": 30,
+      "nonblank_lines": 26,
+      "code_lines": 26,
+      "comment_lines": 0,
+      "blank_lines": 4
+    },
+    "src/Msync.Runtime/NativeModel/Tiering/NativeTierLayout.cs": {
+      "sha256": "595a98bf2bf8a0f4f6d9ac1c50f08e64dc3c8c151082bfdd937ea1c5450b2cbe",
+      "bytes": 3204,
+      "physical_lines": 61,
+      "nonblank_lines": 55,
+      "code_lines": 54,
+      "comment_lines": 1,
+      "blank_lines": 6
+    },
+    "src/Msync.Runtime/NativeModel/Tiering/NativeTierMemory.cs": {
+      "sha256": "4aa08decdf4dc73cf2e9fa966b4341ce3c61db9746aebab5b6c54f1944834c9e",
+      "bytes": 9664,
+      "physical_lines": 243,
+      "nonblank_lines": 223,
+      "code_lines": 218,
+      "comment_lines": 5,
+      "blank_lines": 20
+    },
+    "src/Msync.Runtime/NativeModel/Tiering/NativeTierOptions.cs": {
+      "sha256": "6826d1c40b0c1918dfc9b379de70bc0c28867182e26212b2d83c2d909f8f2067",
+      "bytes": 1448,
+      "physical_lines": 34,
+      "nonblank_lines": 30,
+      "code_lines": 30,
+      "comment_lines": 0,
+      "blank_lines": 4
+    },
+    "src/Msync.Runtime/Planning/PlanResourceIndex.cs": {
+      "sha256": "81c275658ec348abca87fc9bba7ca4f27aa1d7d789c4e6b047df77b517c1fdb0",
+      "bytes": 6104,
+      "physical_lines": 163,
+      "nonblank_lines": 144,
+      "code_lines": 144,
+      "comment_lines": 0,
+      "blank_lines": 19
+    },
+    "src/Msync.Runtime/Planning/ResourceIdentity.cs": {
+      "sha256": "69f87f20829bf0e43245570204c0151bb5d5de528b4fb67fc3476f4f055c64b0",
+      "bytes": 773,
+      "physical_lines": 15,
+      "nonblank_lines": 13,
+      "code_lines": 13,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Runtime/Platform/NativeAccess.cs": {
+      "sha256": "9938ca5817da6651dce63cb5fbd08fa76f742893e998297ce4971c491b070243",
+      "bytes": 687,
+      "physical_lines": 19,
+      "nonblank_lines": 15,
+      "code_lines": 15,
+      "comment_lines": 0,
+      "blank_lines": 4
+    },
+    "src/Msync.Runtime/Platform/NativeCodePage.cs": {
+      "sha256": "c7c981fbd8d019a195beadedb404a9f52f792bcf259590b99af5b5fc844bd714",
+      "bytes": 5290,
+      "physical_lines": 127,
+      "nonblank_lines": 108,
+      "code_lines": 103,
+      "comment_lines": 5,
+      "blank_lines": 19
+    },
+    "src/Msync.Runtime/Platform/NativeFileIdentity.cs": {
+      "sha256": "1d5cd62451e8293cce4273fdfaec52a40d99667c51c91f7691d1be3084c9539c",
+      "bytes": 10115,
+      "physical_lines": 195,
+      "nonblank_lines": 181,
+      "code_lines": 178,
+      "comment_lines": 3,
+      "blank_lines": 14
+    },
+    "src/Msync.Runtime/Platform/NativeFileMetadata.cs": {
+      "sha256": "a05fabbf33dfc7a7a6f3967679a85d7a16d13f1dd0478594b17777467855d564",
+      "bytes": 10588,
+      "physical_lines": 193,
+      "nonblank_lines": 183,
+      "code_lines": 177,
+      "comment_lines": 6,
+      "blank_lines": 10
+    },
+    "src/Msync.Runtime/Platform/WindowsFileCopy.cs": {
+      "sha256": "47860f3c42286a26c28a031287c5cf348049dcd2d215b1e34d6774a924938491",
+      "bytes": 3793,
+      "physical_lines": 76,
+      "nonblank_lines": 71,
+      "code_lines": 69,
+      "comment_lines": 2,
+      "blank_lines": 5
+    },
+    "src/Msync.Runtime/Scheduling/ResourceIndex.cs": {
+      "sha256": "7225c0f95c25c62647852767314044a3c7e1b8bf34d21c781c28e1efb79f9b23",
+      "bytes": 8891,
+      "physical_lines": 250,
+      "nonblank_lines": 224,
+      "code_lines": 221,
+      "comment_lines": 3,
+      "blank_lines": 26
+    },
+    "src/Msync.Runtime/Scheduling/SchedulingStatistics.cs": {
+      "sha256": "b9bb251aff3ee21d61d9f692795fa6ade629f20f0424f227938a35cf45b96f4e",
+      "bytes": 530,
+      "physical_lines": 12,
+      "nonblank_lines": 11,
+      "code_lines": 11,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Runtime/Text/UnicodeCasing.cs": {
+      "sha256": "704d1569765054bf9aaa3789885858e3fedab775c00d87c08eba8f783003c4f8",
+      "bytes": 3466,
+      "physical_lines": 93,
+      "nonblank_lines": 85,
+      "code_lines": 84,
+      "comment_lines": 1,
+      "blank_lines": 8
+    },
+    "src/Msync.Runtime/Transfers/ResourcePath.cs": {
+      "sha256": "3d5ae38ad7f6e17fe43893cf906f552f6175927b6b2f3f99c4de6aa4f2f8a8e5",
+      "bytes": 1724,
+      "physical_lines": 44,
+      "nonblank_lines": 42,
+      "code_lines": 42,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "src/Msync.Runtime/Transfers/ShellProgram.cs": {
+      "sha256": "92fd70a9e7de2f6b099e210d9ba81c9449b6e6bf8740f08c62f942a206d25ca0",
+      "bytes": 173,
+      "physical_lines": 6,
+      "nonblank_lines": 5,
+      "code_lines": 5,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "src/Msync.Runtime/Transfers/TransferFiles.cs": {
+      "sha256": "e167d47842ee68e95766a0def76bd87424608e226012e7bae29610f908f3e220",
+      "bytes": 13115,
+      "physical_lines": 273,
+      "nonblank_lines": 256,
+      "code_lines": 256,
+      "comment_lines": 0,
+      "blank_lines": 17
+    },
+    "src/Msync.Runtime/Transfers/TransferOverlap.cs": {
+      "sha256": "bd82418cdc412741b802949426fc0dd16315b33e3c8e59217ef5f2919087be72",
+      "bytes": 7194,
+      "physical_lines": 138,
+      "nonblank_lines": 126,
+      "code_lines": 125,
+      "comment_lines": 1,
+      "blank_lines": 12
+    },
+    "stdlib/_core.msync": {
+      "sha256": "59ab3d0d7c7c8b4ecdcc698c13717e724052fa2b797a77ff09cff2944f9bdf4e",
+      "bytes": 79,
+      "physical_lines": 1,
+      "nonblank_lines": 1,
+      "code_lines": 1,
+      "comment_lines": 0,
+      "blank_lines": 0
+    },
+    "stdlib/bits.msync": {
+      "sha256": "bb4164a362b4d0213ec51be393f19319609439604799da630a84fa40e33402d6",
+      "bytes": 801,
+      "physical_lines": 14,
+      "nonblank_lines": 14,
+      "code_lines": 14,
+      "comment_lines": 0,
+      "blank_lines": 0
+    },
+    "stdlib/bool.msync": {
+      "sha256": "8de9b29deeecfb8eaaf79dd0fa4919c5de177661be6a9b699a1441eaafa41bcf",
+      "bytes": 343,
+      "physical_lines": 7,
+      "nonblank_lines": 7,
+      "code_lines": 7,
+      "comment_lines": 0,
+      "blank_lines": 0
+    },
+    "stdlib/commands.msync": {
+      "sha256": "c70d746d395d448b9fce3a451fe6532072650580aeaa80a4812c90c59d5fbbbb",
+      "bytes": 4669,
+      "physical_lines": 139,
+      "nonblank_lines": 135,
+      "code_lines": 135,
+      "comment_lines": 0,
+      "blank_lines": 4
+    },
+    "stdlib/concepts.msync": {
+      "sha256": "69548519f93234353d461eddf4a3d191283187c804e2082ebef084611796958d",
+      "bytes": 4497,
+      "physical_lines": 173,
+      "nonblank_lines": 143,
+      "code_lines": 143,
+      "comment_lines": 0,
+      "blank_lines": 30
+    },
+    "stdlib/containers.msync": {
+      "sha256": "a96b05cef70bc4c34a995e4f27e928c991ad1118e15ed36334e7f7b94c571dc2",
+      "bytes": 89438,
+      "physical_lines": 2823,
+      "nonblank_lines": 2788,
+      "code_lines": 2788,
+      "comment_lines": 0,
+      "blank_lines": 35
+    },
+    "stdlib/data.msync": {
+      "sha256": "cfda1e495db64527bb2faa712c290665c592c1b0a30978dff2c401a3a55601c4",
+      "bytes": 11734,
+      "physical_lines": 465,
+      "nonblank_lines": 412,
+      "code_lines": 412,
+      "comment_lines": 0,
+      "blank_lines": 53
+    },
+    "stdlib/environment.msync": {
+      "sha256": "d5cfe0738d547b037b57672e6fc1a96b331c665ec921b16c976ca3e740ebcc8a",
+      "bytes": 1112,
+      "physical_lines": 32,
+      "nonblank_lines": 31,
+      "code_lines": 31,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "stdlib/files.msync": {
+      "sha256": "003d1f3b1d4a9281cd6ca3ccca600387d40af9280825d2000594b32d008c8332",
+      "bytes": 5055,
+      "physical_lines": 140,
+      "nonblank_lines": 138,
+      "code_lines": 138,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "stdlib/fs.msync": {
+      "sha256": "d48dc7586a185e83b80fb1191654c13cc9c71941f86abb5b07acafd831e3b494",
+      "bytes": 4462,
+      "physical_lines": 76,
+      "nonblank_lines": 75,
+      "code_lines": 75,
+      "comment_lines": 0,
+      "blank_lines": 1
+    },
+    "stdlib/functional.msync": {
+      "sha256": "ad1036ff6dc6de67cc6ff2c1ba071fc342ce1c759f20275c13dbf492fdecce6f",
+      "bytes": 1187,
+      "physical_lines": 25,
+      "nonblank_lines": 25,
+      "code_lines": 25,
+      "comment_lines": 0,
+      "blank_lines": 0
+    },
+    "stdlib/io.msync": {
+      "sha256": "9dea0c2a39c62030aaa9bdf9c041716a616ce06543b9cfd7661ceb72898d8a2a",
+      "bytes": 3019,
+      "physical_lines": 65,
+      "nonblank_lines": 60,
+      "code_lines": 60,
+      "comment_lines": 0,
+      "blank_lines": 5
+    },
+    "stdlib/math.msync": {
+      "sha256": "2eafc64f64728b5d6ff766597448ec675306879ea4032b1bfb993b5e3672a949",
+      "bytes": 3808,
+      "physical_lines": 128,
+      "nonblank_lines": 128,
+      "code_lines": 128,
+      "comment_lines": 0,
+      "blank_lines": 0
+    },
+    "stdlib/meta.msync": {
+      "sha256": "420d0e3083990e612a6178305363455d693e0e06cb56be92df91d5fd15181584",
+      "bytes": 3803,
+      "physical_lines": 68,
+      "nonblank_lines": 64,
+      "code_lines": 64,
+      "comment_lines": 0,
+      "blank_lines": 4
+    },
+    "stdlib/path.msync": {
+      "sha256": "ce01a62163468a3af87b26c70fdc7783c0295c0e594f3cbc1add6c090bfae799",
+      "bytes": 3305,
+      "physical_lines": 122,
+      "nonblank_lines": 122,
+      "code_lines": 122,
+      "comment_lines": 0,
+      "blank_lines": 0
+    },
+    "stdlib/process.msync": {
+      "sha256": "0633882cdb6354fad183108949ab4a9407ab446f94e1b63086940fc9c9294756",
+      "bytes": 1168,
+      "physical_lines": 34,
+      "nonblank_lines": 30,
+      "code_lines": 30,
+      "comment_lines": 0,
+      "blank_lines": 4
+    },
+    "stdlib/ranges.msync": {
+      "sha256": "a3ce7d44983e485316c16424038a47639ad3f182a44679b39ff9126d3c62e398",
+      "bytes": 13514,
+      "physical_lines": 327,
+      "nonblank_lines": 322,
+      "code_lines": 322,
+      "comment_lines": 0,
+      "blank_lines": 5
+    },
+    "stdlib/regex.msync": {
+      "sha256": "715c66023b212abe607388ab36f4dba2e57e0394f1070cbd7672b0a8c3cef47a",
+      "bytes": 1595,
+      "physical_lines": 37,
+      "nonblank_lines": 35,
+      "code_lines": 35,
+      "comment_lines": 0,
+      "blank_lines": 2
+    },
+    "stdlib/shell.msync": {
+      "sha256": "1978b6c7a8976f32f04974fe37232a42bca2b1b5cfdf349250a1bf87c7affa9f",
+      "bytes": 6971,
+      "physical_lines": 300,
+      "nonblank_lines": 250,
+      "code_lines": 250,
+      "comment_lines": 0,
+      "blank_lines": 50
+    },
+    "stdlib/string.msync": {
+      "sha256": "df20e2159f32db9fcb34c5915670e04b4794376e44d22063d893615daa623ec5",
+      "bytes": 5625,
+      "physical_lines": 191,
+      "nonblank_lines": 191,
+      "code_lines": 191,
+      "comment_lines": 0,
+      "blank_lines": 0
+    },
+    "stdlib/text.msync": {
+      "sha256": "f00043120a99e391f9384cb17418819f33e52dc56d4da5eac0b4bc72b67e3c00",
+      "bytes": 2919,
+      "physical_lines": 76,
+      "nonblank_lines": 71,
+      "code_lines": 71,
+      "comment_lines": 0,
+      "blank_lines": 5
+    }
+  },
+  "totals": {
+    "files": 384,
+    "physical_lines": 54832,
+    "code_lines": 50794,
+    "src_code_lines": 45752,
+    "stdlib_code_lines": 5042
+  },
+  "hard_target": {
+    "minimum_net_reduction_fraction": 0.3,
+    "maximum_code_lines": 35555,
+    "minimum_code_lines_removed": 15239,
+    "maximum_physical_lines": 38382
+  },
+  "semantic_requirement": "All established source/HIR/portable/bound/REPL/editor/IO and resource/alias/lifetime contracts remain; correctness and reduction are joint acceptance conditions.",
+  "fixed_generated_payloads": [
+    "src/Msync.Runtime/Generated/UnicodeCasingData.cs"
+  ]
+}
