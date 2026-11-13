@@ -198,23 +198,26 @@ def checked(
     result: Execution = invoke(
         variant, directory, ["run", artifact], stdin, database, level
     )
-    stdout: str = result.stdout.decode("utf-8").replace("\r\n", "\n")
+    verify(directory, artifact, fixture, result.stdout)
+    return result.elapsed_ms
+
+
+def verify(
+    directory: Path, artifact: str, fixture: Fixture, stdout_bytes: bytes
+) -> None:
+    stdout: str = stdout_bytes.decode("utf-8").replace("\r\n", "\n")
     if stdout != fixture.stdout:
         raise RuntimeError(
-            f"{variant.name}/{directory.name}/{artifact}: stdout "
+            f"{directory}/{artifact}: stdout "
             f"expected {fixture.stdout[:600]!r}, observed {stdout[:600]!r}"
         )
     for output in fixture.outputs:
         actual: str = file_digest(directory / output.path)
         if actual != output.sha256:
-            raise RuntimeError(
-                f"{variant.name}/{directory.name}: wrong bytes at {output.path!r}: {actual}"
-            )
+            raise RuntimeError(f"{directory}: wrong bytes at {output.path!r}: {actual}")
     for path in fixture.absent:
         if (directory / path).exists():
-            raise RuntimeError(
-                f"{variant.name}/{directory.name}: unexpectedly produced {path!r}"
-            )
+            raise RuntimeError(f"{directory}: unexpectedly produced {path!r}")
     for root in fixture.output_roots:
         expected_paths: set[str] = {
             item.path
@@ -228,11 +231,10 @@ def checked(
         }
         if observed_paths != expected_paths:
             raise RuntimeError(
-                f"{variant.name}/{directory.name}: output tree mismatch under {root!r}: "
+                f"{directory}: output tree mismatch under {root!r}: "
                 f"missing={sorted(expected_paths - observed_paths)}, "
                 f"unexpected={sorted(observed_paths - expected_paths)}"
             )
-    return result.elapsed_ms
 
 
 def profile(path: Path) -> dict[str, object]:

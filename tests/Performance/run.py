@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run checked user journeys serially with one current image and an optional baseline."""
+"""Orchestrate checked latency and concurrent throughput journeys."""
 
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ GROUPS: dict[str, str] = {
     "interactive": "Persistent REPL and real stdio LSP requests, including edits",
     "editor": "Fresh-process typed editor journey and moderate-document edit bursts",
     "session": "Actual colored PTY: fixed-state and growing-export session age",
+    "throughput": "Concurrent application processes, bounded 12 CPU / 24 GiB, detailed SQLite",
 }
 CLI_CASES: tuple[str, ...] = (
     "startup",
@@ -69,6 +70,8 @@ class Configuration:
     cpu: int | None
     profile: str
     jit: str
+    concurrency: tuple[int, ...] = ()
+    requests: int = 48
 
 
 @dataclass(frozen=True)
@@ -113,6 +116,18 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument(
         "--workload", choices=(*CORE_CASES, *DIAGNOSTIC_CASES), action="append"
+    )
+    result.add_argument(
+        "--concurrency",
+        type=positive,
+        action="append",
+        help="Throughput worker count; repeat for a scaling sweep (default: 1,4,12,24)",
+    )
+    result.add_argument(
+        "--requests",
+        type=positive,
+        default=48,
+        help="Throughput requests per repetition; at least one per worker",
     )
     result.add_argument("--submissions", type=positive, default=256)
     result.add_argument("--window", type=positive, default=64)
@@ -179,6 +194,8 @@ def configuration(arguments: argparse.Namespace) -> Configuration:
         arguments.cpu,
         arguments.profile,
         arguments.jit,
+        tuple(dict.fromkeys(arguments.concurrency or ())),
+        arguments.requests,
     )
 
 
@@ -259,6 +276,41 @@ def commands(
                     str(config.samples),
                     "--output",
                     str(receipt),
+                ),
+                receipt,
+            ),
+        )
+    if group == "throughput":
+        return (
+            command(
+                group,
+                "Corpus/throughput.py",
+                (
+                    *native_arguments(images),
+                    *measurements,
+                    "--scale",
+                    config.scale,
+                    "--route",
+                    config.route,
+                    "--profile",
+                    config.profile,
+                    "--jit",
+                    config.jit,
+                    "--requests",
+                    str(config.requests),
+                    *selected_cases(config.workloads),
+                    *(
+                        argument
+                        for seed in config.seeds
+                        for argument in ("--seed", str(seed))
+                    ),
+                    *(
+                        argument
+                        for count in config.concurrency
+                        for argument in ("--concurrency", str(count))
+                    ),
+                    "--work",
+                    str(directory),
                 ),
                 receipt,
             ),
@@ -435,7 +487,7 @@ def run(config: Configuration) -> int:
         "configuration": settings,
         "platform": platform.platform(),
         "python": platform.python_version(),
-        "measurement": "Serial checked user journeys; child receipts define product timing boundaries. Group elapsed time is not a product benchmark.",
+        "measurement": "Groups execute serially; child receipts define latency or concurrent throughput boundaries. Group elapsed time is not a product benchmark.",
         "comparison": "two frozen images; child receipts define pairing/session order"
         if config.baseline
         else "single current image; no synthetic before/after arm",

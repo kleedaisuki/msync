@@ -17,8 +17,9 @@ python3 tests/Performance/run.py --binary NEW --baseline OLD \
 ```
 
 With one image this records an absolute snapshot, not an invented A/A comparison.
-Runs are serial. Work directories are new/empty children of `.temp/`; the default
-is uniquely named. `result.json` indexes per-group raw reports and logs, including
+Default runs include concurrent throughput; the six latency groups remain serial.
+Work directories are new/empty
+children of `.temp/`; the default is uniquely named. `result.json` indexes per-group raw reports and logs, including
 completed work and the failing command if a later group fails. `--samples`,
 `--warmups`, `--scale`, `--submissions`, `--window`, and optional `--cpu` control
 the experiment. `--jit auto|off|linked|force` selects the requested guest tier
@@ -27,6 +28,29 @@ policies, not recommended defaults or evidence that promotion is profitable.
 Confirm actual tier use in the separate `--profile profile|instructions` runs;
 an older image may not implement the requested policy. Instrumentation never
 runs in the timed samples.
+
+## Concurrent throughput and SQLite
+
+The default suite includes `throughput`, running isolated native CLI workers under a Linux
+systemd/cgroup-v2 **12 CPU / 24 GiB** resource scope. It leaves serial latency
+measurements unchanged. Default concurrency levels are 1/4/12/24; select actual
+workloads and enough requests for the question you are investigating. Use
+`--group throughput` to run only concurrent measurements, or explicit latency
+groups such as `--group cli` to omit throughput.
+
+```sh
+python3 tests/Performance/run.py --binary PATH_TO_MSYNC --group throughput \
+  --workload local-manifest-copy --route bound --samples 3 --requests 96 \
+  --concurrency 1 --concurrency 12 --concurrency 24 --profile instructions \
+  --work .temp/benchmarks/copy-throughput
+```
+
+`throughput/benchmark.sqlite` contains every timed request, successful
+requests/s, P50/P95/P99, failures, child CPU, resource limits, and losslessly
+merged separate compiler/runtime profiles. Timing is telemetry-off; profile
+cost is never mixed into throughput. Bound workers bind in their own directories
+so captured paths cannot send writes into another worker's fixture.
+See [measurement boundaries, schema, SQL and acceptance](docs/design/benchmark-throughput-v090.md).
 
 ## Coverage
 

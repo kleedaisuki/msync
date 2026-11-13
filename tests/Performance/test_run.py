@@ -113,6 +113,32 @@ class EntrypointTests(unittest.TestCase):
         self.assertNotIn("flat4000", editor.arguments)
         self.assertNotIn("--warmups", editor.arguments)
 
+    def test_throughput_is_enabled_by_default_with_explicit_group_override(self) -> None:
+        self.assertEqual(self.config().groups, tuple(run.GROUPS))
+        self.assertIn("throughput", self.config().groups)
+        self.assertEqual(self.config("--group", "cli").groups, ("cli",))
+        config: run.Configuration = self.config(
+            "--group",
+            "throughput",
+            "--concurrency",
+            "12",
+            "--concurrency",
+            "24",
+            "--requests",
+            "96",
+            "--profile",
+            "instructions",
+            "--jit",
+            "off",
+        )
+        selected: run.Command = run.commands("throughput", config, [self.image()])[0]
+        self.assertEqual(config.concurrency, (12, 24))
+        self.assertIn("96", selected.arguments)
+        self.assertIn("instructions", selected.arguments)
+        self.assertIn("--jit", selected.arguments)
+        self.assertNotIn("--candidate", selected.arguments)
+        self.assertTrue(selected.arguments[1].endswith("Corpus/throughput.py"))
+
     def test_manifest_covers_generators_and_protocol_helpers(self) -> None:
         manifest: dict[str, str] = run.harness_manifest()
         self.assertIn("tests/Performance/Corpus/catalog.py", manifest)
