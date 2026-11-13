@@ -68,7 +68,8 @@ internal sealed class NativeOptimizationProfile(CompilationTrace trace)
     internal void Add(Pass pass, Mark start, NativeFunctionCode function, bool changed = false)
         => Add(pass, start, function, function, changed);
 
-    internal void Add(Pass pass, Mark start, NativeFunctionCode input, NativeFunctionCode output, bool changed)
+    internal void Add(Pass pass, Mark start, NativeFunctionCode input, NativeFunctionCode output, bool changed,
+        IReadOnlyDictionary<string, ulong>? metrics = null)
     {
         long duration = CompilationTrace.Elapsed(start.Ticks);
         long allocated = GC.GetAllocatedBytesForCurrentThread() - start.Allocated;
@@ -81,15 +82,17 @@ internal sealed class NativeOptimizationProfile(CompilationTrace trace)
         sample.Input += start.Input;
         sample.Output += CompilationSize.Of(output);
         if (changed) sample.Changed++;
+        Dictionary<string, ulong> details = new()
+        {
+            ["input.active_instructions"] = (ulong)start.ActiveInstructions,
+            ["output.active_instructions"] = (ulong)output.Instructions.Count(item => item.Op != NativeOp.Nop)
+        };
+        if (metrics is not null) foreach (var (key, value) in metrics) details[key] = value;
         trace.Report(new($"optimizer.pass.{names[(int)pass]}", start.Unix, duration, allocated,
             CompilationOutcome.Ok, start.Input, CompilationSize.Of(output), ChangedInvocations: changed ? 1 : 0)
         {
             Attributes = Attributes(start),
-            Metrics = new Dictionary<string, ulong>
-            {
-                ["input.active_instructions"] = (ulong)start.ActiveInstructions,
-                ["output.active_instructions"] = (ulong)output.Instructions.Count(item => item.Op != NativeOp.Nop)
-            }
+            Metrics = details
         });
     }
 

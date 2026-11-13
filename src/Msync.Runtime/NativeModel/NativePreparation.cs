@@ -84,8 +84,11 @@ internal sealed partial class NativePreparationState
 
     internal NativeProgram Run()
     {
+        bool[] cyclic = new NativeControlFlow(function.Instructions).Cyclic;
         HashSet<int> visited = [];
-        for (pc = 0; pc < function.Instructions.Count && visited.Add(pc); pc++)
+        // First-iteration values are not loop invariants. Keep cyclic code residual
+        // until preparation has an invariant/iteration representation for it.
+        for (pc = 0; pc < function.Instructions.Count && !cyclic[pc] && visited.Add(pc); pc++)
         {
             token.ThrowIfCancellationRequested();
             NativeInstruction instruction = function.Instructions[pc];
@@ -218,13 +221,13 @@ internal sealed partial class NativePreparationState
         NativeAddress destination = frame.Pointer(instruction.A);
         if (computingCall && !owned.Contains(destination.Allocation)) return false;
         NativeLayout layout = image.Layout(checked((int)instruction.Immediate));
-        image.ValidateRegion(destination, layout, count);
+        image.CheckRegionBounds(destination, layout, count);
         if (instruction.Op == NativeOp.ClearMemory) memory.ClearRegionTrusted(destination, layout, count);
         else
         {
             if (!Known(instruction.B, out _)) return false;
             NativeAddress source = frame.Pointer(instruction.B);
-            image.ValidateRegion(source, layout, count);
+            image.CheckRegionBounds(source, layout, count);
             memory.CopyRegionTrusted(source, destination, layout, count);
         }
         return true;

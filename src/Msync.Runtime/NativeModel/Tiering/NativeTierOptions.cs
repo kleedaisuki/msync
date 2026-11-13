@@ -31,4 +31,12 @@ public readonly record struct NativeTierStatistics(long Compilations, long Compi
     public long LinkedEntries { get; init; }
     public long LinkedOperations { get; init; }
     public long RawOperations { get; init; }
+    public long RegisterRegions { get; init; }
+    public long RegisterValues { get; init; }
+    public long RegisterSpills { get; init; }
+    public long EliminatedFrameStores { get; init; }
+    public long SelectionNanoseconds { get; init; }
+    public long RegisterAllocationNanoseconds { get; init; }
+    public long EmissionNanoseconds { get; init; }
+    public long PublicationNanoseconds { get; init; }
 }

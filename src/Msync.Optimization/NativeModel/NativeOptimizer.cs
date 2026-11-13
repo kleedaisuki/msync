@@ -3,7 +3,7 @@ using Msync.Core.Native;
 
 namespace Msync.Optimization;
 
-public static class NativeOptimizer
+public static partial class NativeOptimizer
 {
     public static NativeProgram Optimize(NativeProgram program, int level = 2)
         => OptimizeCore(program, level, null);
@@ -22,7 +22,8 @@ public static class NativeOptimizer
         ArgumentNullException.ThrowIfNull(program);
         if (level is < 0 or > 3) throw new ArgumentOutOfRangeException(nameof(level));
         if (level == 0) return program with { OptimizationLevel = level };
-        program = NativeInlining.Run(program, level, profile);
+        int[] inlineBudgets = Enumerable.Repeat(level == 2 ? 384 : 1536, program.Functions.Count).ToArray();
+        program = NativeInlining.Run(program, level, profile, inlineBudgets);
         NativeConstantPool constants = new(program.Constants);
         NativeFunctionCode[] functions = program.Functions.ToArray();
         List<NativeAllocationPlan> plans = program.Allocations
@@ -48,7 +49,7 @@ public static class NativeOptimizer
         }
         NativeProgram optimized = program with
         { Functions = functions, Constants = constants.Values.ToArray(), Allocations = plans.ToArray(), OptimizationLevel = level };
-        NativeProgram compact = Compact(optimized, profile);
+        NativeProgram compact = InlineCleaned(Compact(optimized, profile), level, profile, inlineBudgets);
         return Compact(NativeRegisterAllocation.Run(compact, profile), profile);
     }
 

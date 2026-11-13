@@ -52,7 +52,8 @@ internal static class FrameBindingChecks
             throw new Exception("Session frame construction forgot persisted bindings or temporary roots.");
         NativeFrame ephemeral = new(sessionImage, 0, null, [], memory);
         ephemeral.Set(0, NativeValue.FromNumber(43));
-        if (!ephemeral.Owns(ephemeral.Location(0)) || first.GetDatum(0).Value.AsNumber() != 41)
+        if (!ReferenceEquals(ephemeral.Location(0).Allocation, ephemeral.Location(1).Allocation)
+            || first.GetDatum(0).Value.AsNumber() != 41 || first.GetDatum(1).Value.AsNumber() != 37)
             throw new Exception("A preparation frame acquired session-owned storage without an owner.");
         ephemeral.Bind(0, heap);
         if (ephemeral.Location(0) != heap)

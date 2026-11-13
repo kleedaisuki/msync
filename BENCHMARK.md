@@ -47,6 +47,12 @@ adaptive-runtime overlays are diagnostics or historical experiments, not general
 application evidence. Correctness regressions remain worth keeping even when
 their timings are not representative.
 
+## Latest local snapshot
+
+[04465c4: full product suite and detailed compiler telemetry](docs/design/benchmark-telemetry-04465c4.md)
+records all six groups, standard-scale application routes, editor/session results
+and the separate single-vCPU LSP startup diagnosis.
+
 ## Interpretation and evolution
 
 - Every timed application must pass its independent result/file oracle. Copy

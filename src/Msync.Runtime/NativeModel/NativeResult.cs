@@ -67,8 +67,24 @@ internal sealed class NativeMemory
 {
     private ConditionalWeakTable<NativeAllocation, ConcurrentDictionary<NativeOffset, NativeFuture>>? pending;
     private long pendingRevision;
+    private int activePending;
     internal long PendingRevision => Volatile.Read(ref pendingRevision);
+    internal bool HasAnyPending => Volatile.Read(ref activePending) != 0;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool IsPending(NativeAddress address) => TryPending(address, out _);
+
+    internal void ResetFrame(NativeAllocation allocation)
+    {
+        if (HasAnyPending && pending is { } table
+            && table.TryGetValue(allocation, out ConcurrentDictionary<NativeOffset, NativeFuture>? values)
+            && table.Remove(allocation))
+        {
+            int removed = values.Count;
+            if (removed > 0) Interlocked.Add(ref activePending, -removed);
+            Interlocked.Increment(ref pendingRevision);
+        }
+        allocation.Storage.ResetFrame();
+    }
 
     internal NativeDatum Read(NativeAddress address) => TryPending(address, out NativeFuture? future)
         ? new(future!) : new(NativeStorage.LoadTrusted(address.Type, address));
@@ -86,7 +102,18 @@ internal sealed class NativeMemory
         if (value.Future is { } future)
         {
             NativeStorage.ClearTrusted(address.Type, address);
-            Pending().GetValue(address.Allocation, static _ => new())[address.Offset] = future;
+            ConcurrentDictionary<NativeOffset, NativeFuture> values = Pending().GetValue(address.Allocation, static _ => new());
+            // Increment before publishing so readers/removers never observe HasAnyPending == false for a live entry.
+            Interlocked.Increment(ref activePending);
+            while (true)
+            {
+                if (values.TryAdd(address.Offset, future)) break;
+                if (values.TryGetValue(address.Offset, out NativeFuture? existing) && values.TryUpdate(address.Offset, future, existing))
+                {
+                    Interlocked.Decrement(ref activePending);
+                    break;
+                }
+            }
             Interlocked.Increment(ref pendingRevision);
             return;
         }
@@ -106,24 +133,28 @@ internal sealed class NativeMemory
         NativeStorage.StoreAddress(destination, value);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryCopyReady(NativeAddress source, NativeAddress destination)
     {
-        if (!source.IsInitialized || IsPending(source) || !source.Type.Equals(destination.Type)) return false;
+        NativeType srcType;
+        if (!source.IsInitialized || IsPending(source) || !(srcType = source.Type).Equals(destination.Type)) return false;
         RemovePending(destination);
-        NativeStorage.CopyTrusted(source.Type, source, destination);
+        NativeStorage.CopyTrustedUnchecked(srcType, source, destination);
         return true;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void Copy(NativeAddress source, NativeAddress destination)
     {
         if (!TryCopyReady(source, destination)) Write(destination, Read(source));
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void Copy(NativeType type, NativeAddress source, NativeAddress destination)
     {
         if (!source.IsInitialized || IsPending(source)) { Write(destination, Read(source)); return; }
         RemovePending(destination);
-        NativeStorage.CopyTrusted(type, source, destination);
+        NativeStorage.CopyTrustedUnchecked(type, source, destination);
     }
 
     internal void CopyRegionTrusted(NativeAddress source, NativeAddress destination, NativeLayout layout, int count)
@@ -153,20 +184,44 @@ internal sealed class NativeMemory
                 Clear(address.OffsetBy(layout.Extent * element + field.Offset, field.Type));
     }
 
-    internal bool HasPending(NativeAllocation allocation) => pending is { } table
+    internal bool HasPending(NativeAllocation allocation) => HasAnyPending && pending is { } table
         && table.TryGetValue(allocation, out ConcurrentDictionary<NativeOffset, NativeFuture>? values) && !values.IsEmpty;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryPending(NativeAddress address, out NativeFuture? future)
     {
-        future = null;
-        return pending is { } table && table.TryGetValue(address.Allocation, out ConcurrentDictionary<NativeOffset, NativeFuture>? values)
-            && values.TryGetValue(address.Offset, out future);
+        if (!HasAnyPending)
+        {
+            future = null;
+            return false;
+        }
+        return TryPendingSlow(address, out future);
     }
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private bool TryPendingSlow(NativeAddress address, out NativeFuture? future)
+    {
+        if (pending is { } table && table.TryGetValue(address.Allocation, out ConcurrentDictionary<NativeOffset, NativeFuture>? values)
+            && values.TryGetValue(address.Offset, out future))
+            return true;
+        future = null;
+        return false;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void RemovePending(NativeAddress address)
     {
-        if (pending is { } table && table.TryGetValue(address.Allocation, out ConcurrentDictionary<NativeOffset, NativeFuture>? values))
-            values.TryRemove(address.Offset, out _);
+        if (!HasAnyPending) return;
+        RemovePendingSlow(address);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private void RemovePendingSlow(NativeAddress address)
+    {
+        if (pending is { } table
+            && table.TryGetValue(address.Allocation, out ConcurrentDictionary<NativeOffset, NativeFuture>? values)
+            && values.TryRemove(address.Offset, out _))
+            Interlocked.Decrement(ref activePending);
     }
 
     private ConditionalWeakTable<NativeAllocation, ConcurrentDictionary<NativeOffset, NativeFuture>> Pending()

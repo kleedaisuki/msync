@@ -7,7 +7,7 @@ public sealed partial class NativeInterpreter
     private sealed record TailPlan(IReadOnlyList<int> Instructions);
 
     private sealed record TailInvocation(int Target, NativeEnvironment? Environment,
-        IReadOnlyList<NativeDatum> Arguments, int Pc, Activation Caller, NativeInstruction Instruction, TailPlan Plan);
+        NativeArguments Arguments, int Pc, Activation Caller, NativeInstruction Instruction, TailPlan Plan);
 
     private readonly record struct TailReturn(RuntimeProfile.NativeFrameCounters Counters,
         NativeFunctionCode Function, int Pc, TailPlan Plan)
@@ -31,7 +31,7 @@ public sealed partial class NativeInterpreter
         NativeFunctionCode function = activation.Function;
         if (function.Instructions[pc] is not { Op: NativeOp.Call, Result: >= 0 }) return null;
         if (activation.Work.HasWork || activation.Regions is { Count: > 0 }
-            || activation.Iterators.Any(iterator => iterator is not null)) return null;
+            || activation.HasActiveIterators) return null;
         if (activation.FunctionIndex == image.Program.EntryPoint && image.Program.PreserveLocals) return null;
         Generation selected = activeGeneration.Value ?? generation;
         TailPlan?[]? sites = Volatile.Read(ref selected.TailSites[activation.FunctionIndex]);

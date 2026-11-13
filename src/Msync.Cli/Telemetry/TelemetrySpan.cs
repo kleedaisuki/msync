@@ -94,6 +94,14 @@ internal sealed class TelemetrySpan(TelemetrySession session, string name, strin
         SetMetric("tier.recompilations", stats.Recompilations - before.Recompilations);
         SetMetric("tier.cancellation_polls", stats.CancellationPolls - before.CancellationPolls);
         SetMetric("tier.unavailable_compilations", stats.UnavailableCompilations - before.UnavailableCompilations);
+        SetMetric("tier.register_regions", stats.RegisterRegions - before.RegisterRegions);
+        SetMetric("tier.register_values", stats.RegisterValues - before.RegisterValues);
+        SetMetric("tier.register_spills", stats.RegisterSpills - before.RegisterSpills);
+        SetMetric("tier.eliminated_frame_stores", stats.EliminatedFrameStores - before.EliminatedFrameStores);
+        SetMetric("tier.selection_ns", stats.SelectionNanoseconds - before.SelectionNanoseconds);
+        SetMetric("tier.register_allocation_ns", stats.RegisterAllocationNanoseconds - before.RegisterAllocationNanoseconds);
+        SetMetric("tier.emission_ns", stats.EmissionNanoseconds - before.EmissionNanoseconds);
+        SetMetric("tier.publication_ns", stats.PublicationNanoseconds - before.PublicationNanoseconds);
     }
 
     public void Dispose() => session.EndSpan(name, id, parent, startedUnix, TelemetrySession.Elapsed(started),

@@ -13,8 +13,9 @@ artifacts/native-tiering/linux-x64/Msync.NativeTiering.Tests
 ```
 
 The user journeys cover exact IEEE bits, closure state and retargeting, complete
-String/Path/Connection-containing namespaces, Range callbacks, actual call/layout/
-kind guard failures, recompilation, cancellation, GC during real byte publication,
+String/Path/Connection-containing namespaces, Range callbacks, changing indirect
+call targets/layouts without redundant guards, actual kind guard failures,
+recompilation, cancellation, GC during real byte publication,
 selected I/O suspension without replay, Process state, and concurrent code-page
 invalidation. A gated read spans `UpdateProgram`; old work remains on its image.
 
@@ -35,3 +36,12 @@ only during synchronous execution, never across the saved asynchronous operation
 Automatic promotion remains disabled until representative frozen-image Native
 AOT measurements establish a gain. Native entries alone are not a performance
 claim; ARM64/Windows encoding and execution require their own platform evidence.
+
+Register-region journeys exercise definition-specific values on reused slots,
+12-argument register pressure and real stack spills, eliminated intermediate
+frame descriptors/stores, checked union refinements, native branch conditions
+with pending payloads, native jump cancellation, exact taken/untaken profile
+edges and invocation/pin-lease reuse across safepoints. A contextual transfer
+followed by a mutable loop checks that preparation does not freeze first-iteration
+values into a source-free executable. See the
+[backend receipt](../../docs/design/native-execution-lowering-v090.md#register-allocated-native-regions).

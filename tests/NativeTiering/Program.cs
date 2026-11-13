@@ -6,6 +6,7 @@ using Msync.Runtime.Native;
 
 int checks = EmissionChecks.Run() + FrameBindingChecks.Run() + RegionCopyChecks.Run();
 checks += await NumberAccessChecks.RunAsync();
+checks += await RegisterRegionChecks.RunAsync();
 void Check(bool condition, string message)
 {
     checks++;
@@ -99,9 +100,9 @@ async Task Guards()
                 [NativeValue.FromFunction(new(target)), NativeValue.FromNumber(8)]);
             Check(result.AsNumber() == 8 + target, "Call speculation captured a stale target or value");
         }
-        Check(interpreter.TierStatistics.GuardMisses > 0 && interpreter.TierStatistics.Deoptimizations > 0,
-            "Changing call targets did not take an exact guarded side exit");
-        Check(interpreter.TierStatistics.Recompilations > 0, "Deoptimized code never recompiles without the invalid assumption");
+        Check(interpreter.TierStatistics.GuardMisses == 0 && interpreter.TierStatistics.Deoptimizations == 0,
+            "An indirect helper call acquired a speculative guard without specializing its target");
+        Check(interpreter.TierStatistics.Recompilations == 0, "An indirect helper call invalidated otherwise reusable code");
     }
     NativeProgram kinds = new([], [new("dynamic-add", [new(0, NativeSlotRole.Parameter), new(0, NativeSlotRole.Parameter), new(0)],
         [new(NativeOp.Binary, 2, 0, 1, Immediate: (long)NativeBinary.Add), new(NativeOp.Return, A: 2)],
@@ -151,7 +152,7 @@ async Task Guards()
         foreach (NativeAllocation value in new[] { a, a, b })
             Check((await interpreter.InvokeAsync(NativeValue.FromFunction(new(0)), [NativeValue.FromAddress(value.Address)])).AsNumber()
                 == (ReferenceEquals(value, a) ? 7 : 13), "Layout speculation used an offset from the wrong namespace");
-        Check(interpreter.TierStatistics.GuardMisses > 0, "Layout replacement did not deoptimize");
+        Check(interpreter.TierStatistics.GuardMisses == 0, "A dynamic layout selection acquired a redundant speculation guard");
     }
 }
 
@@ -303,8 +304,8 @@ async Task ConcurrentVersions()
     for (int index = 0; index < results.Length; index++)
         Check(results[index].AsNumber() == 300 * 299 / 2 + (index % 2 == 0 ? 0 : 300),
             "Concurrent invalidation reused another call's values or freed executing code");
-    Check(interpreter.TierStatistics.Entries > 0 && interpreter.TierStatistics.GuardMisses > 0,
-        "Concurrent lifetime test did not enter and invalidate native code");
+    Check(interpreter.TierStatistics.Entries > 0 && interpreter.TierStatistics.GuardMisses == 0,
+        "Concurrent indirect calls should execute native code without pointless target invalidation");
 }
 
 async Task Profiling()

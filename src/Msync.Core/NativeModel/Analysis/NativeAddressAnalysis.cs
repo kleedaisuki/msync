@@ -165,6 +165,25 @@ internal sealed partial class NativeAddressAnalysis
             active.Remove(this);
             return false;
         }
+        internal bool CollectFrameTargets(HashSet<int> slots, bool allowFormal) =>
+            CollectFrameTargets([], slots, allowFormal);
+        private bool CollectFrameTargets(HashSet<Points> active, HashSet<int> slots, bool allowFormal)
+        {
+            if (!active.Add(this)) return true;
+            if (Top) return false;
+            for (int i = 0; i < targets.Count; i++)
+                if (targets[i].Allocation < 0) slots.Add(targets[i].Slot);
+            if (symbolic is { } b)
+            {
+                if (b.Applications.Count > 0 || b.Adaptations.Count > 0 || b.Reads.Count > 0
+                    || b.ElementSources.Count > 0 || (allowFormal && b.Formals.Count > 0))
+                    return false;
+                for (int i = 0; i < b.Projections.Count; i++)
+                    if (!b.Projections[i].Source.CollectFrameTargets(active, slots, allowFormal)) return false;
+            }
+            active.Remove(this);
+            return true;
+        }
         internal Formal? PureFormal
         {
             get

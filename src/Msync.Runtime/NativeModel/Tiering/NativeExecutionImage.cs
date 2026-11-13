@@ -20,18 +20,27 @@ internal readonly struct NativeExecutionInstruction(NativeInstruction source, in
 
 internal sealed class NativeExecutionImage(NativeImage image, NativeTierOptions options) : IDisposable
 {
-    private readonly ConcurrentDictionary<int, NativeExecutionFunction> functions = [];
-    internal NativeExecutionFunction Function(int index) => functions.GetOrAdd(index,
-        static (index, state) => new(state.image, index, state.options), (image, options));
+    private readonly NativeExecutionFunction?[] functions = new NativeExecutionFunction?[image.Program.Functions.Count];
+    internal NativeImage Image => image;
+    internal NativeExecutionFunction Function(int index)
+    {
+        NativeExecutionFunction? existing = Volatile.Read(ref functions[index]);
+        if (existing is not null) return existing;
+        NativeExecutionFunction created = new(image, index, options);
+        NativeExecutionFunction? winner = Interlocked.CompareExchange(ref functions[index], created, null);
+        if (winner is null) return created;
+        created.Dispose();
+        return winner;
+    }
 
     public void Dispose()
     {
-        foreach (NativeExecutionFunction function in functions.Values) function.Dispose();
-        functions.Clear();
+        for (int index = 0; index < functions.Length; index++)
+            Interlocked.Exchange(ref functions[index], null)?.Dispose();
     }
 }
 
-internal sealed class NativeExecutionFunction : IDisposable
+internal sealed partial class NativeExecutionFunction : IDisposable
 {
     private readonly object gate = new();
     private readonly NativeImage image;
@@ -53,76 +62,337 @@ internal sealed class NativeExecutionFunction : IDisposable
         Index = index;
         Definition = image.Program.Functions[index];
         Metadata = Definition.Instructions as NativeInstruction[] ?? Definition.Instructions.ToArray();
-        Operands = Metadata.Select((instruction, pc) => NativeExecutionOperand.Link(image, instruction,
-            instruction.Op is NativeOp.AddressOffset or NativeOp.ProjectAddress
-                ? Provenance.Addresses.ProvenLayoutsAt(pc, instruction.A) : null)).ToArray();
+        bool pureSynchronous = true;
+        bool contextFree = true;
+        bool observableBinary = false;
+        foreach (NativeInstruction instruction in Metadata)
+        {
+            if (instruction.Op == NativeOp.Binary && !observableBinary)
+            {
+                if (image.Program.Types[Definition.Slots[instruction.A].Type].Kind != TypeKind.Number
+                    || image.Program.Types[Definition.Slots[instruction.B].Type].Kind != TypeKind.Number)
+                    observableBinary = true;
+            }
+            if (!pureSynchronous && !contextFree) continue;
+            if (instruction.Op is NativeOp.Call or NativeOp.CallNative or NativeOp.Transfer
+                or NativeOp.MakeLazyRange or NativeOp.DeferRange or NativeOp.OpenIterator
+                or NativeOp.NextIterator or NativeOp.CloseIterator or NativeOp.ProcessCall
+                or NativeOp.SelectPath or NativeOp.Barrier or NativeOp.Acquire
+                or NativeOp.ExecutePlan or NativeOp.PlanResult)
+            { pureSynchronous = false; contextFree = false; continue; }
+            if (contextFree && (instruction.Op == NativeOp.Constant && image.Program.Constants[instruction.A].Kind == NativeKind.Path
+                || instruction.Op == NativeOp.Binary && (NativeBinary)instruction.Immediate is NativeBinary.PathJoin or NativeBinary.Qualify))
+                contextFree = false;
+        }
+        IsPureSynchronous = pureSynchronous;
+        IsContextFree = contextFree;
+        HasObservableBinary = observableBinary;
+        Operands = Metadata.Select(instruction => NativeExecutionOperand.Link(image, instruction)).ToArray();
         instructions = Lower();
+        LinkCalls();
     }
 
     internal int Index { get; }
+    internal bool IsPureSynchronous { get; }
+    internal bool IsContextFree { get; }
+    internal bool HasObservableBinary { get; }
+    internal bool IsUnavailable => Volatile.Read(ref unavailable);
     internal NativeFunctionCode Definition { get; }
     internal NativeInstruction[] Metadata { get; }
     internal NativeExecutionInstruction[] Instructions => instructions;
     private NativeEscapeAnalysis Provenance => provenance ??= new(image.Program, Index, image.Provenance);
     internal bool HasKind(int slot, NativeKind kind) => image.Program.Types[Definition.Slots[slot].Type] is { Pointee: < 0 } type
         && type.Kind == (kind == NativeKind.Number ? TypeKind.Number : TypeKind.Bool);
+    internal bool CanWriteRaw(int slot) => slot >= 0 && RawWritable[slot]
+        && image.Type(Definition.Slots[slot].Type).Representation.References == 0;
+    internal bool IsUnion(int slot) => image.Type(Definition.Slots[slot].Type).IsUnion;
+    internal bool AdmitsKind(int slot, NativeKind kind) => image.Type(Definition.Slots[slot].Type).Accepts(kind);
     private NativeExecutionInstruction[] Lower()
     {
         NativeExecutionInstruction[] code = Metadata.Select(instruction => new NativeExecutionInstruction(instruction)).ToArray();
         bool[] entry = new bool[code.Length];
         NativeControlFlow flow = new(Metadata);
+        HashSet<int>[] liveAfter = NativeRegisterPlan.LiveAfter(Metadata, flow);
         for (int pc = 0; pc < code.Length; pc++)
             foreach (int next in flow.Successors[pc]) if (next != pc + 1) entry[next] = true;
+        HashSet<int> exposed = Metadata.Where(instruction => instruction.Op is NativeOp.FrameAddress or NativeOp.BindLocation)
+            .Select(instruction => instruction.A).ToHashSet();
+        HashSet<int> rebound = Metadata.Where(instruction => instruction.Op == NativeOp.BindLocation)
+            .Select(instruction => instruction.A).ToHashSet();
+        bool CanElideTemp(int slot) => slot >= Definition.CaptureCount
+            && Definition.Slots[slot].Role == NativeSlotRole.Temporary
+            && !Definition.Slots[slot].Escapes
+            && !exposed.Contains(slot)
+            && FixedCell(slot, rebound);
         for (int pc = 0; pc + 1 < code.Length; pc++)
         {
             NativeInstruction address = Metadata[pc], access = Metadata[pc + 1];
-            if (address.Op != NativeOp.FrameAddress || entry[pc + 1] || !RawWritable[address.Result]
-                || access.A != address.Result || !DeadAfter(address.Result, pc + 1)) continue;
-            if (access.Op == NativeOp.Load)
-                code[pc] = new(access with { Op = NativeOp.Copy, A = address.A }, 2);
-            else if (access.Op == NativeOp.Store && access.B != address.Result)
-                code[pc] = new(access with { Result = address.A, A = access.B }, 2, NativeInterpreter.FrameStoreHandler);
-            else continue;
-            Operands[pc] = Operands[pc + 1];
+            bool deadTemp = !liveAfter[pc + 1].Contains(address.Result)
+                || NativeInstructionFacts.Definitions(access).Contains(address.Result);
+            if (entry[pc + 1] || !deadTemp) continue;
+            if (address.Op == NativeOp.FrameAddress && CanElideTemp(address.Result) && access.A == address.Result)
+            {
+                if (access.Op == NativeOp.Load)
+                    code[pc] = new(access with { Op = NativeOp.Copy, A = address.A }, 2);
+                else if (access.Op == NativeOp.Store && access.B != address.Result)
+                    code[pc] = new(access with { Result = address.A, A = access.B }, 2, NativeInterpreter.FrameStoreHandler);
+                else continue;
+                Operands[pc] = Operands[pc + 1];
+                pc++;
+            }
+            else if (address.Op == NativeOp.AddressOffset && CanElideTemp(address.Result))
+            {
+                if (access.Op == NativeOp.Load && access.A == address.Result)
+                    code[pc] = new(access with { A = address.A }, 2, NativeInterpreter.OffsetLoadHandler);
+                else if (access.Op == NativeOp.Store && access.A == address.Result && access.B != address.Result)
+                    code[pc] = new(access with { A = address.A }, 2, NativeInterpreter.OffsetStoreHandler);
+                else if (access.Op == NativeOp.BindLocation && access.B == address.Result)
+                    code[pc] = new(access with { B = address.A }, 2, NativeInterpreter.OffsetBindHandler);
+                else continue;
+                pc++;
+            }
+            else if (address.Op == NativeOp.ProjectAddress && CanElideTemp(address.Result))
+            {
+                if (access.Op == NativeOp.Load && access.A == address.Result)
+                    code[pc] = new(access with { A = address.A }, 2, NativeInterpreter.ProjectLoadHandler);
+                else if (access.Op == NativeOp.Store && access.A == address.Result && access.B != address.Result)
+                    code[pc] = new(access with { A = address.A }, 2, NativeInterpreter.ProjectStoreHandler);
+                else continue;
+                pc++;
+            }
         }
-        HashSet<int> rebound = Metadata.Where(instruction => instruction.Op == NativeOp.BindLocation).Select(instruction => instruction.A).ToHashSet();
-        for (int pc = 0; pc < code.Length; pc++)
+        int[] defCount = new int[Definition.Slots.Count];
+        int[] singleDefPc = new int[Definition.Slots.Count];
+        for (int pc = 0; pc < code.Length; pc += code[pc].Span)
         {
+            int result = code[pc].Result;
+            if (result < 0) continue;
+            defCount[result]++;
+            singleDefPc[result] = pc;
+        }
+        int[] blockStart = new int[code.Length];
+        foreach (NativeControlFlow.Block block in flow.Blocks)
+            for (int i = block.Start; i < block.End; i++) blockStart[i] = block.Start;
+        bool[] unfusedExposed = new bool[Definition.Slots.Count];
+        bool[] safeValueSlot = new bool[Definition.Slots.Count];
+        for (int pc = 0; pc < code.Length; pc += code[pc].Span)
+        {
+            if (code[pc].Op is NativeOp.FrameAddress or NativeOp.BindLocation
+                || (code[pc].Span == 1 && Metadata[pc].Op == NativeOp.FrameAddress))
+                unfusedExposed[Metadata[pc].A] = true;
+        }
+        for (int slot = 0; slot < safeValueSlot.Length; slot++)
+        {
+            safeValueSlot[slot] = FixedCell(slot, rebound)
+                && !unfusedExposed[slot]
+                && !Definition.Slots[slot].Escapes
+                && !Provenance.EscapingLocations.Contains(slot);
+        }
+        int[] slotVersion = new int[Definition.Slots.Count];
+        (int Slot, int Version)[] copyOrigin = new (int, int)[Definition.Slots.Count];
+        Array.Fill(copyOrigin, (-1, 0));
+        Dictionary<int, int> blockProvenTypes = [];
+        for (int pc = 0; pc < code.Length; pc += code[pc].Span)
+        {
+            if (entry[pc] || pc == blockStart[pc]) blockProvenTypes.Clear();
             NativeExecutionInstruction instruction = code[pc];
-            if (instruction.Op == NativeOp.Binary && instruction.Immediate is >= 0 and <= (long)NativeBinary.GreaterEqual
+            int tailPc = pc + instruction.Span - 1;
+            if (instruction.Result >= 0 && !liveAfter[tailPc].Contains(instruction.Result)
+                && safeValueSlot[instruction.Result]
+                && (instruction.Op == NativeOp.MakeFunction && (instruction.A < 0 || instruction.C == 0 || Metadata[pc].Inputs is null or { Count: 0 })
+                    || instruction.Op == NativeOp.Constant && image.Program.Constants[instruction.A].Kind is NativeKind.Number or NativeKind.Bool or NativeKind.Null or NativeKind.String))
+            {
+                blockProvenTypes.Remove(instruction.Result);
+                slotVersion[instruction.Result]++;
+                code[pc] = new(Metadata[pc], instruction.Span, NativeInterpreter.NopHandler);
+                continue;
+            }
+            if (instruction.Op == NativeOp.Narrow
+                && ((blockProvenTypes.TryGetValue(instruction.A, out int provenType) && CoversNarrowType(image, provenType, Metadata[pc].Type))
+                    || RedundantNarrow(pc, instruction, rebound, code, defCount, singleDefPc, blockStart[pc])))
+            {
+                code[pc] = new(Metadata[pc] with { Op = NativeOp.Copy }, code[pc].Span);
+            }
+            else if (instruction.Op == NativeOp.Narrow && Metadata[pc].Type >= 0)
+            {
+                int narrowedType = Metadata[pc].Type;
+                if (safeValueSlot[instruction.A]) blockProvenTypes[instruction.A] = narrowedType;
+                (int originSlot, int originVersion) = copyOrigin[instruction.A];
+                if (originSlot >= 0 && safeValueSlot[originSlot] && slotVersion[originSlot] == originVersion)
+                    blockProvenTypes[originSlot] = narrowedType;
+                if (instruction.Result >= 0 && safeValueSlot[instruction.Result])
+                    blockProvenTypes[instruction.Result] = narrowedType;
+                if (instruction.Result >= 0 && instruction.Result != instruction.A)
+                    slotVersion[instruction.Result]++;
+            }
+            else if (instruction.Op == NativeOp.Move && (!liveAfter[pc].Contains(instruction.A) || instruction.A == instruction.Result))
+            {
+                code[pc] = new(Metadata[pc] with { Op = NativeOp.Copy }, code[pc].Span);
+            }
+            if (code[pc].Op == NativeOp.Copy)
+            {
+                int src = code[pc].A;
+                int dst = code[pc].Result;
+                if (dst >= 0)
+                {
+                    if (dst != src) slotVersion[dst]++;
+                    if (safeValueSlot[dst])
+                    {
+                        if (blockProvenTypes.TryGetValue(src, out int copiedType)) blockProvenTypes[dst] = copiedType;
+                        else blockProvenTypes.Remove(dst);
+                    }
+                    else blockProvenTypes.Remove(dst);
+                    if (safeValueSlot[src])
+                    {
+                        (int originSlot, int originVersion) = copyOrigin[src];
+                        copyOrigin[dst] = originSlot >= 0 && safeValueSlot[originSlot] && slotVersion[originSlot] == originVersion
+                            ? (originSlot, originVersion)
+                            : (src, slotVersion[src]);
+                    }
+                    else copyOrigin[dst] = (-1, 0);
+                }
+                Operands[pc] = Operands[pc] with { Type = null };
+                if (FixedCell(src, rebound) && FixedCell(dst, rebound))
+                {
+                    NativeType type = image.Type(Definition.Slots[src].Type);
+                    if (type.Equals(image.Type(Definition.Slots[dst].Type))) Operands[pc] = Operands[pc] with { Type = type };
+                }
+            }
+            else if (instruction.Op == NativeOp.Binary && instruction.Immediate is >= 0 and <= (long)NativeBinary.GreaterEqual
                 && HasKind(instruction.A, NativeKind.Number) && HasKind(instruction.B, NativeKind.Number)
                 && HasKind(instruction.Result, instruction.Immediate >= (long)NativeBinary.Equal ? NativeKind.Bool : NativeKind.Number)
                 && FixedCell(instruction.A, rebound) && FixedCell(instruction.B, rebound) && FixedCell(instruction.Result, rebound))
-                code[pc] = new(Metadata[pc], handler: NativeInterpreter.ExecutionHandlerAddress(NativeOp.Binary, number: true));
-            if (code[pc].Op == NativeOp.Copy)
             {
-                Operands[pc] = Operands[pc] with { Type = null };
-                if (!FixedCell(code[pc].A, rebound) || !FixedCell(code[pc].Result, rebound)) continue;
-                NativeType type = image.Type(Definition.Slots[code[pc].A].Type);
-                if (type.Equals(image.Type(Definition.Slots[code[pc].Result].Type))) Operands[pc] = Operands[pc] with { Type = type };
+                if (instruction.Result >= 0)
+                {
+                    blockProvenTypes.Remove(instruction.Result);
+                    slotVersion[instruction.Result]++;
+                    copyOrigin[instruction.Result] = (-1, 0);
+                }
+                code[pc] = new(Metadata[pc], handler: NativeInterpreter.ExecutionHandlerAddress(NativeOp.Binary, number: true));
+            }
+            else if (code[pc].Op != NativeOp.Narrow && code[pc].Result >= 0)
+            {
+                blockProvenTypes.Remove(code[pc].Result);
+                slotVersion[code[pc].Result]++;
+                copyOrigin[code[pc].Result] = (-1, 0);
+            }
+        }
+        for (int pc = 0; pc < code.Length; pc += code[pc].Span)
+        {
+            while (true)
+            {
+                NativeExecutionInstruction first = code[pc];
+                int nextPc = pc + first.Span;
+                if (first.Op != NativeOp.Copy || first.Handler != 0 || nextPc >= code.Length || entry[nextPc]) break;
+                NativeExecutionInstruction second = code[nextPc];
+                int temp = first.Result, source = first.A;
+                if (source == temp || !CanElideTemp(temp) || !FixedCell(source, rebound)) break;
+                if (liveAfter[nextPc + second.Span - 1].Contains(temp) && second.Result != temp) break;
+                if (second.Op == NativeOp.Copy && second.Handler == 0 && second.A == temp && FixedCell(second.Result, rebound))
+                {
+                    NativeType sourceType = image.Type(Definition.Slots[source].Type);
+                    NativeType destType = image.Type(Definition.Slots[second.Result].Type);
+                    code[pc] = new(Metadata[pc] with { Op = NativeOp.Copy, Result = second.Result, A = source }, first.Span + second.Span);
+                    Operands[pc] = Operands[pc] with { Type = sourceType.Equals(destType) ? sourceType : null };
+                    continue;
+                }
+                if (second.Op == NativeOp.Load && second.Handler == NativeInterpreter.ProjectLoadHandler && second.A == temp)
+                {
+                    code[pc] = new(Metadata[nextPc + second.Span - 1] with { A = source },
+                        first.Span + second.Span, NativeInterpreter.ProjectLoadHandler);
+                    Operands[pc] = Operands[nextPc];
+                    continue;
+                }
+                break;
             }
         }
         return code;
+    }
+
+    private static bool SameTypeShape(NativeProgram program, int left, int right)
+    {
+        if (left == right) return true;
+        NativeCodeType a = program.Types[left], b = program.Types[right];
+        if (a.Kind != b.Kind || a.Element != b.Element || a.Pointee != b.Pointee) return false;
+        if (a.Layouts is null || b.Layouts is null) return a.Layouts is null && b.Layouts is null;
+        return a.Layouts.Count == b.Layouts.Count && a.Layouts.SequenceEqual(b.Layouts);
+    }
+
+    private static bool CoversNarrowType(NativeImage image, int provenType, int targetType)
+    {
+        if (provenType < 0 || targetType < 0) return false;
+        if (SameTypeShape(image.Program, provenType, targetType)) return true;
+        NativeType sourceStorage = image.Type(provenType);
+        NativeType targetStorage = image.Type(targetType);
+        if ((sourceStorage.Kinds & ~targetStorage.Kinds) != 0) return false;
+        if (!sourceStorage.Accepts(NativeKind.Address)) return true;
+        IReadOnlyList<int>? admitted = image.Program.Types[targetType].Layouts;
+        if (admitted is null) return true;
+        if (admitted.Count == 0) return false;
+        IReadOnlyList<int>? declared = image.Program.Types[provenType].Layouts;
+        return declared is { Count: > 0 } && declared.All(admitted.Contains);
+    }
+
+    private bool RedundantNarrow(int pc, in NativeExecutionInstruction instruction, HashSet<int> rebound,
+        NativeExecutionInstruction[] code, int[] defCount, int[] singleDefPc, int blockStart)
+    {
+        if (!FixedCell(instruction.A, rebound)) return false;
+        int slotTypeIndex = Definition.Slots[instruction.A].Type;
+        int targetTypeIndex = Metadata[pc].Type;
+        if (targetTypeIndex < 0) return false;
+        if (SameTypeShape(image.Program, slotTypeIndex, targetTypeIndex)) return true;
+        NativeType sourceStorage = image.Type(slotTypeIndex);
+        NativeType targetStorage = image.Type(targetTypeIndex);
+        if ((sourceStorage.Kinds & ~targetStorage.Kinds) != 0) return false;
+        if (!sourceStorage.Accepts(NativeKind.Address)) return true;
+        IReadOnlyList<int>? admitted = image.Program.Types[targetTypeIndex].Layouts;
+        if (admitted is null) return true;
+        if (admitted.Count == 0) return false;
+        IReadOnlyList<int>? declared = image.Program.Types[slotTypeIndex].Layouts;
+        if (declared is { Count: > 0 } && declared.All(admitted.Contains)) return true;
+        if (Provenance.Addresses.ProvenLayoutsAt(pc, instruction.A) is { Count: > 0 } proven && proven.All(admitted.Contains)) return true;
+        int current = instruction.A;
+        int scanPc = pc - 1;
+        for (int depth = 0; depth < 8; depth++)
+        {
+            int defPc = -1;
+            if (scanPc >= blockStart)
+            {
+                for (int cursor = blockStart; cursor <= scanPc; cursor += code[cursor].Span)
+                {
+                    if (code[cursor].Result == current || rebound.Contains(current))
+                    {
+                        if (code[cursor].Result == current) defPc = cursor;
+                    }
+                    else if (cursor != pc && Metadata[cursor].Op == NativeOp.FrameAddress && Metadata[cursor].A == current && code[cursor].Span == 1)
+                    {
+                        defPc = -1;
+                        break;
+                    }
+                }
+            }
+            if (defPc < 0 && defCount[current] == 1 && !rebound.Contains(current) && current >= Definition.CaptureCount + Definition.ParameterCount)
+                defPc = singleDefPc[current];
+            if (defPc < 0) return false;
+            NativeExecutionInstruction def = code[defPc];
+            if (!(def.Op is NativeOp.Copy or NativeOp.Move or NativeOp.Narrow
+                || def.Op == NativeOp.Store && def.Handler == NativeInterpreter.FrameStoreHandler)) return false;
+            current = def.A;
+            if (!FixedCell(current, rebound)) return false;
+            int currentType = Definition.Slots[current].Type;
+            if (SameTypeShape(image.Program, currentType, targetTypeIndex)) return true;
+            IReadOnlyList<int>? sourceLayouts = image.Program.Types[currentType].Layouts;
+            if (sourceLayouts is { Count: > 0 } && sourceLayouts.All(admitted.Contains)) return true;
+            scanPc = defPc - 1;
+        }
+        return false;
     }
 
     private bool FixedCell(int slot, HashSet<int> rebound) => !rebound.Contains(slot)
         && (slot >= Definition.CaptureCount || Definition.Signature.Captures[slot].Mode == NativeCaptureMode.Value)
         && !(image.Program.PreserveLocals && Index == image.Program.EntryPoint
             && (image.Program.SessionRoots?.Contains(slot) ?? Definition.Slots[slot].Role != NativeSlotRole.Temporary));
-
-    private bool DeadAfter(int slot, int pc)
-    {
-        for (int next = pc + 1; next < Metadata.Length; next++)
-        {
-            NativeInstruction instruction = Metadata[next];
-            if (instruction.Op == NativeOp.Drop && instruction.A == slot) return true;
-            if (NativeInstructionFacts.ValueReads(instruction).Contains(slot)) return false;
-            if (NativeInstructionFacts.Definitions(instruction).Contains(slot)) return true;
-            if (instruction.Op is NativeOp.Branch or NativeOp.Jump or NativeOp.NextIterator) return false;
-            if (instruction.Op is NativeOp.Return or NativeOp.Unreachable) return true;
-        }
-        return true;
-    }
 
     internal NativeInstruction Diagnostic(int pc) => Metadata[pc + instructions[pc].Span - 1];
     internal void Visit(RuntimeProfile.NativeFrameCounters counters, int pc)
@@ -147,35 +417,56 @@ internal sealed class NativeExecutionFunction : IDisposable
         get
         {
             if (Volatile.Read(ref rawWritable) is { } ready) return ready;
-            bool[] proof = PrivateWrites(image.Program, Index, Provenance);
+            bool[] proof = PrivateWrites(image.Program, Index, Provenance, instructions);
             return Interlocked.CompareExchange(ref rawWritable, proof, null) ?? proof;
         }
     }
-    private static bool[] PrivateWrites(NativeProgram program, int index, NativeEscapeAnalysis escape)
+    private static bool TryCollectExposed(NativeEscapeAnalysis escape, NativeExecutionInstruction[] lowered, HashSet<int> exposed)
+    {
+        for (int pc = 0; pc < lowered.Length; pc += lowered[pc].Span)
+        {
+            NativeExecutionInstruction instruction = lowered[pc];
+            if (instruction.Op is NativeOp.FrameAddress or NativeOp.BindLocation) exposed.Add(instruction.A);
+            if (instruction.Op == NativeOp.EnvironmentAddress && escape.Addresses.At(pc, instruction.Result).MayAliasCurrentFrame)
+                return false;
+            else if (instruction.Op == NativeOp.BindLocation && escape.Addresses.At(pc, instruction.B).MayAliasCurrentFrame)
+                return false;
+            else if (instruction.Op == NativeOp.ProjectAddress)
+            {
+                if (escape.Addresses.At(pc, instruction.A).MayAliasCurrentFrameAllocation)
+                    return false;
+            }
+            else if (instruction.Op is NativeOp.AddressOffset or NativeOp.IndexAddress
+                or NativeOp.CopyMemory or NativeOp.ClearMemory or NativeOp.RangeFromMemory)
+            {
+                if (escape.Addresses.At(pc, instruction.A).MayAliasCurrentFrame) return false;
+                if (instruction.Op == NativeOp.CopyMemory
+                    && escape.Addresses.At(pc, instruction.B).MayAliasCurrentFrame)
+                    return false;
+            }
+        }
+        return true;
+    }
+
+    private static bool[] PrivateWrites(NativeProgram program, int index, NativeEscapeAnalysis escape, NativeExecutionInstruction[] lowered)
     {
         NativeFunctionCode function = program.Functions[index];
         bool[] result = new bool[function.Slots.Count];
-        if (escape.EscapingLocations.Count != 0) return result;
-        for (int pc = 0; pc < function.Instructions.Count; pc++)
-        {
-            NativeInstruction instruction = function.Instructions[pc];
-            if (instruction.Op == NativeOp.EnvironmentAddress
-                || instruction.Op == NativeOp.BindLocation && escape.Addresses.At(pc, instruction.B).MayAliasCurrentFrame) return result;
-            if (instruction.Op is NativeOp.AddressOffset or NativeOp.ProjectAddress or NativeOp.IndexAddress
-                or NativeOp.CopyMemory or NativeOp.ClearMemory or NativeOp.RangeFromMemory)
-            {
-                if (escape.Addresses.At(pc, instruction.A).MayAliasCurrentFrame) return result;
-                if (instruction.Op == NativeOp.CopyMemory && escape.Addresses.At(pc, instruction.B).MayAliasCurrentFrame) return result;
-            }
-        }
-        HashSet<int> exposed = function.Instructions.Where(instruction => instruction.Op is NativeOp.FrameAddress or NativeOp.BindLocation)
-            .Select(instruction => instruction.A).ToHashSet();
+        HashSet<int> exposed = [];
+        if (!TryCollectExposed(escape, lowered, exposed)) return result;
         for (int slot = 0; slot < result.Length; slot++)
-            result[slot] = function.Slots[slot].Role == NativeSlotRole.Temporary && !exposed.Contains(slot);
+            result[slot] = slot >= function.CaptureCount && function.Slots[slot].Role == NativeSlotRole.Temporary
+                && !function.Slots[slot].Escapes && !escape.EscapingLocations.Contains(slot)
+                && !exposed.Contains(slot) && program.Types[function.Slots[slot].Type].Pointee < 0
+                && !(index == program.EntryPoint && program.PreserveLocals && program.SessionRoots?.Contains(slot) == true);
         return result;
     }
-    internal bool NeedsProfiling => Volatile.Read(ref calls) >= Math.Max(1, options.CallThreshold / 2)
-        || Volatile.Read(ref backedges) >= Math.Max(1, options.BackedgeThreshold / 2);
+    internal bool NeedsProfiling => HasObservableBinary
+        && !Volatile.Read(ref unavailable)
+        && Volatile.Read(ref compiled) is null
+        && options.Policy is NativeJitPolicy.Auto or NativeJitPolicy.Force
+        && (Volatile.Read(ref calls) >= Math.Max(1, options.CallThreshold / 2)
+            || Volatile.Read(ref backedges) >= Math.Max(1, options.BackedgeThreshold / 2));
     internal void Observe(int pc, NativeSiteShape shape)
     {
         NativeSiteProfile? profile = Volatile.Read(ref Profiles[pc]);
@@ -204,8 +495,9 @@ internal sealed class NativeExecutionFunction : IDisposable
             if (code is null) { unavailable = true; counters.Unavailable(); return null; }
             compiled = code;
             TimeSpan duration = System.Diagnostics.Stopwatch.GetElapsedTime(started);
-            counters.Compiled(code.Bytes, duration, invalidations != 0);
+            counters.Compiled(code.Bytes, duration, invalidations != 0, code.Statistics);
             profile.TierCompilation(code.Bytes, duration.Ticks * 100, invalidations != 0);
+            profile.TierCodegen(code.Statistics);
             return code;
         }
     }
@@ -232,13 +524,23 @@ internal sealed class NativeTierCounters
     private long guardMisses, deoptimizations, suspensions, recompilations, cancellationPolls, unavailable;
     private long linkedEntries, linkedOperations;
     private long rawOperations;
+    private long registerRegions, registerValues, registerSpills, eliminatedStores;
+    private long selectionNs, allocationNs, emissionNs, publicationNs;
     internal void LinkedEntry() => Interlocked.Increment(ref linkedEntries);
     internal void LinkedOperation() => Interlocked.Increment(ref linkedOperations);
-    internal void Compiled(int bytes, TimeSpan duration, bool recompiled)
+    internal void Compiled(int bytes, TimeSpan duration, bool recompiled, NativeCodegenStatistics statistics)
     {
         Interlocked.Increment(ref compilations);
         Interlocked.Add(ref compilationNanoseconds, duration.Ticks * 100);
         Interlocked.Add(ref codeBytes, bytes);
+        Interlocked.Add(ref registerRegions, statistics.Regions);
+        Interlocked.Add(ref registerValues, statistics.Values);
+        Interlocked.Add(ref registerSpills, statistics.Spills);
+        Interlocked.Add(ref eliminatedStores, statistics.EliminatedStores);
+        Interlocked.Add(ref selectionNs, statistics.SelectionNanoseconds);
+        Interlocked.Add(ref allocationNs, statistics.AllocationNanoseconds);
+        Interlocked.Add(ref emissionNs, statistics.EmissionNanoseconds);
+        Interlocked.Add(ref publicationNs, statistics.PublicationNanoseconds);
         if (recompiled) Interlocked.Increment(ref recompilations);
     }
     internal void Entered() => Interlocked.Increment(ref entries);
@@ -266,5 +568,11 @@ internal sealed class NativeTierCounters
         Volatile.Read(ref codeBytes), Volatile.Read(ref entries), Volatile.Read(ref operations), Volatile.Read(ref directOperations),
         Volatile.Read(ref guardMisses), Volatile.Read(ref deoptimizations), Volatile.Read(ref suspensions),
         Volatile.Read(ref recompilations), Volatile.Read(ref cancellationPolls), Volatile.Read(ref unavailable))
-    { LinkedEntries = Volatile.Read(ref linkedEntries), LinkedOperations = Volatile.Read(ref linkedOperations), RawOperations = Volatile.Read(ref rawOperations) };
+    {
+        LinkedEntries = Volatile.Read(ref linkedEntries), LinkedOperations = Volatile.Read(ref linkedOperations), RawOperations = Volatile.Read(ref rawOperations),
+        RegisterRegions = Volatile.Read(ref registerRegions), RegisterValues = Volatile.Read(ref registerValues),
+        RegisterSpills = Volatile.Read(ref registerSpills), EliminatedFrameStores = Volatile.Read(ref eliminatedStores),
+        SelectionNanoseconds = Volatile.Read(ref selectionNs), RegisterAllocationNanoseconds = Volatile.Read(ref allocationNs),
+        EmissionNanoseconds = Volatile.Read(ref emissionNs), PublicationNanoseconds = Volatile.Read(ref publicationNs)
+    };
 }

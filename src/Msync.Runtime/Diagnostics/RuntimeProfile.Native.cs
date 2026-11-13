@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using Msync.Core.Native;
+using Msync.Runtime.Native;
 
 namespace Msync.Runtime;
 
@@ -56,6 +57,12 @@ public sealed partial class RuntimeProfile
             ["logical_elements"] = (ulong)counters.Elements,
             ["logical_storage_bytes"] = (ulong)counters.StorageBytes,
             ["frame_placed_allocations"] = (ulong)counters.FrameAllocations,
+            ["call_arguments_borrowed"] = (ulong)counters.BorrowedArguments,
+            ["call_arguments_copied"] = (ulong)counters.CopiedArguments,
+            ["call_argument_snapshots"] = (ulong)counters.ArgumentSnapshots,
+            ["frame_storage_reuses"] = (ulong)counters.FrameStorageReuses,
+            ["tail_arguments_copied"] = (ulong)counters.TailArguments,
+            ["tail_argument_buffers"] = (ulong)counters.TailArgumentBuffers,
             ["copies"] = (ulong)counters.Copies,
             ["moves"] = (ulong)counters.Moves,
             ["drops"] = (ulong)counters.Drops,
@@ -71,7 +78,15 @@ public sealed partial class RuntimeProfile
             ["jit_recompilations"] = (ulong)counters.TierRecompilations,
             ["linked_entries"] = (ulong)counters.LinkedEntries,
             ["linked_operations"] = (ulong)counters.LinkedOperations,
-            ["jit_raw_operations"] = (ulong)counters.TierRawOperations
+            ["jit_raw_operations"] = (ulong)counters.TierRawOperations,
+            ["jit_register_regions"] = (ulong)counters.TierRegisterRegions,
+            ["jit_register_values"] = (ulong)counters.TierRegisterValues,
+            ["jit_register_spills"] = (ulong)counters.TierRegisterSpills,
+            ["jit_eliminated_frame_stores"] = (ulong)counters.TierEliminatedStores,
+            ["jit_selection_ns"] = (ulong)counters.TierSelectionNs,
+            ["jit_register_allocation_ns"] = (ulong)counters.TierAllocationNs,
+            ["jit_emission_ns"] = (ulong)counters.TierEmissionNs,
+            ["jit_publication_ns"] = (ulong)counters.TierPublicationNs
         }));
         if (counters.Sites is { } sites)
             for (int pc = 0; pc < sites.Length; pc++)
@@ -165,6 +180,8 @@ public sealed partial class RuntimeProfile
         internal long Elements;
         internal long StorageBytes;
         internal long FrameAllocations;
+        internal long BorrowedArguments, CopiedArguments, ArgumentSnapshots, FrameStorageReuses;
+        internal long TailArguments, TailArgumentBuffers;
         internal long Copies;
         internal long Moves;
         internal long Drops;
@@ -172,6 +189,8 @@ public sealed partial class RuntimeProfile
         internal long TierDirectOperations, TierGuardMisses, TierDeoptimizations, TierSuspensions, TierRecompilations;
         internal long LinkedEntries, LinkedOperations;
         internal long TierRawOperations;
+        internal long TierRegisterRegions, TierRegisterValues, TierRegisterSpills, TierEliminatedStores;
+        internal long TierSelectionNs, TierAllocationNs, TierEmissionNs, TierPublicationNs;
     }
 
     internal readonly struct NativeFrameCounters(NativeProfileImage? image, int function, NativeFunctionCounters? counters)
@@ -196,6 +215,18 @@ public sealed partial class RuntimeProfile
         internal void TierEntry()
         {
             if (counters is not null) Interlocked.Increment(ref counters.TierEntries);
+        }
+        internal void TierCodegen(NativeCodegenStatistics statistics)
+        {
+            if (counters is null) return;
+            Interlocked.Add(ref counters.TierRegisterRegions, statistics.Regions);
+            Interlocked.Add(ref counters.TierRegisterValues, statistics.Values);
+            Interlocked.Add(ref counters.TierRegisterSpills, statistics.Spills);
+            Interlocked.Add(ref counters.TierEliminatedStores, statistics.EliminatedStores);
+            Interlocked.Add(ref counters.TierSelectionNs, statistics.SelectionNanoseconds);
+            Interlocked.Add(ref counters.TierAllocationNs, statistics.AllocationNanoseconds);
+            Interlocked.Add(ref counters.TierEmissionNs, statistics.EmissionNanoseconds);
+            Interlocked.Add(ref counters.TierPublicationNs, statistics.PublicationNanoseconds);
         }
         internal void TierOperation(bool direct, int count = 1)
         {
@@ -256,6 +287,20 @@ public sealed partial class RuntimeProfile
         {
             if (counters?.Targets is not { } targets) return;
             Interlocked.Increment(ref targets.GetOrAdd((pc, target), static _ => new()).Calls);
+        }
+        internal void TailArguments(int count, bool allocated)
+        {
+            if (counters is null) return;
+            Interlocked.Add(ref counters.TailArguments, count);
+            if (allocated) Interlocked.Increment(ref counters.TailArgumentBuffers);
+        }
+        internal void CallStorage(int borrowed, int copied, bool snapshot, bool reused)
+        {
+            if (counters is null) return;
+            Interlocked.Add(ref counters.BorrowedArguments, borrowed);
+            Interlocked.Add(ref counters.CopiedArguments, copied);
+            if (snapshot) Interlocked.Increment(ref counters.ArgumentSnapshots);
+            if (reused) Interlocked.Increment(ref counters.FrameStorageReuses);
         }
         internal void Native(string name)
         {

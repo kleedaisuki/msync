@@ -3,10 +3,11 @@ namespace Msync.Core.Native;
 public static class NativeTypeRelations
 {
     public static bool Same(IReadOnlyList<NativeCodeType> types, int left, int right) =>
-        Accepts(types, left, right) && Accepts(types, right, left);
+        left == right || Accepts(types, left, right) && Accepts(types, right, left);
 
     public static bool Accepts(IReadOnlyList<NativeCodeType> types, int destination, int source)
     {
+        if (destination == source) return true;
         Stack<(int Destination, int Source)> pending = new();
         HashSet<(int, int)> seen = [];
         pending.Push((destination, source));

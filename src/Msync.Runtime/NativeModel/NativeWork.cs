@@ -5,22 +5,45 @@ namespace Msync.Runtime.Native;
 
 internal sealed class NativeWorkScope(NativeWorkScope? parent)
 {
-    private readonly HashSet<NativeFuture> futures = new(ReferenceEqualityComparer.Instance);
-    private readonly HashSet<NativeProcess> processes = new(ReferenceEqualityComparer.Instance);
+    private HashSet<NativeFuture>? futures;
+    private HashSet<NativeProcess>? processes;
     private readonly object gate = new();
+    private bool hasWork;
     internal NativeWorkScope? Parent => parent;
-    internal bool HasWork { get { lock (gate) return futures.Count != 0 || processes.Count != 0; } }
+    internal bool HasWork => Volatile.Read(ref hasWork);
     internal RuntimeProfile.NativeFrameCounters Counters { get; init; }
-    internal NativeFuture[] Pending { get { lock (gate) return futures.ToArray(); } }
+    internal NativeFuture[] Pending { get { lock (gate) return futures is { Count: > 0 } ? futures.ToArray() : []; } }
 
-    internal void Add(NativeFuture future) { lock (gate) futures.Add(future); }
-    internal void Add(NativeProcess process) { lock (gate) processes.Add(process); }
+    internal void Add(NativeFuture future)
+    {
+        lock (gate)
+        {
+            (futures ??= new(ReferenceEqualityComparer.Instance)).Add(future);
+            Volatile.Write(ref hasWork, true);
+        }
+    }
+
+    internal void Add(NativeProcess process)
+    {
+        lock (gate)
+        {
+            (processes ??= new(ReferenceEqualityComparer.Instance)).Add(process);
+            Volatile.Write(ref hasWork, true);
+        }
+    }
 
     internal async ValueTask FinishAsync(NativeReachable reachable, Action failedTransfer, CancellationToken token)
     {
         NativeFuture[] pending;
         NativeProcess[] running;
-        lock (gate) { pending = futures.ToArray(); running = processes.ToArray(); futures.Clear(); processes.Clear(); }
+        lock (gate)
+        {
+            pending = futures is { Count: > 0 } ? futures.ToArray() : [];
+            running = processes is { Count: > 0 } ? processes.ToArray() : [];
+            futures?.Clear();
+            processes?.Clear();
+            Volatile.Write(ref hasWork, false);
+        }
         List<Exception>? failures = null;
         foreach (NativeFuture future in pending)
         {
@@ -49,14 +72,14 @@ internal sealed class NativeWorkScope(NativeWorkScope? parent)
     internal void CountCompletedTransfers(Action failedTransfer)
     {
         NativeFuture[] completed;
-        lock (gate) completed = futures.ToArray();
+        lock (gate) completed = futures is { Count: > 0 } ? futures.ToArray() : [];
         foreach (NativeFuture future in completed) future.CountFailure(failedTransfer);
     }
 
     internal void AbortProcesses()
     {
         NativeProcess[] running;
-        lock (gate) running = processes.ToArray();
+        lock (gate) running = processes is { Count: > 0 } ? processes.ToArray() : [];
         foreach (NativeProcess process in running)
         {
             if (process.Control is { IsRunning: true } control) control.Kill();
@@ -68,7 +91,11 @@ internal sealed class NativeWorkScope(NativeWorkScope? parent)
     {
         NativeFuture[] pending;
         NativeProcess[] running;
-        lock (gate) { pending = futures.ToArray(); running = processes.ToArray(); }
+        lock (gate)
+        {
+            pending = futures is { Count: > 0 } ? futures.ToArray() : [];
+            running = processes is { Count: > 0 } ? processes.ToArray() : [];
+        }
         foreach (NativeFuture future in pending)
             if (future.IsTransfer) await future.CompleteAsync(token).ConfigureAwait(false);
         foreach (NativeProcess process in running) await process.WaitAsync(token).ConfigureAwait(false);

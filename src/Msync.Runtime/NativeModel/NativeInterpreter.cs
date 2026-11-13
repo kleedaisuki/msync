@@ -8,10 +8,11 @@ namespace Msync.Runtime.Native;
 public sealed partial class NativeInterpreter : IAsyncDisposable
 {
     private Generation generation;
+    private volatile bool programUpdated;
     private readonly AsyncLocal<Generation?> activeGeneration = new();
-    private NativeImage image => (activeGeneration.Value ?? generation).Image;
-    private NativeEnvironmentLayout[] environments => (activeGeneration.Value ?? generation).Environments;
-    private NativeEnvironmentLayout?[] explicitEnvironments => (activeGeneration.Value ?? generation).ExplicitEnvironments;
+    private NativeImage image => (programUpdated ? activeGeneration.Value ?? generation : generation).Image;
+    private NativeEnvironmentLayout[] environments => (programUpdated ? activeGeneration.Value ?? generation : generation).Environments;
+    private NativeEnvironmentLayout?[] explicitEnvironments => (programUpdated ? activeGeneration.Value ?? generation : generation).ExplicitEnvironments;
     private readonly RuntimeProfile? profile;
     private readonly NativeRuntimeContext sessionContext;
     private readonly AsyncLocal<NativeRuntimeContext?> deferredContext = new();
@@ -66,6 +67,7 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
             for (int index = statics.Length; index < expanded.Length; index++) expanded[index] = new();
             statics = expanded;
         }
+        programUpdated = true;
         generation = new(next);
     }
 
@@ -87,16 +89,20 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         NativeWorkScope? previous = currentWork.Value;
+        Generation? previousGeneration = activeGeneration.Value;
         currentWork.Value = executionWork;
+        activeGeneration.Value = generation;
         try
         {
-            NativeDatum result = await RunFunctionAsync(image.Program.EntryPoint, null, [], cancellationToken);
+            ValidateInvocation(image.Program.EntryPoint, 0);
+            NativeDatum result = await RunFunctionAsync(image.Program.EntryPoint, null, default, cancellationToken);
             return result.Future is { } future ? await future.CompleteAsync(cancellationToken) : result.Value;
         }
         finally
         {
             executionWork.CountCompletedTransfers(() => Interlocked.Increment(ref failedTransfers));
             currentWork.Value = previous;
+            activeGeneration.Value = previousGeneration;
         }
     }
 
@@ -110,57 +116,119 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
         return await result.ResolveAsync(cancellationToken);
     }
 
-    private async ValueTask<NativeDatum> InvokeDatumAsync(NativeValue callable,
+    private ValueTask<NativeDatum> InvokeDatumAsync(NativeValue callable,
         IReadOnlyList<NativeDatum> arguments, CancellationToken token)
     {
         NativeFunction function = callable.AsFunction();
         if (function.NativeName is { } name)
-            return await InvokeNativeDatumAsync(name, arguments, context.CaptureDirectory(), null, token);
-        return await RunFunctionAsync(function.Function, function.Environment, arguments, token);
+            return InvokeNativeDatumAsync(name, arguments, context.CaptureDirectory(), null, token);
+        ValidateInvocation(function.Function, arguments.Count);
+        return RunFunctionAsync(function.Function, function.Environment, new(arguments), token);
     }
 
-    private async ValueTask<NativeDatum> RunFunctionAsync(int index, NativeEnvironment? environment,
-        IReadOnlyList<NativeDatum> arguments, CancellationToken token)
+    private void ValidateInvocation(int index, int count)
     {
-        Generation? previousGeneration = activeGeneration.Value;
+        NativeFunctionCode function = image.Program.Functions[index];
+        if (function.IsTemplate) throw new MsyncException("The selected callable requires a compiled specialization.");
+        if (count != function.ParameterCount)
+            throw new MsyncException($"Function '{function.Name}' expects {function.ParameterCount} arguments, received {count}.");
+    }
+
+    private ValueTask<NativeDatum> RunFunctionAsync(int index, NativeEnvironment? environment,
+        NativeArguments arguments, CancellationToken token)
+    {
+        Generation? previousGeneration = programUpdated ? activeGeneration.Value : generation;
         Generation selected = previousGeneration ?? generation;
+        bool switchGeneration = !ReferenceEquals(selected, previousGeneration);
         NativeWorkScope? parent = currentWork.Value;
-        List<TailReturn>? returns = null;
-        TailInvocation? origin = null;
+        return RunFunctionSync(index, environment, arguments, token, selected, switchGeneration, previousGeneration, parent, null, null);
+    }
+
+    private ValueTask<NativeDatum> RunFunctionSync(int index, NativeEnvironment? environment, NativeArguments arguments,
+        CancellationToken token, Generation selected, bool switchGeneration, Generation? previousGeneration,
+        NativeWorkScope? parent, List<TailReturn>? returns, TailInvocation? origin)
+    {
+        Dictionary<NativeLayout, NativeAllocation>? tailBuffers = null;
+        NativeAllocation? currentTailBuffer = null;
         try
         {
             while (true)
             {
                 token.ThrowIfCancellationRequested();
                 NativeFunctionCode function = selected.Image.Program.Functions[index];
-                if (function.IsTemplate) throw new MsyncException("The selected callable requires a compiled specialization.");
-                if (arguments.Count != function.ParameterCount)
-                    throw new MsyncException($"Function '{function.Name}' expects {function.ParameterCount} arguments, received {arguments.Count}.");
-                NativeWorkScope owner = new(parent ?? executionWork)
-                { Counters = profile?.EnterNative(selected.Image.Program, index) ?? default };
-                NativeFrame frame = new(selected.Image, index, environment, arguments, memory,
-                    index == selected.Image.Program.EntryPoint && selected.Image.Program.PreserveLocals ? sessionLocations : null);
-                Activation activation = new(index, function, frame, owner, ExecutionFunction(selected.Image, index));
+                NativeExecutionFunction executable = ExecutionFunction(selected.Image, index);
+                bool trackScope = profile is not null || !executable.IsPureSynchronous;
+                NativeWorkScope owner = trackScope
+                    ? new(parent ?? executionWork) { Counters = profile?.EnterNative(selected.Image.Program, index) ?? default }
+                    : parent ?? executionWork;
+                NativeFrame frame = executable.EnterFrame(environment, arguments, memory,
+                    index == selected.Image.Program.EntryPoint && selected.Image.Program.PreserveLocals ? sessionLocations : null,
+                    out bool reused);
+                if (profile is not null) owner.Counters.CallStorage(arguments.BorrowedCount, arguments.Count - arguments.BorrowedCount, arguments.IsSnapshot, reused);
+                Activation activation = new(index, function, frame, owner, executable, trackScope);
                 NativeDatum result = new(NativeValue.Null);
-                activeGeneration.Value = selected;
-                currentWork.Value = owner;
-                try { result = await RunActivationAsync(activation, token); }
+                if (switchGeneration) activeGeneration.Value = selected;
+                if (trackScope) currentWork.Value = owner;
+                ValueTask<NativeDatum> run = default;
+                ExceptionDispatchInfo? runFailure = null;
+                try
+                {
+                    run = RunActivationAsync(activation, token);
+                    if (!run.IsCompleted)
+                        return AwaitFunctionRunAsync(environment, arguments, token, selected, switchGeneration,
+                            previousGeneration, parent, returns, origin, function, executable, frame, owner, activation, run);
+                    result = run.GetAwaiter().GetResult();
+                }
+                catch (Exception error)
+                {
+                    runFailure = ExceptionDispatchInfo.Capture(error);
+                }
+                ValueTask finish;
+                try { finish = FinishActivationAsync(activation, environment, arguments, result, token); }
+                catch
+                {
+                    if (trackScope) currentWork.Value = parent;
+                    if (switchGeneration) activeGeneration.Value = previousGeneration;
+                    throw;
+                }
+                if (!finish.IsCompleted)
+                    return AwaitFunctionFinishAsync(finish, runFailure, token, selected, switchGeneration,
+                        previousGeneration, parent, returns, origin, function, executable, frame, owner, activation, result);
+                try { finish.GetAwaiter().GetResult(); }
                 finally
                 {
-                    try { await FinishActivationAsync(activation, environment, arguments, result, token); }
-                    finally { currentWork.Value = parent; activeGeneration.Value = previousGeneration; }
+                    if (trackScope) currentWork.Value = parent;
+                    if (switchGeneration) activeGeneration.Value = previousGeneration;
                 }
+                if (runFailure is not null) runFailure.Throw();
                 if (activation.Tail is not { } tail)
                 {
+                    executable.LeaveFrame(frame, memory);
+                    if (currentTailBuffer is not null) memory.ResetFrame(currentTailBuffer);
                     if (returns is not null)
                         for (int pending = returns.Count - 1; pending >= 0; pending--) returns[pending].Complete();
-                    return result;
+                    return new(result);
                 }
+                NativeArguments nextArguments = default;
+                NativeAllocation? nextBuffer = null;
+                if (tail.Arguments.Count != 0)
+                {
+                    FrameAllocation target = selected.Image.Frame(tail.Target);
+                    tailBuffers ??= [];
+                    bool allocated = !tailBuffers.TryGetValue(target.Parameters, out nextBuffer);
+                    if (allocated) tailBuffers.Add(target.Parameters, nextBuffer = new(target.Parameters));
+                    tail.Arguments.CopyTo(nextBuffer!, memory);
+                    nextArguments = new(nextBuffer!, target.ParameterBorrows, target.ParameterBorrowCount);
+                    owner.Counters.TailArguments(tail.Arguments.Count, allocated);
+                }
+                if (currentTailBuffer is not null && !ReferenceEquals(currentTailBuffer, nextBuffer)) memory.ResetFrame(currentTailBuffer);
+                currentTailBuffer = nextBuffer;
+                executable.LeaveFrame(frame, memory);
                 if (profile is not null) (returns ??= []).Add(new(owner.Counters, function, tail.Pc, tail.Plan));
                 origin = tail;
                 index = tail.Target;
                 environment = tail.Environment;
-                arguments = tail.Arguments;
+                arguments = nextArguments;
             }
         }
         catch (Exception error) when (origin is not null)
@@ -170,87 +238,210 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
         }
     }
 
-    private async ValueTask<NativeDatum> RunActivationAsync(Activation activation, CancellationToken token)
+    private async ValueTask<NativeDatum> AwaitFunctionRunAsync(NativeEnvironment? environment, NativeArguments arguments,
+        CancellationToken token, Generation selected, bool switchGeneration, Generation? previousGeneration,
+        NativeWorkScope? parent, List<TailReturn>? returns, TailInvocation? origin,
+        NativeFunctionCode function, NativeExecutionFunction executable, NativeFrame frame,
+        NativeWorkScope owner, Activation activation, ValueTask<NativeDatum> run)
+    {
+        NativeDatum result = new(NativeValue.Null);
+        try
+        {
+            try { result = await run; }
+            finally
+            {
+                try { await FinishActivationAsync(activation, environment, arguments, result, token); }
+                finally
+                {
+                    currentWork.Value = parent;
+                    if (switchGeneration) activeGeneration.Value = previousGeneration;
+                }
+            }
+        }
+        catch (Exception error) when (origin is not null)
+        {
+            ThrowTierFailure(origin.Caller, origin.Instruction, origin.Pc, error);
+            throw;
+        }
+        return await CompleteTailOrReturnAsync(result, token, selected, switchGeneration, previousGeneration,
+            parent, returns, function, executable, frame, owner, activation);
+    }
+
+    private async ValueTask<NativeDatum> AwaitFunctionFinishAsync(ValueTask finish, ExceptionDispatchInfo? runFailure,
+        CancellationToken token, Generation selected, bool switchGeneration, Generation? previousGeneration,
+        NativeWorkScope? parent, List<TailReturn>? returns, TailInvocation? origin,
+        NativeFunctionCode function, NativeExecutionFunction executable, NativeFrame frame,
+        NativeWorkScope owner, Activation activation, NativeDatum result)
+    {
+        try
+        {
+            try { await finish; }
+            finally
+            {
+                currentWork.Value = parent;
+                if (switchGeneration) activeGeneration.Value = previousGeneration;
+            }
+            if (runFailure is not null) runFailure.Throw();
+        }
+        catch (Exception error) when (origin is not null)
+        {
+            ThrowTierFailure(origin.Caller, origin.Instruction, origin.Pc, error);
+            throw;
+        }
+        return await CompleteTailOrReturnAsync(result, token, selected, switchGeneration, previousGeneration,
+            parent, returns, function, executable, frame, owner, activation);
+    }
+
+    private ValueTask<NativeDatum> CompleteTailOrReturnAsync(NativeDatum result, CancellationToken token,
+        Generation selected, bool switchGeneration, Generation? previousGeneration, NativeWorkScope? parent,
+        List<TailReturn>? returns, NativeFunctionCode function,
+        NativeExecutionFunction executable, NativeFrame frame, NativeWorkScope owner, Activation activation)
+    {
+        if (activation.Tail?.Arguments.IsFrameView != true) executable.LeaveFrame(frame, memory);
+        if (activation.Tail is not { } tail)
+        {
+            if (returns is not null)
+                for (int pending = returns.Count - 1; pending >= 0; pending--) returns[pending].Complete();
+            return new(result);
+        }
+        if (profile is not null) (returns ??= []).Add(new(owner.Counters, function, tail.Pc, tail.Plan));
+        return RunFunctionSync(tail.Target, tail.Environment, tail.Arguments, token, selected, switchGeneration,
+            previousGeneration, parent, returns, tail);
+    }
+
+    private ValueTask<NativeDatum> RunActivationAsync(Activation activation, CancellationToken token)
+    {
+        NativeExecutionFunction executable = activation.Execution;
+        bool enableTiering = !disposed && !executable.IsUnavailable && (tierOptions.Policy == NativeJitPolicy.Force
+            || tierOptions.Policy == NativeJitPolicy.Auto && NativeMachineCode.AutoEnabled);
+        if (enableTiering) executable.Enter();
+        bool linkedCounters = tierOptions.Policy == NativeJitPolicy.Linked;
+        bool observed = profile is not null;
+        if (linkedCounters) { tierCounters.LinkedEntry(); activation.Work.Counters.LinkedEntry(); }
+        return RunActivationFromSync(activation, 0, null, true, enableTiering, linkedCounters, observed, token);
+    }
+
+    private ValueTask<NativeDatum> RunActivationFromSync(Activation activation, int pc, NativeCompiledFunction? version,
+        bool promotionPoint, bool enableTiering, bool linkedCounters, bool observed, CancellationToken token)
     {
         NativeFunctionCode function = activation.Function;
         NativeFrame frame = activation.Frame;
         NativeWorkScope owner = activation.Work;
-        bool enableTiering = !disposed && (tierOptions.Policy == NativeJitPolicy.Force
-            || tierOptions.Policy == NativeJitPolicy.Auto && NativeMachineCode.AutoEnabled);
         NativeExecutionFunction executable = activation.Execution;
-        if (enableTiering) executable.Enter();
         NativeInstruction[] instructions = executable.Metadata;
-        bool linkedCounters = tierOptions.Policy == NativeJitPolicy.Linked;
-        bool observed = profile is not null;
-        if (linkedCounters) { tierCounters.LinkedEntry(); owner.Counters.LinkedEntry(); }
-        NativeCompiledFunction? version = null;
-        bool promotionPoint = true;
-        for (int pc = 0; pc < instructions.Length;)
+        while (pc < instructions.Length)
         {
             token.ThrowIfCancellationRequested();
             if (enableTiering && promotionPoint)
             {
                 version = executable.TryCompile(tierCounters, owner.Counters);
+                if (version is null && executable.IsUnavailable) enableTiering = false;
                 promotionPoint = false;
             }
             if (version is not null)
             {
-                TierOutcome outcome = await RunTierAsync(activation, executable, version, pc, token);
-                if (outcome.Returned) return activation.Result;
+                ValueTask<TierOutcome> tierPending = RunTier(activation, executable, version, pc, token);
+                if (!tierPending.IsCompleted)
+                    return AwaitActivationTierAsync(activation, version, enableTiering, linkedCounters, observed, tierPending, token);
+                TierOutcome outcome = tierPending.GetAwaiter().GetResult();
+                if (outcome.Returned) return new(activation.Result);
                 pc = outcome.Next;
                 if (!outcome.ExecuteBaseline) continue;
                 version = null;
             }
-            if (enableTiering) ObserveTier(executable, frame, pc);
+            if (enableTiering && executable.HasObservableBinary) ObserveTier(executable, frame, pc);
             NativeStep step;
             if (observed) executable.Visit(owner.Counters, pc);
             if (linkedCounters) { tierCounters.LinkedOperation(); owner.Counters.LinkedOperation(); }
             try
             {
                 ValueTask<NativeStep> pending = ExecuteLinked(activation, executable.Instructions[pc], pc, token);
-                bool suspended = !pending.IsCompleted;
-                if (suspended) owner.Counters.Pause();
-                try { step = await pending; }
-                finally { if (suspended) owner.Counters.Continue(); }
+                if (!pending.IsCompleted)
+                    return AwaitActivationStepAsync(activation, pc, version, promotionPoint, enableTiering, linkedCounters, observed, pending, token);
+                step = pending.GetAwaiter().GetResult();
             }
-            catch (OperationCanceledException) { throw; }
-            catch (MsyncException error) when (error.Span is null)
+            catch (Exception error)
             {
-                if (executable.Diagnostic(pc).Source is { } source)
-                    throw new MsyncException(error.Message, source, error);
+                ExceptionDispatchInfo.Capture(WrapStepFailure(executable, function, pc, error)).Throw();
                 throw;
             }
-            catch (InvalidOperationException error)
-            {
-                NativeInstruction instruction = executable.Diagnostic(pc);
-                throw new MsyncException($"{error.Message} Native {instruction.Op} in function '{function.Name}', instruction {pc}, operands {instruction.A}/{instruction.B}/{instruction.C}, result {instruction.Result}.", instruction.Source, error);
-            }
-            catch (Exception error) when (error is ArgumentException or IOException or UnauthorizedAccessException)
-            { throw new MsyncException(error.Message, executable.Diagnostic(pc).Source, error); }
-            if (step.Returned) return activation.Result;
+            if (step.Returned) return new(activation.Result);
             if (observed) owner.Counters.Edge(pc + executable.Instructions[pc].Span - 1, step.Next);
             if (step.Next <= pc) { if (enableTiering) executable.Backedge(); promotionPoint = true; }
             pc = step.Next;
         }
-        return new(NativeValue.Null);
+        return new(new NativeDatum(NativeValue.Null));
     }
 
-    private async ValueTask FinishActivationAsync(Activation activation, NativeEnvironment? environment,
-        IReadOnlyList<NativeDatum> arguments, NativeDatum result, CancellationToken token)
+    private static Exception WrapStepFailure(NativeExecutionFunction executable, NativeFunctionCode function, int pc, Exception error)
+    {
+        if (error is OperationCanceledException) return error;
+        if (error is MsyncException msync)
+            return msync.Span is null && executable.Diagnostic(pc).Source is { } source ? new MsyncException(msync.Message, source, msync) : msync;
+        if (error is InvalidOperationException)
+        {
+            NativeInstruction instruction = executable.Diagnostic(pc);
+            return new MsyncException($"{error.Message} Native {instruction.Op} in function '{function.Name}', instruction {pc}, operands {instruction.A}/{instruction.B}/{instruction.C}, result {instruction.Result}.", instruction.Source, error);
+        }
+        if (error is ArgumentException or IOException or UnauthorizedAccessException)
+            return new MsyncException(error.Message, executable.Diagnostic(pc).Source, error);
+        return error;
+    }
+
+    private async ValueTask<NativeDatum> AwaitActivationTierAsync(Activation activation, NativeCompiledFunction version,
+        bool enableTiering, bool linkedCounters, bool observed, ValueTask<TierOutcome> tierPending, CancellationToken token)
+    {
+        TierOutcome outcome = await tierPending;
+        if (outcome.Returned) return activation.Result;
+        NativeCompiledFunction? nextVersion = outcome.ExecuteBaseline ? null : version;
+        return await RunActivationFromSync(activation, outcome.Next, nextVersion, false, enableTiering, linkedCounters, observed, token);
+    }
+
+    private async ValueTask<NativeDatum> AwaitActivationStepAsync(Activation activation, int pc, NativeCompiledFunction? version,
+        bool promotionPoint, bool enableTiering, bool linkedCounters, bool observed, ValueTask<NativeStep> pending, CancellationToken token)
+    {
+        NativeExecutionFunction executable = activation.Execution;
+        NativeWorkScope owner = activation.Work;
+        NativeStep step;
+        owner.Counters.Pause();
+        try
+        {
+            try { step = await pending; }
+            finally { owner.Counters.Continue(); }
+        }
+        catch (Exception error)
+        {
+            ExceptionDispatchInfo.Capture(WrapStepFailure(executable, activation.Function, pc, error)).Throw();
+            throw;
+        }
+        if (step.Returned) return activation.Result;
+        if (observed) owner.Counters.Edge(pc + executable.Instructions[pc].Span - 1, step.Next);
+        if (step.Next <= pc) { if (enableTiering) executable.Backedge(); promotionPoint = true; }
+        return await RunActivationFromSync(activation, step.Next, version, promotionPoint, enableTiering, linkedCounters, observed, token);
+    }
+
+    private ValueTask FinishActivationAsync(Activation activation, NativeEnvironment? environment,
+        NativeArguments arguments, NativeDatum result, CancellationToken token) =>
+        !activation.HasActiveIterators && (!activation.OwnsWork || !activation.Work.HasWork)
+            ? ValueTask.CompletedTask
+            : AwaitFinishActivationAsync(activation, environment, arguments, result, token);
+
+    private async ValueTask AwaitFinishActivationAsync(Activation activation, NativeEnvironment? environment,
+        NativeArguments arguments, NativeDatum result, CancellationToken token)
     {
         Exception? iteratorFailure = null;
         try { await activation.CloseIteratorsAsync(); }
         catch (Exception error) { iteratorFailure = error; }
-        if (activation.Work.HasWork)
+        if (activation.OwnsWork && activation.Work.HasWork)
         {
             NativeReachable reachable = new(memory, GetRangeRoots, image);
             reachable.Add(result);
-            foreach (NativeDatum argument in arguments) reachable.Add(argument);
+            for (int index = 0; index < arguments.Count; index++) reachable.Add(arguments.Read(index, memory));
             foreach (StaticState state in statics)
                 if (Volatile.Read(ref state.Allocation) is { } allocation)
                     reachable.Add(new NativeDatum(NativeValue.FromAddress(allocation.Address)));
             if (environment is not null)
-                for (int capture = 0; capture < environment.Count; capture++)
+                for (int capture = 0; capture < activation.Function.CaptureCount; capture++)
                 {
                     if (environment.Layout.Captures[capture].Location) reachable.AddLocation(environment[capture].Location);
                     else reachable.AddLocation(environment.CaptureAddress(capture));
@@ -270,7 +461,6 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
     {
         NativeAddress address = function.Environment?.Address
             ?? throw new MsyncException("The selected function has no capture environment.", instruction.Source);
-        NativeStorage.ValidateRegion(address, image.Layout(instruction.B), 1);
         return address;
     }
 
@@ -318,18 +508,28 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
         internal TailPlan?[]?[] TailSites { get; } = new TailPlan?[]?[image.Program.Functions.Count];
     }
 
-    private sealed class Activation(int functionIndex, NativeFunctionCode function, NativeFrame frame, NativeWorkScope work, NativeExecutionFunction execution)
+    private sealed class Activation(int functionIndex, NativeFunctionCode function, NativeFrame frame, NativeWorkScope work, NativeExecutionFunction execution, bool ownsWork = true)
     {
         internal NativeExecutionFunction Execution { get; } = execution;
         internal int FunctionIndex { get; } = functionIndex;
         internal NativeFunctionCode Function { get; } = function;
         internal NativeFrame Frame { get; } = frame;
         internal NativeWorkScope Work { get; } = work;
+        internal bool OwnsWork { get; } = ownsWork;
         internal NativeDatum Result { get; set; }
         internal TailInvocation? Tail { get; set; }
         internal IAsyncEnumerator<NativeDatum>?[] Iterators { get; } = function.IteratorCount == 0 ? [] : new IAsyncEnumerator<NativeDatum>?[function.IteratorCount];
         internal Dictionary<int, NativeDatum[]>? Plans;
         internal Dictionary<string, HashSet<NativeFuture>>? Regions;
+        internal bool HasActiveIterators
+        {
+            get
+            {
+                for (int index = 0; index < Iterators.Length; index++)
+                    if (Iterators[index] is not null) return true;
+                return false;
+            }
+        }
         internal async ValueTask CloseIteratorsAsync()
         {
             List<Exception>? failures = null;
@@ -355,6 +555,7 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
         finally
         {
             foreach (KeyValuePair<NativeImage, NativeExecutionImage> entry in executableImages) entry.Value.Dispose();
+            DisposeTierPool();
             transferSlots.Dispose();
         }
     }

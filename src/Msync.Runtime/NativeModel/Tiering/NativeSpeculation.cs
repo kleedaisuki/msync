@@ -19,12 +19,26 @@ internal sealed class NativeSiteProfile
     internal NativeSiteShape? Snapshot() { lock (gate) return shape; }
 }
 
-internal sealed record NativeSiteShape(NativeKind First, NativeKind Second = NativeKind.Null,
-    int Function = -1, string? NativeName = null, int Layout = -1);
+internal sealed record NativeSiteShape(NativeKind First, NativeKind Second);
 
 internal enum NativeFastOperation : byte
 {
-    Bridge, NumberConstant, BoolConstant, NumberCopy, BoolCopy, NumberNegate, BoolNot,
+    Bridge, Nop, Jump, Branch, NumberReturn, BoolReturn, NumberConstant, BoolConstant, NumberCopy, BoolCopy, NumberNegate, BoolNot,
+    BoolEqual, BoolNotEqual,
     NumberAdd, NumberSubtract, NumberMultiply, NumberDivide,
     NumberEqual, NumberNotEqual, NumberLess, NumberLessEqual, NumberGreater, NumberGreaterEqual
+}
+
+internal static class NativeFastOperations
+{
+    internal static bool IsBoolResult(this NativeFastOperation op) =>
+        op is NativeFastOperation.BoolConstant or NativeFastOperation.BoolCopy or NativeFastOperation.BoolNot
+            or NativeFastOperation.BoolEqual or NativeFastOperation.BoolNotEqual or >= NativeFastOperation.NumberEqual;
+
+    internal static bool TakesSecondOperand(this NativeFastOperation op) =>
+        op >= NativeFastOperation.BoolEqual;
+
+    internal static bool ExpectsBoolInputs(this NativeFastOperation op) =>
+        op is NativeFastOperation.BoolCopy or NativeFastOperation.BoolNot
+            or NativeFastOperation.BoolEqual or NativeFastOperation.BoolNotEqual;
 }

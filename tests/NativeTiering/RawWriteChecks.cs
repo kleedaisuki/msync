@@ -70,19 +70,19 @@ internal static class RawWriteChecks
             if (native.Context->Slots[slot].Flags != flags)
                 throw new InvalidOperationException($"Slot {slot} has stale native pending/ownership flags.");
         }
-        Check(0, 1);
+        Check(0, 0);
         memory.Write(frame.Location(0), pending);
         native.RefreshPending(1);
-        Check(0, 3);
+        Check(0, 2);
         memory.Copy(frame.Location(0), frame.Location(2));
         native.RefreshPending(1);
-        Check(2, 3);
+        Check(2, 2);
         frame.Set(0, NativeValue.FromNumber(7));
         native.RefreshPending(0);
-        Check(0, 1);
+        Check(0, 0);
         memory.Clear(frame.Location(2));
         native.RefreshPending(2);
-        Check(2, 1);
+        Check(2, 0);
         NativeProgram bound = new([new(NativeKind.Number, Number: 1)], [new("bound-flags", [new(0), new(0), new(0), new(1)],
             [new(NativeOp.Constant, 0, 0), new(NativeOp.FrameAddress, 3, 0), new(NativeOp.BindLocation, A: 1, B: 3),
              new(NativeOp.BindLocation, A: 2, B: 3), new(NativeOp.Return, A: 0)], new([], 0, []))],

@@ -32,15 +32,49 @@ public sealed partial class NativeInterpreter
     {
         private readonly NativeRuntimeContext execution = origin.ForkDirectory();
         public NativeDatum Current => inner.Current;
-        public async ValueTask<bool> MoveNextAsync()
+
+        public ValueTask<bool> MoveNextAsync()
         {
-            using var directory = owner.EnterDeferredDirectory(execution);
-            return await inner.MoveNextAsync();
+            NativeRuntimeContext? previous = owner.deferredContext.Value;
+            bool switchDir = !ReferenceEquals(previous, execution);
+            if (switchDir) owner.deferredContext.Value = execution;
+            ValueTask<bool> next;
+            try { next = inner.MoveNextAsync(); }
+            catch { if (switchDir) owner.deferredContext.Value = previous; throw; }
+            if (next.IsCompleted)
+            {
+                if (switchDir) owner.deferredContext.Value = previous;
+                return next;
+            }
+            return FinishMoveNextAsync(next, previous, switchDir);
         }
-        public async ValueTask DisposeAsync()
+
+        private async ValueTask<bool> FinishMoveNextAsync(ValueTask<bool> next, NativeRuntimeContext? previous, bool switchDir)
         {
-            using var directory = owner.EnterDeferredDirectory(execution);
-            await inner.DisposeAsync();
+            try { return await next; }
+            finally { if (switchDir) owner.deferredContext.Value = previous; }
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            NativeRuntimeContext? previous = owner.deferredContext.Value;
+            bool switchDir = !ReferenceEquals(previous, execution);
+            if (switchDir) owner.deferredContext.Value = execution;
+            ValueTask dispose;
+            try { dispose = inner.DisposeAsync(); }
+            catch { if (switchDir) owner.deferredContext.Value = previous; throw; }
+            if (dispose.IsCompleted)
+            {
+                if (switchDir) owner.deferredContext.Value = previous;
+                return dispose;
+            }
+            return FinishDisposeAsync(dispose, previous, switchDir);
+        }
+
+        private async ValueTask FinishDisposeAsync(ValueTask dispose, NativeRuntimeContext? previous, bool switchDir)
+        {
+            try { await dispose; }
+            finally { if (switchDir) owner.deferredContext.Value = previous; }
         }
     }
 }

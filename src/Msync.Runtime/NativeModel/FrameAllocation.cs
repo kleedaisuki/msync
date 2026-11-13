@@ -4,14 +4,15 @@ namespace Msync.Runtime.Native;
 
 internal readonly record struct NativeFrameAllocation(NativeOffset Offset, int Layout);
 internal readonly record struct NativeFrameRegion(NativeOffset Offset, NativeLayout Layout);
-internal readonly record struct NativeFrameSlot(NativeOffset Offset, NativeType Type, int Binding, bool Persistent);
+internal readonly record struct NativeFrameSlot(NativeOffset Offset, NativeType Type, NativeType? Pointee, int Binding, bool Persistent, bool ExactAddress, bool Borrowable);
 
 internal readonly struct FrameAllocation
 {
     private readonly Dictionary<int, NativeFrameAllocation>? allocations;
 
     internal FrameAllocation(NativeProgram program, int function, NativeLayout registers,
-        IReadOnlyList<NativeAllocationPlan> candidates, Func<int, NativeLayout> layout, NativeAddressAnalysis.ProgramFacts provenance)
+        IReadOnlyList<NativeType> types, IReadOnlyList<NativeAllocationPlan> candidates,
+        Func<int, NativeLayout> layout, NativeAddressAnalysis.ProgramFacts provenance)
     {
         allocations = null;
         Registers = registers;
@@ -25,12 +26,22 @@ internal readonly struct FrameAllocation
                 .Where(item => item.slot.Role != NativeSlotRole.Temporary && !registers[item.index].Type.IsNever)
                 .Select(item => item.index).Concat(program.SessionRoots ?? []).ToHashSet() : [];
         bound.UnionWith(persistent);
+        bool[] readOnly = NativeCallFacts.ReadOnlyParameters(code, provenance.Function(function));
+        Parameters = new NativeLayout(Enumerable.Range(0, code.ParameterCount)
+            .Select(index => new NativeField(index.ToString(System.Globalization.CultureInfo.InvariantCulture), registers[code.CaptureCount + index].Type)));
+        ParameterBorrows = Enumerable.Range(0, code.ParameterCount).Select(index => readOnly[code.CaptureCount + index]).ToArray();
+        ParameterBorrowCount = ParameterBorrows.Count(value => value);
+        for (int index = 0; index < code.ParameterCount; index++)
+            if (readOnly[code.CaptureCount + index]) bound.Add(code.CaptureCount + index);
         BindingSlots = bound.Order().ToArray();
         Slots = new NativeFrameSlot[code.Slots.Count];
         for (int index = 0; index < Slots.Length; index++)
         {
             NativeFieldLayout field = registers[index];
-            Slots[index] = new(field.Offset, field.Type, -1, persistent.Contains(index));
+            int pointee = program.Types[code.Slots[index].Type].Pointee;
+            bool isPersistent = persistent.Contains(index);
+            Slots[index] = new(field.Offset, field.Type, pointee >= 0 ? types[pointee] : null,
+                -1, isPersistent, field.Type.Kinds == (1UL << (int)NativeKind.Address), readOnly[index] && !isPersistent);
         }
         for (int index = 0; index < BindingSlots.Length; index++)
         {
@@ -60,6 +71,9 @@ internal readonly struct FrameAllocation
             allocations.Add(selected[index].Instruction, new(offsets[index + 1], selected[index].Layout));
     }
 
+    internal NativeLayout Parameters { get; }
+    internal bool[] ParameterBorrows { get; }
+    internal int ParameterBorrowCount { get; }
     internal NativeFrameSlot[] Slots { get; }
     internal int[] BindingSlots { get; }
     internal NativeLayout Layout { get; }

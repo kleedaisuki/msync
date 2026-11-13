@@ -23,6 +23,132 @@ allocation's immutable layout. Dynamic layout unions select an admitted variant.
 Both execution modes use those operands. General helpers remain complete for all
 builtins and effects; this is not a numeric-only accepted language subset.
 
+## Register-allocated native regions
+
+The guest compiler now derives definition-specific scalar values and live
+intervals before machine-code emission. This is process-local compilation data,
+not another portable format, VM, frame authority or pointer cache. The portable
+`.mso`/`.mexe` contracts remain unchanged. Sharing operation semantics does not
+require preserving the interpreter's per-operation memory traffic.
+
+`NativeRegisterPlan` partitions lowered basic blocks at helper/effect boundaries,
+independently reachable PCs, incompatible checked refinements and cancellation
+safepoints. Eligible outputs are compiler-proven private, unexposed scalar cells
+without managed roots. Each definition has its own value identity even when
+portable register coloring reuses the same slot. CFG liveness determines actual
+live-out stores. Linear scan assigns volatile scalar registers; excess live
+values spill to the native invocation's stack, not canonical guest frame cells.
+Both x64 and ARM64 consume the same allocation plan and preserve their host ABI.
+
+Region inputs perform actual semantic readiness/union selection once before any
+region operation commits. An unavailable input exits before the region; baseline
+execution then propagates the existing Future or reports the original operation's
+failure. Region intermediates have no pending/init/type/private-write tests and
+need no frame descriptors. Only live-out values are committed at the boundary.
+If a live-out replaces a pending private value, a conditional boundary helper
+removes that exact Runtime payload after successful computation; it never awaits
+the overwritten value. No effect is replayed for state reconstruction.
+
+Immutable storage ABI and write eligibility are code-generation decisions, not
+runtime permission flags. The native descriptor no longer duplicates the static
+kind or raw-write authority. Fixed field accesses are linked offset arithmetic;
+single-case projections do not rediscover allocation layouts. Trusted bulk memory
+operations check real dynamic extent/logical-allocation bounds, not the layout
+graph again. External Core/host admission still owns physical type admission.
+Indirect helper calls and dynamic projection helpers no longer acquire speculative
+guards when no target/offset specialization was actually generated.
+
+One region hit accounts for its original logical visits and edges; scalar
+operations no longer update a hit counter individually. Cancellation polls reuse
+the existing invocation, pin leases and workspace instead of allocating them
+again. Obsolete owners from rebinding lose their pin leases at the next poll.
+Jumps and conditional branches are native transfers rather than managed bridge
+calls. Branch hit storage distinguishes the actual taken/untaken edges, including
+when both alternatives share a target. Asynchronous suspension still releases all pins before waiting on the
+already-started operation. Code pages retain their existing SafeHandle lease.
+
+Codegen telemetry separately records selection, allocation, emission and
+publication time, plus region/value/spill counts and eliminated canonical stores.
+The existing per-function/opcode/source observations remain exact across policies.
+`tests/NativeTiering/RegisterRegionChecks.cs` exercises detached artifacts, actual
+register pressure/spills, source and bound routes, incompatible union refinements,
+colored definitions, concurrent invalidation and multi-safepoint execution.
+
+This follows the normal separation of value flow, register allocation and final
+encoding described in the [LLVM code generator](https://www.llvm.org/docs/CodeGenerator.html)
+and [Cranelift's allocator design discussion](https://www.cfall.in/blog/2022/06/09/cranelift-regalloc2/).
+It is a local linear-scan backend, not an adoption of LLVM or regalloc2, and it does
+not claim cross-block register residency or interprocedural native inlining.
+
+### Linux x64 Native AOT receipt (2026-11-13)
+
+The frozen candidate has 545 inputs under
+`.temp/jit-register-backend/candidate-manifest.json`; all frozen and working-tree
+hashes matched after publication/execution. SDK 10.0.403 produced one CLI, one
+tier acceptance executable and one public-API numeric harness. The tier image
+passed 2,162 journeys. The CLI passed source/`.mso`/source-free `.mexe` arithmetic,
+capture and real-file-transfer routes, three actual missing-source failure routes,
+and three recorded executions. The existing 128 preparation equivalences and
+alias/cancellation/no-replanning controls also pass. ARM64/Windows have encoding
+receipts, not claimed execution on this Linux x64 host.
+
+The independent warm kernel decodes a portable artifact containing 901 dependent
+adds, uses 32 untimed warmups, then checks the exact result after each of 2,000
+public `InvokeAsync` calls. Eight order-balanced samples per condition on one
+pinned CPU gave these medians; guest compilation is outside this timed interval:
+
+| Kernel condition | Elapsed ms | Managed allocation bytes | Guest code bytes |
+| --- | ---: | ---: | ---: |
+| Control Off | 209.982 | 2,448,000 | 0 |
+| Candidate Off | 212.237 | 2,448,000 | 0 |
+| Control Force | 67.420 | 6,611,168 | 260,487 |
+| Candidate Force | 16.684 | 3,440,000 | 19,083 |
+
+This kernel is 4.04x faster than old Force and 12.72x faster than candidate Off.
+Its four safepoint regions eliminate 897 intermediate frame stores. Median guest
+compile time is 6.215 ms control versus 6.383 ms candidate: this is a warm-execution
+result, not a cold-start compilation speedup. The separate pressure fixture has
+12 live inputs, actual stack spills and only one canonical result store;
+saved x64/ARM64 disassembly confirms no frame round trips between its 11 adds.
+
+The two application artifacts still do **not** establish profitable automatic
+promotion. Six rotated fresh-process samples include artifact read/startup and
+guest compilation, exclude source compilation and telemetry, and check complete
+stdout on every run. CPU medians in that window were:
+
+| Application | Control Off ms | Candidate Off ms | Control Force ms | Candidate Force ms |
+| --- | ---: | ---: | ---: | ---: |
+| Record stream | 195.840 | 203.040 | 217.498 | 204.583 |
+| Polygon queries | 855.340 | 876.109 | 1,071.404 | 1,041.076 |
+
+Automatic promotion remains disabled. Baseline timing has unresolved variation:
+the subsequent Off-only ABBA window averaged paired changes of -2.55% record and
++2.02% polygon, with individual pairs ranging -6.85%..+4.26% and -1.15%..+4.89%.
+Record's dynamic host instructions decrease 814,701,642 -> 811,838,984 (-0.35%).
+Neither that instruction reduction nor the large kernel gain accepts default
+whole-application throughput. Both timing windows and the earlier pre-control-flow
+window are retained, rather than selecting a favorable window.
+
+Drivers, raw samples, traces and disassembly are under
+`.temp/jit-register-backend/`; reusable receipts and reproduction drivers are
+archived in `artifacts/validation/jit-register-backend/`. Published validation
+payload directories are `artifacts/validation/jit-register-{candidate,control,tier}`
+and `jit-register-kernel-{candidate,control}`. These are local validation payloads,
+not release assets.
+
+### Contextual specialization must not freeze one loop iteration
+
+The actual source -> `.mso` -> `.mexe` transfer-plus-computation journey exposed
+an older preparation bug: the first loop visit produced constant replacements
+for its condition/body, then preparation stopped only at the backedge. The
+resulting residual loop repeated first-iteration constants forever, including
+under the old backend and JIT Off. Preparation now identifies cyclic CFG nodes
+before recording replacements and leaves that suffix residual. Prefix I/O plans
+remain prepared. A first-iteration value is not an invariant; full cyclic
+specialization requires an explicit invariant/iteration representation, not a
+VM freshness check or replanning. `ContextualLoopAsync` covers O0/O2, binary
+round trips, actual transfer bytes and Off/Force completion.
+
 ## Authorities and checks that remain
 
 * Frame bindings, canonical bytes/typed roots and Runtime pending payloads remain
@@ -350,3 +476,54 @@ Same-artifact Off CPU medians fall 231.725→206.331 ms (record) and
 963.2305→906.784 ms (polygon), six balanced samples plus one warm-up. Force still
 loses to Off; no automatic promotion claim. Evidence:
 `.temp/deletion-first-02/receipt.json`, including disassembly and raw measurements.
+
+## Tier overhead elimination and Auto profitability (2026-11-13)
+
+Profiling (`polygon-queries` and `signal-hysteresis` Callgrind + `--telemetry-level profile`)
+identified five architectural sources of overhead when tiering or forcing JIT execution:
+
+1. **Unbounded profiling on unavailable functions (`NativeExecutionFunction.NeedsProfiling`, `NativeInterpreter.RunActivationAsync/FromSync`)**:
+   Once `IsProfitableForAuto` rejected a function (`unavailable = true`), `NeedsProfiling`
+   continued returning `true` for the rest of the run, charging `ObserveTier` and `Metadata[pc]`
+   reads on every interpreted step (`157.9M Ir` in `signal-hysteresis`). Fix: precompute
+   `HasObservableBinary` once per lowered function, require `HasObservableBinary && !IsUnavailable && compiled is null`
+   in `NeedsProfiling`, and immediately disable `enableTiering` once `IsUnavailable` becomes true.
+2. **Per-entry `GCHandle.Alloc` pinning for captured/borrowed external slots (`NativeTierMemory`, `RunTierSync`)**:
+   Captured location slots (`DynamicExternalSlots`) previously allocated/freed paired pinned
+   `GCHandle`s via `PinLease` on every `RunTierSync` entry (`67.8M Ir` in `signal-hysteresis`).
+   Fix: `RunTierSync` now `fixed`-pins up to two distinct non-frame `NativeAllocation`s on the stack
+   alongside `frameAllocation` and passes those pinned bases into `NativeTierMemory.Reset`, keeping
+   `PinLease` strictly as the fallback for 3+ dynamic external owners.
+3. **`TierBridge` inline bloat, dead backedge atomics, and loop-body `RefreshPending` (`NativeInterpreter.Tiering.cs`)**:
+   Removed dead `executable.Backedge()` inside compiled `TierBridge`, hoisted non-pending
+   `RefreshPending` out of the inner bridge loop, kept inline dispatch inside `TierBridge` compact
+   to avoid register-spill splitting, and kept `[MethodImpl(AggressiveInlining)]` only on small
+   accessor/byte helpers (`NativeAddress`, `NativeStorage` 8-byte fast copy path) rather than
+   multi-branch `CopyTrustedUnchecked`/`Pointer`/`SetPointer` helpers.
+4. **Tiering image lookup and lowering gaps (`NativeExecutionImage.cs`, `NativeInterpreter.cs`, `Execution.cs`)**:
+   Replaced per-function `ConcurrentDictionary` lookup with a lock-free array indexed by function id,
+   added `!programUpdated` fast bypass around repeated `AsyncLocal` generation reads, enabled
+   `CanEliminateDead` for proven non-escaping `FixedCell` temporaries even in functions containing
+   `EnvironmentAddress`/`ProjectAddress` (without altering `PrivateWrites`/`RawWritable` contracts),
+   eliminated intra-block redundant `Narrow` chains, and added synchronous fast paths for
+   immediate `Allocate`/`IndexAddress`/`CopyMemory`/`ClearMemory`.
+5. **Transition-aware `Auto` gate (`NativeCompiledFunction.IsProfitableForAuto`, `NativeMachineCode.AutoEnabled = true`)**:
+   Count direct↔`Bridge` control transitions alongside loops and direct compute operations:
+   accept loops with real compute (`directCompute > 0 && directTotal >= transitions`) and
+   compute-dense helpers (`directCompute >= 2 && directTotal >= 4 && directTotal >= transitions * 2`),
+   while rejecting pure constructor/glue helpers such as `<range-item>` in `polygon-queries`
+   (which previously bounced through `TierBridge'2` 243,900 times under `Force`).
+
+Verification (`Release` after final code edit):
+- `tests/NativeTiering`: `PASS 2165 native tier journeys`; `tests/NativeMiddleEnd`: `PASS 666 native middle-end contracts`;
+  `tests/CompilerTelemetry`: `PASS`; `tests/NativeExecution`: 17/17 earlier checks passed while
+  `PendingMetadataAsync` hit host `inotify_add_watch(...) = -1 ENOSPC` (`ready` file was created cleanly);
+  `tests/TailCallOptimization`: paused on concurrent external `Msync.Compiler.Semantics.SemanticAnalyzer.ProjectReturn` stack overflow on `fresh-escaped-location O0`.
+- Native AOT `tests/Performance/run.py` (`polygon-queries`, `small`, `seed 17`, `object`, `--cpu 2`):
+  `off` `p50=320.794ms` (`p95=349.586ms`), `auto` `p50=247.780ms` (`-22.8%`, `p95=251.996ms`),
+  `force` `p50=267.991ms` (`-16.5%`, `p95=275.799ms`). Callgrind `auto` total: `1,012,373,477 Ir` (down from `1,255.9M Ir` in r10 `force`).
+- 11 precompiled `baseline.mso` workloads (`.temp/jit-diag/r8-all-force/applications/*/small/17`, 7 samples `--cpu 2`, verified stdout):
+  `auto` beat `off` on 10/11 workloads (`polygon-queries` `0.737x`, `bounded-sensor-pipeline` `0.850x`,
+  `numeric-record-stream` `0.862x`, `live-policy-dispatch` `0.911x`, `signal-hysteresis` `0.917x`,
+  `set-dedup` `0.924x`, `unicode-path-manifest` `0.928x`, `heap-scheduler` `0.956x`,
+  `bplus-inventory` `0.970x`, `local-manifest-copy` `0.984x`; `local-range-copy` `1.036x` vs `force` `0.940x`).

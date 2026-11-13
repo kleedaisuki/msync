@@ -32,7 +32,7 @@ internal sealed class NativeImage
             .Where(plan => plan.Placement == NativeAllocationPlacement.Frame).ToLookup(plan => plan.Function);
         frames = program.Functions.Select((function, number) => new FrameAllocation(program, number,
             new NativeLayout(function.Slots.Select((slot, index) =>
-                new NativeField(slot.Name ?? $"%{index}", types[slot.Type]))), framePlans[number].ToArray(), Layout, Provenance)).ToArray();
+                new NativeField(slot.Name ?? $"%{index}", types[slot.Type]))), types, framePlans[number].ToArray(), Layout, Provenance)).ToArray();
         foreach (FrameAllocation frame in frames)
         {
             if (ReferenceEquals(frame.Layout, frame.Registers)) continue;
@@ -67,14 +67,14 @@ internal sealed class NativeImage
     {
         ArgumentOutOfRangeException.ThrowIfNegative(index);
         NativeAddress result = address.OffsetBy(stride.Extent * index);
-        ValidateRegion(address, result, stride, 1);
+        CheckRegionBounds(address, result, stride, 1);
         return result;
     }
 
-    internal void ValidateRegion(NativeAddress address, NativeLayout layout, int count) =>
-        ValidateRegion(address, address, layout, count);
+    internal void CheckRegionBounds(NativeAddress address, NativeLayout layout, int count) =>
+        CheckRegionBounds(address, address, layout, count);
 
-    private void ValidateRegion(NativeAddress origin, NativeAddress address, NativeLayout layout, int count)
+    private void CheckRegionBounds(NativeAddress origin, NativeAddress address, NativeLayout layout, int count)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(count);
         if (frameRegions.TryGetValue(origin.Allocation.Layout, out NativeFrameRegion[]? regions))
@@ -86,7 +86,7 @@ internal sealed class NativeImage
                 || end.Bytes > limit.Bytes || end.References > limit.References)
                 throw new ArgumentOutOfRangeException(nameof(count), "Native region exceeds its logical allocation.");
         }
-        NativeStorage.ValidateRegion(address, layout, count);
+        NativeStorage.CheckRegionBounds(address, layout, count);
     }
 
     private static NativeFrameRegion Region(NativeOffset offset, IReadOnlyList<NativeFrameRegion> regions)
@@ -175,9 +175,6 @@ internal sealed class NativeImage
 
     internal NativeAddress AddressField(NativeAddress address, int layout, int field)
     {
-        int actual = LayoutIdentity(address);
-        if (actual != layout)
-            throw new InvalidOperationException($"Allocation layout {actual} cannot project field '{layouts[layout][field].Name}' using layout {layout}.");
         NativeFieldLayout member = layouts[layout][field];
         return address.OffsetBy(member.Offset, member.Type);
     }

@@ -22,7 +22,7 @@ internal static class ProducerLoweringChecks
         NativeArtifact.Validate(program);
         NativeImage image = new(program, new());
         NativeExecutionFunction execution = new(image, 0, new(NativeJitPolicy.Force));
-        if (!execution.Operands[3].FixedLayout || !execution.RawWritable[0] || !execution.RawWritable[4])
+        if (execution.Operands[3].Projection is not { Length: 1 } || !execution.RawWritable[0] || !execution.RawWritable[4])
             throw new Exception("Backend lowering failed to consume the shared actual producer proof.");
         using MemoryStream wire = new();
         NativeArtifact.Write(program, wire);

@@ -36,7 +36,7 @@ internal static class EmissionChecks
         NativeExecutionFunction function = new(new(program, new()), 0, new(NativeJitPolicy.Force));
         NativeFastOperation[] operations = [NativeFastOperation.NumberConstant, NativeFastOperation.NumberConstant,
             NativeFastOperation.NumberAdd, NativeFastOperation.NumberNegate, NativeFastOperation.NumberLess,
-            NativeFastOperation.BoolNot, NativeFastOperation.Bridge, NativeFastOperation.Bridge,
+            NativeFastOperation.BoolNot, NativeFastOperation.Branch, NativeFastOperation.Jump,
             NativeFastOperation.NumberCopy, NativeFastOperation.Bridge];
         byte[] arm = NativeMachineCode.Emit(function, operations, Architecture.Arm64, false,
             (nint)0x11111111, (nint)0x22222222, (nint)0x33333333, program.Constants);

@@ -7,12 +7,56 @@ namespace Msync.Runtime.Native;
 public sealed partial class NativeInterpreter
 {
     internal static unsafe nint FrameStoreHandler => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, ValueTask<NativeStep>>)&ExecuteFrameStore;
+    internal static unsafe nint OffsetLoadHandler => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, ValueTask<NativeStep>>)&ExecuteOffsetLoad;
+    internal static unsafe nint ProjectLoadHandler => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, ValueTask<NativeStep>>)&ExecuteProjectLoad;
+    internal static unsafe nint OffsetStoreHandler => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, ValueTask<NativeStep>>)&ExecuteOffsetStore;
+    internal static unsafe nint ProjectStoreHandler => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, ValueTask<NativeStep>>)&ExecuteProjectStore;
+    internal static unsafe nint OffsetBindHandler => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, ValueTask<NativeStep>>)&ExecuteOffsetBind;
+    internal static unsafe nint NopHandler => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, ValueTask<NativeStep>>)&ExecuteNop;
 
-    private static ValueTask<NativeStep> ExecuteFrameStore(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
+    private static ValueTask<NativeStep> ExecuteNop(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token) =>
+        new(new NativeStep(pc + instruction.Span));
+
+    private static ValueTask<NativeStep> StoreToAddress(NativeInterpreter owner, NativeFrame frame, int sourceSlot, NativeAddress target, int nextPc)
     {
-        NativeAddress target = activation.Frame.Location(instruction.Result);
-        if (!owner.memory.TryCopyReady(activation.Frame.Location(instruction.A), target))
-            owner.memory.Write(target, owner.CoerceStore(activation.Frame.GetDatum(instruction.A), target.Type));
+        if (!owner.memory.TryCopyReady(frame.Location(sourceSlot), target))
+            owner.memory.Write(target, owner.CoerceStore(frame.GetDatum(sourceSlot), target.Type));
+        return new(new NativeStep(nextPc));
+    }
+
+    private static ValueTask<NativeStep> ExecuteFrameStore(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token) =>
+        StoreToAddress(owner, activation.Frame, instruction.A, activation.Frame.Location(instruction.Result), pc + instruction.Span);
+
+    private static ValueTask<NativeStep> ExecuteOffsetLoad(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
+    {
+        NativeFrame frame = activation.Frame;
+        owner.memory.Copy(activation.Execution.Operands[pc].AddressField(frame.Pointer(instruction.A)), frame.Location(instruction.Result));
+        return new(new NativeStep(pc + instruction.Span));
+    }
+
+    private static ValueTask<NativeStep> ExecuteProjectLoad(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
+    {
+        NativeFrame frame = activation.Frame;
+        owner.memory.Copy(activation.Execution.Operands[pc].Project(owner.image, frame.Pointer(instruction.A)), frame.Location(instruction.Result));
+        return new(new NativeStep(pc + instruction.Span));
+    }
+
+    private static ValueTask<NativeStep> ExecuteOffsetStore(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
+    {
+        NativeFrame frame = activation.Frame;
+        return StoreToAddress(owner, frame, instruction.B, activation.Execution.Operands[pc].AddressField(frame.Pointer(instruction.A)), pc + instruction.Span);
+    }
+
+    private static ValueTask<NativeStep> ExecuteProjectStore(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
+    {
+        NativeFrame frame = activation.Frame;
+        return StoreToAddress(owner, frame, instruction.B, activation.Execution.Operands[pc].Project(owner.image, frame.Pointer(instruction.A)), pc + instruction.Span);
+    }
+
+    private static ValueTask<NativeStep> ExecuteOffsetBind(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
+    {
+        NativeFrame frame = activation.Frame;
+        frame.Bind(instruction.A, activation.Execution.Operands[pc].AddressField(frame.Pointer(instruction.B)));
         return new(new NativeStep(pc + instruction.Span));
     }
 
@@ -116,7 +160,7 @@ public sealed partial class NativeInterpreter
     private static ValueTask<NativeStep> ExecuteAddressOffset(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
     {
         NativeFrame frame = activation.Frame;
-        frame.SetPointer(instruction.Result, activation.Execution.Operands[pc].AddressField(owner.image, frame.Pointer(instruction.A), instruction.B));
+        frame.SetPointer(instruction.Result, activation.Execution.Operands[pc].AddressField(frame.Pointer(instruction.A)));
         return new(new NativeStep(pc + instruction.Span));
     }
 
@@ -264,13 +308,23 @@ public sealed partial class NativeInterpreter
         return new(new NativeStep(pc + 1, true));
     }
 
-    private static ValueTask<NativeStep> ExecuteNop(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
+    private static ValueTask<NativeStep> ExecuteAllocate(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
     {
+        if (instruction.C >= 0) return ExecuteAllocateAsync(owner, activation, instruction, pc, token);
+        NativeLayout layout = activation.Execution.Operands[pc].Layout!;
+        if (activation.Frame.TryAllocate(pc, out NativeAddress placed))
+        {
+            activation.Work.Counters.Allocation(layout, 1, framePlaced: true);
+            activation.Frame.SetPointer(instruction.Result, placed);
+        }
+        else
+        {
+            NativeAllocation allocation = new(layout, instruction.A, 1) { AllocationSite = Math.Max(0, instruction.B) };
+            activation.Work.Counters.Allocation(allocation);
+            activation.Frame.SetPointer(instruction.Result, allocation.Address);
+        }
         return new(new NativeStep(pc + instruction.Span));
     }
-
-    private static ValueTask<NativeStep> ExecuteAllocate(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token) =>
-        ExecuteAllocateAsync(owner, activation, instruction, pc, token);
 
     private static async ValueTask<NativeStep> ExecuteAllocateAsync(NativeInterpreter owner, Activation activation, NativeExecutionInstruction instruction, int pc, CancellationToken token)
     {
@@ -290,8 +344,15 @@ public sealed partial class NativeInterpreter
         return new(pc + instruction.Span);
     }
 
-    private static ValueTask<NativeStep> ExecuteIndexAddress(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token) =>
-        ExecuteIndexAddressAsync(owner, activation, instruction, pc, token);
+    private static ValueTask<NativeStep> ExecuteIndexAddress(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
+    {
+        NativeDatum indexDatum = activation.Frame.GetDatum(instruction.B);
+        if (!indexDatum.IsReady) return ExecuteIndexAddressAsync(owner, activation, instruction, pc, token);
+        int index = Count(indexDatum.Value);
+        activation.Frame.SetPointer(instruction.Result, owner.image.IndexAddress(activation.Frame.Pointer(instruction.A), index,
+            activation.Execution.Operands[pc].Layout!));
+        return new(new NativeStep(pc + instruction.Span));
+    }
 
     private static async ValueTask<NativeStep> ExecuteIndexAddressAsync(NativeInterpreter owner, Activation activation, NativeExecutionInstruction instruction, int pc, CancellationToken token)
     {
@@ -301,30 +362,46 @@ public sealed partial class NativeInterpreter
         return new(pc + instruction.Span);
     }
 
-    private static ValueTask<NativeStep> ExecuteCopyMemory(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token) =>
-        ExecuteCopyMemoryAsync(owner, activation, instruction, pc, token);
+    private static ValueTask<NativeStep> ExecuteCopyMemory(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
+    {
+        if (instruction.C >= 0) return ExecuteCopyMemoryAsync(owner, activation, instruction, pc, token);
+        NativeLayout layout = activation.Execution.Operands[pc].Layout!;
+        NativeAddress target = activation.Frame.Pointer(instruction.A);
+        owner.image.CheckRegionBounds(target, layout, 1);
+        NativeAddress source = activation.Frame.Pointer(instruction.B);
+        owner.image.CheckRegionBounds(source, layout, 1);
+        owner.memory.CopyRegionTrusted(source, target, layout, 1);
+        return new(new NativeStep(pc + instruction.Span));
+    }
 
     private static async ValueTask<NativeStep> ExecuteCopyMemoryAsync(NativeInterpreter owner, Activation activation, NativeExecutionInstruction instruction, int pc, CancellationToken token)
     {
         int count = instruction.C < 0 ? 1 : Count(await activation.Frame.GetDatum(instruction.C).ResolveAsync(token));
         NativeLayout layout = activation.Execution.Operands[pc].Layout!;
         NativeAddress target = activation.Frame.Pointer(instruction.A);
-        owner.image.ValidateRegion(target, layout, count);
+        owner.image.CheckRegionBounds(target, layout, count);
         NativeAddress source = activation.Frame.Pointer(instruction.B);
-        owner.image.ValidateRegion(source, layout, count);
+        owner.image.CheckRegionBounds(source, layout, count);
         owner.memory.CopyRegionTrusted(source, target, layout, count);
         return new(pc + instruction.Span);
     }
 
-    private static ValueTask<NativeStep> ExecuteClearMemory(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token) =>
-        ExecuteClearMemoryAsync(owner, activation, instruction, pc, token);
+    private static ValueTask<NativeStep> ExecuteClearMemory(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
+    {
+        if (instruction.C >= 0) return ExecuteClearMemoryAsync(owner, activation, instruction, pc, token);
+        NativeLayout layout = activation.Execution.Operands[pc].Layout!;
+        NativeAddress target = activation.Frame.Pointer(instruction.A);
+        owner.image.CheckRegionBounds(target, layout, 1);
+        owner.memory.ClearRegionTrusted(target, layout, 1);
+        return new(new NativeStep(pc + instruction.Span));
+    }
 
     private static async ValueTask<NativeStep> ExecuteClearMemoryAsync(NativeInterpreter owner, Activation activation, NativeExecutionInstruction instruction, int pc, CancellationToken token)
     {
         int count = instruction.C < 0 ? 1 : Count(await activation.Frame.GetDatum(instruction.C).ResolveAsync(token));
         NativeLayout layout = activation.Execution.Operands[pc].Layout!;
         NativeAddress target = activation.Frame.Pointer(instruction.A);
-        owner.image.ValidateRegion(target, layout, count);
+        owner.image.CheckRegionBounds(target, layout, count);
         owner.memory.ClearRegionTrusted(target, layout, count);
         return new(pc + instruction.Span);
     }
