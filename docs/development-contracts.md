@@ -18,6 +18,9 @@
 
 - Finish the requested behavior, not an MVP. Report meaningful progress and
   concrete blockers; prefer removing special cases to accumulating guards.
+- Use the [concurrent journey runner](../tests/TestExecution/README.md) for shared
+  incremental builds, supervised Roslyn reuse, bounded task scheduling and SQLite
+  failure receipts; existing script entry points remain supported.
 - Validate changed contracts locally through real user journeys and properties.
   Use focused formatting/static analysis; do not replace end-to-end evidence
   with unit-test counts or repeat accepted measurements without a new question.

@@ -9,6 +9,7 @@
   <ItemGroup>
     <Compile Include="../../src/Msync.Compiler/Editor/EditorSyntaxIndex.cs" Link="Product/EditorSyntaxIndex.cs" />
     <Compile Include="../../src/Msync.Compiler/Editor/EditorTypeNames.cs" Link="Product/EditorTypeNames.cs" />
+    <Compile Include="../../src/Msync.Compiler/Editor/EditorLexemes.cs" Link="Product/EditorLexemes.cs" />
     <Compile Include="../../src/Msync.Compiler/Editor/EditorSymbols.cs" Link="Product/EditorSymbols.cs" />
     <Compile Include="../../src/Msync.Compiler/Editor/SemanticSymbols.cs" Link="Product/SemanticSymbols.cs" />
     <Compile Include="../../src/Msync.Compiler/Syntax/*.cs" Link="Product/Syntax/%(Filename)%(Extension)" />

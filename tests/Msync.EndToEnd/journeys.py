@@ -88,7 +88,8 @@ def run(binary: Path, cwd: Path) -> None:
         capture_output=True,
         timeout=30,
     )
-    assert artifact.stdout.startswith(b"MSYNCBC\0"), (
+    # Binary stdout framing applies to both native IR and historical bytecode images.
+    assert artifact.stdout.startswith((b"MSYNCIR\0", b"MSYNCBC\0")), (
         "Binary stdout contains text or a banner"
     )
     repl(binary, cwd)
