@@ -27,20 +27,24 @@ public static class NativeOptimizer
         NativeFunctionCode[] functions = program.Functions.ToArray();
         List<NativeAllocationPlan> plans = program.Allocations
             .Where(plan => plan.Placement == NativeAllocationPlacement.Eliminated).ToList();
+        NativeProgram workingProgram = program with { Functions = functions };
+        NativeAddressAnalysis.ProgramFacts? sharedFacts = null;
         for (int function = 0; function < functions.Length; function++)
         {
             profile?.Function(function);
-            var state = (program: program with { Functions = functions }, function, constants, plans, profile, level);
-            functions[function] = profile is null ? OptimizeFunction(state.program, function, constants, plans, null, level)
+            var state = (program: workingProgram, function, constants, plans, profile, level, facts: sharedFacts);
+            (functions[function], sharedFacts) = profile is null
+                ? OptimizeFunction(state.program, function, constants, plans, null, level, sharedFacts)
                 : profile.Trace.MeasureDetailed("optimizer.function", state,
                     static item =>
                     {
-                        try { return OptimizeFunction(item.program, item.function, item.constants, item.plans, item.profile, item.level); }
+                        try { return OptimizeFunction(item.program, item.function, item.constants, item.plans, item.profile, item.level, item.facts); }
                         catch (Exception error) { item.profile!.Fail(error); throw; }
                     },
-                    CompilationSize.Of(functions[function]), CompilationSize.Of,
+                    CompilationSize.Of(functions[function]), static result => CompilationSize.Of(result.Function),
                     attributes: new Dictionary<string, string>
                     { ["function.name"] = functions[function].Name, ["function.id"] = function.ToString(System.Globalization.CultureInfo.InvariantCulture) });
+            workingProgram = program with { Functions = functions };
         }
         NativeProgram optimized = program with
         { Functions = functions, Constants = constants.Values.ToArray(), Allocations = plans.ToArray(), OptimizationLevel = level };
@@ -81,27 +85,33 @@ public static class NativeOptimizer
         };
     }
 
-    private static NativeFunctionCode OptimizeFunction(NativeProgram program, int index,
-        NativeConstantPool constants, List<NativeAllocationPlan> plans, NativeOptimizationProfile? profile, int level)
+    private static (NativeFunctionCode Function, NativeAddressAnalysis.ProgramFacts? SharedFacts) OptimizeFunction(
+        NativeProgram program, int index, NativeConstantPool constants, List<NativeAllocationPlan> plans,
+        NativeOptimizationProfile? profile, int level, NativeAddressAnalysis.ProgramFacts? sharedFacts)
     {
         NativeFunctionCode original = program.Functions[index];
-        if (original.IsTemplate || original.Instructions.Count == 0) return original;
+        if (original.IsTemplate || original.Instructions.Count == 0) return (original, sharedFacts);
         NativeInstruction[] code = original.Instructions.ToArray();
         NativeFunctionCode function = original with { Instructions = code };
         NativeProgram view = FunctionView(program, index, function);
         bool changed;
+        bool anyCodeChanged = false;
         int iteration = 0;
+        NativeEscapeAnalysis finalEscape;
+        NativeControlFlow finalFlow;
         do
         {
             profile?.Iteration(++iteration);
             var globalStarted = profile?.Start(NativeOptimizationProfile.Pass.GlobalFacts, function) ?? default;
             bool globalChanged = level >= 2 && NativeGlobalFacts.Run(function, code, constants);
             if (level >= 2) profile?.Add(NativeOptimizationProfile.Pass.GlobalFacts, globalStarted, function, globalChanged);
+            if (globalChanged) { sharedFacts = null; anyCodeChanged = true; }
             var started = profile?.Start(NativeOptimizationProfile.Pass.ControlFlow, function) ?? default;
             NativeControlFlow flow = new(code);
             profile?.Add(NativeOptimizationProfile.Pass.ControlFlow, started, function);
             started = profile?.Start(NativeOptimizationProfile.Pass.EscapeAnalysis, function) ?? default;
-            NativeEscapeAnalysis escape = new(view, index);
+            sharedFacts ??= new(view);
+            NativeEscapeAnalysis escape = new(view, index, sharedFacts);
             profile?.Add(NativeOptimizationProfile.Pass.EscapeAnalysis, started, function);
             started = profile?.Start(NativeOptimizationProfile.Pass.GlobalMemory, function) ?? default;
             bool memoryChanged = level >= 2 && NativeGlobalMemory.Run(view, index, code, flow, escape);
@@ -110,13 +120,16 @@ public static class NativeOptimizer
             bool localChanged = new NativeLocalOptimization(view, function, code, constants, escape).Run(flow);
             changed = globalChanged || memoryChanged || localChanged;
             profile?.Add(NativeOptimizationProfile.Pass.LocalValues, started, function, localChanged);
-            started = profile?.Start(NativeOptimizationProfile.Pass.EscapeAnalysis, function) ?? default;
-            escape = new(view, index);
-            profile?.Add(NativeOptimizationProfile.Pass.EscapeAnalysis, started, function);
+            if (memoryChanged || localChanged)
+            {
+                sharedFacts = null;
+                anyCodeChanged = true;
+            }
             started = profile?.Start(NativeOptimizationProfile.Pass.DeadMemory, function) ?? default;
             bool removedMemory = NativeDeadMemory.Run(view, index, code, escape);
             changed |= removedMemory;
             profile?.Add(NativeOptimizationProfile.Pass.DeadMemory, started, function, removedMemory);
+            if (removedMemory) { sharedFacts = null; anyCodeChanged = true; }
             started = profile?.Start(NativeOptimizationProfile.Pass.ControlFlow, function) ?? default;
             flow = new(code);
             profile?.Add(NativeOptimizationProfile.Pass.ControlFlow, started, function);
@@ -124,23 +137,31 @@ public static class NativeOptimizer
             bool removedResults = RemoveDead(view, index, flow, code, plans);
             changed |= removedResults;
             profile?.Add(NativeOptimizationProfile.Pass.DeadResults, started, function, removedResults);
+            if (removedResults) { sharedFacts = null; anyCodeChanged = true; }
+            finalEscape = escape;
+            finalFlow = flow;
         } while (changed);
 
-        var finalStarted = profile?.Start(NativeOptimizationProfile.Pass.EscapeAnalysis, function) ?? default;
-        NativeEscapeAnalysis finalEscape = new(view, index);
-        profile?.Add(NativeOptimizationProfile.Pass.EscapeAnalysis, finalStarted, function);
-        finalStarted = profile?.Start(NativeOptimizationProfile.Pass.ControlFlow, function) ?? default;
-        function = function with
+        bool slotsChanged = false;
+        NativeSlot[] updatedSlots = function.Slots.ToArray();
+        foreach (int number in finalEscape.EscapingLocations)
         {
-            Slots = function.Slots.Select((slot, number) =>
-            finalEscape.EscapingLocations.Contains(number) ? slot with { Escapes = true } : slot).ToArray()
-        };
-        view = FunctionView(program, index, function);
-        NativeControlFlow finalFlow = new(code);
-        profile?.Add(NativeOptimizationProfile.Pass.ControlFlow, finalStarted, function);
-        finalStarted = profile?.Start(NativeOptimizationProfile.Pass.LastUseMoves, function) ?? default;
+            if (!updatedSlots[number].Escapes)
+            {
+                updatedSlots[number] = updatedSlots[number] with { Escapes = true };
+                slotsChanged = true;
+            }
+        }
+        if (slotsChanged)
+        {
+            function = function with { Slots = updatedSlots };
+            view = FunctionView(program, index, function);
+            sharedFacts = null;
+        }
+        var finalStarted = profile?.Start(NativeOptimizationProfile.Pass.LastUseMoves, function) ?? default;
         bool moved = MoveLastUses(view, index, finalFlow, code);
         profile?.Add(NativeOptimizationProfile.Pass.LastUseMoves, finalStarted, function, moved);
+        if (moved) { sharedFacts = null; anyCodeChanged = true; }
         finalStarted = profile?.Start(NativeOptimizationProfile.Pass.Placement, function) ?? default;
         bool placed = false;
         foreach (var allocation in finalEscape.Layouts)
@@ -161,7 +182,7 @@ public static class NativeOptimizer
             foreach (NativeAllocationPlacement placement in Enum.GetValues<NativeAllocationPlacement>())
                 profile.Trace.Metric("allocations." + placement, plans.Count(plan => plan.Function == index && plan.Placement == placement));
         }
-        return function;
+        return (anyCodeChanged || slotsChanged ? function : original, sharedFacts);
     }
 
     private static NativeProgram FunctionView(NativeProgram program, int index, NativeFunctionCode function)

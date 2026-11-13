@@ -123,15 +123,62 @@ internal sealed class NativeValueFlow
         if (destination is null) return source.Copy();
         for (int slot = 0; slot < destination.Values.Length; slot++)
         {
-            destination.Values[slot] = destination.Values[slot].Union(source.Values[slot]).Order().ToArray();
-            destination.Locations[slot] = destination.Locations[slot].Union(source.Locations[slot]).Order().ToArray();
+            destination.Values[slot] = MergeSorted(destination.Values[slot], source.Values[slot]);
+            destination.Locations[slot] = MergeSorted(destination.Locations[slot], source.Locations[slot]);
         }
         for (int iterator = 0; iterator < destination.Iterators.Length; iterator++)
-            destination.Iterators[iterator] = destination.Iterators[iterator].Union(source.Iterators[iterator]).Order().ToArray();
+            destination.Iterators[iterator] = MergeSorted(destination.Iterators[iterator], source.Iterators[iterator]);
         return destination;
     }
 
-    private static bool Same(State left, State right) => left.Values.Zip(right.Values).All(pair => pair.First.SequenceEqual(pair.Second))
-        && left.Locations.Zip(right.Locations).All(pair => pair.First.SequenceEqual(pair.Second))
-        && left.Iterators.Zip(right.Iterators).All(pair => pair.First.SequenceEqual(pair.Second));
+    private static int[] MergeSorted(int[] a, int[] b)
+    {
+        if (ReferenceEquals(a, b) || b.Length == 0) return a;
+        if (a.Length == 0) return b;
+        if (a.Length == 1 && b.Length == 1)
+        {
+            if (a[0] == b[0]) return a;
+            return a[0] < b[0] ? [a[0], b[0]] : [b[0], a[0]];
+        }
+        int i = 0, j = 0, unique = 0;
+        while (i < a.Length && j < b.Length)
+        {
+            int va = a[i], vb = b[j];
+            if (va < vb) { i++; }
+            else if (vb < va) { j++; }
+            else { i++; j++; }
+            unique++;
+        }
+        unique += (a.Length - i) + (b.Length - j);
+        if (unique == a.Length) return a;
+        if (unique == b.Length) return b;
+        int[] result = new int[unique];
+        i = 0; j = 0;
+        int k = 0;
+        while (i < a.Length && j < b.Length)
+        {
+            int va = a[i], vb = b[j];
+            if (va < vb) { result[k++] = va; i++; }
+            else if (vb < va) { result[k++] = vb; j++; }
+            else { result[k++] = va; i++; j++; }
+        }
+        while (i < a.Length) result[k++] = a[i++];
+        while (j < b.Length) result[k++] = b[j++];
+        return result;
+    }
+
+    private static bool Same(State left, State right)
+        => SameArrays(left.Values, right.Values)
+        && SameArrays(left.Locations, right.Locations)
+        && SameArrays(left.Iterators, right.Iterators);
+
+    private static bool SameArrays(int[][] left, int[][] right)
+    {
+        for (int i = 0; i < left.Length; i++)
+        {
+            int[] a = left[i], b = right[i];
+            if (!ReferenceEquals(a, b) && !a.AsSpan().SequenceEqual(b)) return false;
+        }
+        return true;
+    }
 }

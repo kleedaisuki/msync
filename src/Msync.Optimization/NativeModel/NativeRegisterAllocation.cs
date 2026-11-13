@@ -23,13 +23,13 @@ internal static class NativeRegisterAllocation
     {
         NativeFunctionCode function = program.Functions[index];
         if (function.IsTemplate || function.Instructions.Count == 0 || ObservesFrame(program, function)) return function;
-        NativeEscapeAnalysis escape = new(program, index);
-        if (escape.EscapingLocations.Count != 0) return function;
+        for (int slot = 0; slot < function.Slots.Count; slot++)
+            if (function.Slots[slot].Escapes) return function;
         HashSet<int> used = function.Instructions.SelectMany(NativeInstructionFacts.Reads)
             .Concat(function.Instructions.SelectMany(NativeInstructionFacts.Definitions)).ToHashSet();
         int prefix = ProtectedPrefix(program, function, index, used);
         used.RemoveWhere(slot => slot < prefix);
-        NativeAddressAnalysis facts = escape.Addresses;
+        NativeAddressAnalysis facts = new(program, index);
         Dictionary<int, (string? Layouts, string Physical)> contracts = used.ToDictionary(slot => slot, slot =>
         {
             NativeCodeType type = program.Types[function.Slots[slot].Type];

@@ -91,10 +91,22 @@ internal sealed partial class NativeAddressAnalysis
     internal sealed class ProgramFacts(NativeProgram program)
     {
         private readonly Dictionary<int, NativeAddressAnalysis> functions = [];
+        private readonly Stack<NativeAddressAnalysis> newlyRegistered = [];
+        private readonly Queue<NativeAddressAnalysis> dirty = [];
         private bool running, complete;
         internal object Gate { get; } = new();
         internal void Register(int index, NativeAddressAnalysis facts)
-        { lock (Gate) { functions.TryAdd(index, facts); complete = false; } }
+        {
+            lock (Gate)
+            {
+                if (functions.TryAdd(index, facts))
+                {
+                    complete = false;
+                    facts.queued = true;
+                    newlyRegistered.Push(facts);
+                }
+            }
+        }
         internal NativeAddressAnalysis Function(int index)
         {
             lock (Gate) return functions.TryGetValue(index, out NativeAddressAnalysis? facts)
@@ -107,14 +119,16 @@ internal sealed partial class NativeAddressAnalysis
             running = true;
             try
             {
-                bool changed;
-                do
+                while (newlyRegistered.Count > 0 || dirty.Count > 0)
                 {
-                    int previous = functions.Count;
-                    changed = false;
-                    foreach (NativeAddressAnalysis facts in functions.Values.ToArray()) if (!facts.frozen) changed |= facts.Step();
-                    changed |= previous != functions.Count;
-                } while (changed);
+                    NativeAddressAnalysis facts = newlyRegistered.Count > 0 ? newlyRegistered.Pop() : dirty.Dequeue();
+                    facts.queued = false;
+                    if (facts.frozen || !facts.Step()) continue;
+                    facts.SummaryVersion++;
+                    if (!facts.queued) { facts.queued = true; dirty.Enqueue(facts); }
+                    foreach (NativeAddressAnalysis caller in facts.callers)
+                        if (!caller.frozen && !caller.queued) { caller.queued = true; dirty.Enqueue(caller); }
+                }
                 foreach (NativeAddressAnalysis facts in functions.Values) facts.frozen = true;
                 complete = true;
             }
@@ -170,9 +184,10 @@ internal sealed partial class NativeAddressAnalysis
     {
         bool changed = source.Top ? destination.MakeUnknown() : false;
         if (source.Formals.Count != 0 || source.Applications.Count != 0 || source.Adaptations.Count != 0 || source.Reads.Count != 0 || source.Projections.Count != 0)
-            changed |= destination.Adaptations.Add(AdaptationAt(pc, instruction, source));
-        foreach (NativeCallableOrigin original in source.Callables.ToArray())
+            changed |= destination.MutAdaptations.Add(AdaptationAt(pc, instruction, source));
+        for (int i = 0; i < source.Callables.Count; i++)
         {
+            NativeCallableOrigin original = source.Callables[i];
             int target = original.NativeName is null ? ResolveTarget(original, instruction) : original.Function;
             if (target < 0 && original.NativeName is null) continue; // This alternative traps before producing a value.
             int environment = original.Environment;
@@ -186,7 +201,20 @@ internal sealed partial class NativeAddressAnalysis
         return changed;
     }
 
-    private Points[] Arguments(int pc, NativeInstruction instruction) => (instruction.Inputs ?? []).Select(slot => Input(pc, slot)).ToArray();
+    private readonly Dictionary<int, Points[]> argumentBuffers = [];
+    private Points[] Arguments(int pc, NativeInstruction instruction)
+    {
+        if (instruction.Inputs is not { Count: > 0 } inputs) return [];
+        if (argumentBuffers.TryGetValue(pc, out Points[]? cached) && cached.Length == inputs.Count)
+        {
+            for (int i = 0; i < inputs.Count; i++) cached[i] = Input(pc, inputs[i]);
+            return cached;
+        }
+        Points[] result = new Points[inputs.Count];
+        for (int i = 0; i < inputs.Count; i++) result[i] = Input(pc, inputs[i]);
+        argumentBuffers[pc] = result;
+        return result;
+    }
 
     private bool Invoke(int pc, Points callee, Points[] arguments, Points destination, NativeInstruction? instruction = null, Points? effectSink = null, Application? origin = null, int role = 0)
     {
@@ -195,25 +223,36 @@ internal sealed partial class NativeAddressAnalysis
         if (callee.Formals.Count != 0 || callee.Applications.Count != 0 || callee.Adaptations.Count != 0 || callee.Reads.Count != 0 || callee.Projections.Count != 0)
         {
             Application application = ApplicationAt(pc, arguments, instruction, false, origin, role);
-            changed |= destination.Applications.Add(application) | destination.LayoutApplications.Add(application);
+            changed |= destination.MutApplications.Add(application) | destination.MutLayoutApplications.Add(application);
             Application effect = ApplicationAt(pc, arguments, instruction, true, origin, role);
             changed |= application.Callee.Merge(callee) | effect.Callee.Merge(callee);
-            changed |= effectSink.Applications.Add(effect);
+            changed |= effectSink.MutApplications.Add(effect);
             for (int index = 0; index < arguments.Length; index++)
                 changed |= application.Arguments[index].Merge(arguments[index]) | effect.Arguments[index].Merge(arguments[index]);
         }
-        foreach (NativeCallableOrigin callable in callee.Callables.ToArray())
+        for (int i = 0; i < callee.Callables.Count; i++)
         {
+            NativeCallableOrigin callable = callee.Callables[i];
             // Runtime checks NativeName before Call.B/session/source dispatch.
             if (callable.NativeName is { } native) { changed |= Native(pc, native, arguments, destination, effectSink, origin); continue; }
             int target = ResolveTarget(callable, instruction);
             if (target < 0) continue;
             var key = (pc, callable);
             if (!invocations.TryGetValue(key, out Invocation? invocation))
-                invocations.Add(key, invocation = new(this, owner.Function(target), callable, pc, arguments.Length));
-            for (int index = 0; index < arguments.Length; index++) changed |= invocation.Arguments[index].Merge(arguments[index]);
-            changed |= invocation.Import(invocation.Callee.returns, destination);
-            changed |= invocation.Import(invocation.Callee.externalWrites, effectSink);
+            {
+                NativeAddressAnalysis targetFacts = owner.Function(target);
+                targetFacts.callers.Add(this);
+                invocations.Add(key, invocation = new(this, targetFacts, callable, pc, arguments.Length));
+            }
+            bool argsChanged = false;
+            for (int index = 0; index < arguments.Length; index++) argsChanged |= invocation.Arguments[index].Merge(arguments[index]);
+            changed |= argsChanged;
+            if (argsChanged || callable.Captures.Length != 0 || !invocation.IsCurrent(destination, effectSink))
+            {
+                changed |= invocation.Import(invocation.Callee.returns, destination);
+                changed |= invocation.Import(invocation.Callee.externalWrites, effectSink);
+                invocation.MarkCurrent(destination, effectSink);
+            }
         }
         return changed;
     }
@@ -299,9 +338,9 @@ internal sealed partial class NativeAddressAnalysis
     private static bool CopyElements(Points source, Points destination)
     {
         int previous = destination.Elements.Count + destination.RangeSources.Count;
-        destination.Elements.UnionWith(source.Elements);
-        destination.RangeSources.UnionWith(source.RangeSources);
-        if (source.Formals.Count != 0 || source.Applications.Count != 0) destination.RangeSources.Add(source);
+        destination.Elements.UnionWith(in source.Elements);
+        destination.MutRangeSources.UnionWith(in source.RangeSources);
+        if (source.Formals.Count != 0 || source.Applications.Count != 0) destination.MutRangeSources.Add(source);
         bool changed = previous != destination.Elements.Count + destination.RangeSources.Count;
         if (source.ElementsUnknown || source.Top) changed |= destination.UnknownElements();
         return changed;
@@ -312,9 +351,9 @@ internal sealed partial class NativeAddressAnalysis
         if (!active.Add(source)) return false;
         bool changed = source.Top || source.ElementsUnknown ? destination.MakeUnknown() : false;
         if (source.Formals.Count != 0 || source.Applications.Count != 0)
-            changed |= destination.ElementSources.Add(source) | destination.LayoutElements.Add(source);
-        foreach (Points item in source.Elements.ToArray()) changed |= destination.Merge(item);
-        foreach (Points range in source.RangeSources.ToArray()) changed |= ReadElements(range, destination, active);
+            changed |= destination.MutElementSources.Add(source) | destination.MutLayoutElements.Add(source);
+        for (int i = 0; i < source.Elements.Count; i++) changed |= destination.Merge(source.Elements[i]);
+        for (int i = 0; i < source.RangeSources.Count; i++) changed |= ReadElements(source.RangeSources[i], destination, active);
         active.Remove(source);
         return changed;
     }
@@ -342,7 +381,8 @@ internal sealed partial class NativeAddressAnalysis
                 foreach (Points item in arguments) changed |= destination.Elements.Add(item);
                 return changed;
             case NativeResultRule.RangeRepeat: return destination.Elements.Add(arguments[0]);
-            case NativeResultRule.RangeConcat: case NativeResultRule.RangeMerge:
+            case NativeResultRule.RangeConcat:
+            case NativeResultRule.RangeMerge:
                 return CopyElements(arguments[0], destination) | CopyElements(arguments[1], destination);
             case NativeResultRule.RangeMergeLeft: return CopyElements(arguments[0], destination);
             case NativeResultRule.RangeItem:
@@ -362,7 +402,7 @@ internal sealed partial class NativeAddressAnalysis
                 return false; // This producer is empty; it does not manufacture values from the type descriptor.
             case NativeResultRule.RangeFlatten:
                 if (arguments[0].Top || arguments[0].ElementsUnknown || arguments[0].Formals.Count != 0) changed |= destination.UnknownElements();
-                foreach (Points item in arguments[0].Elements.ToArray()) changed |= CopyElements(item, destination);
+                for (int i = 0; i < arguments[0].Elements.Count; i++) changed |= CopyElements(arguments[0].Elements[i], destination);
                 return changed;
             case NativeResultRule.RangeNested:
                 return destination.Elements.Add(arguments[0]);
@@ -382,6 +422,22 @@ internal sealed partial class NativeAddressAnalysis
         private readonly Dictionary<ReadExpression, Points> reads = [];
         private readonly Dictionary<Points, Points> projected = [];
         private readonly Dictionary<(int Function, int Allocation, int Slot), ForeignRegion> regions = [];
+        private readonly HashSet<(Points, Points)> visited = [];
+        private long lastCalleeVersion = -1;
+        private Points? lastDestination;
+        private Points? lastEffectSink;
+
+        internal bool IsCurrent(Points destination, Points effectSink)
+            => lastCalleeVersion == Callee.SummaryVersion
+            && ReferenceEquals(lastDestination, destination)
+            && ReferenceEquals(lastEffectSink, effectSink);
+
+        internal void MarkCurrent(Points destination, Points effectSink)
+        {
+            lastCalleeVersion = Callee.SummaryVersion;
+            lastDestination = destination;
+            lastEffectSink = effectSink;
+        }
 
         private bool importing, fieldChanged;
         internal bool Import(Points source, Points destination)
@@ -391,8 +447,8 @@ internal sealed partial class NativeAddressAnalysis
             if (importing) return false;
             importing = true;
             fieldChanged = false;
-            try { return Import(source, destination, []) | fieldChanged; }
-            finally { importing = false; }
+            try { return Import(source, destination, visited) | fieldChanged; }
+            finally { visited.Clear(); importing = false; }
         }
         private bool Import(Points source, Points destination, HashSet<(Points, Points)> visited)
         {
@@ -403,9 +459,10 @@ internal sealed partial class NativeAddressAnalysis
             if (source.Top) changed |= destination.UnknownAliases();
             if (source.LayoutUnknown) changed |= destination.UnknownLayout();
             if (source.ElementsUnknown) changed |= destination.UnknownElements();
-            int previous = destination.Layouts.Count; destination.Layouts.UnionWith(source.Layouts); changed |= previous != destination.Layouts.Count;
-            foreach (Formal formal in source.Formals.ToArray())
+            int previous = destination.Layouts.Count; destination.Layouts.UnionWith(in source.Layouts); changed |= previous != destination.Layouts.Count;
+            for (int i = 0; i < source.Formals.Count; i++)
             {
+                Formal formal = source.Formals[i];
                 if (formal.Kind == FormalKind.Argument)
                     changed |= formal.Index < Arguments.Length ? destination.Merge(Arguments[formal.Index], source.LayoutFormals.Contains(formal)) : destination.MakeUnknown();
                 else if (formal.Index >= callable.Captures.Length) changed |= destination.MakeUnknown();
@@ -417,22 +474,25 @@ internal sealed partial class NativeAddressAnalysis
                 }
                 else changed |= destination.Merge(callable.Captures[formal.Index], source.LayoutFormals.Contains(formal));
             }
-            foreach (Projection expression in source.Projections.ToArray())
+            for (int i = 0; i < source.Projections.Count; i++)
             {
+                Projection expression = source.Projections[i];
                 Points input = Imported(expression.Source);
                 changed |= Import(expression.Source, input, visited);
                 if (!projections.TryGetValue(expression, out Points? result)) projections.Add(expression, result = new());
                 changed |= caller.ProjectValue(expression.Instruction, input, result) | destination.Merge(result);
             }
-            foreach (ReadExpression expression in source.Reads.ToArray())
+            for (int i = 0; i < source.Reads.Count; i++)
             {
+                ReadExpression expression = source.Reads[i];
                 Points input = Imported(expression.Address);
                 changed |= Import(expression.Address, input, visited);
                 if (!reads.TryGetValue(expression, out Points? result)) reads.Add(expression, result = new());
                 changed |= caller.Read(result, input, expression.Type) | destination.Merge(result, source.LayoutReads.Contains(expression));
             }
-            foreach (Application expression in source.Applications.ToArray())
+            for (int i = 0; i < source.Applications.Count; i++)
             {
+                Application expression = source.Applications[i];
                 if (!applications.TryGetValue(expression, out ApplicationValues? values))
                     applications.Add(expression, values = new(expression.Arguments.Length));
                 values.Callee.Canonical = expression.Callee.Canonical;
@@ -445,28 +505,32 @@ internal sealed partial class NativeAddressAnalysis
                     : caller.Invoke(pc, values.Callee, values.Arguments, values.Result, expression.Dispatch, origin: expression);
                 changed |= destination.Merge(values.Result, source.LayoutApplications.Contains(expression));
             }
-            foreach (Adaptation expression in source.Adaptations.ToArray())
+            for (int i = 0; i < source.Adaptations.Count; i++)
             {
+                Adaptation expression = source.Adaptations[i];
                 Points input = Imported(expression.Source);
                 changed |= Import(expression.Source, input, visited);
                 if (!adaptations.TryGetValue(expression, out Points? result)) adaptations.Add(expression, result = new());
                 changed |= caller.AdaptValue(pc, expression.Instruction, input, result) | destination.Merge(result);
             }
-            foreach (Points expression in source.ElementSources.ToArray())
+            for (int i = 0; i < source.ElementSources.Count; i++)
             {
+                Points expression = source.ElementSources[i];
                 Points input = Imported(expression);
                 changed |= Import(expression, input, visited);
                 if (!projected.TryGetValue(expression.Canonical, out Points? result)) projected.Add(expression.Canonical, result = new());
                 changed |= ReadElements(input, result, []) | destination.Merge(result, source.LayoutElements.Contains(expression));
             }
-            foreach (Points expression in source.RangeSources.ToArray())
+            for (int i = 0; i < source.RangeSources.Count; i++)
             {
+                Points expression = source.RangeSources[i];
                 Points input = Imported(expression);
                 changed |= Import(expression, input, visited);
                 changed |= CopyElements(input, destination);
             }
-            foreach (Target target in source.Targets.ToArray())
+            for (int i = 0; i < source.Targets.Count; i++)
             {
+                Target target = source.Targets[i];
                 int layout = target.Allocation >= 0 ? Callee.function.Instructions[target.Allocation].A : -1;
                 ForeignRegion region = Region(Callee.functionIndex, target.Allocation, target.Slot, layout);
                 changed |= destination.Foreign.Add(new(region, target.Field));
@@ -474,26 +538,37 @@ internal sealed partial class NativeAddressAnalysis
                     foreach (var field in fields) changed |= Import(field.Value, Field(region, field.Key), visited);
                 if (target.Allocation < 0) changed |= Import(Callee.values[target.Slot], Field(region, -1), visited);
             }
-            foreach (ForeignTarget target in source.Foreign.ToArray())
+            for (int i = 0; i < source.Foreign.Count; i++)
             {
+                ForeignTarget target = source.Foreign[i];
                 ForeignRegion region = Region(target.Region.Function, target.Region.Allocation, target.Region.Slot, target.Region.Layout);
                 changed |= destination.Foreign.Add(new(region, target.Field));
-                foreach (var field in target.Region.Fields.ToArray()) changed |= Import(field.Value, Field(region, field.Key), visited);
+                if (ReferenceEquals(target.Region, region))
+                {
+                    foreach (var field in target.Region.Fields.ToArray()) changed |= Import(field.Value, Field(region, field.Key), visited);
+                }
+                else
+                {
+                    foreach (var field in target.Region.Fields) changed |= Import(field.Value, Field(region, field.Key), visited);
+                }
             }
-            foreach (NativeCallableOrigin original in source.Callables.ToArray())
+            for (int i = 0; i < source.Callables.Count; i++)
             {
+                NativeCallableOrigin original = source.Callables[i];
                 NativeCallableOrigin value = caller.Callable(pc, original.Creator, original.Pc, original.Function, original.Environment,
                     original.Plain, original.NativeName, original.Captures.Length);
                 changed |= destination.Callables.Add(value);
                 for (int index = 0; index < value.Captures.Length; index++) changed |= Import(original.Captures[index], value.Captures[index], visited);
             }
-            foreach (Points element in source.Elements.ToArray())
+            for (int i = 0; i < source.Elements.Count; i++)
             {
+                Points element = source.Elements[i];
                 Points value = Imported(element);
                 changed |= destination.Elements.Add(value) | Import(element, value, visited);
             }
-            foreach (Points retained in source.Retained.ToArray())
+            for (int i = 0; i < source.Retained.Count; i++)
             {
+                Points retained = source.Retained[i];
                 Points value = Imported(retained);
                 changed |= destination.Retained.Add(value) | Import(retained, value, visited);
             }
