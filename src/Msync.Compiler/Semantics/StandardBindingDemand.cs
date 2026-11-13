@@ -1,4 +1,5 @@
 using Msync.Compiler.Syntax;
+using Msync.Core;
 using static Msync.Compiler.Syntax.SyntaxTraversal;
 
 namespace Msync.Compiler.Semantics;
@@ -9,10 +10,12 @@ internal sealed class StandardBindingDemand
     private readonly IReadOnlyDictionary<string, StandardSource> libraries;
     private readonly Dictionary<string, HashSet<Statement>> selected = new(StringComparer.Ordinal);
     private readonly CancellationToken cancellationToken;
+    private readonly CompilationTrace? trace;
 
     public StandardBindingDemand(Document document, IReadOnlyDictionary<string, StandardSource> libraries,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, CompilationTrace? trace = null)
     {
+        this.trace = trace;
         this.libraries = libraries;
         this.cancellationToken = cancellationToken;
         foreach (var statement in document.Statements)
@@ -43,7 +46,7 @@ internal sealed class StandardBindingDemand
     private void Demand(string name, string? export)
     {
         if (!libraries.TryGetValue(name, out var module)) return;
-        var declarations = module.Document.Statements;
+        var declarations = module.GetDocument(trace).Statements;
         if (!selected.TryGetValue(name, out var included))
         {
             included = new(ReferenceEqualityComparer.Instance);

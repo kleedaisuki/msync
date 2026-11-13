@@ -31,7 +31,8 @@ internal static class NativeInlining
         int[][] positions = new int[functions.Length][];
         for (int index = 0; index < functions.Length; index++)
         {
-            var started = profile?.Start() ?? default;
+            profile?.Function(index);
+            var started = profile?.Start(NativeOptimizationProfile.Pass.Inlining, program.Functions[index]) ?? default;
             (functions[index], positions[index]) = builder.Function(index);
             profile?.Add(NativeOptimizationProfile.Pass.Inlining, started, program.Functions[index], functions[index],
                 !ReferenceEquals(functions[index], program.Functions[index]));

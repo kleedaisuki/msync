@@ -25,10 +25,18 @@ public static partial class NativeArtifact
         }
     }
 
-    public static NativeProgram Read(Stream stream)
+    public static NativeProgram Read(Stream stream) => Read(stream, null);
+
+    public static NativeProgram Read(Stream stream, CompilationTrace? trace) => trace?.Detail is { } detail
+        ? detail.MeasureDetailed("compiler.artifact.decode", (stream, detail), static state => ReadCore(state.stream, state.detail),
+            size: CompilationSize.Of, metrics: CompilationMetrics.Of)
+        : ReadCore(stream, null);
+
+    private static NativeProgram ReadCore(Stream stream, CompilationTrace? trace)
     {
         ArgumentNullException.ThrowIfNull(stream);
         using PositionStream input = new(stream);
+        long start = input.Position;
         using BinaryReader reader = new(input, Encoding.UTF8, leaveOpen: true);
         try
         {
@@ -38,9 +46,11 @@ public static partial class NativeArtifact
             if (version != FormatVersion)
                 throw new MsyncException($"Unsupported native IR format {version}; expected {FormatVersion}");
             int encoding = reader.ReadInt32();
-            NativeProgram program = encoding == CompactMarker ? ReadCompact(reader) : ReadUnpooledCompatible(reader, encoding);
-            Validate(program);
-            return NormalizeAllocationHints(program);
+            NativeProgram program = encoding == CompactMarker ? ReadCompact(reader, trace) : ReadUnpooledCompatible(reader, encoding);
+            Validate(program, trace);
+            trace?.Metric("artifact.bytes", input.Position - start);
+            return trace is null ? NormalizeAllocationHints(program)
+                : trace.MeasureDetailed("compiler.artifact.allocation_hints", program, NormalizeAllocationHints);
         }
         catch (Exception error) when (error is MsyncException or IOException or ArgumentException or OverflowException)
         {
@@ -118,10 +128,12 @@ public static partial class NativeArtifact
         WritePath(program, path);
     }
 
-    public static void WriteProduced(NativeProgram program, string path)
+    public static void WriteProduced(NativeProgram program, string path) => WriteProduced(program, path, null);
+
+    public static void WriteProduced(NativeProgram program, string path, CompilationTrace? trace)
     {
         ValidateExport(program);
-        WritePath(program, path);
+        WritePath(program, path, trace?.Detail);
     }
 
     public static void Write(NativeProgram program, Stream stream)
@@ -131,10 +143,12 @@ public static partial class NativeArtifact
         Encode(program, stream);
     }
 
-    public static void WriteProduced(NativeProgram program, Stream stream)
+    public static void WriteProduced(NativeProgram program, Stream stream) => WriteProduced(program, stream, null);
+
+    public static void WriteProduced(NativeProgram program, Stream stream, CompilationTrace? trace)
     {
         ValidateExport(program);
-        Encode(program, stream);
+        Encode(program, stream, trace?.Detail);
     }
 
     private static void ValidateExport(NativeProgram program)
@@ -166,7 +180,7 @@ public static partial class NativeArtifact
         return program with { Allocations = plans };
     }
 
-    private static void WritePath(NativeProgram program, string path)
+    private static void WritePath(NativeProgram program, string path, CompilationTrace? trace = null)
     {
         string full = System.IO.Path.GetFullPath(path);
         string temporary = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(full)!,
@@ -174,13 +188,18 @@ public static partial class NativeArtifact
         try
         {
             using (FileStream stream = new(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-                Encode(program, stream);
+                Encode(program, stream, trace);
             File.Move(temporary, full, overwrite: true);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
-    private static void Encode(NativeProgram program, Stream stream) => EncodeCompact(program, stream);
+    private static void Encode(NativeProgram program, Stream stream, CompilationTrace? trace = null)
+    {
+        if (trace is null) { EncodeCompact(program, stream); return; }
+        trace.Run("compiler.artifact.encode", (program, stream, trace),
+            static state => EncodeCompact(state.program, state.stream, state.trace));
+    }
 
     private static NativeFunctionCode ReadFunction(BinaryReader reader, bool includesReflection)
     {

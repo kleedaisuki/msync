@@ -37,12 +37,32 @@ public sealed class Parser
         return new(statements, new(0, source.Length));
     }
 
+    internal static Document Parse(string source, string sourceName, CompilationTrace trace)
+    {
+        IReadOnlyList<Token> tokens = trace.MeasureDetailed("compiler.lex", (source, sourceName),
+            static state => new Lexer(state.source, state.sourceName).Lex(),
+            attributes: new Dictionary<string, string> { ["source.file"] = sourceName },
+            metrics: static result => new Dictionary<string, ulong> { ["tokens"] = (ulong)result.Count });
+        return trace.MeasureDetailed("compiler.syntax", (source, sourceName, tokens), static state =>
+        {
+            Parser parser = new(state.source, state.sourceName, state.tokens);
+            return new Document(parser.Statements(TokenKind.End), new(0, state.source.Length));
+        }, metrics: static document => new Dictionary<string, ulong> { ["statements"] = (ulong)document.Statements.Count });
+    }
+
     public static EditorParseResult ParseForEditor(string source, string sourceName = "<source>") =>
         ParseForEditor(source, sourceName, default);
 
-    internal static EditorParseResult ParseForEditor(string source, string sourceName, CancellationToken cancellationToken)
+    internal static EditorParseResult ParseForEditor(string source, string sourceName, CancellationToken cancellationToken,
+        CompilationTrace? trace = null)
     {
-        var tokens = new Lexer(source, sourceName, cancellationToken).LexForEditor(out SyntaxException? error);
+        var lexed = trace is null ? LexEditor(source, sourceName, cancellationToken)
+            : trace.MeasureDetailed("compiler.lex", (source, sourceName, cancellationToken),
+                static state => LexEditor(state.source, state.sourceName, state.cancellationToken),
+                attributes: new Dictionary<string, string> { ["source.file"] = sourceName },
+                metrics: static result => new Dictionary<string, ulong>
+                { ["tokens"] = (ulong)result.Tokens.Count, ["diagnostics"] = result.Error is null ? 0UL : 1UL });
+        var (tokens, error) = lexed;
         var regexSpans = tokens.Where(token => token.Kind == TokenKind.Regex).Select(token => token.Span).ToList();
         if (error is { IsIncomplete: true } && source[error.Span.Start] == '<') regexSpans.Add(error.Span);
         Parser parser = new(source, sourceName, tokens, editorMode: true, error, cancellationToken);
@@ -55,6 +75,13 @@ public sealed class Parser
         SyntaxException? first = parser.firstError ?? error;
         return new(new(statements, new(0, source.Length)) { EditorError = first }, first, parser.incompleteRoot)
         { RegexSpans = regexSpans, Tokens = tokens };
+    }
+
+    private static (IReadOnlyList<Token> Tokens, SyntaxException? Error) LexEditor(string source, string sourceName,
+        CancellationToken cancellationToken)
+    {
+        var tokens = new Lexer(source, sourceName, cancellationToken).LexForEditor(out SyntaxException? error);
+        return (tokens, error);
     }
 
     public static IReadOnlyList<SourceSpan> NumberSpans(string source) => new Lexer(source, "<editor>")

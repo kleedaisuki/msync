@@ -55,7 +55,7 @@ internal sealed class ReplSession
     {
         await ExecuteAsync(ShellPrelude, CancellationToken.None, prelude: true);
         await using InteractivePrompt? prompt = InteractivePrompt.IsSupported
-            ? new(syntax.IsIncomplete, PromptNames, color: TerminalPresentation.Colors(color), describe: DescribePromptBindings, analyze: source => compiler.AnalyzeEditor(source, execution.GetLocalValue), colorPolicy: color,
+            ? new(syntax.IsIncomplete, PromptNames, color: TerminalPresentation.Colors(color), describe: DescribePromptBindings, analyze: AnalyzePrompt, colorPolicy: color,
                 workingDirectory: () => execution.WorkingDirectory) : null;
         editing = prompt is not null;
         if (!Console.IsInputRedirected)
@@ -78,6 +78,14 @@ internal sealed class ReplSession
             if (!editing) Console.CancelKeyPress -= Cancel;
             await execution.DisposeAsync();
         }
+    }
+
+    private EditorAnalysis AnalyzePrompt(string source)
+    {
+        using TelemetrySpan? span = telemetry?.Begin("repl.analysis", TelemetryLevel.Phases);
+        return span is null ? compiler.AnalyzeEditor(source, execution.GetLocalValue)
+            : span.Measure((source, trace: span.CompilerTrace),
+                state => compiler.AnalyzeEditor(state.source, execution.GetLocalValue, state.trace));
     }
 
     private IReadOnlyList<SemanticMember> DescribePromptBindings() => compiler.DescribeBindings()

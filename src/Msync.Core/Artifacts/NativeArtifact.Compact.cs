@@ -4,7 +4,7 @@ namespace Msync.Core.Native;
 
 public static partial class NativeArtifact
 {
-    private static void EncodeCompact(NativeProgram program, Stream stream)
+    private static void EncodeCompact(NativeProgram program, Stream stream, CompilationTrace? trace = null)
     {
         CompactPool pool = new();
         List<(CompactSection Kind, byte[] Bytes)> sections = [];
@@ -36,6 +36,10 @@ public static partial class NativeArtifact
         }));
         Add(CompactSection.Plans, writer => WriteArray(writer, program.ExecutionPlans ?? [], WritePlan));
 
+        trace?.Metric("pool.strings", pool.Strings.Count);
+        trace?.Metric("pool.source_spans", pool.Spans.Count);
+        trace?.Metric("sections", sections.Count);
+        trace?.Metric("sections.bytes", sections.Sum(section => (long)section.Bytes.Length));
         using BinaryWriter output = new(stream, Encoding.UTF8, leaveOpen: true);
         output.Write(Magic); output.Write(FormatVersion); output.Write(CompactMarker); output.Write(CompactRevision);
         WriteUnsigned(output, checked((uint)pool.Strings.Count));
@@ -55,9 +59,18 @@ public static partial class NativeArtifact
 
         void Add(CompactSection kind, Action<CompactWriter> write)
         {
+            byte[] bytes = trace is null ? EncodeSection(write)
+                : trace.MeasureDetailed("compiler.artifact.encode_section", write, EncodeSection,
+                    attributes: new Dictionary<string, string> { ["artifact.section"] = kind.ToString() },
+                    metrics: static result => new Dictionary<string, ulong> { ["section.bytes"] = (ulong)result.Length });
+            sections.Add((kind, bytes));
+        }
+
+        byte[] EncodeSection(Action<CompactWriter> write)
+        {
             using MemoryStream section = new();
             using (CompactWriter writer = new(section, pool)) write(writer);
-            sections.Add((kind, section.ToArray()));
+            return section.ToArray();
         }
     }
 
@@ -99,7 +112,7 @@ public static partial class NativeArtifact
         }
     }
 
-    private static NativeProgram ReadCompact(BinaryReader input)
+    private static NativeProgram ReadCompact(BinaryReader input, CompilationTrace? trace = null)
     {
         byte revision = input.ReadByte();
         if (revision != CompactRevision) throw new MsyncException($"Unsupported native IR compact encoding {revision}; expected {CompactRevision}");
@@ -117,6 +130,8 @@ public static partial class NativeArtifact
             ValidateSpan(span); spanValues.Add(span);
         }
         SourceSpan[] spans = spanValues.ToArray();
+        trace?.Metric("pool.strings", strings.Length);
+        trace?.Metric("pool.source_spans", spans.Length);
         uint sections = ReadUnsigned(input);
         if (sections != (uint)CompactSection.Plans) throw new MsyncException("Native IR compact section set is incomplete or unknown");
         (ModuleSemantics semantics, ArtifactStage stage, int optimization, int entry, bool preserve, BindingContext? context)
@@ -158,10 +173,23 @@ public static partial class NativeArtifact
                 throw new MsyncException($"Native IR section {expected} exceeds remaining artifact bytes");
             using SectionStream section = new(input.BaseStream, length);
             using CompactReader reader = new(section, strings, spans);
-            T result = read(reader);
-            if (section.Remaining != 0) throw new MsyncException($"Unconsumed bytes in native IR section {expected}");
-            return result;
+            return trace is null ? DecodeSection(reader, section, read, expected)
+                : trace.MeasureDetailed("compiler.artifact.decode_section", (reader, section, read, expected, length, trace),
+                    static state =>
+                    {
+                        T result = DecodeSection(state.reader, state.section, state.read, state.expected);
+                        state.trace.Metric("section.bytes", state.length);
+                        return result;
+                    }, attributes: new Dictionary<string, string> { ["artifact.section"] = expected.ToString() });
         }
+    }
+
+    private static T DecodeSection<T>(CompactReader reader, SectionStream section, Func<CompactReader, T> read,
+        CompactSection expected)
+    {
+        T result = read(reader);
+        if (section.Remaining != 0) throw new MsyncException($"Unconsumed bytes in native IR section {expected}");
+        return result;
     }
 
     private static int ReadPoolCount(BinaryReader reader, string name, int minimumBytes)

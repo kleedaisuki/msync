@@ -95,7 +95,7 @@ compare matching workloads/optimization levels. Root attributes include
 | --- | --- |
 | `summary` (default when enabled) | Command outcome, actual artifact read/write and compile containers, binding/preparation commands, runtime initialization and execution, existing transfer/process observations |
 | `phases` | Source reads, parse/bind/analyze/HIR lowering/optimization spans, preparation within the standalone execution host, scheduler counts on the execute span |
-| `profile` | Aggregate optimizer-pass events and VM function/opcode/native counts, process CPU and managed allocation/collection counts |
+| `profile` | Detailed compiler phase/function/pass spans and work/decision metrics, aggregate optimizer-pass events and VM function/opcode/native counts, process CPU and managed allocation/collection counts |
 | `instructions` | Aggregate dynamic bytecode positions, branch/iterator edges and actual source call-site targets |
 | `diagnostics` | Exact operation timeline: VM frames and awaits that see incomplete work, scheduler admission and dependency links, transfer/transport and process lifecycle; lossless queue backpressure |
 
@@ -171,9 +171,21 @@ to the execute span via their event owner, and aggregate optimizer pass rows
 belong to the enclosing compile span. Pass event `duration_ns` is a metric
 summing disjoint invocations, not a wall-time interval.
 
-`vm.function` contains frame entries (`calls`), dynamic opcode attempts
-(`instructions`) and `number_boxes` at VM operand pop, peek and argument
-copy boundaries, not all allocations of numbers. `vm.opcode` and
+For the current native-v1 runtime, `vm.function` contains frame entries
+(`calls`), dynamic opcode attempts (`instructions`), logical allocation counts,
+elements, storage bytes, frame-placed allocation counts, and tiering counters.
+`logical_storage_bytes` counts the raw region plus reference slots for executed
+IR allocations; it excludes managed object/array headers, initialization flags,
+and allocations made separately for frames or closure environments. It is not
+a live-heap or total managed-allocation measurement. The historical boxed VM's
+`number_boxes` metric does not describe this representation.
+
+Field addressing and memory operations are visible as opcode/site counts,
+including `AddressOffset`, `ProjectAddress`, `Load` and `Store` when present in
+the executed IR. There are no dedicated counters for fixed-layout versus checked
+projections, ready versus pending memory reads, or per-field access latency.
+Instruction hits describe IR execution, not physical memory-access counts.
+`vm.opcode` and
 `vm.instruction` sum the same attempted instructions in different dimensions.
 `vm.edge` measures actual next-instruction transitions after jumps or
 iterator-next; it does not count a successor never entered after an abort.
@@ -316,6 +328,78 @@ whole optimization level, not one isolated pass. The O0 frame spans sum to
 79.95 ms within a 40.79 ms execute span; their overlap is precisely why
 inclusive intervals are not an exclusive CPU accounting. Raw matched
 profiles and SQLite files are in `.temp/timeline-study/compare/`.
+
+## Compiler telemetry
+
+Compiler recording uses the same local JSONL/SQLite session as execution. `phases`
+retains the existing coarse boundaries. `profile`, `instructions` and `diagnostics`
+also record the following actual work; selecting a level alone never enables a
+recorder. Diagnostics uses the existing lossless writer admission policy.
+
+| Work | Observations and evidence |
+| --- | --- |
+| Source parsing | `compiler.parse` owns `compiler.lex` and `compiler.syntax`; source identity/UTF-16 length, token and top-level statement counts. Supplied parsed documents emit `compiler.parse.reused`, not a fabricated parse interval. |
+| Binding | `compiler.bind`, `compiler.bind.standard_demand`, `compiler.bind.standard_module`; declarations, locations, types, templates and modules, available/selected standard declarations, module exports and projection decisions. |
+| Standard-source cache | `compiler.standard.document` identifies the module and whether its lazy document was cold or warm. A warm access is not another parse. |
+| Semantics | `compiler.semantic.body` counts analyzed HIR node kinds, including repeated analysis; `compiler.semantic.standard_module` identifies module work. |
+| Specialization | `compiler.semantic.instantiate` records template identity/name, call-site source range, publish/query mode, argument/capture counts and cache hit/miss/active-recursion decisions. A miss can reuse an active recursive instance rather than build a new one. |
+| Flow analysis | `compiler.flow.prepare` owns `compiler.flow.graph` and `compiler.flow.solve`; block/edge/operation/input-point counts and actual solver block transfers. Transfers include revisits, not just distinct reachable blocks. |
+| HIR sealing | `compiler.hir.freeze` and `compiler.hir.seal` report nodes, edges, types, locations, functions, templates, layouts and sources. Compare the two censuses to explain discarded construction. |
+| Native lowering | `compiler.lower.reserve`, `.layouts`, `.function`, `.finalize_types`; function/source attribution, output instruction/slot sizes, layouts and types. The enclosing `compiler.lower` adds native opcode and allocation-plan censuses. |
+| Optimization | `optimizer.function` owns function-local passes and records fixed-point iterations and allocation placements. `optimizer.pass.native-*` spans retain function identity, iteration, changed status, before/after sizes and active (non-Nop) instruction counts. Inlining, compaction and register-slot passes run at program scope and retain function attribution. Existing `optimizer.native-*` aggregate events remain available. |
+| Native artifact I/O | `compiler.artifact.encode`/`.decode` and `.encode_section`/`.decode_section`; compact section identity and byte counts, string/source-span pool counts; allocation-hint normalization has its own interval. Historical format 6 imports record `compiler.artifact.import_v6` and use the same native verifier. |
+| Native verification | `compiler.verify` owns type and per-function validation, including pointer-use and typed-flow intervals. Verification runs at existing admission boundaries; recording does not add validation to trusted compiler output. |
+| HIR artifact I/O | `compiler.hir.encode`, `.decode`, `.verify`; decoded HIR census and existing boundary validation. Reading HIR does not invent source parsing or binding. |
+| Editor and sessions | The same binder/analyzer/lowerer serves incremental editor prefix work, REPL compilation and prompt analysis. Exact revision reuse, source rebasing and prefix reuse retain their existing editor observations. |
+
+`CompilationTrace` owns synchronous nesting explicitly, not through process-global
+or asynchronous ambient state. The host supplies session-unique span IDs and the
+exporter preserves their parent relationships. One trace belongs to one synchronous
+compilation worker; concurrent workers use separate traces. Attributes, metrics and
+concrete exceptions travel through the sink-neutral observation API. Failed and
+cancelled phases retain their cause and do not emit successful later stages.
+Compiler failures also export `diagnostic.code`, source file/range, optional
+label/help/note and indexed related locations; consumers need not parse error
+messages to locate a failure or its declaration context.
+Editor recovery can return a useful projection after a failed semantic child;
+its diagnostic count is separate from successful projection completion.
+
+Durations and thread-local managed allocations are inclusive of nested compiler
+work. Do not sum parents and children, or add aggregate optimizer events to the
+individual pass intervals. `changed_invocations` means a pass reported a change,
+not a count of individual rewrites. HIR node visits count analysis work; native
+opcode censuses describe static emitted code, not VM execution. Artifact section
+byte counts exclude framing and shared pools; native decode `artifact.bytes`
+counts the consumed artifact. Compiler details and census construction only run
+with a recorder at the requested level. Use telemetry-off runs for latency.
+
+The shape follows [OpenTelemetry span ownership](https://opentelemetry.io/docs/specs/otel/trace/api/)
+and the phase/function-oriented investigation used by
+[Clang's time-trace tooling](https://clang.llvm.org/docs/analyzer/developer-docs/PerformanceInvestigation.html).
+No collector, LLVM dependency or new persistence schema is required.
+
+Focused acceptance:
+
+```sh
+python3 tests/Telemetry/compiler.py PATH_TO_MSYNC
+python3 tests/Telemetry/journeys.py PATH_TO_MSYNC --case repl
+dotnet run -c Release --project tests/CompilerTelemetry
+```
+
+The CLI journey compiles at O0–O3, checks real replay output, validates nested
+ownership and failure causes, and exercises HIR/native artifact routes and SQLite.
+The in-process companion checks byte-identical artifacts with recording off/on,
+persistent mutable sessions, editor revision/rebase/prefix paths, and cancellation
+ancestry restoration. Cross-process artifact bytes are not used as an oracle:
+standard-module field order currently inherits process-randomized immutable-map
+iteration, independently of recording.
+
+Local acceptance on 2026-11-13 used .NET 10 Release on Linux x64 and a published
+Native AOT CLI in `artifacts/validation/compiler-telemetry-cli`. Source O0–O3
+compilation/replay, HIR/SQLite, structured compiler failures and REPL recording
+passed. The in-process companion passed artifact equivalence, failed-pass and
+invalid-HIR admission attribution, cancellation restoration, incremental editor
+and persistent-session checks. The framed LSP observer journey also passed.
 
 ## Historical Rust SQLite recording and operator workflow
 

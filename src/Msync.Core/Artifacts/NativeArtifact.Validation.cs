@@ -2,7 +2,15 @@ namespace Msync.Core.Native;
 
 public static partial class NativeArtifact
 {
-    public static void Validate(NativeProgram program)
+    public static void Validate(NativeProgram program) => ValidateCore(program, null);
+
+    public static void Validate(NativeProgram program, CompilationTrace? trace)
+    {
+        if (trace?.Detail is not { } detail) { ValidateCore(program, null); return; }
+        detail.Run("compiler.verify", (program, detail), static state => ValidateCore(state.program, state.detail));
+    }
+
+    private static void ValidateCore(NativeProgram program, CompilationTrace? trace)
     {
         ArgumentNullException.ThrowIfNull(program);
         if (program.Semantics != ModuleSemantics.Current || !Enum.IsDefined(program.Stage))
@@ -11,9 +19,17 @@ public static partial class NativeArtifact
             throw new MsyncException("Native IR stage and binding context disagree");
         if ((uint)program.OptimizationLevel > 3 || (uint)program.EntryPoint >= (uint)program.Functions.Count)
             throw new MsyncException("Invalid native IR optimization level or entrypoint");
-        ValidateTypes(program);
+        if (trace is null) ValidateTypes(program);
+        else trace.Run("compiler.verify.types", program, ValidateTypes);
         foreach (NativeConstant constant in program.Constants) ValidateConstant(constant);
-        for (int index = 0; index < program.Functions.Count; index++) ValidateFunction(program, index);
+        for (int index = 0; index < program.Functions.Count; index++)
+        {
+            if (trace is null) { ValidateFunction(program, index); continue; }
+            trace.Run("compiler.verify.function", (program, index, trace),
+                static state => ValidateFunction(state.program, state.index, state.trace),
+                attributes: new Dictionary<string, string> { ["function.name"] = program.Functions[index].Name,
+                    ["function.id"] = index.ToString(System.Globalization.CultureInfo.InvariantCulture) });
+        }
         foreach (NativeAllocationPlan plan in program.Allocations)
         {
             if (!Enum.IsDefined(plan.Placement) || (uint)plan.Function >= (uint)program.Functions.Count
@@ -98,7 +114,7 @@ public static partial class NativeArtifact
         }
     }
 
-    private static void ValidateFunction(NativeProgram program, int functionIndex)
+    private static void ValidateFunction(NativeProgram program, int functionIndex, CompilationTrace? trace = null)
     {
         NativeFunctionCode function = program.Functions[functionIndex];
         if (function.Name is null || function.ParameterCount < 0 || function.CaptureCount < 0 || function.IteratorCount < 0
@@ -140,8 +156,9 @@ public static partial class NativeArtifact
         }
         foreach (NativeInstruction instruction in function.Instructions)
             ValidateInstruction(program, functionIndex, function, instruction);
-        ValidatePointerUses(program, function);
-        ValidateFlow(function);
+        if (trace is null) { ValidatePointerUses(program, function); ValidateFlow(function); return; }
+        trace.Run("compiler.verify.pointers", (program, function), static state => ValidatePointerUses(state.program, state.function));
+        trace.Run("compiler.verify.flow", function, ValidateFlow);
     }
 
     private static void ValidateInstruction(NativeProgram program, int functionIndex,

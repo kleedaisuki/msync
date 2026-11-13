@@ -13,6 +13,7 @@ public static class NativeOptimizer
         if (trace?.IncludeOptimizerPasses != true) return Optimize(program, level);
         NativeOptimizationProfile profile = new(trace);
         try { return OptimizeCore(program, level, profile); }
+        catch (Exception error) { profile.Fail(error); throw; }
         finally { profile.Publish(); }
     }
 
@@ -27,7 +28,20 @@ public static class NativeOptimizer
         List<NativeAllocationPlan> plans = program.Allocations
             .Where(plan => plan.Placement == NativeAllocationPlacement.Eliminated).ToList();
         for (int function = 0; function < functions.Length; function++)
-            functions[function] = OptimizeFunction(program with { Functions = functions }, function, constants, plans, profile, level);
+        {
+            profile?.Function(function);
+            var state = (program: program with { Functions = functions }, function, constants, plans, profile, level);
+            functions[function] = profile is null ? OptimizeFunction(state.program, function, constants, plans, null, level)
+                : profile.Trace.MeasureDetailed("optimizer.function", state,
+                    static item =>
+                    {
+                        try { return OptimizeFunction(item.program, item.function, item.constants, item.plans, item.profile, item.level); }
+                        catch (Exception error) { item.profile!.Fail(error); throw; }
+                    },
+                    CompilationSize.Of(functions[function]), CompilationSize.Of,
+                    attributes: new Dictionary<string, string>
+                    { ["function.name"] = functions[function].Name, ["function.id"] = function.ToString(System.Globalization.CultureInfo.InvariantCulture) });
+        }
         NativeProgram optimized = program with
         { Functions = functions, Constants = constants.Values.ToArray(), Allocations = plans.ToArray(), OptimizationLevel = level };
         NativeProgram compact = Compact(optimized, profile);
@@ -42,7 +56,8 @@ public static class NativeOptimizer
         for (int index = 0; index < functions.Length; index++)
         {
             NativeFunctionCode original = program.Functions[index];
-            var started = profile?.Start() ?? default;
+            profile?.Function(index);
+            var started = profile?.Start(NativeOptimizationProfile.Pass.Compact, original) ?? default;
             NativeControlOptimization.Result result = NativeControlOptimization.Compact(original);
             functions[index] = result.Function;
             positions[index] = result.Positions;
@@ -75,44 +90,46 @@ public static class NativeOptimizer
         NativeFunctionCode function = original with { Instructions = code };
         NativeProgram view = FunctionView(program, index, function);
         bool changed;
+        int iteration = 0;
         do
         {
-            var globalStarted = profile?.Start() ?? default;
+            profile?.Iteration(++iteration);
+            var globalStarted = profile?.Start(NativeOptimizationProfile.Pass.GlobalFacts, function) ?? default;
             bool globalChanged = level >= 2 && NativeGlobalFacts.Run(function, code, constants);
             if (level >= 2) profile?.Add(NativeOptimizationProfile.Pass.GlobalFacts, globalStarted, function, globalChanged);
-            var started = profile?.Start() ?? default;
+            var started = profile?.Start(NativeOptimizationProfile.Pass.ControlFlow, function) ?? default;
             NativeControlFlow flow = new(code);
             profile?.Add(NativeOptimizationProfile.Pass.ControlFlow, started, function);
-            started = profile?.Start() ?? default;
+            started = profile?.Start(NativeOptimizationProfile.Pass.EscapeAnalysis, function) ?? default;
             NativeEscapeAnalysis escape = new(view, index);
             profile?.Add(NativeOptimizationProfile.Pass.EscapeAnalysis, started, function);
-            started = profile?.Start() ?? default;
+            started = profile?.Start(NativeOptimizationProfile.Pass.GlobalMemory, function) ?? default;
             bool memoryChanged = level >= 2 && NativeGlobalMemory.Run(view, index, code, flow, escape);
             if (level >= 2) profile?.Add(NativeOptimizationProfile.Pass.GlobalMemory, started, function, memoryChanged);
-            started = profile?.Start() ?? default;
+            started = profile?.Start(NativeOptimizationProfile.Pass.LocalValues, function) ?? default;
             bool localChanged = new NativeLocalOptimization(view, function, code, constants, escape).Run(flow);
             changed = globalChanged || memoryChanged || localChanged;
             profile?.Add(NativeOptimizationProfile.Pass.LocalValues, started, function, localChanged);
-            started = profile?.Start() ?? default;
+            started = profile?.Start(NativeOptimizationProfile.Pass.EscapeAnalysis, function) ?? default;
             escape = new(view, index);
             profile?.Add(NativeOptimizationProfile.Pass.EscapeAnalysis, started, function);
-            started = profile?.Start() ?? default;
+            started = profile?.Start(NativeOptimizationProfile.Pass.DeadMemory, function) ?? default;
             bool removedMemory = NativeDeadMemory.Run(view, index, code, escape);
             changed |= removedMemory;
             profile?.Add(NativeOptimizationProfile.Pass.DeadMemory, started, function, removedMemory);
-            started = profile?.Start() ?? default;
+            started = profile?.Start(NativeOptimizationProfile.Pass.ControlFlow, function) ?? default;
             flow = new(code);
             profile?.Add(NativeOptimizationProfile.Pass.ControlFlow, started, function);
-            started = profile?.Start() ?? default;
+            started = profile?.Start(NativeOptimizationProfile.Pass.DeadResults, function) ?? default;
             bool removedResults = RemoveDead(view, index, flow, code, plans);
             changed |= removedResults;
             profile?.Add(NativeOptimizationProfile.Pass.DeadResults, started, function, removedResults);
         } while (changed);
 
-        var finalStarted = profile?.Start() ?? default;
+        var finalStarted = profile?.Start(NativeOptimizationProfile.Pass.EscapeAnalysis, function) ?? default;
         NativeEscapeAnalysis finalEscape = new(view, index);
         profile?.Add(NativeOptimizationProfile.Pass.EscapeAnalysis, finalStarted, function);
-        finalStarted = profile?.Start() ?? default;
+        finalStarted = profile?.Start(NativeOptimizationProfile.Pass.ControlFlow, function) ?? default;
         function = function with
         {
             Slots = function.Slots.Select((slot, number) =>
@@ -121,10 +138,10 @@ public static class NativeOptimizer
         view = FunctionView(program, index, function);
         NativeControlFlow finalFlow = new(code);
         profile?.Add(NativeOptimizationProfile.Pass.ControlFlow, finalStarted, function);
-        finalStarted = profile?.Start() ?? default;
+        finalStarted = profile?.Start(NativeOptimizationProfile.Pass.LastUseMoves, function) ?? default;
         bool moved = MoveLastUses(view, index, finalFlow, code);
         profile?.Add(NativeOptimizationProfile.Pass.LastUseMoves, finalStarted, function, moved);
-        finalStarted = profile?.Start() ?? default;
+        finalStarted = profile?.Start(NativeOptimizationProfile.Pass.Placement, function) ?? default;
         bool placed = false;
         foreach (var allocation in finalEscape.Layouts)
         {
@@ -138,6 +155,12 @@ public static class NativeOptimizer
             plans.Add(new(allocation.Key, allocation.Value, placement, index));
         }
         profile?.Add(NativeOptimizationProfile.Pass.Placement, finalStarted, function, placed);
+        if (profile is not null)
+        {
+            profile.Trace.Metric("optimizer.iterations", iteration);
+            foreach (NativeAllocationPlacement placement in Enum.GetValues<NativeAllocationPlacement>())
+                profile.Trace.Metric("allocations." + placement, plans.Count(plan => plan.Function == index && plan.Placement == placement));
+        }
         return function;
     }
 

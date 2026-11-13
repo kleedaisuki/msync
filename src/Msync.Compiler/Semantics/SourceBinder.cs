@@ -27,6 +27,7 @@ internal sealed partial class SourceBinder
             = parent is not null && parent.Template == template ? parent.Captures : [];
     }
 
+    internal CompilationTrace? Trace { get; set; }
     private readonly HirBuilder hir;
     private readonly BoundProgram program;
     private readonly bool observations;
@@ -75,7 +76,9 @@ internal sealed partial class SourceBinder
         sourceText = text;
         sourceName = name;
         if (!program.IsSession && text.Contains('$'))
-            standardDemand = new(document, StandardLibraries.Value, cancellationToken);
+            standardDemand = Trace is null ? new(document, StandardLibraries.Value, cancellationToken)
+                : Trace.MeasureDetailed("compiler.bind.standard_demand", (document, cancellationToken, Trace),
+                    static state => new StandardBindingDemand(state.document, StandardLibraries.Value, state.cancellationToken, state.Trace));
         source = new(hir.Sources.Count);
         hir.Sources.Add(new(name, text));
         if (!incremental)
@@ -98,25 +101,35 @@ internal sealed partial class SourceBinder
         return program;
     }
 
-    public BoundModule BindStandardModule(string name)
+    public BoundModule BindStandardModule(string name) => Trace is null ? BindStandardModuleCore(name)
+        : Trace.MeasureDetailed("compiler.bind.standard_module", (self: this, name),
+            static state => state.self.BindStandardModuleCore(state.name),
+            attributes: new Dictionary<string, string> { ["module.name"] = name },
+            metrics: static module => new Dictionary<string, ulong>
+            { ["exports"] = (ulong)module.Exports.Count, ["projected"] = module.Projected ? 1UL : 0UL });
+
+    private BoundModule BindStandardModuleCore(string name)
     {
         if (program.StandardModules.TryGetValue(name, out var existing)) return existing;
         if (!StandardLibraries.Value.TryGetValue(name, out var library))
             throw Error($"Unknown standard module '{name}'.", new(0, 0));
+        Document document = library.GetDocument(Trace);
         var previous = (source, sourceName, sourceText, nativeModule, scope, annotationScope);
         source = new(hir.Sources.Count);
         sourceText = library.Source;
         sourceName = $"msync-stdlib:///{LanguageContract.Version}/{name}.msync";
         nativeModule = name;
         hir.Sources.Add(new(sourceName, sourceText));
-        scope = new(null, Range(library.Document.Span), null);
+        scope = new(null, Range(document.Span), null);
         annotationScope = null;
         try
         {
-            var declarations = library.Document.Statements;
+            var declarations = document.Statements;
             var statements = name == "concepts" ? declarations
-                : standardDemand?.Declarations(name, library.Document) ?? declarations;
+                : standardDemand?.Declarations(name, document) ?? declarations;
             var initializers = statements.Select(Statement).ToArray();
+            Trace?.Metric("declarations.available", declarations.Count);
+            Trace?.Metric("declarations.selected", initializers.Length);
             var fields = scope.Values.Values.ToImmutableArray();
             int layout = hir.ScopeLayouts.Count;
             hir.ScopeLayouts.Add(new(fields.Select(location => new HirField(
@@ -125,7 +138,7 @@ internal sealed partial class SourceBinder
             int construction = hir.Scopes.Count;
             hir.AddScope(new(layout, fields));
             var body = Node(HirKind.Scope, hir.Type(new HirType(TypeRef.Scope, Shape: layout)),
-                library.Document.Span, initializers, construction);
+                document.Span, initializers, construction);
             BoundModule module = new(name, source, body, scope.Values, scope.Concepts,
                 Projected: initializers.Length < declarations.Count);
             program.StandardModules.Add(name, module);

@@ -39,13 +39,14 @@ internal sealed class SemanticSession(string sourceName, int optimization)
         HirModule module = Compiler.Analyze(analyzer, facts, trace);
         var options = new NativeHirLoweringOptions(optimization, PreserveLocals: true);
         NativeHirLoweringResult result = trace is null ? lowering.Lower(module, options)
-            : trace.Measure("compiler.lower", (lowering, module, options),
-                static state => state.lowering.Lower(state.module, state.options),
-                size: static lowered => CompilationSize.Of(lowered.Program));
+            : trace.MeasureDetailed("compiler.lower", (lowering, module, options, trace),
+                static state => state.lowering.Lower(state.module, state.options, state.trace),
+                size: static lowered => CompilationSize.Of(lowered.Program),
+                metrics: static lowered => CompilationMetrics.Of(lowered.Program));
         NativeProgram executable = trace is null ? NativeOptimizer.Optimize(result.Program, optimization)
-            : trace.Measure("compiler.optimize", (result.Program, optimization, trace),
+            : trace.MeasureDetailed("compiler.optimize", (result.Program, optimization, trace),
                 static state => NativeOptimizer.Optimize(state.Program, state.optimization, state.trace),
-                CompilationSize.Of(result.Program), CompilationSize.Of);
+                CompilationSize.Of(result.Program), CompilationSize.Of, metrics: CompilationMetrics.Of);
         pending = new(bound, analyzer.FinalState, result.Layout, nextDispatches);
         additions.Commit();
         transaction.Commit();
@@ -53,7 +54,7 @@ internal sealed class SemanticSession(string sourceName, int optimization)
     }
 
     internal SemanticEditorResult AnalyzeEditor(string source, Document? document = null,
-        Func<int, NativeValue?>? resolveAcceptedValue = null)
+        Func<int, NativeValue?>? resolveAcceptedValue = null, CompilationTrace? trace = null)
     {
         using var transaction = workspace.BeginTransaction();
         using var additions = instances.BeginAdditions();
@@ -64,10 +65,10 @@ internal sealed class SemanticSession(string sourceName, int optimization)
             new NativeSemanticSessionValues(accepted, acceptedLayout, seed, acceptedSites!)
                 .Refresh(accepted.Exports.Values, resolveAcceptedValue);
         }
-        BoundProgram bound = Binder(observations: true, editorMode: true).Bind(source, sourceName, document);
+        BoundProgram bound = Compiler.Bind(Binder(observations: true, editorMode: true), source, sourceName, document, trace);
         SemanticObservationBuilder observations = new(bound);
         SourceDiagnostic? diagnostic = bound.Diagnostics.FirstOrDefault();
-        SemanticAnalyzer analyzer = new(bound, observations, instances, dispatches.Fork());
+        SemanticAnalyzer analyzer = new(bound, observations, instances, dispatches.Fork()) { Trace = trace?.Detail };
         try { analyzer.AnalyzeForEditor(seed); }
         catch (CompileException error)
         {

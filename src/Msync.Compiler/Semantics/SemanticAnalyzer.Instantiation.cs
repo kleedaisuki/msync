@@ -161,7 +161,21 @@ internal sealed partial class SemanticAnalyzer
     private FunctionInvocation Instantiate(HirTemplateId id, ImmutableArray<SemanticCapture> captured,
         IReadOnlyList<SemanticValue> arguments, HirSourceRange source, SemanticContext caller, bool applyEffects = true)
     {
+        return Trace is null ? InstantiateCore(id, captured, arguments, source, caller, applyEffects)
+            : Trace.MeasureDetailed("compiler.semantic.instantiate", (self: this, id, captured, arguments, source, caller, applyEffects),
+                static state => state.self.InstantiateCore(state.id, state.captured, state.arguments,
+                    state.source, state.caller, state.applyEffects),
+                attributes: new Dictionary<string, string>(HirTelemetry.Source(hir.Sources, source))
+                { ["template.name"] = hir.Templates[id.Value].Name, ["template.id"] = id.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                  ["semantic.mode"] = caller.Publish ? "publish" : "query" });
+    }
+
+    private FunctionInvocation InstantiateCore(HirTemplateId id, ImmutableArray<SemanticCapture> captured,
+        IReadOnlyList<SemanticValue> arguments, HirSourceRange source, SemanticContext caller, bool applyEffects)
+    {
         var template = hir.Templates[id.Value];
+        Trace?.Metric("arguments", arguments.Count);
+        Trace?.Metric("captures", captured.IsDefault ? 0 : captured.Length);
         if (arguments.Count != template.Parameters.Length)
         {
             var declaration = hir.Sources[template.Source.Source.Value];
@@ -201,6 +215,7 @@ internal sealed partial class SemanticAnalyzer
         var cache = caller.Publish ? instances : (caller.Queries ??= new()).Instances;
         if (!cache.TryGetValue(key, out var instance))
         {
+            Trace?.Metric("cache.miss", 1);
             // A new specialization could add concrete facts to an earlier
             // function body. That edit must replace the whole projection.
             if (id.Value < reusedEditorTemplates) throw new EditorPrefixChanged();
@@ -210,7 +225,9 @@ internal sealed partial class SemanticAnalyzer
             string recursiveKey = InstanceKey(id, arguments, captureValues, caller, ref schema, recursive: true);
             if (!cache.Active.TryGetValue(recursiveKey, out instance))
                 instance = BuildInstance(id, template, arguments, captureValues, actualCaptures, source, caller, cache, key, recursiveKey);
+            else Trace?.Metric("cache.recursive", 1);
         }
+        else Trace?.Metric("cache.hit", 1);
         return ProjectInvocation(instance, arguments, captureValues, actualCaptures, caller, applyEffects, source);
     }
 

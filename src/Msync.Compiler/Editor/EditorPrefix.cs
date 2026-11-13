@@ -27,7 +27,7 @@ internal sealed class EditorPrefix(string text, int statementCount, BoundProgram
     }
 
     internal static EditorPrefix? Create(string previous, EditorParseResult old, string source,
-        EditorParseResult parsed, string sourceName, CancellationToken cancellationToken)
+        EditorParseResult parsed, string sourceName, CancellationToken cancellationToken, CompilationTrace? trace = null)
     {
         if (old.Error is not null || !Independent(parsed.Document)) return null;
         int matching = 0;
@@ -46,13 +46,13 @@ internal sealed class EditorPrefix(string text, int statementCount, BoundProgram
         // Inter-statement comments and trivia can affect declaration help.
         if (!previous.AsSpan().StartsWith(prefixText, StringComparison.Ordinal)) return null;
         var prefix = Slice(parsed, 0, matching, 0, end, keepError: false);
-        var bound = new SourceBinder(observations: true, editorMode: true, cancellationToken: cancellationToken)
-            .Bind(prefixText, sourceName, prefix.Document);
+        var bound = Compiler.Bind(new SourceBinder(observations: true, editorMode: true, cancellationToken: cancellationToken),
+            prefixText, sourceName, prefix.Document, trace);
         if (bound.Diagnostics.Count != 0 || bound.WrittenLocations.Count != 0
             || bound.StandardLocations.Count != 0 || bound.NextSingleton != 0) return null;
         var observations = new SemanticObservationBuilder(bound, cancellationToken);
         SemanticInstanceCache instances = new();
-        var analyzer = new SemanticAnalyzer(bound, observations, instances);
+        var analyzer = new SemanticAnalyzer(bound, observations, instances) { Trace = trace?.Detail };
         try { analyzer.AnalyzeForEditor(); }
         catch (CompileException) { return null; }
         SemanticContext final = analyzer.FinalState;
@@ -74,20 +74,20 @@ internal sealed class EditorPrefix(string text, int statementCount, BoundProgram
         && (parsed.Error is null || parsed.Error.Span.Start >= text.Length);
 
     internal EditorAnalysis? Analyze(string source, EditorParseResult parsed, string sourceName,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, CompilationTrace? trace = null)
     {
         var suffix = Slice(parsed, statementCount, parsed.Document.Statements.Count - statementCount,
             text.Length, source.Length, keepError: true);
         if (!Independent(suffix.Document)) return null;
         using var transaction = bound.Hir.BeginTransaction();
         using var additions = instances.BeginAdditions();
-        var appended = new SourceBinder(bound, observations: true, editorMode: true, appendDocument: true,
-            cancellationToken: cancellationToken).Bind(source, sourceName, suffix.Document);
+        var appended = Compiler.Bind(new SourceBinder(bound, observations: true, editorMode: true, appendDocument: true,
+            cancellationToken: cancellationToken), source, sourceName, suffix.Document, trace);
         if (appended.WrittenLocations.Count != 0 || appended.StandardLocations.Count != 0
             || appended.NextSingleton != 0) return null;
         var observations = new SemanticObservationBuilder(appended, cancellationToken);
         var analyzer = new SemanticAnalyzer(appended, observations, instances,
-            reusedEditorTemplates: bound.Templates.Count);
+            reusedEditorTemplates: bound.Templates.Count) { Trace = trace?.Detail };
         SourceDiagnostic? diagnostic = appended.Diagnostics.FirstOrDefault();
         try { analyzer.AnalyzeForEditor(facts); }
         catch (EditorPrefixChanged) { return null; }

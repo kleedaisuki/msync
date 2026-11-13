@@ -13,31 +13,37 @@ internal static class NativeCommandPipeline
     internal static NativeProgram Read(string file, TelemetrySession? telemetry)
     {
         using TelemetrySpan? span = telemetry?.Begin("artifact.read");
-        NativeProgram program = span is null ? ReadFile(file) : span.Measure(file, ReadFile);
+        NativeProgram program = span is null ? ReadFile(file) : span.Measure((file, trace: span.CompilerTrace),
+            static state => ReadFile(state.file, state.trace));
         string kind = program.Stage == ArtifactStage.Relocatable ? "object" : "executable";
         span?.SetAttribute("artifact.kind", kind);
         telemetry?.SetAttribute("input.kind", kind);
         return program;
     }
 
-    internal static NativeProgram Read(Stream stream)
+    internal static NativeProgram Read(Stream stream) => Read(stream, null);
+
+    private static NativeProgram Read(Stream stream, CompilationTrace? trace)
     {
         long start = stream.Position;
         Span<byte> magic = stackalloc byte[8];
         int count = stream.ReadAtLeast(magic, magic.Length, throwOnEndOfStream: false);
         stream.Position = start;
-        if (count != magic.Length || !LegacyV6Reader.HasMagic(magic)) return NativeArtifact.Read(stream);
-        NativeProgram program = NativeLegacyV6Importer.Import(LegacyV6Reader.Read(stream));
-        NativeArtifact.Validate(program);
+        if (count != magic.Length || !LegacyV6Reader.HasMagic(magic)) return NativeArtifact.Read(stream, trace);
+        NativeProgram program = trace?.Detail is { } detail
+            ? detail.MeasureDetailed("compiler.artifact.import_v6", stream,
+                static input => NativeLegacyV6Importer.Import(LegacyV6Reader.Read(input)), size: CompilationSize.Of)
+            : NativeLegacyV6Importer.Import(LegacyV6Reader.Read(stream));
+        NativeArtifact.Validate(program, trace);
         return program;
     }
 
-    private static NativeProgram ReadFile(string file)
+    private static NativeProgram ReadFile(string file, CompilationTrace? trace = null)
     {
         try
         {
             using FileStream stream = File.OpenRead(file);
-            return Read(stream);
+            return Read(stream, trace);
         }
         catch (Exception error) when (error is IOException or MsyncException)
         {
@@ -68,9 +74,9 @@ internal static class NativeCommandPipeline
             if (output == "-")
             {
                 using Stream stream = Console.OpenStandardOutput();
-                NativeArtifact.WriteProduced(program, stream);
+                NativeArtifact.WriteProduced(program, stream, span?.CompilerTrace);
             }
-            else NativeArtifact.WriteProduced(program, output);
+            else NativeArtifact.WriteProduced(program, output, span?.CompilerTrace);
             span?.Complete();
         }
         catch (Exception error) { span?.Fail(error); throw; }

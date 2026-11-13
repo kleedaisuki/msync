@@ -35,7 +35,7 @@ internal static class CommandPipeline
         using TelemetrySpan? span = telemetry?.Begin("artifact.read");
         span?.SetAttribute("artifact.kind", "hir");
         return span is null ? HirArtifact.Read(file)
-            : span.Measure(file, static file => HirArtifact.Read(file));
+            : span.Measure((file, trace: span.CompilerTrace), static state => HirArtifact.Read(state.file, state.trace));
     }
 
     internal static HirModule Analyze(string source, string file, TelemetrySession? telemetry)
@@ -51,7 +51,7 @@ internal static class CommandPipeline
     {
         using TelemetrySpan? span = telemetry?.Begin("artifact.write");
         span?.SetAttribute("artifact.kind", "hir");
-        try { HirCommands.Write(module, output); span?.Complete(); }
+        try { HirCommands.Write(module, output, span?.CompilerTrace); span?.Complete(); }
         catch (Exception error) { span?.Fail(error); throw; }
     }
 

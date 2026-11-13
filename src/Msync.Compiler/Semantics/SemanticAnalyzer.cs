@@ -10,6 +10,8 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
     SemanticInstanceCache? codeCache = null, SemanticSessionDispatch? sessionDispatch = null,
     int reusedEditorTemplates = 0)
 {
+    internal CompilationTrace? Trace { get; set; }
+    private long[]? analyzedKinds;
     private readonly SemanticArena hir = new(program.Hir);
     private readonly int boundNodeCount = program.Hir.Nodes.Count;
     private int nextRegion;
@@ -19,13 +21,33 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
 
     internal HirModule Analyze(SemanticContext? seed = null)
     {
-        AnalyzeCore(seed);
-        return HirSealer.Seal(program.Hir.Freeze(program.Entry, program.IsSession) with
-        { SessionDispatches = sessionDispatch?.Tables ?? [] });
+        AnalyzeForEditor(seed);
+        HirModule module = Trace is null ? Freeze() : Trace.MeasureDetailed("compiler.hir.freeze", this, static self => self.Freeze(),
+            metrics: static result => HirTelemetry.Metrics(result));
+        return Trace is null ? HirSealer.Seal(module)
+            : Trace.MeasureDetailed("compiler.hir.seal", module, HirSealer.Seal,
+                metrics: static result => HirTelemetry.Metrics(result));
     }
 
     // Editor consumers retain source/type tables, never compacted executable bodies.
-    internal void AnalyzeForEditor(SemanticContext? seed = null) => AnalyzeCore(seed);
+    internal void AnalyzeForEditor(SemanticContext? seed = null)
+    {
+        if (Trace is null) { AnalyzeCore(seed); return; }
+        analyzedKinds = new long[Enum.GetValues<HirKind>().Length];
+        Trace.Run("compiler.semantic.body", (self: this, seed), static state =>
+        {
+            try { state.self.AnalyzeCore(state.seed); }
+            finally
+            {
+                foreach (HirKind kind in Enum.GetValues<HirKind>())
+                    if (state.self.analyzedKinds![(int)kind] is > 0 and var count)
+                        state.self.Trace!.Metric("nodes." + kind, count);
+            }
+        });
+    }
+
+    private HirModule Freeze() => program.Hir.Freeze(program.Entry, program.IsSession) with
+    { SessionDispatches = sessionDispatch?.Tables ?? [] };
 
     private void AnalyzeCore(SemanticContext? seed)
     {
@@ -53,6 +75,7 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
     {
         observations?.BeforeNode(id, context);
         HirNode node = program.Node(id);
+        if (analyzedKinds is { } counts) counts[(int)node.Kind]++;
         var children = program.Children(id);
         SemanticValue value = node.Kind switch
         {

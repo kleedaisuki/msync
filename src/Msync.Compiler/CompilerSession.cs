@@ -47,12 +47,19 @@ public class CompilerSession
         lock (gate) return session.DescribeConcepts();
     }
 
-    public EditorAnalysis AnalyzeEditor(string submission, Func<int, NativeValue?>? resolveAcceptedValue = null)
+    public EditorAnalysis AnalyzeEditor(string submission, Func<int, NativeValue?>? resolveAcceptedValue = null) =>
+        AnalyzeEditor(submission, resolveAcceptedValue, trace);
+
+    public EditorAnalysis AnalyzeEditor(string submission, Func<int, NativeValue?>? resolveAcceptedValue, CompilationTrace? trace)
     {
-        EditorParseResult parsed = Parser.ParseForEditor(submission, sourceName);
+        EditorParseResult parsed = trace is null ? Parser.ParseForEditor(submission, sourceName)
+            : trace.MeasureDetailed("editor.parse", (submission, sourceName, trace),
+                static state => Parser.ParseForEditor(state.submission, state.sourceName, default, state.trace.Detail));
         SemanticEditorResult semantic;
-        lock (gate) semantic = session.AnalyzeEditor(submission, parsed.Document, resolveAcceptedValue);
-        return EditorCompiler.ProjectSemantic(submission, sourceName, parsed, semantic);
+        lock (gate) semantic = session.AnalyzeEditor(submission, parsed.Document, resolveAcceptedValue, trace);
+        return trace is null ? EditorCompiler.ProjectSemantic(submission, sourceName, parsed, semantic)
+            : trace.MeasureDetailed("editor.project", (submission, sourceName, parsed, semantic),
+                static state => EditorCompiler.ProjectSemantic(state.submission, state.sourceName, state.parsed, state.semantic));
     }
 
     public void AcceptSubmission() => AcceptSubmission(null);

@@ -17,7 +17,7 @@ internal sealed class TelemetrySpan(TelemetrySession session, string name, strin
     public string Id => id;
     public Action<RuntimeObservation> RuntimeObserver => observation => session.Observe(observation, id);
     public CompilationTrace? CompilerTrace => session.Level >= TelemetryLevel.Phases
-        ? new(ObserveCompilation, includeOptimizerPasses: session.Level >= TelemetryLevel.Profile)
+        ? new(ObserveCompilation, includeOptimizerPasses: session.Level >= TelemetryLevel.Profile, nextSpanId: session.NextSpan)
         : null;
 
     public TelemetrySpan? Begin(string child, TelemetryLevel minimum = TelemetryLevel.Summary) => session.Begin(child, minimum, id);

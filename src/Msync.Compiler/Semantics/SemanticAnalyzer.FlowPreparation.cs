@@ -12,6 +12,22 @@ internal sealed partial class SemanticAnalyzer
     private HirFlowAnalysis PrepareFlow(HirNodeId root, SemanticContext context, SemanticValue? iterationSource = null,
         Func<SemanticValue, HirTypeId>? initialType = null)
     {
+        return Trace is null ? PrepareFlowCore(root, context, iterationSource, initialType)
+            : Trace.MeasureDetailed("compiler.flow.prepare", (self: this, root, context, iterationSource, initialType),
+                static state => state.self.PrepareFlowCore(state.root, state.context, state.iterationSource, state.initialType),
+                attributes: HirTelemetry.Source(hir.Sources, program.Node(root).Source),
+                metrics: static result => new Dictionary<string, ulong>
+                {
+                    ["blocks"] = (ulong)result.Graph.Blocks.Length,
+                    ["edges"] = (ulong)result.Graph.Blocks.Sum(block => block.Successors.Length),
+                    ["operations"] = (ulong)result.Graph.Blocks.Sum(block => block.Operations.Length),
+                    ["transfers"] = (ulong)result.Solution.Transfers, ["input.points"] = (ulong)result.Inputs.Count
+                });
+    }
+
+    private HirFlowAnalysis PrepareFlowCore(HirNodeId root, SemanticContext context, SemanticValue? iterationSource,
+        Func<SemanticValue, HirTypeId>? initialType)
+    {
         var domains = ImmutableDictionary.CreateBuilder<HirLocationId, FlowLocationDomain>();
         var visited = new HashSet<HirNodeId>();
         for (; flowDeclarationCount < program.Declarations.Count; flowDeclarationCount++)
@@ -98,7 +114,7 @@ internal sealed partial class SemanticAnalyzer
                 : hir.Type(sourceType with { Element = element.Type.Value });
             evaluated = new(Runtime(source), SemanticType: known, Eager: source.EagerRange);
         }
-        return new HirFlowGraphBuilder(program, projection.Project, context.Location, Place).Analyze(root, facts, evaluated);
+        return new HirFlowGraphBuilder(program, projection.Project, context.Location, Place).Analyze(root, facts, evaluated, Trace);
     }
 
     private SemanticValue FlowRead(HirNodeId id, HirLocationId location, SemanticValue value,

@@ -62,7 +62,13 @@ internal sealed partial class SemanticAnalyzer
         return value;
     }
 
-    private SemanticValue EnsureModule(string name, HirSourceRange source, SemanticContext context)
+    private SemanticValue EnsureModule(string name, HirSourceRange source, SemanticContext context) =>
+        Trace is null ? EnsureModuleCore(name, source, context)
+            : Trace.MeasureDetailed("compiler.semantic.standard_module", (self: this, name, source, context),
+                static state => state.self.EnsureModuleCore(state.name, state.source, state.context),
+                attributes: new Dictionary<string, string> { ["module.name"] = name });
+
+    private SemanticValue EnsureModuleCore(string name, HirSourceRange source, SemanticContext context)
     {
         if (!name.StartsWith('_')) _ = EnsureStandardRoot(source, context);
         HirLocationId shared = program.StandardLocations[name];

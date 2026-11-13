@@ -3,6 +3,8 @@ using System.Globalization;
 using System.Reflection;
 using System.Threading.Channels;
 using Microsoft.Data.Sqlite;
+using Msync.Compiler;
+using Msync.Compiler.Syntax;
 using Msync.Core;
 using Msync.Runtime;
 
@@ -162,12 +164,16 @@ internal sealed class TelemetrySession : IDisposable
 
     internal void ObserveCompilation(CompilationObservation observation, string parent)
     {
-        Dictionary<string, string> attributes = [];
+        parent = observation.ParentSpanId ?? parent;
+        Dictionary<string, string> attributes = observation.Attributes is { } suppliedAttributes ? new(suppliedAttributes) : [];
+        RecordCompilationError(observation.Error, attributes);
         Dictionary<string, ulong> metrics = new()
         {
             ["managed.allocated_bytes"] = (ulong)observation.AllocatedBytes,
             ["invocations"] = (ulong)observation.Invocations
         };
+        if (observation.Metrics is { } suppliedMetrics)
+            foreach (var (key, value) in suppliedMetrics) metrics[key] = value;
         if (observation.ChangedInvocations is { } changed) metrics["changed_invocations"] = (ulong)changed;
         if (observation.Input is { } input)
         {
@@ -191,11 +197,46 @@ internal sealed class TelemetrySession : IDisposable
         {
             metrics["duration_ns"] = (ulong)observation.DurationNanoseconds;
             Record(new("event", traceId, parent, null, observation.Name, null, null, observation.StartUnixNanoseconds,
-                status, "complete", attributes, metrics, []));
+                status, status == "cancelled" ? "cancelled" : "complete", attributes, metrics, Causes(observation.Error)));
             return;
         }
-        EndSpan(observation.Name, NextSpan(), parent, observation.StartUnixNanoseconds, observation.DurationNanoseconds,
-            status, null, attributes, metrics);
+        EndSpan(observation.Name, observation.SpanId ?? NextSpan(), parent, observation.StartUnixNanoseconds, observation.DurationNanoseconds,
+            status, observation.Error, attributes, metrics);
+    }
+
+    private static void RecordCompilationError(Exception? error, Dictionary<string, string> attributes)
+    {
+        SourceDiagnostic? diagnostic = error switch
+        {
+            CompileException compile => compile.Diagnostic,
+            SyntaxException syntax => syntax.Diagnostic,
+            _ => null
+        };
+        if (diagnostic is null)
+        {
+            if (error is MsyncException { Span: { } source })
+                RecordSource(attributes, "source", source.Source, source.Start, source.Length);
+            return;
+        }
+        attributes["diagnostic.code"] = diagnostic.Code;
+        RecordSource(attributes, "source", diagnostic.SourceName, diagnostic.Span.Start, diagnostic.Span.Length);
+        if (diagnostic.Label is { } label) attributes["diagnostic.label"] = label;
+        if (diagnostic.Help is { } help) attributes["diagnostic.help"] = help;
+        if (diagnostic.Note is { } note) attributes["diagnostic.note"] = note;
+        for (int index = 0; index < diagnostic.Related.Count; index++)
+        {
+            DiagnosticLocation related = diagnostic.Related[index];
+            string prefix = "diagnostic.related." + index.ToString(CultureInfo.InvariantCulture);
+            RecordSource(attributes, prefix, related.SourceName, related.Span.Start, related.Span.Length);
+            attributes[prefix + ".message"] = related.Message;
+        }
+    }
+
+    private static void RecordSource(Dictionary<string, string> attributes, string prefix, string file, int start, int length)
+    {
+        attributes[prefix + ".file"] = file;
+        attributes[prefix + ".offset"] = start.ToString(CultureInfo.InvariantCulture);
+        attributes[prefix + ".length"] = length.ToString(CultureInfo.InvariantCulture);
     }
 
     public void Finish(string outcome, Exception? error = null)
@@ -220,7 +261,7 @@ internal sealed class TelemetrySession : IDisposable
         if (failure is not null) warnings.WriteLine($"msync: telemetry warning: incomplete recording in '{destination}': {failure}");
     }
 
-    private string NextSpan() => Interlocked.Increment(ref nextSpan).ToString("x16", CultureInfo.InvariantCulture);
+    internal string NextSpan() => Interlocked.Increment(ref nextSpan).ToString("x16", CultureInfo.InvariantCulture);
 
     private static TelemetryCause[] Causes(Exception? error)
     {

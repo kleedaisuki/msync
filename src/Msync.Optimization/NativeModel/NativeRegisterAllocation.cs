@@ -9,7 +9,8 @@ internal static class NativeRegisterAllocation
         NativeFunctionCode[] functions = new NativeFunctionCode[program.Functions.Count];
         for (int index = 0; index < functions.Length; index++)
         {
-            var started = profile?.Start() ?? default;
+            profile?.Function(index);
+            var started = profile?.Start(NativeOptimizationProfile.Pass.Slots, program.Functions[index]) ?? default;
             NativeFunctionCode original = program.Functions[index];
             functions[index] = Allocate(program, index);
             profile?.Add(NativeOptimizationProfile.Pass.Slots, started, original, functions[index],

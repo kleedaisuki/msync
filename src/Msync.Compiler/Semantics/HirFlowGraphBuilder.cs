@@ -35,15 +35,21 @@ internal sealed class HirFlowGraphBuilder(IFlowProgramView module,
     private HirNodeId root;
     private FlowFact? evaluatedForSequence;
 
-    public HirFlowAnalysis Analyze(HirNodeId body, FlowFacts initial, FlowFact? evaluatedSequence = null)
+    public HirFlowAnalysis Analyze(HirNodeId body, FlowFacts initial, FlowFact? evaluatedSequence = null,
+        CompilationTrace? trace = null)
     {
         root = body;
         evaluatedForSequence = evaluatedSequence;
         nextTemporary = Math.Max(module.LocationCount, initial.NextLocationIdentity);
-        Visit(body);
+        if (trace is null) Visit(body);
+        else trace.Run("compiler.flow.graph", (self: this, body), static state => state.self.Visit(state.body));
         FlowGraph graph = new(blocks.Select(block => new FlowBlock(block.Operations.ToImmutableArray(),
             block.Successors.ToImmutableArray())).ToImmutableArray(), new(0));
-        FlowSolution solution = FlowSolver.Solve(graph, initial.Extend(temporaries), Project);
+        FlowFacts extended = initial.Extend(temporaries);
+        FlowSolution solution = trace is null ? FlowSolver.Solve(graph, extended, Project)
+            : trace.MeasureDetailed("compiler.flow.solve", (graph, extended, self: this),
+                static state => FlowSolver.Solve(state.graph, state.extended, state.self.Project),
+                metrics: static result => new Dictionary<string, ulong> { ["transfers"] = (ulong)result.Transfers });
         var inputs = ImmutableDictionary.CreateBuilder<HirNodeId, FlowFacts>();
         for (int index = 0; index < blocks.Count; index++)
         {

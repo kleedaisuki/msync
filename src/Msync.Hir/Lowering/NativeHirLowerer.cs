@@ -25,12 +25,19 @@ public sealed class NativeHirLoweringSession
 
     public NativeHirLoweringResult Lower(HirModule module, NativeHirLoweringOptions? options = null) =>
         NativeHirLowerer.Lower(module, options, this);
+
+    public NativeHirLoweringResult Lower(HirModule module, NativeHirLoweringOptions? options, CompilationTrace? trace) =>
+        NativeHirLowerer.Lower(module, options, this, trace);
 }
 
 public static partial class NativeHirLowerer
 {
     public static NativeHirLoweringResult Lower(HirModule module, NativeHirLoweringOptions? options = null,
         NativeHirLoweringSession? session = null)
+        => Lower(module, options, session, null);
+
+    public static NativeHirLoweringResult Lower(HirModule module, NativeHirLoweringOptions? options,
+        NativeHirLoweringSession? session, CompilationTrace? trace)
     {
         if (!module.SessionDispatches.IsDefaultOrEmpty && session is null)
             throw new InvalidOperationException("Open callable signatures require an active native HIR session.");
@@ -40,11 +47,11 @@ public static partial class NativeHirLowerer
         if (missing.Length != 0)
             throw new InvalidOperationException("Typed HIR requires session locations: " +
                 string.Join(", ", missing.Select(id => module.Locations[id.Value].Name).Distinct(StringComparer.Ordinal)));
-        return new Lowering(module, options ?? new(), state).Run();
+        return new Lowering(module, options ?? new(), state, trace?.Detail).Run();
     }
 
     private sealed partial class Lowering(HirModule hir, NativeHirLoweringOptions options,
-        NativeHirLoweringSession session)
+        NativeHirLoweringSession session, CompilationTrace? trace)
     {
         private readonly List<NativeConstant> constants = [];
         private readonly Dictionary<NativeConstant, int> constantIndices = new(new ConstantComparer());
@@ -63,27 +70,40 @@ public static partial class NativeHirLowerer
 
         internal NativeHirLoweringResult Run()
         {
-            SeedPathOrigins();
-            ReserveCallables();
-            PrepareHistoricalBindings();
-            ReserveNativeLayouts();
-            for (int i = 0; i < hir.Scopes.Length; i++) ScopeLayout(i);
-            for (int i = 0; i < hir.ScopeLayouts.Length; i++) Layout(i);
-            FinalizeHistoricalTypes();
-            BindFieldContracts();
-            FinalizeScopeTypes();
+            Stage("compiler.lower.reserve", static self =>
+            {
+                self.SeedPathOrigins();
+                self.ReserveCallables();
+                self.PrepareHistoricalBindings();
+            });
+            Stage("compiler.lower.layouts", static self =>
+            {
+                self.ReserveNativeLayouts();
+                for (int i = 0; i < self.Hir.Scopes.Length; i++) self.ScopeLayout(i);
+                for (int i = 0; i < self.Hir.ScopeLayouts.Length; i++) self.Layout(i);
+                self.FinalizeHistoricalTypes();
+                self.BindFieldContracts();
+                self.FinalizeScopeTypes();
+                self.RecordLayouts();
+            });
             NativeFunctionCode[] functions = new NativeFunctionCode[Locations.NextCallable + (historical?.Functions.Length ?? 0)];
             if (historical is { } bindings) bindings.Functions.CopyTo(functions, bindings.FunctionOffset);
             for (int index = 0; index < hir.Functions.Length; index++)
             {
                 HirFunctionId id = new(index);
-                functions[Function(id)] = new FunctionLowering(this, id, hir.Functions[index]).Run();
+                var state = (self: this, id, function: hir.Functions[index]);
+                functions[Function(id)] = trace is null ? new FunctionLowering(this, id, state.function).Run()
+                    : trace.MeasureDetailed("compiler.lower.function", state,
+                        static item => new FunctionLowering(item.self, item.id, item.function).Run(),
+                        size: CompilationSize.Of,
+                        attributes: new Dictionary<string, string>(HirTelemetry.Source(hir.Sources, hir.Nodes[state.function.Body.Value].Source))
+                        { ["function.name"] = state.function.Name, ["function.id"] = index.ToString(System.Globalization.CultureInfo.InvariantCulture) });
             }
             for (int index = 0; index < hir.Templates.Length; index++)
                 functions[Locations.Templates[new(index)]] = Template(hir.Templates[index]);
             if (functions.Any(function => function is null))
                 throw new InvalidOperationException("A persistent HIR module must retain its prior callable definitions.");
-            FinalizeScopeTypes();
+            Stage("compiler.lower.finalize_types", static self => self.FinalizeScopeTypes());
             NativeProgram program = new(constants.ToArray(), functions, session.Types.ToArray(),
                 session.Layouts.ToArray(), Function(hir.Entry))
             {
@@ -99,6 +119,18 @@ public static partial class NativeHirLowerer
                         dispatch.Targets.ToDictionary(target => Callable(target.Identity), target => Function(target.Target)))).ToArray()
             };
             return new(program, Locations.Layout);
+        }
+
+        private void Stage(string name, Action<Lowering> action)
+        {
+            if (trace is null) action(this);
+            else trace.Run(name, this, action);
+        }
+
+        private void RecordLayouts()
+        {
+            trace?.Metric("native.types", session.Types.Count);
+            trace?.Metric("native.layouts", session.Layouts.Count);
         }
 
         private void FinalizeScopeTypes()

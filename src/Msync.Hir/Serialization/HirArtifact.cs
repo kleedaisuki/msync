@@ -12,15 +12,24 @@ public static class HirArtifact
 
     public static bool IsHir(ReadOnlySpan<byte> bytes) => bytes.StartsWith(Magic);
 
-    public static HirModule Read(string path)
+    public static HirModule Read(string path) => Read(path, null);
+
+    public static HirModule Read(string path, CompilationTrace? trace)
     {
         using FileStream stream = File.OpenRead(path);
-        try { return Read(stream); }
+        try { return Read(stream, trace); }
         catch (MsyncException error)
         { throw new MsyncException($"Cannot read Typed HIR artifact '{path}': {error.Message}", inner: error); }
     }
 
-    public static HirModule Read(Stream stream)
+    public static HirModule Read(Stream stream) => Read(stream, null);
+
+    public static HirModule Read(Stream stream, CompilationTrace? trace) => trace?.Detail is { } detail
+        ? detail.MeasureDetailed("compiler.hir.decode", (stream, detail), static state => ReadCore(state.stream, state.detail),
+            metrics: HirTelemetry.Metrics)
+        : ReadCore(stream, null);
+
+    private static HirModule ReadCore(Stream stream, CompilationTrace? trace)
     {
         using BinaryReader reader = new(stream, Utf8, leaveOpen: true);
         try
@@ -35,7 +44,8 @@ public static class HirArtifact
             if (language != LanguageVersion)
                 throw new MsyncException($"Unsupported Typed HIR language semantics '{language}'; expected '{LanguageVersion}'.");
             HirModule module = decoder.Module();
-            HirValidation.Validate(module);
+            if (trace is null) HirValidation.Validate(module);
+            else trace.Run("compiler.hir.verify", module, HirValidation.Validate);
             return module;
         }
         catch (Exception error) when (error is IOException or ArgumentException or FormatException or OverflowException)
@@ -49,13 +59,15 @@ public static class HirArtifact
     }
 
     /// <summary>Encode sealed compiler output or HIR already decoded at the input boundary.</summary>
-    public static void WriteProduced(HirModule module, string path)
+    public static void WriteProduced(HirModule module, string path) => WriteProduced(module, path, null);
+
+    public static void WriteProduced(HirModule module, string path, CompilationTrace? trace)
     {
         string destination = Path.GetFullPath(path);
         string temporary = Path.Combine(Path.GetDirectoryName(destination)!, $".{Path.GetFileName(destination)}.msync-{Guid.NewGuid():N}");
         try
         {
-            using (FileStream stream = new(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None)) WriteProduced(module, stream);
+            using (FileStream stream = new(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None)) WriteProduced(module, stream, trace);
             File.Move(temporary, destination, overwrite: true);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
@@ -67,7 +79,15 @@ public static class HirArtifact
         WriteProduced(module, stream);
     }
 
-    public static void WriteProduced(HirModule module, Stream stream)
+    public static void WriteProduced(HirModule module, Stream stream) => WriteProduced(module, stream, null);
+
+    public static void WriteProduced(HirModule module, Stream stream, CompilationTrace? trace)
+    {
+        if (trace?.Detail is not { } detail) { Encode(module, stream); return; }
+        detail.Run("compiler.hir.encode", (module, stream), static state => Encode(state.module, state.stream));
+    }
+
+    private static void Encode(HirModule module, Stream stream)
     {
         using BinaryWriter writer = new(stream, Utf8, leaveOpen: true);
         writer.Write(Magic);
