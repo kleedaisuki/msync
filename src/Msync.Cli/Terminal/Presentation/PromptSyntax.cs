@@ -14,100 +14,64 @@ internal static class PromptSyntax
     public static List<FormatSpan> Highlight(string text, IReadOnlyDictionary<string, SemanticMember>? bindings = null)
     {
         List<FormatSpan> spans = [];
-        var lexical = Msync.Compiler.Syntax.Parser.HighlightSpans(text);
-        var numbers = lexical.Numbers.ToDictionary(span => span.Start, span => span.Length);
-        var arithmetic = lexical.ArithmeticOperators.ToDictionary(span => span.Start, span => span.Length);
-        int position = 0, start = 0;
         string previous = "", chain = "";
-        while (position < text.Length)
+        foreach (EditorLexeme lexeme in EditorLexemes.Scan(text))
         {
-            if (char.IsWhiteSpace(text[position])) { position++; continue; }
-            start = position;
-            char character = text[position];
-            if ((character == '#' || text.AsSpan(position).StartsWith("//", StringComparison.Ordinal))
-                && (position == 0 || char.IsWhiteSpace(text[position - 1])))
+            int start = lexeme.Span.Start, length = lexeme.Span.Length;
+            string word = text.Substring(start, length);
+            AnsiColor? style;
+            if (lexeme.Kind == EditorLexemeKind.Comment) style = AnsiColor.BrightBlack;
+            else if (lexeme.Kind == EditorLexemeKind.String)
             {
-                while (position < text.Length && text[position] is not ('\r' or '\n')) position++;
-                Add(AnsiColor.BrightBlack); continue;
-            }
-            if (character == '"')
-            {
-                position++;
-                while (position < text.Length)
+                style = AnsiColor.Green;
+                if (previous == "::" && lexeme.Complete)
                 {
-                    if (text[position++] != '"') continue;
-                    if (position < text.Length && text[position] == '"') { position++; continue; }
-                    break;
+                    chain += "::" + word[1..^1].Replace("\"\"", "\"", StringComparison.Ordinal);
+                    if (bindings is not null && bindings.TryGetValue(chain, out var member)) style = ValueColor(member.SemanticRole);
                 }
-                AnsiColor? quotedStyle = AnsiColor.Green;
-                if (previous == "::" && position > start + 1 && text[position - 1] == '"')
-                {
-                    chain += "::" + text[(start + 1)..(position - 1)].Replace("\"\"", "\"", StringComparison.Ordinal);
-                    if (bindings is not null && bindings.TryGetValue(chain, out var member)) quotedStyle = ValueColor(member.SemanticRole);
-                }
-                if (quotedStyle is { } quotedAccent) Add(quotedAccent);
-                previous = "value"; continue;
+                previous = "value";
             }
-            if (character == '<' && (previous is "" or "/" or "{" or "[" or "," or "=>" || previous.EndsWith('/')))
+            else if (lexeme.Kind is EditorLexemeKind.Regex or EditorLexemeKind.Number)
             {
-                position = PatternEnd(text, position + 1);
-                Add(AnsiColor.Magenta); previous = "value"; continue;
+                style = AnsiColor.Magenta;
+                previous = lexeme.Kind == EditorLexemeKind.Number ? "number" : "value";
+                chain = "";
             }
-            int protocol = text.AsSpan(position).StartsWith("ssh://", StringComparison.Ordinal) ? 3
-                : text.AsSpan(position).StartsWith("wsl://", StringComparison.Ordinal) ? 3 : 0;
-            if (protocol > 0)
+            else if (word.StartsWith("ssh://", StringComparison.Ordinal) || word.StartsWith("wsl://", StringComparison.Ordinal))
             {
-                spans.Add(new(start, protocol + 3, AnsiColor.Cyan));
-                position += protocol + 3;
-                while (position < text.Length && (!Boundary(text[position]) || text[position] == '@')
-                    && !text.AsSpan(position).StartsWith("::", StringComparison.Ordinal)) position++;
-                previous = "value"; continue;
-            }
-            int numericLength = numbers.GetValueOrDefault(start);
-            if (numericLength > 0)
-            {
-                position += numericLength;
-                Add(AnsiColor.Magenta); previous = "number"; chain = ""; continue;
-            }
-            if (arithmetic.TryGetValue(start, out int arithmeticLength))
-            {
-                position += arithmeticLength;
-                Add(AnsiColor.Cyan); previous = "operator"; chain = ""; continue;
-            }
-            if ("{}()[],;?:=$|<>!@".Contains(character, StringComparison.Ordinal) || text.AsSpan(position).StartsWith("->", StringComparison.Ordinal))
-            {
-                position++;
-                if (position < text.Length && (character == ':' && text[position] == ':' || character is '=' or '!' or '<' or '>' && text[position] == '='
-                    || character is '-' or '=' && text[position] == '>' || character == '*' && text[position] == '*')) position++;
-                string operation = text[start..position];
-                if (character == '?') Add(AnsiColor.Magenta);
-                else if (operation is "::" or "->" or "=>" or "=" or "==" or "!=" or "<" or "<=" or ">" or ">=" or "$" or "|" or "@" or "+" or "-" or "*" or "**" or "%") Add(AnsiColor.Cyan);
-                chain = operation == "::" ? chain.Length == 0 ? previous : chain : "";
-                previous = operation;
+                spans.Add(new(start, 6, AnsiColor.Cyan));
+                previous = "value";
                 continue;
             }
-            if (character == '/' && (previous is "number" or ")" || position + 1 == text.Length || text[position + 1] == '<'))
-            { position++; if (previous is "number" or ")") Add(AnsiColor.Cyan); previous = "/"; continue; }
-            while (position < text.Length && !Boundary(text[position]) && !arithmetic.ContainsKey(position) && text[position] is not ('"' or '<' or ':' or '$')
-                && !text.AsSpan(position).StartsWith("->", StringComparison.Ordinal)) position++;
-            if (position == start) position++;
-            string word = text[start..position];
-            string selected = previous == "$" ? "$" + word : previous == "::" && chain.Length != 0 ? chain + "::" + word : word;
-            AnsiColor? style = Commands.Contains(word, StringComparer.Ordinal) ? AnsiColor.Cyan
-                : word is "if" or "else" or "match" or "for" or "in" or "loop" or "return" or "break" or "release" or "acquire" or "acqrel" or "as" ? AnsiColor.Magenta
-                : word == "type" || Keywords.Contains(word, StringComparer.Ordinal) ? char.IsUpper(word[0]) ? AnsiColor.Magenta : AnsiColor.Cyan
-                : word is "+" or "-" or "*" ? AnsiColor.Cyan
-                : NumberSyntax.TryParse(word, out _) ? AnsiColor.Magenta
-                : previous == "fn" ? AnsiColor.Yellow
-                : previous is "scope" or "concept" or "typename" or "type" ? AnsiColor.Magenta
-                : bindings is not null && bindings.TryGetValue(selected, out var value) ? ValueColor(value.SemanticRole)
-                : DeclaredColor(text, position);
-            if (style is { } accent) Add(accent);
-            previous = word; chain = selected;
+            else if (lexeme.Kind is EditorLexemeKind.Operator or EditorLexemeKind.Delimiter || word is "+" or "-" or "*" or "%" or "**")
+            {
+                style = word == "?" ? AnsiColor.Magenta
+                    : word == "/" ? previous is "number" or ")" ? AnsiColor.Cyan : null
+                    : word is "::" or "->" or "=>" or "=" or "==" or "!=" or "<" or "<=" or ">" or ">=" or "$" or "|" or "@" or "+" or "-" or "*" or "**" or "%" ? AnsiColor.Cyan : null;
+                chain = word == "::" ? chain.Length == 0 ? previous : chain : "";
+                previous = word;
+            }
+            else
+            {
+                if (previous == "/" && start > 0 && text[start - 1] == '/' && Commands.Contains("/" + word, StringComparer.Ordinal))
+                {
+                    spans.Add(new(start - 1, length + 1, AnsiColor.Cyan));
+                    previous = word;
+                    continue;
+                }
+                string selected = previous == "$" ? "$" + word : previous == "::" && chain.Length != 0 ? chain + "::" + word : word;
+                style = Commands.Contains(word, StringComparer.Ordinal) ? AnsiColor.Cyan
+                    : word is "if" or "else" or "match" or "for" or "in" or "loop" or "return" or "break" or "release" or "acquire" or "acqrel" or "as" ? AnsiColor.Magenta
+                    : word == "type" || Keywords.Contains(word, StringComparer.Ordinal) ? char.IsUpper(word[0]) ? AnsiColor.Magenta : AnsiColor.Cyan
+                    : previous == "fn" ? AnsiColor.Yellow
+                    : previous is "scope" or "concept" or "typename" or "type" ? AnsiColor.Magenta
+                    : bindings is not null && bindings.TryGetValue(selected, out var value) ? ValueColor(value.SemanticRole)
+                    : DeclaredColor(text, lexeme.Span.End);
+                previous = word; chain = selected;
+            }
+            if (style is { } accent) spans.Add(new(start, length, accent));
         }
         return spans;
-
-        void Add(AnsiColor style) => spans.Add(new(start, position - start, style));
     }
 
     private static AnsiColor? DeclaredColor(string text, int offset)
@@ -127,35 +91,6 @@ internal static class PromptSyntax
 
     private static AnsiColor? ValueColor(string role) => role == "function" ? AnsiColor.Yellow
         : role == "type" ? AnsiColor.Magenta : null;
-
-    private static bool Boundary(char character) => char.IsWhiteSpace(character) || "{}()[],;?=$|<>!@".Contains(character, StringComparison.Ordinal);
-
-    private static int PatternEnd(string text, int position)
-    {
-        bool escaped = false, characterClass = false, namedAngle = false;
-        for (; position < text.Length; position++)
-        {
-            char character = text[position];
-            if (escaped) { escaped = false; continue; }
-            if (character == '\\')
-            {
-                if (!characterClass && position + 2 < text.Length && text[position + 1] == 'k' && text[position + 2] == '<')
-                { namedAngle = true; position += 2; continue; }
-                escaped = true; continue;
-            }
-            if (character == '[') characterClass = true;
-            if (character == ']') characterClass = false;
-            if (character == '(' && !characterClass && position + 3 < text.Length && text[position + 1] == '?' && text[position + 2] == '<'
-                && text[position + 3] is not ('=' or '!')) { namedAngle = true; position += 2; continue; }
-            if (character != '>' || characterClass) continue;
-            if (namedAngle) { namedAngle = false; continue; }
-            int next = position + 1;
-            if (next == text.Length || char.IsWhiteSpace(text[next]) || "/,;}|)".Contains(text[next], StringComparison.Ordinal)
-                || text.AsSpan(next).StartsWith("=>", StringComparison.Ordinal) || text.AsSpan(next).StartsWith("->", StringComparison.Ordinal))
-                return next;
-        }
-        return position;
-    }
 
     public static PromptHint? Hint(string text, int caret, IReadOnlyDictionary<string, SemanticMember> bindings)
     {
@@ -207,25 +142,12 @@ internal static class PromptSyntax
     private static string? CallHint(string text, int caret, IReadOnlyDictionary<string, SemanticMember> bindings)
     {
         Stack<(char Delimiter, int Offset, int Argument)> opens = [];
-        bool quoted = false;
-        for (int position = 0; position < caret; position++)
+        foreach (EditorLexeme lexeme in EditorLexemes.Scan(text))
         {
-            char character = text[position];
-            if (character == '"')
-            {
-                if (quoted && position + 1 < caret && text[position + 1] == '"') position++;
-                else quoted = !quoted;
-                continue;
-            }
-            if (quoted) continue;
-            if (character == '<' && RegexStart(text, position)) { position = PatternEnd(text, position + 1) - 1; continue; }
-            if ((character == '#' || text.AsSpan(position).StartsWith("//", StringComparison.Ordinal))
-                && (position == 0 || char.IsWhiteSpace(text[position - 1])))
-            {
-                while (position < caret && text[position] is not ('\r' or '\n')) position++;
-                continue;
-            }
-            if (character is '(' or '[' or '{') opens.Push((character, position, 0));
+            if (lexeme.Span.Start >= caret) break;
+            if (lexeme.Kind != EditorLexemeKind.Delimiter) continue;
+            char character = text[lexeme.Span.Start];
+            if (character is '(' or '[' or '{') opens.Push((character, lexeme.Span.Start, 0));
             else if (character is ')' or ']' or '}') { if (opens.Count > 0) opens.Pop(); }
             else if (character == ',' && opens.Count > 0)
             {
@@ -254,36 +176,8 @@ internal static class PromptSyntax
             : "Scope::member selects a member; Connection @ path qualifies a path";
     }
 
-    private static bool RegexStart(string text, int offset)
-    {
-        int previous = offset - 1;
-        while (previous >= 0 && char.IsWhiteSpace(text[previous])) previous--;
-        return previous < 0 || "/{[,".Contains(text[previous], StringComparison.Ordinal)
-            || previous > 0 && text[previous] == '>' && text[previous - 1] == '=';
-    }
-
-    internal static bool InsideLiteral(string text, int offset)
-    {
-        bool quoted = false;
-        for (int position = 0; position < offset; position++)
-        {
-            if (!quoted && (text[position] == '#' || text.AsSpan(position).StartsWith("//", StringComparison.Ordinal))
-                && (position == 0 || char.IsWhiteSpace(text[position - 1])))
-            {
-                while (position < offset && text[position] is not ('\r' or '\n')) position++;
-                if (position == offset) return true;
-            }
-            if (!quoted && text[position] == '<' && RegexStart(text, position))
-            {
-                int end = PatternEnd(text, position + 1);
-                if (end > offset || end == offset && text[end - 1] != '>') return true;
-                position = end - 1;
-                continue;
-            }
-            if (text[position] != '"') continue;
-            if (quoted && position + 1 < offset && text[position + 1] == '"') position++;
-            else quoted = !quoted;
-        }
-        return quoted;
-    }
+    internal static bool InsideLiteral(string text, int offset) => EditorLexemes.Scan(text).Any(lexeme =>
+        lexeme.Kind is EditorLexemeKind.String or EditorLexemeKind.Regex or EditorLexemeKind.Comment
+        && lexeme.Span.Start < offset && (offset < lexeme.Span.End
+            || offset == lexeme.Span.End && (!lexeme.Complete || lexeme.Kind == EditorLexemeKind.Comment)));
 }

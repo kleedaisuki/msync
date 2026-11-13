@@ -5,9 +5,9 @@
       "msync.compiler": {
         "type": "Project",
         "dependencies": {
-          "Msync.Core": "[0.8.1, )",
-          "Msync.Hir": "[0.8.1, )",
-          "Msync.Optimization": "[0.8.1, )"
+          "Msync.Core": "[0.9.0, )",
+          "Msync.Hir": "[0.9.0, )",
+          "Msync.Optimization": "[0.9.0, )"
         }
       },
       "msync.core": {
@@ -16,13 +16,13 @@
       "msync.hir": {
         "type": "Project",
         "dependencies": {
-          "Msync.Core": "[0.8.1, )"
+          "Msync.Core": "[0.9.0, )"
         }
       },
       "msync.optimization": {
         "type": "Project",
         "dependencies": {
-          "Msync.Core": "[0.8.1, )"
+          "Msync.Core": "[0.9.0, )"
         }
       }
     }

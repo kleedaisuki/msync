@@ -15,6 +15,7 @@ internal sealed record BoundDeclaration(HirLocationId Location, string Name,
     HirTemplateId? Template = null, HirLocationId? CapturedFrom = null);
 
 internal sealed record BoundTypeUse(HirSourceRange Source, HirTypeId Type);
+internal sealed record BoundTypeWitness(HirLocationId Location, HirSourceRange Source, string Name);
 internal sealed record BoundReference(HirSourceRange Source, HirLocationId Location,
     bool Declaration = false, bool Parameter = false);
 internal sealed record BoundVisibility(HirSourceRange Owner, int Position,
@@ -78,6 +79,7 @@ internal sealed class BoundProgram(HirBuilder hir)
     public Dictionary<HirNodeId, HirTypeId> TypeAnnotations { get; } = [];
     public Dictionary<HirNodeId, int> ConceptUses { get; } = [];
     public Dictionary<int, string> TypeParameterNames { get; } = [];
+    public Dictionary<int, BoundTypeWitness> TypeWitnesses { get; } = [];
     public HashSet<HirLocationId> WrittenLocations { get; } = [];
     public HashSet<string> WrittenMembers { get; } = new(StringComparer.Ordinal);
     public Dictionary<string, BoundModule> StandardModules { get; } = new(StringComparer.Ordinal);
@@ -98,6 +100,7 @@ internal sealed class BoundProgram(HirBuilder hir)
         foreach (var pair in previous.TypeAnnotations) TypeAnnotations.Add(pair.Key, pair.Value);
         foreach (var pair in previous.ConceptUses) ConceptUses.Add(pair.Key, pair.Value);
         foreach (var pair in previous.TypeParameterNames) TypeParameterNames.Add(pair.Key, pair.Value);
+        foreach (var pair in previous.TypeWitnesses) TypeWitnesses.Add(pair.Key, pair.Value);
         foreach (var pair in previous.StandardModules) StandardModules.Add(pair.Key, pair.Value);
         foreach (var pair in previous.StandardLocations) StandardLocations.Add(pair.Key, pair.Value);
         WrittenLocations.UnionWith(previous.WrittenLocations);

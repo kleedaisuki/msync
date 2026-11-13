@@ -155,7 +155,7 @@ internal sealed class HirFlowGraphBuilder(IFlowProgramView module,
             if ((applied & (HirEffects.Invoke | HirEffects.WriteLocation | HirEffects.WriteMemory)) != 0)
                 Operation(FlowOperation.WriteMemory());
         }
-        else if (node.Kind == HirKind.Scope)
+        else if (node.Kind is HirKind.Scope or HirKind.AllocateScope)
         {
             HirScopeConstruction scope = module.Scope(node.Data);
             if (scope.Self is { } self) Operation(FlowOperation.Assign(Location(self), module.RuntimeType(node.Type)));

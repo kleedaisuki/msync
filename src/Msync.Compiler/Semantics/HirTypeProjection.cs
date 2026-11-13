@@ -6,14 +6,15 @@ namespace Msync.Compiler.Semantics;
 
 // A type-only projection of an already bound body. It has no executable-output
 // capability, and Source calls consult a return scheme instead of analyzing a body.
-internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
+internal sealed partial class HirTypeProjection(BoundProgram program, SemanticArena hir,
     SemanticContext context, HirFlowTypeAlgebra types,
     Func<SemanticCallable, IReadOnlyList<FlowFact>, FlowFact?>? sourceReturn = null,
     Func<HirNodeId, HirLocationId?>? places = null,
-    Func<HirNodeId, IEnumerable<SemanticCallable>>? resolveCallable = null)
+    Func<HirNodeId, IEnumerable<SemanticCallable>>? resolveCallable = null,
+    Func<HirTypeId, HirTypeId>? resolveType = null)
 {
     private readonly Dictionary<int, HirTypeId> scopeResults = [];
-    private readonly HashSet<(int Site, HirLocationId Field)> recursiveFields = [];
+    private readonly Dictionary<int, HirTypeId> recursiveScopes = [];
 
     public FlowFact Project(HirNodeId id, FlowFacts facts)
     {
@@ -22,16 +23,13 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
         switch (node.Kind)
         {
             case HirKind.Literal:
-                return Fact(Resolve(node.Type), hir.Literals[node.Data].Kind == HirLiteralKind.Bool
-                    ? hir.Literals[node.Data].Boolean : null);
+                return LiteralFact(hir, node, Resolve(node.Type));
             case HirKind.ReadLocation:
             case HirKind.ReadStorage:
                 {
                     HirLocationId location = context.Location(new(node.Data));
                     if (facts.Contains(location)) return facts.Read(location);
-                    if (context.Values.TryGetValue(location, out var current)) return Fact(current.Type, current.KnownBool)
-                        with
-                    { Eager = current.EagerRange };
+                    if (context.Values.TryGetValue(location, out var current)) return ValueFact(hir, current);
                     return Fact(Resolve(hir.Locations[location.Value].StorageType));
                 }
             case HirKind.Block:
@@ -121,13 +119,17 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
                 }
             case HirKind.MemberRead:
                 {
-                    if (places?.Invoke(id) is { } field && facts.Contains(field))
-                        return facts.Read(field);
                     FlowFact receiver = Project(children[0], facts);
-                    return Fact(types.Member(receiver.SemanticType ?? hir.Type(receiver.Type), node.Text!))
-                        with
-                    { Eager = Value(id)?.EagerRange == true };
+                    HirTypeId member = types.Member(receiver.SemanticType ?? hir.Type(receiver.Type), node.Text!);
+                    if (places?.Invoke(id) is { } field && facts.Contains(field))
+                    {
+                        FlowFact selected = facts.Read(field);
+                        HirTypeId narrowed = types.Narrow(member, selected.Type, true);
+                        return selected with { Type = hir.Types[narrowed.Value].RuntimeType, SemanticType = narrowed };
+                    }
+                    return Fact(member) with { Eager = Value(id)?.EagerRange == true };
                 }
+            case HirKind.AllocateScope: return Fact(node.Type);
             case HirKind.Scope:
                 return Scope(node, children, facts);
             case HirKind.TemplateClosure:
@@ -168,6 +170,7 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
 
     private FlowFact Scope(HirNode node, ReadOnlySpan<HirNodeId> children, FlowFacts facts)
     {
+        if (recursiveScopes.TryGetValue(node.Data, out var closed)) return Fact(closed);
         HirScopeConstruction construction = hir.Scopes[node.Data];
         var fields = ImmutableArray.CreateBuilder<HirField>();
         foreach (HirLocationId location in construction.Fields)
@@ -177,8 +180,23 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
             foreach (HirNodeId child in children)
                 if (Initializer(child, location) is { } value)
                 {
-                    FlowFact projected = Project(value, facts);
+                    HirLocationId stored = context.Location(location);
+                    FlowFact projected = context.QueryBinding is not null && facts.Contains(stored)
+                        ? facts.Read(stored) : Project(value, facts);
                     type = projected.SemanticType ?? hir.Type(projected.Type);
+                    HirNode initializer = program.Node(value);
+                    HirLocationId? carrier = initializer.Kind is HirKind.ReadLocation or HirKind.ReadStorage
+                        ? context.Location(new(initializer.Data)) : places?.Invoke(value);
+                    if (projected.Type.WithoutNull.Kind == TypeKind.Never && carrier is { } source)
+                    {
+                        HirLocationId definition = context.Definitions.GetValueOrDefault(source, source);
+                        HirTypeId storage = program.TryDeclaration(definition, out var declared) && declared.Annotation is not null
+                            ? Resolve(hir.Locations[definition.Value].StorageType)
+                            : context.Storage.GetValueOrDefault(source,
+                                facts.Contains(source) ? facts.Domain(source).StorageSemanticType ?? hir.Locations[source.Value].StorageType
+                                    : hir.Locations[source.Value].StorageType);
+                        if (hir.Types[storage.Value].RuntimeType.WithoutNull.Kind != TypeKind.Never) type = Resolve(storage);
+                    }
                     break;
                 }
             if (descriptor.AdmitsNull)
@@ -186,16 +204,17 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
                 HirType stored = hir.Types[type.Value];
                 type = hir.Type(stored with { RuntimeType = stored.RuntimeType.WithNull, Nullable = true });
             }
-            var site = (node.Data, location);
-            HirType projectedType = hir.Types[type.Value];
-            bool structural = projectedType.Shape >= 0 || projectedType.Element >= 0 || !projectedType.Alternatives.IsDefaultOrEmpty;
-            if (structural && !recursiveFields.Contains(site) && scopeResults.TryGetValue(node.Data, out var previous)
-                && ContainsType(type, previous, [])) recursiveFields.Add(site);
-            if (recursiveFields.Contains(site))
-                type = hir.Type(hir.Types[type.Value].RuntimeType);
             fields.Add(new(descriptor.Name, type, descriptor.AdmitsNull));
         }
         ImmutableArray<HirField> row = fields.ToImmutable();
+        if (scopeResults.TryGetValue(node.Data, out var previous)
+            && row.Any(field => ContainsType(field.StorageType, previous, [])))
+        {
+            HirTypeId recursive = CloseRecursiveScope(node.Data, row, previous);
+            recursiveScopes.Add(node.Data, recursive);
+            scopeResults[node.Data] = recursive;
+            return Fact(recursive);
+        }
         int shape = hir.InternScopeLayout(new(row));
         HirTypeId result = hir.Type(new HirType(TypeRef.Scope, Shape: shape));
         scopeResults[node.Data] = result;
@@ -263,8 +282,6 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
         {
             NativeBehavior behavior = signature.Behavior.GetValueOrDefault();
             bool eager = (behavior & NativeBehavior.EagerRange) != 0;
-            if (arguments.Length != 0 && ProjectStorage(IndexedNative.Classify(native), arguments[0]) is { } storage)
-                return storage;
             if (arguments.Length != 0 && HirNativeResultTypes.IsStructuralRange(signature.ResultRule))
             {
                 var first = arguments[0];
@@ -307,27 +324,6 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
         return Fact(Resolve(node.Type));
     }
 
-    private FlowFact? ProjectStorage(IndexedNativeOperation operation, FlowFact input)
-    {
-        if (operation is not (IndexedNativeOperation.Vector or IndexedNativeOperation.Typed
-            or IndexedNativeOperation.EmptyLike or IndexedNativeOperation.Element or IndexedNativeOperation.Snapshot)) return null;
-        HirTypeId source = input.SemanticType ?? hir.Type(input.Type);
-        HirTypeId element = operation == IndexedNativeOperation.Typed
-            ? input.Denotations is { Types.Length: 1 } denoted ? denoted.Types[0] : hir.Type(TypeRef.Any)
-            : types.Element(source);
-        return operation switch
-        {
-            IndexedNativeOperation.Vector or IndexedNativeOperation.Typed or IndexedNativeOperation.EmptyLike =>
-                Fact(Owner(TypeKind.Storage)),
-            IndexedNativeOperation.Element => Fact(element),
-            IndexedNativeOperation.Snapshot => Fact(Owner(TypeKind.Range)) with { Eager = true },
-            _ => null
-        };
-
-        HirTypeId Owner(TypeKind kind) =>
-            hir.Type(new HirType(new(kind, hir.Types[element.Value].RuntimeType), Element: element.Value));
-    }
-
     private SemanticValue? Value(HirNodeId id)
     {
         HirNode node = program.Node(id);
@@ -340,9 +336,18 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
 
     private HirTypeId Resolve(HirTypeId type)
     {
+        if (resolveType is not null) return resolveType(type);
         while (context.Substitutions.TryGetValue(type, out var target) && target != type) type = target;
         return type;
     }
+
+    internal static FlowFact LiteralFact(SemanticArena arena, HirNode node, HirTypeId type) =>
+        new(arena.Types[type.Value].RuntimeType, Boolean: arena.Literals[node.Data].Kind == HirLiteralKind.Bool
+            ? arena.Literals[node.Data].Boolean : null, SemanticType: type);
+
+    internal static FlowFact ValueFact(SemanticArena arena, SemanticValue value) =>
+        new(arena.Types[value.Type.Value].RuntimeType, Boolean: value.KnownBool, SemanticType: value.Type,
+            Eager: value.EagerRange);
 
     private FlowFact Fact(HirTypeId type, bool? boolean = null) =>
         new(hir.Types[type.Value].RuntimeType, Boolean: boolean, SemanticType: type);

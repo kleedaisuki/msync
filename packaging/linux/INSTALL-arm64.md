@@ -7,12 +7,12 @@ the build host/sysroot. If the binary needs a newer system library, rebuild
 the package against the deployment system.
 
 Keep the extracted package in a stable directory, for example
-`~/.local/opt/msync-0.8.6-linux-aarch64`. Keep `libe_sqlite3.so` beside
+`~/.local/opt/msync-0.9.0-linux-aarch64`. Keep `libe_sqlite3.so` beside
 `bin/msync` so telemetry can be enabled later. To add the command to PATH:
 
 ```sh
 mkdir -p ~/.local/bin
-ln -s ~/.local/opt/msync-0.8.6-linux-aarch64/bin/msync ~/.local/bin/msync
+ln -s ~/.local/opt/msync-0.9.0-linux-aarch64/bin/msync ~/.local/bin/msync
 ```
 
 Ensure `~/.local/bin` is on PATH. To upgrade, extract the new package and

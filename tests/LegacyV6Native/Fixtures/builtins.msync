@@ -1,0 +1,21 @@
+fn factory(text: String) { scope Saved { item: text }; Saved };
+let first = factory("first");
+first::item = "changed";
+$std::io::println(factory("ignored")::item);
+let values = [1, 2, 3];
+$std::io::println($std::ranges::size(values) as String);
+$std::io::println($std::ranges::sum($std::ranges::map(values, fn(n: Number) { n * 2 })) as String);
+$std::io::println($std::regex::is_match("abc123", "[0-9]+") as String);
+$std::io::println((3 is Number) as String);
+$std::io::println(($local @ /tmp/item) as String);
+$std::io::println($std::path::join(./relative, "child") as String);
+let found? = $std::regex::find("A😀abc", "abc");
+if found? { $std::io::println("missing"); } else { $std::io::println(found::index as String); };
+for pair in $std::ranges::zip([1, 2], ["x", "y"]) {
+    $std::io::println(pair::first as String);
+    $std::io::println(pair::second);
+};
+for item in $std::ranges::enumerate_from(["a", "b"], 4) {
+    $std::io::println(item::index as String);
+    $std::io::println(item::value);
+};

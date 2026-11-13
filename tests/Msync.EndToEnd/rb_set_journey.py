@@ -18,6 +18,30 @@ ROOT: Path = Path(__file__).resolve().parents[2]
 Operation = tuple[bool, int]
 
 
+def payload_identity(binary: Path) -> dict[str, str]:
+    files: list[Path] = [binary]
+    files.extend(
+        path
+        for path in binary.parent.iterdir()
+        if path != binary
+        and path.is_file()
+        and (
+            path.suffix in (".dll", ".so", ".dylib")
+            or ".so." in path.name
+            or path.name.endswith((".deps.json", ".runtimeconfig.json"))
+        )
+    )
+    runtimes: Path = binary.parent / "runtimes"
+    if runtimes.is_dir():
+        files.extend(path for path in runtimes.rglob("*") if path.is_file())
+    return {
+        path.relative_to(binary.parent).as_posix(): hashlib.sha256(
+            path.read_bytes()
+        ).hexdigest()
+        for path in sorted(files)
+    }
+
+
 @dataclass(frozen=True)
 class Node:
     key: int
@@ -50,46 +74,49 @@ fn numbers(values: Range<Number>) -> String {
     $std::string::join($std::ranges::transform(values,
         fn(value: Number) { value as String }), ",")
 };
-fn encode_rows(owner, root: Number, count: Number) -> String {
-    let index = root;
-    let prior = 0;
+fn node_id(tree, node?) -> Number {
+    if node is null { return 0; };
+    let Node = decltype(tree::nil);
+    let current = node as Node;
+    if current::nil { return 0; };
+    let key? = current::key;
+    if key is null { 0 } else { key + 1 }
+};
+fn encode_rows(tree) -> String {
     let text = "";
-    for _ in $std::ranges::iota(0, 2 * count + 1) {
-        if index == 0 { return text; };
-        let parent = $std::arena::parent(owner, index);
-        let left = $std::arena::child(owner, index, true);
-        let right = $std::arena::child(owner, index, false);
-        let next = parent;
-        if prior == parent {
-            let row = $std::string::join([
-                index as String, $std::arena::key(owner, index) as String,
-                left as String, right as String, parent as String,
-                $std::arena::red(owner, index) as String,
-            ], ",");
-            text = $std::string::concat(text, $std::string::concat(row, "/"));
-            if left != 0 { next = left; } else {
-                if right != 0 { next = right; };
+    for key in set_type::snapshot(tree) {
+        let Node = decltype(tree::nil);
+        let node = tree::root as Node;
+        loop {
+            if node::nil { break; };
+            let item? = node::key;
+            if item is null { break; };
+            if item == key {
+                let row = $std::string::join([
+                    node_id(tree, node) as String, item as String,
+                    node_id(tree, node::left) as String, node_id(tree, node::right) as String,
+                    node_id(tree, node::parent) as String, node::red as String,
+                ], ",");
+                text = $std::string::concat(text, $std::string::concat(row, "/"));
+                break;
             };
-        } else {
-            if prior == left and right != 0 { next = right; };
+            let next? = if key < item { node::left } else { node::right };
+            if next is null { break; };
+            node = next as Node;
         };
-        prior = index;
-        index = next;
     };
-    $std::string::concat(text, "unfinished")
+    text
 };
 fn capture(tree, changed: Bool) -> String {
-    let owner = tree::arena;
-    let root = $std::arena::root(owner);
-    let count = $std::containers::Set::size(tree);
+    let count = set_type::size(tree);
     $std::string::join([
-        changed as String, root as String, count as String,
-        numbers($std::containers::Set::snapshot(tree)), $std::arena::red(owner, 0) as String,
-        encode_rows(owner, root, count)
+        changed as String, node_id(tree, tree::root) as String, count as String,
+        numbers(set_type::snapshot(tree)), tree::nil::red as String,
+        encode_rows(tree)
     ], ";")
 };
 let tree = set_type::new(Number);
-let trace = $std::storage::vector_empty(String);
+let trace = "";
 for operation in [
 """
         + literal
@@ -98,10 +125,10 @@ for operation in [
     let changed = if operation::insert {
         set_type::insert(tree, operation::value)
     } else { set_type::remove(tree, operation::value) };
-    $std::storage::vector_push(trace, capture(tree, changed));
+    trace = $std::string::concat(trace,
+        $std::string::concat(capture(tree, changed), $std::environment::newline()));
 };
-$std::string::join($std::storage::vector_take(trace), $std::environment::newline())
-    -> ./trace.txt;
+trace -> ./trace.txt;
 let between = set_type::range(tree, 3, 9);
 numbers(between) -> ./range.txt;
 let lower? = set_type::lower_bound(tree, 8);
@@ -143,17 +170,15 @@ if set_type::size(names) == 2 and set_type::contains(names, "klee") {
 };
 let recycled = set_type::new(Number);
 set_type::insert(recycled, 10);
-let former_index = $std::arena::root(recycled::arena);
 let saved = set_type::snapshot(recycled);
 set_type::remove(recycled, 10);
 set_type::insert(recycled, 20);
-let new_index = $std::arena::root(recycled::arena);
-if new_index == former_index and new_index != 0 {
+if set_type::size(recycled) == 1 and set_type::contains(recycled, 20) {
     $std::string::join([numbers(saved), numbers(set_type::snapshot(recycled))], ";")
         -> ./recycled.txt;
 };
 set_type::clear(recycled);
-if $std::arena::root(recycled::arena) == 0 and not $std::arena::red(recycled::arena, 0) {
+if recycled::root::nil and not recycled::nil::red {
     numbers(set_type::snapshot(recycled)) -> ./cleared.txt;
 };
 let key = scope { rank: 1, label: "before" };
@@ -376,6 +401,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path)
     arguments: argparse.Namespace = parser.parse_args()
     binary: Path = arguments.binary.resolve()
+    payload: dict[str, str] = payload_identity(binary)
     levels: list[int] = arguments.level or [2]
     scratch: Path = ROOT / ".temp/rb-set-journey"
     scratch.mkdir(parents=True, exist_ok=True)
@@ -399,8 +425,13 @@ def main() -> None:
             },
             "platform": platform.platform(),
             "levels": levels,
+            "payload_sha256": payload,
             **execute(binary, Path(temporary), levels),
         }
+        assert payload_identity(binary) == payload, (
+            "CLI payload changed during validation"
+        )
+        report["payload_unchanged"] = True
     rendered: str = json.dumps(report, indent=2) + "\n"
     if arguments.output is not None:
         arguments.output.parent.mkdir(parents=True, exist_ok=True)

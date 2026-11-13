@@ -25,6 +25,7 @@ internal sealed partial class SemanticObservationBuilder
     private readonly Dictionary<HirLocationId, HirNodeId> initializers = [];
     private readonly Dictionary<HirTemplateId, HirSourceRange> templateOrigins = [];
     private readonly Dictionary<HirLocationId, SemanticValue> boundValues = [];
+    private readonly SemanticAnalyzer projection;
     private readonly Dictionary<HirNodeId, BoundVisibility[]> before;
     private readonly Dictionary<HirNodeId, BoundVisibility[]> after;
     private readonly Dictionary<HirSourceRange, BoundReference[]> uses;
@@ -43,6 +44,7 @@ internal sealed partial class SemanticObservationBuilder
     public SemanticObservationBuilder(BoundProgram program, CancellationToken cancellationToken = default)
     {
         this.program = program;
+        projection = new(program);
         this.cancellationToken = cancellationToken;
         source = program.Node(program.Body).Source.Source;
         before = program.Visibility.Where(item => !item.After && item.Owner.Source == source)
@@ -62,7 +64,7 @@ internal sealed partial class SemanticObservationBuilder
         for (int index = 0; index < program.Hir.Nodes.Count; index++)
         {
             HirNode node = program.Hir.Nodes[index];
-            if (node.Kind == HirKind.Scope && program.Hir.Scopes[node.Data].Self is { } self)
+            if (node.Kind is HirKind.Scope or HirKind.AllocateScope && program.Hir.Scopes[node.Data].Self is { } self)
                 initializers.TryAdd(self, new(index));
             if (node.Kind != HirKind.Declare || node.Children.Count == 0) continue;
             HirNodeId initializer = program.Hir.Edges[node.Children.Start];
@@ -128,10 +130,14 @@ internal sealed partial class SemanticObservationBuilder
         foreach (var item in program.Visibility)
             if (item.Owner.Source == source && !recorded.Contains(item))
                 RecordContext(item, generic, concrete: false);
+        var required = contexts.SelectMany(item => item.Visibility.Bindings.Values)
+            .Concat(imports.SelectMany(item => item.Bindings.Values))
+            .Concat(uses.Values.SelectMany(group => group).Select(use => use.Location)).ToHashSet();
         var definitions = ImmutableDictionary.CreateBuilder<HirLocationId, SemanticBindingView>();
         foreach (var declaration in program.Declarations)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (declaration.Source.Source != source && !required.Contains(declaration.Location)) continue;
             SemanticValue value = BoundValue(declaration.Location);
             definitions.Add(declaration.Location, new(declaration.Name, declaration.Location,
                 Value(value, generic), Parameter(declaration.Location)));
@@ -146,7 +152,7 @@ internal sealed partial class SemanticObservationBuilder
             if (selection.ReceiverSpan.Source != source || !receiverSpans.Add(Span(selection.ReceiverSpan))) continue;
             var children = program.Children(selection.Node);
             if (children.Length == 0) continue;
-            SemanticValue receiver = BoundExpression(children[0]);
+            SemanticValue receiver = ProjectExpression(children[0]);
             receivers.Add(MemberReceiver(selection, Value(receiver, generic), concrete: false));
             if (selection.Name is null || receiver.Scope is not { } shape
                 || !shape.Fields.TryGetValue(selection.Name, out var member)) continue;
@@ -280,7 +286,8 @@ internal sealed partial class SemanticObservationBuilder
         HirTemplateId? template = callable?.Template;
         bool unknown = program.Hir.Types[value.Type.Value].TypeParameter >= 0
             && scope is null && callable is null;
-        SemanticConnectionView? connection = value.Observation?.Connection is { } imported
+        TypeKind runtimeKind = program.Hir.Types[value.Type.Value].RuntimeType.Kind;
+        SemanticConnectionView? connection = value.RuntimeDependentMetadata || runtimeKind != TypeKind.Connection ? null : value.Observation?.Connection is { } imported
             ? new(imported.Kind, imported.Address)
             : value.Literal is { Kind: HirLiteralKind.Connection } endpoint
                 ? new(endpoint.ConnectionKind, endpoint.Text ?? "") : null;
@@ -295,8 +302,7 @@ internal sealed partial class SemanticObservationBuilder
             Members: fields,
             Element: element, CurrentType: currentType,
             Connection: connection, Path: path,
-            Text: value.Observation?.Text
-                ?? (value.Literal is { Kind: HirLiteralKind.String } text ? text.Text : null),
+            Text: KnownText(value, context),
             Signature: nativeSignature is null ? null : NativeSignature(nativeSignature),
             Documentation: nativeSignature is not null ? Documentation(nativeSignature.Source)
                 : template is { } definition ? CallableDocumentation(definition) : null);
@@ -393,36 +399,12 @@ internal sealed partial class SemanticObservationBuilder
                 module.Exports, Named: true)
             };
         else if (initializers.TryGetValue(location, out var initializer))
-            value = BoundExpression(initializer);
+            value = ProjectExpression(initializer);
         boundValues[location] = value;
         return value;
     }
 
-    private SemanticValue BoundExpression(HirNodeId id)
-    {
-        HirNode node = program.Node(id);
-        if (node.Kind == HirKind.ReadLocation) return BoundValue(new(node.Data));
-        if (node.Kind == HirKind.MemberRead)
-        {
-            var children = program.Children(id);
-            if (children.Length != 0 && BoundExpression(children[0]).Scope is { } scope
-                && node.Text is { } name && scope.Fields.TryGetValue(name, out var member)) return member;
-        }
-        if (node.Kind == HirKind.Literal) return new(node.Type, id, program.Hir.Literals[node.Data]);
-        if (node.Kind == HirKind.NativeFunction) return new(node.Type, id, Callables: [new(NativeName: node.Text)]);
-        if (node.Kind == HirKind.TemplateClosure)
-            return new(node.Type, id, Callables: [new(program.Hir.TemplateClosures[node.Data].Template)]);
-        if (node.Kind == HirKind.Scope)
-        {
-            HirScopeConstruction construction = program.Hir.Scopes[node.Data];
-            var fields = construction.Fields.ToImmutableDictionary(location => program.Hir.Locations[location.Value].Name,
-                BoundValue, StringComparer.Ordinal);
-            var locations = construction.Fields.ToImmutableDictionary(location => program.Hir.Locations[location.Value].Name,
-                location => location, StringComparer.Ordinal);
-            return new(node.Type, id, Scope: new(-1, construction.Layout, fields, locations, construction.Singleton >= 0));
-        }
-        return new(node.Type, id);
-    }
+    private SemanticValue ProjectExpression(HirNodeId id) => projection.ProjectBoundResult(id, BoundValue);
 
     private SemanticConceptView Concept(int id)
     {

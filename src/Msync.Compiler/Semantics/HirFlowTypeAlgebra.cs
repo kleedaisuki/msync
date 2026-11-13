@@ -157,7 +157,12 @@ internal sealed class HirFlowTypeAlgebra(SemanticArena hir) : IFlowTypeAlgebra
         }
         if (description.Shape >= 0)
             foreach (HirField field in hir.ScopeLayouts[description.Shape].Fields)
-                if (field.Name == name) return field.StorageType;
+                if (field.Name == name)
+                {
+                    HirType stored = hir.Types[field.StorageType.Value];
+                    return field.AdmitsNull ? hir.Type(stored with
+                    { RuntimeType = stored.RuntimeType.WithNull, Nullable = true }) : field.StorageType;
+                }
         return hir.Type(TypeRef.Any);
     }
 

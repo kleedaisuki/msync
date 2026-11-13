@@ -1,4 +1,5 @@
 using System.Numerics;
+using Msync.Core.Native;
 
 namespace Msync.Core;
 
@@ -17,9 +18,11 @@ public static class MetaTypes
             (target.Element is null || source.Element is null || target.Element.Accepts(source.Element));
     }
 
-    public static Value Evaluate(string operation, IReadOnlyList<TypeRef> types)
+    public static NativeValue Evaluate(string operation, IReadOnlyList<TypeRef> types) =>
+        Evaluate(operation, types[0], types.Count > 1 ? types[1] : null);
+
+    public static NativeValue Evaluate(string operation, TypeRef first, TypeRef? second = null)
     {
-        TypeRef first = types[0];
         return operation switch
         {
             "is_null" => Boolean(first.Kind == TypeKind.Null),
@@ -37,25 +40,27 @@ public static class MetaTypes
             "is_union" => Boolean(BitOperations.PopCount((uint)first.Kind) > 1),
             "is_scalar" => Boolean(first.Kind != TypeKind.Never && (first.Kind & ~Scalars) == 0),
             "is_nullable" => Boolean(first.Nullable),
-            "is_same" => Boolean(first == types[1]),
-            "accepts" => Boolean(first.Accepts(types[1])),
-            "is_assignable" => Boolean(IsConvertible(types[1], first)),
-            "is_convertible" => Boolean(IsConvertible(first, types[1])),
-            "is_castable" => Boolean(ExplicitConversions.Possible(first, types[1])),
-            "add_null" => new TypeValue(first.WithNull),
-            "remove_null" => new TypeValue(first.WithoutNull),
-            "common_type" => new TypeValue(TypeRef.Union(first, types[1])),
-            "range_of" => new TypeValue(new(TypeKind.Range, first)),
+            "is_same" => Boolean(first == Required(second)),
+            "accepts" => Boolean(first.Accepts(Required(second))),
+            "is_assignable" => Boolean(IsConvertible(Required(second), first)),
+            "is_convertible" => Boolean(IsConvertible(first, Required(second))),
+            "is_castable" => Boolean(ExplicitConversions.Possible(first, Required(second))),
+            "add_null" => NativeValue.FromType(first.WithNull),
+            "remove_null" => NativeValue.FromType(first.WithoutNull),
+            "common_type" => NativeValue.FromType(TypeRef.Union(first, Required(second))),
+            "range_of" => NativeValue.FromType(new(TypeKind.Range, first)),
             "element_type" => first.WithoutNull.Kind == TypeKind.Range
-                ? new TypeValue(first.Element ?? TypeRef.Any) : Value.Null,
-            "range_rank" => new NumberValue(RangeRank(first)),
-            "type_name" => new StringValue(first.ToString()),
-            "alternatives" => new RangeValue(Alternatives(first), TypeRef.Type),
+                ? NativeValue.FromType(first.Element ?? TypeRef.Any) : NativeValue.Null,
+            "range_rank" => NativeValue.FromNumber(RangeRank(first)),
+            "type_name" => NativeValue.FromString(first.ToString()),
+            "alternatives" => NativeValue.FromRange(NativeRange.Snapshot(Alternatives(first), TypeRef.Type)),
             _ => throw new MsyncException($"Unknown meta native '{operation}'")
         };
     }
 
-    private static Value Boolean(bool value) => value ? Value.True : Value.False;
+    private static TypeRef Required(TypeRef? type) => type ?? throw new ArgumentException("This metadata operation requires two Type descriptors.");
+
+    private static NativeValue Boolean(bool value) => NativeValue.FromBool(value);
 
     private static int RangeRank(TypeRef type)
     {
@@ -69,9 +74,9 @@ public static class MetaTypes
         return rank;
     }
 
-    private static IEnumerable<Value> Alternatives(TypeRef type)
+    private static IEnumerable<NativeValue> Alternatives(TypeRef type)
     {
         for (TypeKind bit = TypeKind.Null; bit <= TypeKind.Number; bit = (TypeKind)((ushort)bit << 1))
-            if ((type.Kind & bit) != 0) yield return new TypeValue(new(bit, bit == TypeKind.Range ? type.Element : null));
+            if ((type.Kind & bit) != 0) yield return NativeValue.FromType(new(bit, bit == TypeKind.Range ? type.Element : null));
     }
 }

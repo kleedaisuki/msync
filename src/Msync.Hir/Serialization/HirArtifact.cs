@@ -8,7 +8,7 @@ public static class HirArtifact
     private static ReadOnlySpan<byte> Magic => "MSYNHIR\0"u8;
     internal static readonly UTF8Encoding Utf8 = new(false, true);
     public const ushort FormatVersion = 3;
-    public const string LanguageVersion = Artifact.LanguageVersion;
+    public const string LanguageVersion = LanguageContract.Version;
 
     public static bool IsHir(ReadOnlySpan<byte> bytes) => bytes.StartsWith(Magic);
 

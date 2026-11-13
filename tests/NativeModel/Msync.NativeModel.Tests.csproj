@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>Msync.NativeModel.Tests</AssemblyName>
+    <PublishAot Condition="'$(NativeModelAot)' == 'true'">true</PublishAot>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Msync.Core/Msync.Core.csproj" />
+  </ItemGroup>
+</Project>

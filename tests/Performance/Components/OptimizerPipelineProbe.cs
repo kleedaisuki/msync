@@ -7,8 +7,10 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Msync.Core;
+using Msync.Core.Native;
+using Msync.Runtime.Native;
+using Msync.Probes;
 using Msync.Runtime;
-using Module = Msync.Core.Module;
 using SourceCompiler = Msync.Compiler.Compiler;
 
 namespace Msync.Components;
@@ -39,6 +41,8 @@ internal sealed record PipelineOptions(string Root, string Output, int[] Sizes, 
                 default: throw new ArgumentException($"Unknown optimizer probe option '{option}'");
             }
         }
+        if (sizes.Any(size => size < 1) || samples < 1 || warmups < 0 || levels.Any(level => level is < 0 or > 3))
+            throw new ArgumentException("Sizes and samples must be positive, warmups nonnegative and levels within O0..O3.");
         return new(root, output, sizes, samples, warmups, cases, levels);
     }
 
@@ -46,9 +50,9 @@ internal sealed record PipelineOptions(string Root, string Output, int[] Sizes, 
 }
 
 internal sealed record PipelineIdentity(string Executable, string Sha256, string CompilerBuild, string CoreBuild, string RuntimeBuild,
-    string Framework, string Architecture);
+    string Framework, string Architecture, string? JitPolicy);
 internal sealed record PipelineShape(string Workload, int Size, int Level, string Stage, int SourceBytes, int Constants, int Functions,
-    int Instructions, int Locals, int Blocks, int ArtifactBytes, IReadOnlyDictionary<string, int> Opcodes);
+    int Instructions, int Locals, int? Blocks, int ArtifactBytes, IReadOnlyDictionary<string, int> Opcodes);
 internal sealed record PipelineObservation(string Workload, int Size, int Level, string Stage, int IterationsPerSample,
     double[] Milliseconds, double P50Milliseconds, double P95Milliseconds, double AllocatedBytesPerOperation, int[] Collections);
 internal sealed record PipelineReport(PipelineIdentity Image, int Samples, int Warmups, PipelineShape[] Shapes, PipelineObservation[] Observations);
@@ -67,9 +71,9 @@ internal static class OptimizerPipelineProbe
         Directory.CreateDirectory(Path.GetDirectoryName(options.Output)!);
         string executable = Environment.ProcessPath!;
         PipelineIdentity identity = new(executable, Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(executable))),
-            Build(typeof(SourceCompiler)), Build(typeof(Optimizer)), Build(typeof(Interpreter)),
+            Build(typeof(SourceCompiler)), Build(typeof(NativeOptimizer)), Build(typeof(NativeInterpreter)),
             System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
-            System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString());
+            System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(), Environment.GetEnvironmentVariable("MSYNC_JIT"));
         List<PipelineShape> shapes = [];
         List<PipelineObservation> observations = [];
         foreach (string workload in options.Cases)
@@ -83,26 +87,26 @@ internal static class OptimizerPipelineProbe
 
     private static void Profile(PipelineOptions options, string workload, int size, List<PipelineShape> shapes, List<PipelineObservation> observations)
     {
-        bool bytecode = workload == "call_dag";
+        bool handIr = workload == "call_dag";
         bool transfers = workload == "transfers";
         bool memory = MemoryPipelineWorkloads.IsMemory(workload);
         MemoryPipelineWorkloads.Prepare(workload, options.Root);
-        string source = bytecode ? "" : Source(workload, size);
+        string source = handIr ? "" : Source(workload, size);
         string sourceName = $"optimizer-{workload}-{size}.msync";
         File.WriteAllText(Path.Combine(Path.GetDirectoryName(options.Output)!, sourceName), source);
-        Module raw = bytecode ? CallDag(size) : SourceCompiler.Compile(source, sourceName, 0);
+        NativeProgram raw = handIr ? CallDag(size) : SourceCompiler.Compile(source, sourceName, 0);
         BindingContext binding = new(options.Root, options.Root, Path.Combine(options.Root, sourceName));
         ExecutionOptions runtime = new(WorkingDirectory: options.Root, SourceFile: binding.SourceFile, Output: TextWriter.Null, Error: TextWriter.Null);
         foreach (int level in options.Levels)
         {
-            Module optimized = bytecode ? Optimizer.Optimize(raw, level) : SourceCompiler.Compile(source, sourceName, level);
-            Module executable = Binding.Bind(optimized, binding);
+            NativeProgram optimized = handIr ? NativeOptimizer.Optimize(raw, level) : SourceCompiler.Compile(source, sourceName, level);
+            NativeProgram executable = NativeProbe.Prepare(optimized, binding);
             if (transfers)
             {
-                Artifact.Validate(optimized);
-                Artifact.Validate(executable);
-                Artifact.Validate(RoundTrip(optimized));
-                Artifact.Validate(RoundTrip(executable));
+                NativeArtifact.Validate(optimized);
+                NativeArtifact.Validate(executable);
+                NativeArtifact.Validate(RoundTrip(optimized));
+                NativeArtifact.Validate(RoundTrip(executable));
             }
             else
             {
@@ -116,14 +120,14 @@ internal static class OptimizerPipelineProbe
             (string Name, Func<object> Run)[] stages =
             [
                 ("compile", () => SourceCompiler.Compile(source, sourceName, level)),
-                ("optimize", () => Optimizer.Optimize(raw, level)),
-                ("bind", () => Binding.Bind(optimized, binding)),
+                ("optimize", () => NativeOptimizer.Optimize(raw, level)),
+                ("bind", () => NativeProbe.Prepare(optimized, binding)),
                 ("run_relocatable", () => Execute(optimized)),
                 ("run_executable", () => Execute(executable))
             ];
             foreach (var stage in stages)
             {
-                if (bytecode && stage.Name == "compile") continue;
+                if (handIr && stage.Name == "compile") continue;
                 if (transfers && stage.Name.StartsWith("run_", StringComparison.Ordinal)) continue;
                 PipelineObservation observation = Measure(options, workload, size, level, stage.Name, stage.Run);
                 observations.Add(observation);
@@ -131,18 +135,18 @@ internal static class OptimizerPipelineProbe
             }
         }
 
-        object Execute(Module module) => memory ? MemoryPipelineWorkloads.Execute(module, runtime, size, workload)
-            : Interpreter.ExecuteAsync(module, runtime).GetAwaiter().GetResult();
-        void VerifyResult(Module module)
+        object Execute(NativeProgram module) => memory ? MemoryPipelineWorkloads.Execute(module, runtime, size, workload)
+            : NativeProbe.RunAsync(module, runtime).GetAwaiter().GetResult();
+        void VerifyResult(NativeProgram module)
         {
             if (memory) MemoryPipelineWorkloads.Verify(module, runtime, size, workload);
-            else Verify(module, runtime, size, bytecode);
+            else Verify(module, runtime, size, handIr);
         }
     }
 
-    private static PipelineShape Shape(string workload, int size, int level, string stage, string source, Module module) =>
+    private static PipelineShape Shape(string workload, int size, int level, string stage, string source, NativeProgram module) =>
         new(workload, size, level, stage, Encoding.UTF8.GetByteCount(source), module.Constants.Count, module.Functions.Count,
-            module.Functions.Sum(function => function.Instructions.Count), module.Functions.Sum(function => function.LocalCount), module.Blocks?.Count ?? 0,
+            module.Functions.Sum(function => function.Instructions.Count), module.Functions.Sum(function => function.Slots.Count), null,
             Encode(module).Length, module.Functions.SelectMany(function => function.Instructions).GroupBy(instruction => instruction.Op.ToString())
                 .ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal));
 
@@ -181,45 +185,49 @@ internal static class OptimizerPipelineProbe
         return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
     }
 
-    private static void Verify(Module module, ExecutionOptions runtime, int size, bool bytecode)
+    private static void Verify(NativeProgram module, ExecutionOptions runtime, int size, bool handIr)
     {
-        Value result = Interpreter.ExecuteAsync(module, runtime).GetAwaiter().GetResult();
-        if (bytecode)
+        NativeValue result = NativeProbe.RunAsync(module, runtime).GetAwaiter().GetResult();
+        if (handIr)
         {
-            if (result is not NumberValue number || number.Data != 3 * Math.Pow(2, size))
+            if (result.Kind != NativeKind.Number || result.AsNumber() != 3 * Math.Pow(2, size))
                 throw new InvalidOperationException($"Call DAG returned '{result}', expected {3 * Math.Pow(2, size)}");
             return;
         }
-        if (result is not PathValue path || !path.Raw.EndsWith($"input_{size - 1}", StringComparison.Ordinal))
+        if (result.Kind != NativeKind.Path || !result.AsPath().Raw.EndsWith($"input_{size - 1}", StringComparison.Ordinal))
             throw new InvalidOperationException($"Optimizer pipeline returned '{result}', expected Path ending input_{size - 1}");
     }
 
-    private static byte[] Encode(Module module)
+    private static byte[] Encode(NativeProgram module)
     {
         using MemoryStream stream = new();
-        Artifact.Write(module, stream);
+        NativeArtifact.Write(module, stream);
         return stream.ToArray();
     }
 
-    private static Module RoundTrip(Module module)
+    private static NativeProgram RoundTrip(NativeProgram module)
     {
         using MemoryStream stream = new(Encode(module), writable: false);
-        return Artifact.Read(stream);
+        return NativeArtifact.Read(stream);
     }
 
-    private static Module CallDag(int depth)
+    private static NativeProgram CallDag(int depth)
     {
-        List<FunctionCode> functions =
-        [
-            new("main", 0, 0, [new(OpCode.MakeClosure, depth + 1), new(OpCode.Constant, 0), new(OpCode.Call, 1, depth + 2), new(OpCode.Return)], TypeRef.Number),
-            new("f0", 1, 1, [new(OpCode.LoadLocal, 0), new(OpCode.Constant, 1), new(OpCode.Add), new(OpCode.Return)], TypeRef.Number, ParameterTypes: [TypeRef.Number])
-        ];
+        List<NativeFunctionCode> functions =
+        [new("main", [new(0), new(1), new(0)],
+            [new(NativeOp.MakeFunction, 1, depth + 1, C: 0), new(NativeOp.Constant, 0, 0),
+             new(NativeOp.Call, 2, 1, depth + 1, Inputs: [0]), new(NativeOp.Return, A: 2)], new([], 0, [])),
+         new("f0", [new(0, NativeSlotRole.Parameter), new(0), new(0)],
+            [new(NativeOp.Constant, 1, 1), new(NativeOp.Binary, 2, 0, 1, Immediate: (long)NativeBinary.Add), new(NativeOp.Return, A: 2)],
+            new([0], 0, []), ParameterCount: 1)];
         for (int index = 1; index <= depth; index++)
-            functions.Add(new($"f{index}", 1, 1,
-                [new(OpCode.MakeClosure, index), new(OpCode.LoadLocal, 0), new(OpCode.Call, 1, index + 1),
-                 new(OpCode.MakeClosure, index), new(OpCode.LoadLocal, 0), new(OpCode.Call, 1, index + 1), new(OpCode.Add), new(OpCode.Return)],
-                TypeRef.Number, ParameterTypes: [TypeRef.Number]));
-        return new([new NumberValue(2), new NumberValue(1)], functions);
+            functions.Add(new($"f{index}", [new(0, NativeSlotRole.Parameter), new(1), new(0), new(0), new(0)],
+                [new(NativeOp.MakeFunction, 1, index, C: 0),
+                 new(NativeOp.Call, 2, 1, index, Inputs: [0]), new(NativeOp.Call, 3, 1, index, Inputs: [0]),
+                 new(NativeOp.Binary, 4, 2, 3, Immediate: (long)NativeBinary.Add), new(NativeOp.Return, A: 4)],
+                new([0], 0, []), ParameterCount: 1));
+        return new([new(NativeKind.Number, Number: 2), new(NativeKind.Number, Number: 1)], functions,
+            [new(TypeKind.Number), new(TypeKind.Function)], []);
     }
 
     private static string Source(string workload, int size)

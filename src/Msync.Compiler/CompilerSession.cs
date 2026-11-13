@@ -1,11 +1,12 @@
 using Msync.Core;
+using Msync.Core.Native;
 using Msync.Compiler.Semantics;
 using Msync.Compiler.Session;
 using Msync.Compiler.Syntax;
 
 namespace Msync.Compiler;
 
-public sealed class CompilerSession
+public class CompilerSession
 {
     private readonly object gate = new();
     private readonly SemanticSession session;
@@ -22,11 +23,11 @@ public sealed class CompilerSession
         session = new(sourceName, optimization);
     }
 
-    public Module Compile(string submission) => Compile(submission, null);
+    public NativeProgram Compile(string submission) => Compile(submission, null);
 
-    public Module Compile(string submission, Document? document) => Compile(submission, document, trace);
+    public NativeProgram Compile(string submission, Document? document) => Compile(submission, document, trace);
 
-    public Module Compile(string submission, Document? document, CompilationTrace? trace)
+    public NativeProgram Compile(string submission, Document? document, CompilationTrace? trace)
     {
         lock (gate) return session.Compile(submission, document, trace);
     }
@@ -46,7 +47,7 @@ public sealed class CompilerSession
         lock (gate) return session.DescribeConcepts();
     }
 
-    public EditorAnalysis AnalyzeEditor(string submission, Func<int, Value?>? resolveAcceptedValue = null)
+    public EditorAnalysis AnalyzeEditor(string submission, Func<int, NativeValue?>? resolveAcceptedValue = null)
     {
         EditorParseResult parsed = Parser.ParseForEditor(submission, sourceName);
         SemanticEditorResult semantic;
@@ -56,14 +57,14 @@ public sealed class CompilerSession
 
     public void AcceptSubmission() => AcceptSubmission(null);
 
-    public void AcceptSubmission(Func<int, Value?>? resolveAcceptedValue)
+    public void AcceptSubmission(Func<int, NativeValue?>? resolveAcceptedValue)
     {
         lock (gate) session.AcceptSubmission(resolveAcceptedValue);
     }
 
     public void ReconcileSubmission(Func<int, bool> initialized) => ReconcileSubmission(initialized, null);
 
-    public void ReconcileSubmission(Func<int, bool> initialized, Func<int, Value?>? resolveAcceptedValue)
+    public void ReconcileSubmission(Func<int, bool> initialized, Func<int, NativeValue?>? resolveAcceptedValue)
     {
         lock (gate) session.ReconcileSubmission(initialized, resolveAcceptedValue);
     }

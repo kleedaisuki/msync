@@ -1,5 +1,15 @@
 # 0.8 language and execution architecture
 
+The [2026-11-12 native storage and namespace lowering contract](object-spatial-layout.md#authoritative-model-2026-11-12)
+corrects the implementation direction: HIR must lower complete builtin
+representations and static namespaces to ordinary storage/control operations,
+not a generic object runtime with selected native fast paths. The
+[research status](../../RESEARCH.md) distinguishes reusable merged foundations
+from the current representation/allocator gaps; historical gains do not close them.
+`scope { ... }` means direct logical-heap allocation and reference binding;
+compiler/VM optimize physical allocation. No separate library allocator or
+allocation-owner type is part of the target model.
+
 The current 0.8.1 semantic boundary is specified in
 [Typed HIR and compiler phase ownership](typed-hir-v081.md). The 0.8.0
 organization-only acceptance near the end of this note remains a historical
@@ -8,7 +18,7 @@ The subsequent [contextual I/O backend](contextual-io-backend.md) defines the
 executable-plan contract, including ephemeral filesystem observations, graph
 optimization and execution-only VM ownership. The current format-6 typed
 place and capture representation is documented in
-[Scope spatial layout](object-spatial-layout.md).
+[native storage and namespace layout](object-spatial-layout.md).
 
 ## Scope and ownership
 

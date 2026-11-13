@@ -15,6 +15,7 @@ internal sealed record SessionCallRequirement(int Slot, SessionCallableSource So
     ImmutableDictionary<int, SemanticIndexed> Indexed,
     ImmutableDictionary<HirLocationId, SemanticValue> Cells,
     ImmutableDictionary<HirLocationId, HirTypeId> Storage,
+    ImmutableDictionary<HirLocationId, HirLocationId> Definitions,
     ImmutableArray<HirDispatchTarget> Targets);
 
 // A generation owns its additions and target updates. These are typed binding

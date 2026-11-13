@@ -1,0 +1,20 @@
+fn make(seed: Number) {
+    let value = seed;
+    fn next() { global value; value = value + 1; value };
+    scope { value: value, next: next }
+};
+let row = make(3);
+row::value = 10;
+$std::io::println(row::next() as String);
+for entry in $std::ranges::enumerate_from(["a", "b"], 0) {
+    $std::io::println(entry::value);
+};
+let found? = $std::regex::find("text123", "[0-9]+");
+if found? { $std::io::println("absent"); } else { $std::io::println(found::value); };
+$std::io::println($std::meta::type_name($std::meta::member_type(row, "value")));
+for member in $std::meta::members_of(row) {
+    if member::name == "value" {
+        $std::io::println($std::meta::type_name(member::type));
+        $std::io::println($std::meta::type_name(member::storage_type));
+    };
+};

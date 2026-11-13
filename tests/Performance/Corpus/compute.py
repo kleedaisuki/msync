@@ -222,17 +222,17 @@ let input? = $std::io::read_line();
 let state = if input is null { 1 } else { input as Number };
 let limit? = $std::io::read_line();
 let count = if limit is null { 4096 } else { limit as Number };
-let rows = $std::storage::vector_empty(decltype(scope { low: 0, high: 0, keep: true }));
-for tick in $std::ranges::iota(0, count) {
+fn make_row(tick: Number) {
     state = (state * 48271) % 2147483647;
     let low = state % 4096;
     let high = low + (state % 31);
-    $std::storage::vector_push(rows, scope { low: low, high: high, keep: tick % 7 != 0 });
+    scope { low: low, high: high, keep: tick % 7 != 0 }
 };
+let rows = $std::ranges::materialize($std::ranges::transform($std::ranges::iota(0, count), make_row));
 let selected = 0;
 let widths = 0;
 let checksum = 0;
-for row in $std::storage::vector_take(rows) {
+for row in rows {
     if row::keep {
         selected = selected + 1;
         widths = widths + row::high - row::low;

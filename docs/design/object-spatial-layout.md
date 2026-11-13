@@ -1,4 +1,149 @@
-# Object spatial layout and affine schedules
+# Native storage, namespace layouts and lowering
+
+## Authoritative model (2026-11-12)
+
+The user's correction supersedes the object-first optimization direction in
+the historical sections below. Scope is a namespace with a statically known
+layout, not a generic runtime object that sometimes becomes scalarized. Every
+builtin type needs a complete native representation, including String, Path
+and Connection. Number-only lanes plus a generic `Value` fallback do not meet
+this requirement. This is the default lowering model, not an optional JIT tier.
+
+The user's subsequent simplification cancels the separate allocator design:
+`scope { ... }` directly allocates its statically described storage on the
+**logical heap** and binds its fields. Compiler and VM may optimize physical
+allocation; the source and standard library do not select an arena, vector,
+page owner or another allocation API/type.
+
+### Values, products and alternatives
+
+Each builtin has a concrete representation and lifetime contract. A String
+descriptor may own/share variable-sized content; a Path descriptor retains its
+spelling and captured endpoint/local projection; a Connection descriptor does
+not authenticate merely by being copied. Function, Range, Process, Type, Bool,
+Null and Number require equally explicit treatment across all operations.
+Variable payload length does not make the descriptor layout dynamic.
+
+A monomorphic binding uses its representation directly. A real finite union
+may use a closed sum type with a discriminator and its known alternatives.
+Do not implement that sum by retaining an arbitrary object payload, or require
+every statically typed scalar to use a universal tagged wrapper. Host managed
+references and GC support are compatible with native builtin representations;
+they must remain correctly described/rooted, not hidden in raw native memory.
+
+A Scope's fields form a product of these representations or references to
+other statically described storage. Recursive links close through references,
+not infinite inline expansion. Finite layout alternatives are static
+alternatives even when runtime control selects one. An analysis losing a
+layout fact is a lowering/analysis problem, not permission to reject valid
+source or fall back to a dynamic field dictionary.
+
+### Scope construction is logical-heap allocation and reference binding
+
+Executing `scope { ... }`, including an empty construction, logically allocates
+the required builtin field storage and binds declarations/references to its
+positions. Freshness and shared references are semantic properties, even when
+an optimizer proves that no physical allocation is needed. Field names and
+namespace selection belong to HIR and diagnostic metadata, not runtime lookup.
+There is no mandatory Scope identity wrapper or generic object representation.
+
+The logical heap is not a requirement to call a host heap allocator for every
+construction. Compiler and VM may eliminate, split, combine, stack-place or
+pool physical storage where observable behavior is unchanged. The compiler
+supplies the static layout and lifetime facts; a VM allocation policy does not
+rediscover field types from current payload values. User/standard-library code
+does not manage physical slots, free lists or page lifetimes.
+
+Two aliases can reference the same field storage. A captured mutable binding
+is a shared typed location, distinct from a copied payload or from a reference
+to the namespace's fields. Named declarations retain execution/session-owned
+initialization and storage; fresh constructions remain distinct allocations
+when observable. These facts do not require `ScopeValue` or a universal Cell.
+Initializer effects and binding order remain the source program's order,
+independent of chosen storage placement.
+
+For example, HIR for a namespace containing Path, String and Connection fields
+can lower conceptually to the following target-independent operations. These
+are explanatory IR, not a new source API or a proposed wire-opcode spelling:
+
+```text
+L = layout(Path, String, Connection)
+p = logical_heap_alloc L       # physical placement is an optimization
+store.Path       address(p, L.field0), path_value
+store.String     address(p, L.field1), string_value
+store.Connection address(p, L.field2), connection_value
+alias = p                      # preserve shared storage, not deep copy
+x = load.Path address(alias, L.field0)
+```
+
+The final loads/stores need neither member-name discovery nor tests of the
+current payload's runtime class. Static layout does not mean a static address,
+static contents or a static allocation count. Branches, loops, closures,
+recursive references, dynamic input and suspension retain their expressiveness.
+
+### The HIR boundary must finish the language-specific work
+
+HIR owns names, types, namespace layouts, bindings, captures and source semantics.
+Lowering must translate them into relocatable representations of typed storage,
+stack/static/heap allocation, address formation, loads/stores, branches and
+direct/indirect calls, with complete argument/result/environment contracts.
+Logical layouts and symbolic relocations remain target-independent; the target
+resolves physical sizes, alignment, strides and field offsets from those facts.
+Do not serialize host pointers or silently guess layouts from live values.
+
+The compiler uses use/alias/escape/effect/lifetime analysis to select moves,
+copies and deletion/release operations, including return, error, cancellation
+and suspension edges. Moving is valid only when remaining uses and aliases
+permit it. Sharing a String or Connection descriptor need not duplicate its
+payload or a live resource. Cleanup cannot change an already selected effect,
+invalidate a shared capture, or release storage still reachable by deferred work.
+Do not impose source-level ownership restrictions to simplify the backend.
+
+This is the ordinary separation illustrated by
+[LLVM data layout](https://llvm.org/docs/LangRef.html#data-layout),
+[address formation](https://llvm.org/docs/LangRef.html#getelementptr-instruction)
+and [typed allocation/load/store](https://mlir.llvm.org/docs/Dialects/MemRef/),
+not a decision to add LLVM or MLIR as a dependency.
+
+### No separate standard-library allocator design
+
+Standard-library structures use ordinary Scope construction, builtin values
+and reference binding. They do not need a public or private allocator family,
+`Storage` kind, arena/vector/page owner contract, or host-specific collection
+carrier. Set roots, colors, child links and Heap algorithms belong to source,
+not native allocation operations or hand-recognized backend schemas.
+
+Runtime memory management remains an implementation necessity, not another
+language/library abstraction. Pooling, coallocation or dense placement may
+implement ordinary logical allocations when proved valid. Lowered allocation,
+typed access, calls and pointer arithmetic express that implementation; they
+do not require source-level allocator handles or ownership protocols.
+
+### Audited implementation gap, not a completed migration
+
+At `f3bd9d5`, `Value` is still an inheritance hierarchy; frame/operand storage
+uses `Value[]` with numeric sidecars. `ScopeAllocator` inspects actual fields
+to discover numeric shapes, and `ScopePayload` falls back to generic values.
+`HirLowerer.Scope` emits `NewScope`, and field instructions still operate on
+`ScopeValue`. Format 6 carries useful logical facts but is not yet the general
+storage/control lowering described above. `StorageValue`/`TypeKind.Storage`
+and the fixed `ArenaNumberRowLayout` further encode implementation-specific
+carriers and collection schemas. These are structures to replace, not completed
+architectural results to defend with their benchmark gains.
+
+Reusable foundations are HIR's fixed types, layouts, location/capture identities,
+alias/effect facts, pure phase boundary and artifact relocation infrastructure.
+Migration must cover all builtin kinds through locals, calls, returns, captures,
+unions, indexed storage and actual effects, with no generic-object fallback.
+Preserve established source and artifact contracts explicitly; this direction
+does not itself change the reader, format version or published bytes.
+
+## Historical object-based investigations
+
+The following sections retain prior implementation mechanisms and measurements.
+Their object wrappers, runtime layout discovery, collection-specific carriers
+and restricted native subsets are not the target architecture. Source-visible
+alias/effect/lifetime obligations remain; their old object implementation does not.
 
 ## Objective and starting point
 

@@ -80,7 +80,7 @@ def checked_range(
 def inspect_model(model: Json, stage: str) -> dict[str, int]:
     assert model["schemaVersion"] == 1, model
     assert model["languageVersion"] == "0.8.0", model
-    assert model["formatVersion"] == 6
+    assert model["formatVersion"] == 1
     assert model["stage"] == stage, model["stage"]
     assert model["optimizationLevel"] == 0, model["optimizationLevel"]
     text = str(model["text"])
@@ -90,11 +90,12 @@ def inspect_model(model: Json, stage: str) -> dict[str, int]:
         "Path",
         "Bool",
         "MUST NOT EXECUTE",
-        "NewScope",
-        "LoadField",
-        "StoreField",
-        "LoadStaticField",
-        "StoreStaticField",
+        "native-v1",
+        "Allocate",
+        "ProjectAddress",
+        "Load",
+        "Store",
+        "StaticAddress",
     ):
         assert expected in text, (expected, text)
     assert "const" in text.lower() and "block" in text.lower(), text
@@ -153,6 +154,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--plan-artifact", type=Path)
     arguments = parser.parse_args()
     binary = arguments.binary.resolve()
     parent = ROOT / ".temp" / "artifact-view"
@@ -225,6 +227,36 @@ def main() -> None:
                 model = cast(Json, response["result"])
                 summaries[stage] = inspect_model(model, stage)
 
+            for suffix in ("mso", "mexe"):
+                legacy = ROOT / f"tests/LegacyV6Native/Fixtures/aliases.{suffix}"
+                legacy_response = request(client, "msync/artifact", payload(legacy))
+                assert "error" not in legacy_response, legacy_response
+                legacy_model = cast(Json, legacy_response["result"])
+                assert legacy_model["formatVersion"] == 6, legacy_model
+                assert "native-v1" in legacy_model["text"], legacy_model
+                assert legacy_model["symbols"] and legacy_model["references"] and legacy_model["hovers"]
+            summaries["closed_format6_views"] = 2
+            if arguments.plan_artifact:
+                prepared = arguments.plan_artifact.resolve()
+                prepared_hash = hashlib.sha256(prepared.read_bytes()).hexdigest()
+                prepared_response = request(client, "msync/artifact", payload(prepared))
+                assert "error" not in prepared_response, prepared_response
+                prepared_model = cast(Json, prepared_response["result"])
+                plans = cast(list[Json], prepared_model["executionPlans"])
+                assert len(plans) == 1 and plans[0]["resultTransfers"] == [1, 0], plans
+                transfers = cast(list[Json], plans[0]["transfers"])
+                assert transfers[1]["predecessors"] == [0], transfers
+                assert transfers[1]["reads"] and transfers[1]["writes"], transfers
+                assert len(plans[0]["batches"]) == 2, plans
+                assert "execution_plan @p0" in prepared_model["text"]
+                prepared_lines = str(prepared_model["text"]).split("\n")
+                for reference in cast(list[Json], prepared_model["references"]):
+                    checked_range(cast(Json, reference["range"]), prepared_lines)
+                    if "targetLine" in reference:
+                        position({"line": reference["targetLine"], "character": reference["targetCharacter"]}, prepared_lines)
+                assert hashlib.sha256(prepared.read_bytes()).hexdigest() == prepared_hash
+                summaries["native_plan_view"] = len(transfers)
+
             virtual = request(
                 client,
                 "msync/artifact",
@@ -234,11 +266,11 @@ def main() -> None:
             inspect_model(cast(Json, virtual["result"]), "relocatable")
 
             raw = relocatable.read_bytes()
-            source_name = str(source).encode("utf-8")
-            prefix = b"command:msync.test.artifactInjection#"
+            source_name = str(source).encode("utf-16-le")
+            prefix = "command:msync.test.artifactInjection#".encode("utf-16-le")
             assert len(source_name) > len(prefix) and source_name in raw
             injected = raw.replace(
-                source_name, prefix + b"x" * (len(source_name) - len(prefix))
+                source_name, prefix + "x".encode("utf-16-le") * ((len(source_name) - len(prefix)) // 2)
             )
             unsafe = request(
                 client,

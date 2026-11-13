@@ -337,8 +337,9 @@ needed, and an expired optional historical artifact is reported explicitly.
 packages. CI installs that exact SDK rather than selecting a moving `10.0.x`.
 SDK upgrades and dependency-lock updates are one deliberate maintenance change.
 NuGet's canonical `packages.lock.json` pins the ordinary development graph.
-Targeted publication uses `packages.linux-x64.lock.json` or
-`packages.win-x64.lock.json`, selected by `RuntimeIdentifier` in the common build
+Targeted publication uses `packages.linux-x64.lock.json`,
+`packages.linux-arm64.lock.json` or `packages.win-x64.lock.json`, selected by
+`RuntimeIdentifier` in the common build
 properties. This separates actual platform graphs instead of letting a native
 publish overwrite the ordinary development lock. No runtime packs for the other
 platform are needed during an ordinary development build.
@@ -349,12 +350,45 @@ AOT compiler packages to every class library. Publication uses
 `RestoreLockedMode=true`: dependency changes require a deliberate lock update,
 not an incidental version upgrade in a package job.
 
-To update the three graphs, restore the solution normally and with
-`-p:RuntimeIdentifier=linux-x64` / `-p:RuntimeIdentifier=win-x64`. `dotnet restore
--r` sets the plural `RuntimeIdentifiers` restore hint and does not select the
-RID-specific lock property. Restore on Linux can resolve the Windows graph;
-it does not claim that cross-OS Native AOT compilation is supported. The scheme
-uses the documented [NuGet lock-file properties](https://learn.microsoft.com/nuget/consume-packages/package-references-in-project-files#locking-dependencies).
+To update a production graph intentionally, use the CLI project with an early
+RID property, not a global AOT property:
+
+```sh
+dotnet restore src/Msync.Cli/Msync.Cli.csproj -p:RuntimeIdentifier=linux-x64 --force-evaluate
+dotnet publish src/Msync.Cli/Msync.Cli.csproj -c Release -p:RuntimeIdentifier=linux-x64 --self-contained true -p:RestoreLockedMode=true -o artifacts/publish/linux-x64
+```
+
+Repeat restore for `linux-arm64` and `win-x64` when their dependency graph changes;
+ordinary development uses the default lock. `dotnet restore -r` sets the plural
+`RuntimeIdentifiers` restore hint and does not select the RID-specific lock
+property. Restore on Linux can resolve Windows/ARM64 graphs; this does not claim
+cross-OS Native AOT execution. The scheme uses the documented
+[NuGet lock-file properties](https://learn.microsoft.com/nuget/consume-packages/package-references-in-project-files#locking-dependencies).
+
+A global `-p:PublishAot=true` is a different dependency graph: it injects compiler
+and linker packages into **every** referenced project, including PrettyPrompt.
+`Directory.Build.props` recognizes that early property and selects
+`packages.aot.<rid>.lock.json` (or `packages.aot.lock.json` without a RID).
+The CLI's project-local property is evaluated later and retains the production
+lock namespace. Explicit AOT probe graph updates use the same restore command
+with `-p:PublishAot=true --force-evaluate`; never copy its locks over production
+locks or disable locked restoration to obtain a publish.
+
+The v0.9 audit used SDK 10.0.403 / MSBuild 18.9.15 / runtime and ILCompiler
+10.0.14 on Debian 13 linux-x64, clang/LLD 22.1.8 and glibc 2.41. After generating
+the separate global-AOT graphs, ordinary production locked restore passed for
+all three RIDs. Core/Runtime production locks have no compiler package;
+HIR/Compiler/Optimization retain ILLink, and only the CLI owns ILCompiler.
+
+The resulting **integration checkpoint, not a release**, is
+`artifacts/validation/native-io-context-hir-cli/msync` (0.9.0, SHA-256
+`79102922519d9261dda54be6a10340a0e0319002913919ca8637f9c77f0bc16f`).
+Canonical locked publication left all 521 frozen input hashes unchanged.
+`artifacts/validation/native-io-integration-provenance/` retains the full input
+manifest, exact publish command/payload hashes and logs. The actual package smoke
+passed source execution, dry-run/no writes, source-free `.mso`/`.mexe`, bound IR
+execution and native SQLite telemetry; this alone does not establish the complete
+platform/install or IO matrix.
 
 `packaging/smoke.py` exercises the executable as a user: compile a typed function,
 check/dry-run without writes, run the source, remove the source, then execute the

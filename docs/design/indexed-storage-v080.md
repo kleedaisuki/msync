@@ -1,4 +1,34 @@
-# Typed indexed storage and dynamic aggregate facts
+# Logical heap allocation and historical indexed storage
+
+## Corrected allocation boundary (2026-11-12)
+
+The [authoritative native storage model](object-spatial-layout.md#authoritative-model-2026-11-12)
+supersedes the collection-owned native carrier design recorded below. There
+is no separate standard-library allocator design: `scope { ... }` directly
+allocates on the logical heap and binds its statically laid-out builtin fields.
+Compiler and VM optimize physical allocation without adding an arena/vector/page
+owner API, allocation-handle protocol or `Storage` kind. All builtin kinds need
+complete support, not raw Number storage with `Value` for everything else.
+
+Set links/color/key and Heap policy/algorithm are source-defined data and code.
+They must lower to general layouts, allocations, references, typed loads/stores,
+calls and control flow. Source structures use ordinary Scope allocation and
+references. There is no replacement allocator API, and runtime memory management
+must not expose a red-black schema or require a recognized `SetArena<double>`.
+An ordinary lower-level pointer/reference is not a new source-language Storage
+kind. Bounds, relocation, sharing and release follow logical allocation and
+type/lifetime contracts, not a generic object fallback. Internal pooling or
+coallocation is an optimization of that model, not a source-visible owner.
+
+At `f3bd9d5`, `StorageValue`, `TypeKind.Storage`, red-black-specific `arena.*`,
+`ArenaNumberRowLayout`, and Number-only versus `List<Value>` vector storage
+still exist. They are implementation debt under the corrected model, not
+completed target architecture. Existing measurements below describe those
+implementations; they neither authorize new native kinds nor restrict source
+expression. Public collection behavior and snapshot membership remain contracts
+to preserve while replacing storage internals.
+
+## Previous implementation and observations
 
 Set, Heap, BTree, and BPlusTree now have noniterable storage owners. Set owns
 typed red-black rows; Heap owns a dense vector; BTree and BPlusTree share a

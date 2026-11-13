@@ -22,8 +22,8 @@ internal sealed class RemoteProcessControl(Process process, int id) : IProcessCo
     }
     internal void Complete() => Volatile.Write(ref completed, 1);
 
-    internal static ProcessStartInfo StartInfo(ConnectionValue connection, string executable, IReadOnlyList<string> arguments) =>
-        TransferEngine.CreateRemoteProcessStartInfo(connection, "/bin/sh", ["-c", ShellProgram.Source(Program), "msync-process", executable, .. arguments]);
+    internal static ProcessStartInfo StartInfo(ConnectionKind kind, string address, string executable, IReadOnlyList<string> arguments) =>
+        NativeTransferProtocol.CreateRemoteProcessStartInfo(kind, address, "/bin/sh", ["-c", ShellProgram.Source(Program), "msync-process", executable, .. arguments]);
 
     internal static async Task<(int Id, string Diagnostic)> ReadIdentityAsync(Process process, CancellationToken token)
     {

@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Msync.Hir;
+using static Msync.Cli.ArtifactDisassembly;
 
 namespace Msync.Cli;
 
@@ -63,17 +64,4 @@ internal static class HirArtifactRenderer
         _ => 3
     };
 
-    private static string? SourceUri(string name)
-    {
-        if (Uri.TryCreate(name, UriKind.Absolute, out var uri)
-            && (uri.IsFile || uri.Scheme is "msync-stdlib" or "vscode-remote")) return uri.AbsoluteUri;
-        if (name.StartsWith('<') && name.EndsWith('>')) return null;
-        return Path.IsPathFullyQualified(name) ? new Uri(name).AbsoluteUri : null;
-    }
-
-    private static JsonObject Range(int line, int character, int length) => new()
-    {
-        ["start"] = new JsonObject { ["line"] = line, ["character"] = character },
-        ["end"] = new JsonObject { ["line"] = line, ["character"] = character + length }
-    };
 }

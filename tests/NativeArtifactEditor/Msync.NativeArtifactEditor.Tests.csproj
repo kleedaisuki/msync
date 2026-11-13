@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>Msync.NativeArtifactEditor.Tests</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Msync.Core/Msync.Core.csproj" />
+    <ProjectReference Include="../../src/Msync.Hir/Msync.Hir.csproj" />
+    <Compile Include="../../src/Msync.Cli/Artifacts/NativeArtifactRenderer*.cs" Link="Renderer/%(Filename)%(Extension)" />
+    <Compile Include="../../src/Msync.Cli/Artifacts/ArtifactDisassembly*.cs" Link="Renderer/%(Filename)%(Extension)" />
+    <Compile Include="../../src/Msync.Cli/Artifacts/HirArtifactRenderer.cs" Link="Renderer/HirArtifactRenderer.cs" />
+    <Compile Include="../NativeArtifact/Fixtures.cs" Link="Fixtures.cs" />
+  </ItemGroup>
+</Project>

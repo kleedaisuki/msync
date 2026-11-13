@@ -36,8 +36,7 @@ internal sealed partial class LanguageServer
                     case InputClosed: return 0;
                     case InputError failure: Console.Error.WriteLine($"LSP input: {failure.Error.Message}"); return 1;
                     case AnalysisEvent completed: PublishAnalysis(completed); break;
-                    case CompletionEvent completed: PublishCompletion(completed); break;
-                    case ArtifactEvent completed: PublishArtifact(completed); break;
+                    case RequestEvent completed: PublishRequest(completed); break;
                     case AuthEvent authentication: HandleAuthentication(authentication); break;
                     case MessageEvent incoming:
                         using (incoming.Message)
@@ -57,8 +56,7 @@ internal sealed partial class LanguageServer
                 events.Writer.TryComplete();
                 while (events.Reader.TryRead(out ServerEvent? item))
                     if (item is MessageEvent incoming) incoming.Message.Dispose();
-                    else if (item is CompletionEvent completed) completed.Work.Cancellation.Dispose();
-                    else if (item is ArtifactEvent artifactDone) artifactDone.Work.Cancellation.Dispose();
+                    else if (item is RequestEvent completed) completed.Work.Cancellation.Dispose();
             }
             finally { observation?.FinishRequests(); }
         }
@@ -153,8 +151,7 @@ internal sealed partial class LanguageServer
         if (method == "$/cancelRequest")
         {
             string requested = parameters.GetProperty("id").GetRawText();
-            CancelCompletions(id: requested);
-            CancelArtifacts(id: requested);
+            CancelRequests(id: requested);
             for (int index = pendingInsights.Count - 1; index >= 0; index--)
                 if (pendingInsights[index].Id.ToJsonString() == requested)
                 {
@@ -168,7 +165,7 @@ internal sealed partial class LanguageServer
         string uri = descriptor.GetProperty("uri").GetString()!;
         if (method == "textDocument/didClose")
         {
-            CancelCompletions(uri);
+            CancelRequests(RequestKind.Completion, uri);
             CompleteInsights(uri);
             documents.Remove(uri);
             analyses.Close(uri);
@@ -178,7 +175,7 @@ internal sealed partial class LanguageServer
         int version = descriptor.GetProperty("version").GetInt32();
         EditorDocument? previous = documents.GetValueOrDefault(uri);
         if (method == "textDocument/didChange" && previous is not null && version <= previous.Version) return;
-        CancelCompletions(uri);
+        CancelRequests(RequestKind.Completion, uri);
         CompleteInsights(uri);
         SourceText source = method == "textDocument/didOpen" ? new(descriptor.GetProperty("text").GetString()!) : ApplyChanges(previous?.Source ?? new(""), parameters);
         EditorDocument current = new(source, version, ++generation)
@@ -294,8 +291,7 @@ internal sealed partial class LanguageServer
     private void StopAnalysis()
     {
         shuttingDown = true;
-        CancelCompletions();
-        CancelArtifacts();
+        CancelRequests();
         StopAuthentication();
         foreach (var request in pendingInsights)
             Reply(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = request.Id, ["result"] = null }, "shutdown");

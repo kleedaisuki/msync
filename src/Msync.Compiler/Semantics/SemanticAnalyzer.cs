@@ -64,7 +64,7 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
             HirKind.Discard => Discard(node, children, context),
             HirKind.Block => Block(node, children, context),
             HirKind.TemplateClosure => TemplateClosure(node, context),
-            HirKind.Scope => Scope(node, children, context),
+            HirKind.Scope or HirKind.AllocateScope => Scope(node, children, context),
             HirKind.Range or HirKind.LazyRange => Range(node, children, context),
             HirKind.Call => Call(node, children, context),
             HirKind.If or HirKind.Match or HirKind.For or HirKind.Loop
@@ -90,7 +90,7 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
                 ? Standard(node, context) : EnsureModule(imported.Name, node.Source, context);
             HirLocationId target = context.Location(new(node.Data));
             context.Values[target] = initialized;
-            context.Storage[target] = initialized.Type;
+            context.Storage[target] = hir.Type(TypeRef.Scope);
         }
         HirLocationId location = context.Location(new(node.Data));
         SemanticValue value = context.Values.TryGetValue(location, out var current)
@@ -103,9 +103,11 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
             if (active.Initializing) throw Error(node.Source, "A named Scope cannot be read before its initialization completes.", "E0211");
             value = value with { Scope = active };
         }
-        value = RefreshIndexed(value, context);
+        if (value.Callables.IsDefaultOrEmpty && Runtime(value).WithoutNull == TypeRef.Function)
+            value = FutureCallables(value, location, context);
         HirTypeId type = value.Type;
-        return value with { Type = type, Node = Add(node with { Data = location.Value }, type, [], context), Location = location };
+        return value with { Type = type, Node = Add(node with { Data = location.Value }, type, [], context),
+            Location = location, StorageConstraint = StorageType(location, context) };
     }
 
     private SemanticValue Declare(HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext context)
@@ -115,11 +117,14 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
         HirLocationId location = context.Location(source);
         var definition = hir.Locations[source.Value];
         HirTypeId type = StorageTypeFor(location, value, context);
-        if (!definition.AdmitsNull && Runtime(value).Nullable)
+        if (!AdmitsNull(source, type) && Runtime(value).Nullable)
             throw SemanticDiagnosticFactory.NullAdmission(hir.Sources[node.Source.Source.Value],
                 new(node.Source.Start, node.Source.Length), definition);
         Require(value, type, node.Source, allowImplicit: true, context);
         value = Convert(value, type, node.Source, context);
+        value = value with { StorageConstraint = type,
+            CheckedType = program.Declaration(source).Annotation is not null && hir.Types[type.Value].Shape >= 0
+                ? type : value.CheckedType };
         SealStorage(location, type, context);
         context.Values[location] = value;
         UpdateStorageValue(location, value, context);
@@ -149,6 +154,7 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
             SealStorage(location, target, context);
         }
         value = Convert(value, target, valueSource, context);
+        value = value with { StorageConstraint = target };
         CheckSessionAssignment(location, value, valueSource, context);
         CheckClosedAssignment(location, value, valueSource, context);
         context.Values[location] = value;

@@ -215,7 +215,7 @@ internal sealed partial class SemanticAnalyzer
     }
 
     private SemanticValue Retype(SemanticValue value, TypeRef type) =>
-        value with { Type = hir.Type(hir.Types[value.Type.Value] with { RuntimeType = type }) };
+        value with { Type = hir.Type(hir.Types[value.Type.Value] with { RuntimeType = type, Nullable = type.Nullable }) };
 
     private void RefineCondition(HirNodeId expression, bool positive, SemanticContext context)
     {

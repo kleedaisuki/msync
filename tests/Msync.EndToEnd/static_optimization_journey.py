@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Exercise indexed-memory reuse and closed native call domains through the CLI."""
+"""Exercise native field reuse, alias identity and closed call domains through the CLI."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
-import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -16,19 +15,19 @@ from stdlib_experience_journey import accept, invoke
 
 ROOT: Path = Path(__file__).resolve().parents[2]
 PROGRAM: str = """
-let items = $std::storage::vector_new([10, 20]);
-let before = $std::storage::vector_get(items, 0);
-$std::storage::vector_set(items, 1, 99);
-let after = $std::storage::vector_get(items, 0);
+let items = scope { first: 10, second: 20, count: 2 };
+let before = items::first;
+items::second = 99;
+let after = items::first;
 ((before + after) as String) -> ./values.txt;
-let first_size = $std::storage::vector_size(items);
-$std::storage::vector_set(items, 1, 77);
-let second_size = $std::storage::vector_size(items);
+let first_size = items::count;
+items::second = 77;
+let second_size = items::count;
 ((first_size + second_size) as String) -> ./sizes.txt;
-let nodes = $std::storage::vector_new([scope { value: 1 }]);
-let node = $std::storage::vector_get(nodes, 0);
+let nodes = $std::ranges::materialize([scope { value: 1 }]);
+let node = $std::ranges::at(nodes, 0);
 node::value = 2;
-($std::storage::vector_get(nodes, 0)::value as String) -> ./alias.txt;
+($std::ranges::at(nodes, 0)::value as String) -> ./alias.txt;
 let selected = $std::math::abs;
 fn argument() {
     global selected;
@@ -98,18 +97,15 @@ def execute(binary: Path, directory: Path, level: int, stage: str) -> dict[str, 
     )
     accept(disassembly, "disassemble")
     document: dict[str, Any] = cast(dict[str, Any], json.loads(disassembly.stdout))
-    text: str = str(document["text"])
-    entry: re.Match[str] | None = re.search(r"entry @f(\d+)", text)
-    assert entry is not None
-    body: re.Match[str] | None = re.search(
-        r"^fn @f" + entry.group(1) + r" .*?^}\n", text, re.DOTALL | re.MULTILINE
-    )
-    assert body is not None
-    gets: int = body.group(0).count('NativeCall "storage.vector_get"')
-    sizes: int = body.group(0).count('NativeCall "storage.vector_size"')
-    if level >= 2:
-        assert gets == 2, f"Expected one get per owned vector, found {gets}"
-        assert sizes == 1, f"Expected one stable length read, found {sizes}"
+    text: str = json.dumps(document)
+    assert document["representation"] == "native-v1", document
+    operations: list[str] = [
+        instruction["op"]
+        for function in document["functions"]
+        for instruction in function["instructions"]
+    ]
+    assert "CallNative" in operations and "Transfer" in operations, operations
+    assert "storage.vector_" not in text and "arena." not in text, text
     assert "@msync-callee:" not in text and "@msync-cell:" not in text
     if stage == "executable":
         executable: Path = source.with_suffix(".mexe")
@@ -144,8 +140,7 @@ def execute(binary: Path, directory: Path, level: int, stage: str) -> dict[str, 
         "level": level,
         "stage": stage,
         "exact_outputs": len(OUTPUTS),
-        "gets": gets,
-        "sizes": sizes,
+        "native_instructions": len(operations),
     }
 
 

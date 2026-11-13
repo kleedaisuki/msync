@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare frozen Native AOT images through equivalent CLI journeys."""
+"""Measure one frozen CLI image or compare equivalent CLI journeys."""
 
 from __future__ import annotations
 
@@ -67,6 +67,7 @@ class InvocationFailure(RuntimeError):
         code: int,
         stderr: str,
         elapsed: float,
+        stdout: str = "",
     ) -> None:
         message = f"{image.name} {' '.join(args)} exited {code}:\n{stderr}"
         self.details: dict[str, object] = {
@@ -75,6 +76,7 @@ class InvocationFailure(RuntimeError):
             "working_directory": str(cwd),
             "exit_code": code,
             "stderr": stderr,
+            "stdout": stdout,
             "elapsed_ms": elapsed,
         }
         super().__init__(message)
@@ -99,15 +101,14 @@ def percentile(values: Sequence[float], quantile: float) -> float:
 
 
 def invoke(image: Image, args: Sequence[str], cwd: Path) -> float:
-    arguments = [*args]
+    arguments = ["--no-telemetry", *args]
     if image.optimization_level is not None:
         arguments.append(f"-O{image.optimization_level}")
     started = time.perf_counter_ns()
     result = subprocess.run(
         [image.executable, *arguments],
         cwd=cwd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
         text=True,
         encoding="utf-8",
@@ -115,7 +116,13 @@ def invoke(image: Image, args: Sequence[str], cwd: Path) -> float:
     elapsed = (time.perf_counter_ns() - started) / 1_000_000
     if result.returncode != 0:
         raise InvocationFailure(
-            image, arguments, cwd, result.returncode, result.stderr, elapsed
+            image,
+            arguments,
+            cwd,
+            result.returncode,
+            result.stderr,
+            elapsed,
+            result.stdout,
         )
     return elapsed
 
@@ -130,8 +137,13 @@ def freeze(
         if dependency.is_file() and (
             dependency.suffix.lower() in {".so", ".dll", ".dylib"}
             or ".so." in dependency.name
+            or dependency.name
+            in {f"{path.stem}.deps.json", f"{path.stem}.runtimeconfig.json"}
         ):
             shutil.copy2(dependency, destination.parent / dependency.name)
+    runtimes: Path = path.parent / "runtimes"
+    if runtimes.is_dir():
+        shutil.copytree(runtimes, destination.parent / "runtimes")
     version = subprocess.check_output(
         [str(destination), "--version"], text=True, encoding="utf-8"
     ).strip()
@@ -146,8 +158,8 @@ def freeze(
         digest(destination),
         destination.stat().st_size,
         {
-            item.name: digest(item)
-            for item in sorted(destination.parent.iterdir())
+            item.relative_to(destination.parent).as_posix(): digest(item)
+            for item in sorted(destination.parent.rglob("*"))
             if item.is_file()
         },
         optimization_level,
@@ -284,24 +296,61 @@ def verify(case: str, workspace: Path, file_count: int, statements: int = 128) -
     if not case.startswith("copy-"):
         return
     if case.startswith("copy-file"):
-        if (workspace / "input.bin").read_bytes() != (
-            workspace / "output.bin"
-        ).read_bytes():
-            raise AssertionError("Ordinary file bytes differ")
+        verify_file(workspace / "input.bin", workspace / "output.bin")
         return
     source_tree = workspace / "input-tree"
     target_tree = workspace / "output-tree" / "input-tree"
-    actual = sorted(target_tree.rglob("*.bin"))
+    actual = sorted(path for path in target_tree.rglob("*") if path.is_file())
+    expected: set[Path] = {
+        path.relative_to(source_tree)
+        for path in source_tree.rglob("*")
+        if path.is_file()
+    }
     if len(actual) != file_count:
         raise AssertionError(f"Expected {file_count} copied files, found {len(actual)}")
+    if {path.relative_to(target_tree) for path in actual} != expected:
+        raise AssertionError("Copied tree path set differs")
     for target in actual:
         original = source_tree / target.relative_to(target_tree)
-        if original.read_bytes() != target.read_bytes():
-            raise AssertionError(f"Copied bytes differ: {target}")
-        if os.name != "nt" and original.stat().st_mode != target.stat().st_mode:
-            raise AssertionError(f"Copied mode differs: {target}")
-        if original.stat().st_mtime_ns != target.stat().st_mtime_ns:
-            raise AssertionError(f"Copied modification time differs: {target}")
+        verify_file(original, target)
+
+
+def verify_file(original: Path, target: Path) -> None:
+    if original.read_bytes() != target.read_bytes():
+        raise AssertionError(f"Copied bytes differ: {target}")
+    if os.name != "nt" and original.stat().st_mode != target.stat().st_mode:
+        raise AssertionError(f"Copied mode differs: {target}")
+    if original.stat().st_mtime_ns != target.stat().st_mtime_ns:
+        raise AssertionError(f"Copied modification time differs: {target}")
+
+
+def reset_sample(case: str, workspace: Path, iteration: int) -> None:
+    if case in VALUE_CASES and case != "check-values":
+        (workspace / "values-result.txt").write_bytes(b"not the expected result")
+        return
+    if not case.startswith("copy-"):
+        return
+    pairs: list[tuple[Path, Path]] = [
+        (workspace / "input.bin", workspace / "output.bin")
+    ]
+    if case.startswith("copy-tree"):
+        tree: Path = workspace / "input-tree"
+        pairs = [
+            (path, workspace / "output-tree/input-tree" / path.relative_to(tree))
+            for path in sorted(tree.rglob("*"))
+            if path.is_file()
+        ]
+    generation: bytes = f"{iteration:016x}".encode("ascii")
+    for original, target in pairs:
+        size: int = original.stat().st_size
+        with original.open("r+b") as stream:
+            stream.write(generation[:size])
+        os.utime(original, ns=(1_700_000_000_000_000_000 + iteration * 1_000_000,) * 2)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("r+b" if target.exists() else "w+b") as stream:
+            stream.truncate(max(1, size))
+            stream.seek(0)
+            stream.write(b"\xff")
 
 
 def measure(
@@ -362,6 +411,7 @@ def sample_case(
         for image in order:
             workspace = workspaces[image.name]
             try:
+                reset_sample(case, workspace, iteration)
                 elapsed = invoke(image, arguments(case, workspace), workspace)
                 verify(case, workspace, file_count, statements)
             except (InvocationFailure, AssertionError, OSError) as error:
@@ -398,12 +448,15 @@ def main() -> None:
     parser.add_argument(
         "--previous-aot",
         type=Path,
-        required=True,
         help="Previous Native AOT 0.8.0 executable",
     )
     parser.add_argument(
-        "--aot", type=Path, required=True, help="Native AOT 0.8.0 executable"
+        "--aot", type=Path, help="Native AOT 0.8.0 executable (legacy paired interface)"
     )
+    parser.add_argument(
+        "--binary", type=Path, help="Current executable; alone measures one image"
+    )
+    parser.add_argument("--baseline", type=Path, help="Optional preceding executable")
     parser.add_argument(
         "--control-aot",
         type=Path,
@@ -429,12 +482,46 @@ def main() -> None:
         "--output", type=Path, default=ROOT / ".temp/performance-v080/comparison.json"
     )
     options = parser.parse_args()
+    if (
+        options.samples < 1
+        or options.warmups < 0
+        or options.files < 1
+        or options.bytes < 0
+        or options.statements < 1
+        or (options.file_bytes is not None and options.file_bytes < 0)
+    ):
+        parser.error(
+            "expected positive samples/files/statements and nonnegative warmups/byte sizes"
+        )
+    if options.binary is not None:
+        if options.aot is not None or options.previous_aot is not None:
+            parser.error(
+                "--binary/--baseline cannot be combined with --aot/--previous-aot"
+            )
+        options.aot = options.binary
+        options.previous_aot = options.baseline
+    elif (
+        options.aot is None
+        or options.previous_aot is None
+        or options.baseline is not None
+    ):
+        parser.error(
+            "use --binary [--baseline], or the legacy --aot and --previous-aot pair"
+        )
+    if options.control_aot is not None and options.previous_aot is None:
+        parser.error("--control-aot requires a baseline")
     options.output = options.output.resolve()
     root = options.output.parent / f"fixture-{time.time_ns()}"
-    previous_image = freeze(
-        options.previous_aot.resolve(), "before", root, options.previous_aot_level
-    )
-    images = [previous_image]
+    images: list[Image] = []
+    if options.previous_aot is not None:
+        images.append(
+            freeze(
+                options.previous_aot.resolve(),
+                "before",
+                root,
+                options.previous_aot_level,
+            )
+        )
     if options.control_aot is not None:
         images.append(
             freeze(
@@ -480,10 +567,15 @@ def main() -> None:
             "batch_statements": options.statements,
             "percentiles": "p50 median; p95 linearly interpolated empirical quantile",
             "cache": "warm, no page-cache eviction",
-            "order": "alternating AB/BA per sample"
+            "order": "single image"
+            if len(images) == 1
+            else "alternating AB/BA per sample"
             if len(images) == 2
             else "ABC/BCA/CAB/CBA/ACB/BAC balanced six-round rotation",
             "verification": "outside timed interval; exact file bytes, tree count, native modes and ns mtime",
+            "reset": "outside timing; per-sample input generation and existing incorrect destinations (warm replacement, not a fresh-file benchmark)",
+            "telemetry": "disabled explicitly",
+            "native_tier_environment": os.environ.get("MSYNC_JIT", "auto"),
         },
         "images": [asdict(image) for image in images],
         "artifacts": [

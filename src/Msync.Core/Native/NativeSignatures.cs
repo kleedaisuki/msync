@@ -27,7 +27,7 @@ public static partial class NativeSignatures
                 result.Add($"ranges.{name}", new($"ranges.{name}", inputs, output, ResultRule: rule,
                     Behavior: name is "identity" or "all" ? NativeBehavior.Deferred | NativeBehavior.PreservesIdentity : null)
                 {
-                    ElementCallback = output.Kind != TypeKind.Range && inputs.Length == 2 && inputs[1] == TypeRef.Function
+                    ElementCallback = inputs.Length == 2 && inputs[1] == TypeRef.Function
                         ? new(1, 0) : null
                 });
         }
@@ -39,6 +39,8 @@ public static partial class NativeSignatures
         Add("fs", "equivalent", TypeRef.Bool, NativeEffect.Read, path, path);
         Add("fs", "permissions", new(TypeKind.Range, TypeRef.String), NativeEffect.Read, path);
         Add("fs", "directory_iterator recursive_directory_iterator", new(TypeKind.Range, TypeRef.Path), NativeEffect.Read, path);
+        foreach (string name in new[] { "fs.directory_iterator", "fs.recursive_directory_iterator" })
+            result[name] = result[name] with { Behavior = NativeBehavior.Deferred | NativeBehavior.MayFail };
         Add("fs", "set_permissions", TypeRef.Null, NativeEffect.Write, path, TypeRef.String);
         Add("fs", "set_readonly", TypeRef.Null, NativeEffect.Write, path, TypeRef.Bool);
         Add("fs", "delete touch", TypeRef.Null, NativeEffect.Write, path);
@@ -77,9 +79,13 @@ public static partial class NativeSignatures
         Range("any any_of all_of none none_of", TypeRef.Bool, NativeResultRule.Fixed, range, TypeRef.Function);
         Range("single", range, NativeResultRule.RangeOfArguments, any);
         result.Add("ranges.of", new("ranges.of", [], range, Variadic: true, ResultRule: NativeResultRule.RangeOfArguments));
-        Add("process", "stdout stderr", TypeRef.String, NativeEffect.Pure, TypeRef.Process);
-        Add("process", "success", TypeRef.Bool, NativeEffect.Pure, TypeRef.Process);
-        Add("process", "exit_code", TypeRef.Number, NativeEffect.Pure, TypeRef.Process);
+        foreach (var (name, output) in new[]
+        {
+            ("stdout", TypeRef.String), ("stderr", TypeRef.String),
+            ("success", TypeRef.Bool), ("exit_code", TypeRef.Number)
+        })
+            result.Add($"process.{name}", new($"process.{name}", [TypeRef.Process], output, NativeEffect.Read,
+                Behavior: NativeBehavior.DeferredScalar | NativeBehavior.MayFail));
         RegisterCast(result);
         RegisterRanges(result);
         RegisterTextPaths(result);
@@ -90,9 +96,6 @@ public static partial class NativeSignatures
         RegisterEnvironment(result);
         RegisterRegex(result);
         RegisterTextBuilder(result);
-        RegisterVectorStorage(result);
-        RegisterArena(result);
-        RegisterSlots(result);
         RegisterMeta(result);
         RegisterShell(result);
         foreach (var (name, signature) in result.ToArray())

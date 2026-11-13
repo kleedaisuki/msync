@@ -210,13 +210,16 @@ public static class HirValidation
             case HirKind.Closure: Id(node.Data, module.Closures.Length, "closure node"); Arity(count, 0, 0); break;
             case HirKind.TemplateClosure: Id(node.Data, module.TemplateClosures.Length, "template closure node"); Arity(count, 0, 0); break;
             case HirKind.AdaptFunction: Id(node.Data, module.Adaptations.Length, "function adaptation"); Arity(count, 1, 1); break;
-            case HirKind.Scope:
+            case HirKind.Scope or HirKind.AllocateScope:
                 Id(node.Data, module.Scopes.Length, "scope node");
                 var scope = module.Scopes[node.Data];
                 var domain = module.Types[node.Type.Value].ScopeDomain;
                 if (domain.Count != 0 && (domain.Count != 1 || domain[0] != scope.Layout))
                     Fail("scope node construction layout disagrees with its type");
-                int fields = scope.Fields.Length; Arity(count, fields, fields + 1); break;
+                int fields = scope.Fields.Length;
+                if (node.Kind == HirKind.AllocateScope) Arity(count, 0, 0);
+                else Arity(count, fields, fields + 1);
+                break;
             case HirKind.MemberRead: if (node.Text is null) Fail("member name is missing"); Arity(count, 1, 1); break;
             case HirKind.MemberAssign: if (node.Text is null) Fail("member name is missing"); Arity(count, 2, 2); break;
             case HirKind.Range or HirKind.LazyRange:

@@ -9,14 +9,12 @@ public enum NumericIntrinsic : byte
     And, Or, Xor, Not, ShiftLeft, ShiftRight, ShiftRightSigned, RotateLeft, RotateRight,
     PopCount, LeadingZeroCount, TrailingZeroCount, ReverseBytes
 }
-public enum ArenaOperation : byte
+public sealed record NativeElementCallback(int FunctionArgument, int RangeArgument)
 {
-    None, New, Root, Size, Key, Child, Parent, Red, Allocate, Release, Clear,
-    SetRoot, SetChild, SetParent, SetRed
+    public int Arity { get; init; } = 1;
 }
-public sealed record NativeElementCallback(int FunctionArgument, int RangeArgument);
 [Flags]
-public enum NativeBehavior : byte { None = 0, MayFail = 1, Enumerates = 2, Deferred = 4, Invokes = 8, EagerRange = 16, LocalMemory = 32, PreservesIdentity = 64 }
+public enum NativeBehavior : byte { None = 0, MayFail = 1, Enumerates = 2, Deferred = 4, Invokes = 8, EagerRange = 16, LocalMemory = 32, PreservesIdentity = 64, DeferredScalar = 128 }
 public enum NativeResultRule : byte
 {
     Fixed, FirstArgument, RangeOfArguments, RangeItem, Transform, CastTarget,
@@ -30,7 +28,6 @@ public sealed record NativeSignature(string Name, IReadOnlyList<TypeRef> Paramet
     public IReadOnlyList<NativePathAccess>? PathAccess { get; init; }
     public NativeElementCallback? ElementCallback { get; init; }
     public NumericIntrinsic Numeric { get; init; }
-    public ArenaOperation Arena { get; init; }
 
     public NativePathAccess AccessOfPathArgument(int argument) => PathAccess is { } access ? access[argument] : Effect switch
     {

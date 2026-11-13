@@ -1,3 +1,4 @@
+using Msync.Core.Native;
 using Msync.Compiler;
 using Msync.Compiler.Syntax;
 using Msync.Core;
@@ -187,7 +188,7 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
         private SourceCompletionContext? FindSource(string text, int caret)
         {
             SemanticMember? receiver = insight?.Receiver;
-            PathValue? path = receiver?.KnownPath ?? (receiver?.KnownText is { } value ? new PathValue(value) : null);
+            NativePath? path = receiver?.KnownPath ?? (receiver?.KnownText is { } value ? new NativePath(value) : null);
             bool unknown = receiver is not null && path is null
                 && (receiver.Type.Contains("Path", StringComparison.Ordinal) || receiver.Type.Contains("String", StringComparison.Ordinal) || receiver.Type == "Unknown");
             return SourceCompletion.Find(text, caret, includeBarePaths: true,

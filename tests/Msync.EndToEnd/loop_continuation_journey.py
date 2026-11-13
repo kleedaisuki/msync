@@ -23,11 +23,9 @@ fn record(index: Number) {
     scope { index: index, path: path, label: "kept", flag: true }
 };
 fn build(length: Number) {
-    let records = $std::storage::vector_empty(decltype(record(0)));
-    for index in $std::ranges::iota(0, length) {
-        $std::storage::vector_push(records, record(index));
-    };
-    $std::storage::vector_take(records)
+    $std::ranges::materialize($std::ranges::transform(
+        $std::ranges::iota(0, length), fn(index: Number) { record(index) }
+    ))
 };
 let rows = build(count);
 """

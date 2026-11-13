@@ -1,4 +1,11 @@
-# Native callback allocation probe
+# Historical native callback allocation probe (v0.8)
+
+This probe requires the retired `NativeRegistry`/generic-value storage backend;
+it is not runnable against the v0.9 native ABI. Its historical receipts explain
+that implementation's delegate allocation, not current throughput. Current
+callback/state semantics are covered by NativeExecution, NativeSessions and
+[NativeTiering](../../NativeTiering/README.md); measure mixed applications with
+the [maintained suite](../../../BENCHMARK.md).
 
 `NativeRegistry` receives the interpreter's invocation callback even for native
 operations that never call user functions. This probe measures an actual native

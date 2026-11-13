@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../../src/Msync.Runtime/Msync.Runtime.csproj" /></ItemGroup>
+  <ItemGroup><None Include="Fixtures/**/*" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+</Project>

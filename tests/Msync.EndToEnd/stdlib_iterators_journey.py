@@ -54,18 +54,19 @@ Map::insert(nullable, "known-null", null);
 let tree = BTree::of_types(Number, String);
 BTree::insert(tree, 4, "b");
 (BTree::validate(tree) as String) -> ./tree_valid.txt;
-$std::ranges::front(BTree::entries(tree))::value -> ./tree.txt;
+let tree_value? = $std::ranges::front(BTree::entries(tree))::value;
+if tree_value is not null { tree_value -> ./tree.txt; };
 let plus = BPlusTree::of_types(Number, String);
 BPlusTree::insert(plus, 2, "c");
 (BPlusTree::validate(plus) as String) -> ./plus_valid.txt;
-$std::ranges::front(BPlusTree::entries(plus))::value -> ./plus.txt;
+let plus_value? = $std::ranges::front(BPlusTree::entries(plus))::value;
+if plus_value is not null { plus_value -> ./plus.txt; };
 let legacy = BPlusTree::new(7, "legacy");
 BPlusTree::insert(legacy, 8, "value");
 ($std::ranges::matches(legacy::value_prototype, "legacy") as String)
     -> ./legacy.txt;
-let items = $std::storage::vector_empty(decltype(scope { label: "" }));
-$std::storage::vector_push(items, scope { label: "shape" });
-$std::storage::vector_get(items, 0)::label -> ./shape.txt;
+let items = $std::ranges::materialize([scope { label: "shape" }]);
+$std::ranges::at(items, 0)::label -> ./shape.txt;
 let types = List::empty(Number);
 List::push(types, String);
 (List::get_or(types, 0, Number) as String) -> ./prototype.txt;
@@ -242,7 +243,7 @@ NEGATIVE: Final[tuple[tuple[str, str], ...]] = (
 
 
 def invoke(binary: Path, work: Path, *arguments: str, diagnostic: str = "") -> None:
-    result = subprocess.run(
+    result: subprocess.CompletedProcess[str] = subprocess.run(
         [str(binary), "--no-config", "--no-telemetry", *arguments],
         cwd=work,
         capture_output=True,
@@ -286,25 +287,25 @@ def journey(binary: Path, work: Path, case: Journey, level: int) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser: argparse.ArgumentParser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--level", type=int, choices=(0, 1, 2, 3), default=2)
     parser.add_argument(
         "--case", action="append", choices=tuple(case.name for case in JOURNEYS)
     )
-    args = parser.parse_args()
+    args: argparse.Namespace = parser.parse_args()
     binary: Path = args.binary.resolve()
     scratch: Path = ROOT / ".temp"
     scratch.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(
         prefix="stdlib-iterator-", dir=scratch
     ) as directory:
-        work = Path(directory)
+        work: Path = Path(directory)
         for case in JOURNEYS:
             if not args.case or case.name in args.case:
                 journey(binary, work / case.name, case, args.level)
                 print(
-                    f"PASS: {case.name} through source and source-free HIR/bytecode at O{args.level}",
+                    f"PASS: {case.name} through source and source-free HIR/native IR at O{args.level}",
                     flush=True,
                 )
         for index, (source, diagnostic) in enumerate(NEGATIVE):

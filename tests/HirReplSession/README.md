@@ -14,21 +14,30 @@ values remain mutable across submissions, including an explicitly nullable
 Range. Runtime failure retains an initialized declaration prefix but does not
 publish a declaration whose initializer failed.
 
-The public session facade currently supplies the executable image and runtime
-feedback callbacks. The Typed HIR implementation must translate those callbacks
-through its semantic-location/lowered-slot map; bytecode offsets are not semantic
-declaration identities. Existing terminal/PTY fixtures separately exercise the
-human prompt, live Processes and Ctrl+C instead of repeating them here.
+`CompilerSession` supplies a `NativeProgram`; `NativeExecutionSession` supplies
+native-value feedback callbacks. Acceptance translates these callbacks through
+the semantic-location/register map; physical slots are not semantic declaration
+identities. The native-named compiler facade is only a compatibility name for
+this implementation, not a second session or backend. Existing terminal/PTY
+fixtures separately exercise the human prompt, live Processes and Ctrl+C instead
+of repeating them here.
 
 ```text
 dotnet run --project tests/HirReplSession -c Release
 ```
 
-For an immutable owner-produced product snapshot, pass
+For an immutable v0.9 owner-produced product snapshot, pass
 `-p:FrozenAssemblies=/absolute/path/to/snapshot` and use an isolated artifacts
 directory. The probe supports O0/O2/O3 within one invocation. A passing result on
-the 0.8.0 baseline establishes behavior only; it does not prove that the new
-semantic implementation has stopped emitting bytecode during analysis.
+the historical 0.8.0 test source established behavior only. The current probe
+requires the native API and cannot run against the old Value/Module snapshot.
+
+The description mode retains collection-alias feedback using the source
+`containers::List` API, replacing the retired public native vector allocator.
+The optimization mode checks reduction of non-Nop native operations,
+specialization reuse and rollback together with actual execution at O0/O2/O3.
+The optimizer preserves instruction positions with Nops; this check does not
+claim bytecode compaction or a measured dispatch-speed improvement.
 
 ## Accepted baseline
 

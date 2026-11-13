@@ -62,7 +62,8 @@ internal sealed record SemanticValue(HirTypeId Type, HirNodeId Node,
     ImmutableArray<SemanticDeferredWrite> DeferredEffects = default,
     ImmutableArray<int> IndexedAliases = default,
     ImmutableArray<SessionCallBinding> OpenSessionCalls = default,
-    SemanticCallableDomain? FutureCallableDomain = null)
+    SemanticCallableDomain? FutureCallableDomain = null,
+    HirTypeId? StorageConstraint = null, bool RuntimeDependentMetadata = false, HirTypeId? CheckedType = null)
 {
     public bool? KnownBool => Literal is { Kind: HirLiteralKind.Bool } literal ? literal.Boolean : null;
 }
@@ -72,6 +73,7 @@ internal sealed partial class SemanticContext(HirFunctionId function, SemanticOu
     public HirFunctionId Function { get; } = function;
     public SemanticOutput? Output { get; } = output;
     public bool Publish => Output is not null;
+    public Func<HirLocationId, SemanticValue>? QueryBinding { get; set; }
     public bool DeferredReads { get; set; }
     public ImmutableHashSet<HirLocationId> ActivatedModules { get; set; }
         = parent?.ActivatedModules ?? [];
@@ -144,6 +146,7 @@ internal sealed partial class SemanticContext(HirFunctionId function, SemanticOu
 
     public SemanticContext QueryFork() => new(Function, parent: this)
     {
+        QueryBinding = QueryBinding,
         DeferredReads = DeferredReads,
         ExpectedReturn = ExpectedReturn,
         Queries = Queries ?? new(),

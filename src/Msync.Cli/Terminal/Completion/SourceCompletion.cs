@@ -1,3 +1,5 @@
+using Msync.Core.Native;
+using Msync.Compiler;
 using System.Text;
 using Msync.Core;
 
@@ -5,7 +7,7 @@ namespace Msync.Cli;
 
 internal enum SourceCompletionKind { Path, Ssh }
 internal sealed record SourceCompletionContext(int Start, int Length, string Prefix, bool Quoted,
-    string Qualifier, SourceCompletionKind Kind, ConnectionValue? Endpoint = null, PathValue? LookupBase = null,
+    string Qualifier, SourceCompletionKind Kind, NativeConnection? Endpoint = null, NativePath? LookupBase = null,
     bool InsideString = false, bool CloseQuote = false, bool FollowingSeparator = false, bool PreserveQuote = false,
     bool LiteralWindowsAtom = false, IReadOnlySet<string>? BoundNames = null);
 internal sealed record SourceCompletionItem(string Label, string Replacement, string Detail, bool IsDirectory = false, string? FilterText = null);
@@ -15,50 +17,30 @@ internal static class SourceCompletion
     private static readonly string[] WordBoundaries = ["and", "or", "is", "not", "in", "else", "if", "fn", "scope", "let", "match", "for", "exists", "return", "break", "loop", "native", "concept", "type", "typename", "as"];
 
     public static SourceCompletionContext? Find(string text, int caret, bool includeBarePaths = false,
-        PathValue? receiverPath = null, bool unknownPathReceiver = false, ConnectionValue? physicalEndpoint = null, bool unknownPhysicalOwner = false, IReadOnlySet<string>? boundNames = null, string? sourceFile = null)
+        NativePath? receiverPath = null, bool unknownPathReceiver = false, NativeConnection? physicalEndpoint = null, bool unknownPhysicalOwner = false, IReadOnlySet<string>? boundNames = null, string? sourceFile = null)
     {
         int start = 0;
-        bool quoted = false, comment = false, regex = false, escaped = false, characterClass = false, namedAngle = false;
+        bool quoted = false;
+        var literals = EditorLexemes.Scan(text).Where(lexeme => lexeme.Kind is EditorLexemeKind.Comment
+            or EditorLexemeKind.String or EditorLexemeKind.Regex).ToDictionary(lexeme => lexeme.Span.Start);
         for (int index = 0; index < caret; index++)
         {
             char character = text[index];
-            if (comment)
+            if (literals.TryGetValue(index, out var literal))
             {
-                if (character is '\r' or '\n') { comment = false; start = index + 1; }
-                continue;
-            }
-            if (quoted)
-            {
-                if (character != '"') continue;
-                if (index + 1 < caret && text[index + 1] == '"') index++;
-                else quoted = false;
-                continue;
-            }
-            if (regex)
-            {
-                if (escaped) { escaped = false; continue; }
-                if (character == '\\')
+                if (literal.Kind is EditorLexemeKind.Comment or EditorLexemeKind.Regex)
                 {
-                    if (!characterClass && index + 2 < text.Length && text[index + 1] == 'k' && text[index + 2] == '<')
-                    { namedAngle = true; index += 2; continue; }
-                    escaped = true;
-                    continue;
+                    if (caret <= literal.Span.End) return null;
+                    start = literal.Span.End;
                 }
-                if (character == '[') characterClass = true;
-                if (character == ']') characterClass = false;
-                if (character == '(' && !characterClass && index + 3 < text.Length && text[index + 1] == '?' && text[index + 2] == '<'
-                    && text[index + 3] is not ('=' or '!')) { namedAngle = true; index += 2; continue; }
-                if (character != '>' || characterClass) continue;
-                if (namedAngle) { namedAngle = false; continue; }
-                if (RegexBoundary(text, index + 1)) { regex = false; start = index + 1; }
+                else if (literal.Span.End > caret || !literal.Complete)
+                {
+                    quoted = true;
+                    break;
+                }
+                index = literal.Span.End - 1;
                 continue;
             }
-            if (character == '"') { quoted = true; continue; }
-            if ((character == '#' || character == '/' && index + 1 < text.Length && text[index + 1] == '/')
-                && (index == 0 || char.IsWhiteSpace(text[index - 1])))
-            { comment = true; continue; }
-            if (character == '<' && RegexStart(text, index))
-            { regex = true; continue; }
             if (character is ' ' or '\t' && PathFragment(text.AsSpan(start, index - start))) continue;
             if (index > start && char.IsWhiteSpace(text[index - 1]) && PathFragment(text.AsSpan(start, index - start)))
             {
@@ -73,36 +55,35 @@ internal static class SourceCompletion
             { start = index + 1; continue; }
             if (Boundary(character) && !(uri && character is '[' or ']' or '@')) start = index + 1;
         }
-        if (comment || regex) return null;
         string fragment = text[start..caret];
         int end = TokenEnd(text, caret, quoted, fragment.StartsWith("ssh://", StringComparison.Ordinal) || fragment.StartsWith("wsl://", StringComparison.Ordinal));
         if (fragment.StartsWith("ssh://", StringComparison.Ordinal) && LastSelection(fragment) < 0)
             return HostEdit(new(start, end - start, fragment, false, "", SourceCompletionKind.Ssh), text, caret);
-        if (unknownPhysicalOwner || physicalEndpoint is not null && !PhysicalDirectory(physicalEndpoint, sourceFile)) return null;
+        if (unknownPhysicalOwner || physicalEndpoint is { } physical && !PhysicalDirectory(physical, sourceFile)) return null;
         int pathJoin = LastPathJoin(fragment);
-        if (pathJoin >= 0 && receiverPath is not null)
+        if (pathJoin >= 0 && receiverPath is { } selectedPath)
         {
-            if (physicalEndpoint is not null) receiverPath = PathSemantics.Qualify(receiverPath, physicalEndpoint);
-            if (receiverPath.Connection is { Kind: ConnectionKind.Local, Address: "file" })
+            if (physicalEndpoint is { } owner) selectedPath = PathSemantics.Qualify(selectedPath, owner);
+            if (selectedPath.Connection is { Kind: ConnectionKind.Local, Address: "file" })
             {
                 if (sourceFile is null) return null;
-                receiverPath = receiverPath with { WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(sourceFile)) };
+                selectedPath = selectedPath with { WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(sourceFile)) };
             }
             return PathEdit(new(start, end - start, Decode(fragment[(pathJoin + 1)..]), false, "", SourceCompletionKind.Path,
-                receiverPath.Connection, receiverPath, BoundNames: boundNames), text, caret);
+                selectedPath.Connection, selectedPath, BoundNames: boundNames), text, caret);
         }
         if (pathJoin >= 0 && unknownPathReceiver) return null;
         if (LastSelection(fragment) >= 0) return null;
         string qualifier = "";
-        ConnectionValue? endpoint = physicalEndpoint;
+        NativeConnection? endpoint = physicalEndpoint;
         string value = fragment;
         bool isString = value.StartsWith('"');
         string raw = Decode(value);
         bool path = endpoint is not null || raw.Contains('/') || OperatingSystem.IsWindows() && raw.Contains('\\')
             || raw is "~" or "." or "..";
         if (!path && !(includeBarePaths && raw.Length > 0 && !raw.StartsWith('$'))) return null;
-        PathValue? lookupBase = endpoint is { Kind: ConnectionKind.Local, Address: "file" }
-            ? new PathValue(Path.GetDirectoryName(Path.GetFullPath(sourceFile!))!) : null;
+        NativePath? lookupBase = endpoint is { Kind: ConnectionKind.Local, Address: "file" }
+            ? new NativePath(Path.GetDirectoryName(Path.GetFullPath(sourceFile!))!) : null;
         return PathEdit(new(start, end - start, raw, isString, qualifier, SourceCompletionKind.Path, endpoint,
             LookupBase: lookupBase, BoundNames: boundNames), text, caret);
     }
@@ -118,7 +99,7 @@ internal static class SourceCompletion
         string directory;
         if (context.LookupBase is { } lookup)
         {
-            var path = parent.Length == 0 ? lookup : PathSemantics.JoinValue(lookup, new StringValue(parent));
+            var path = parent.Length == 0 ? lookup : PathSemantics.JoinValue(lookup, parent);
             directory = path.LocalPath(workingDirectory, homeDirectory);
         }
         else
@@ -151,7 +132,7 @@ internal static class SourceCompletion
         return items;
     }
 
-    private static bool PhysicalDirectory(ConnectionValue endpoint, string? sourceFile) => endpoint.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl
+    private static bool PhysicalDirectory(NativeConnection endpoint, string? sourceFile) => endpoint.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl
         || endpoint is { Kind: ConnectionKind.Local, Address: not "file" } || endpoint.Kind == ConnectionKind.Local && sourceFile is not null;
 
     private static IReadOnlyList<SourceCompletionItem> Hosts(SourceCompletionContext context, string homeDirectory)
@@ -204,14 +185,6 @@ internal static class SourceCompletion
         return result;
     }
 
-    private static bool RegexStart(string text, int index)
-    {
-        int previous = index - 1;
-        while (previous >= 0 && char.IsWhiteSpace(text[previous])) previous--;
-        return previous < 0 || text[previous] is '/' or '{' or ',' or '['
-            || text[previous] == '>' && previous > 0 && text[previous - 1] == '=';
-    }
-
     private static bool PathFragment(ReadOnlySpan<char> text)
     {
         bool uri = text.StartsWith("ssh://", StringComparison.Ordinal) || text.StartsWith("wsl://", StringComparison.Ordinal);
@@ -226,10 +199,6 @@ internal static class SourceCompletion
                 return word.Length;
         return 0;
     }
-
-    private static bool RegexBoundary(string text, int next) => next == text.Length || char.IsWhiteSpace(text[next])
-        || "/,;}|)".Contains(text[next], StringComparison.Ordinal)
-        || text.AsSpan(next).StartsWith("=>", StringComparison.Ordinal) || text.AsSpan(next).StartsWith("->", StringComparison.Ordinal);
 
     private static int TokenEnd(string text, int caret, bool quoted, bool uri)
     {
@@ -387,7 +356,7 @@ internal sealed class SourceCompletionService(Func<SshPrompt, CancellationToken,
         string leaf = prefix[(separator + 1)..];
         if (prefix == "~" && context.LookupBase is null) { parent = "~/"; leaf = ""; }
         string directory = context.LookupBase is { } lookup
-            ? (parent.Length == 0 ? lookup : PathSemantics.JoinValue(lookup, new StringValue(parent))).Raw
+            ? (parent.Length == 0 ? lookup : PathSemantics.JoinValue(lookup, parent)).Raw
             : parent.Length == 0 ? "." : parent;
         var entries = await remote.ListAsync(endpoint, directory, leaf, cancellationToken);
         List<SourceCompletionItem> items = [];

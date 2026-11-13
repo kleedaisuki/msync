@@ -132,7 +132,15 @@ def failed_copy(binary: Path, fixture: Path) -> Result:
     process = invoke(
         binary,
         fixture,
-        ["--no-config", "run", str(source), "--trace", str(destination)],
+        [
+            "--no-config",
+            "run",
+            str(source),
+            "--trace",
+            str(destination),
+            "--telemetry-level",
+            "phases",
+        ],
     )
     require(process, 1)
     assert not (fixture / "not-created").exists()
@@ -147,6 +155,12 @@ def failed_copy(binary: Path, fixture: Path) -> Result:
         for row in found
     ), found
     assert "missing-file" in process.stderr
+    assert any(
+        row["name"] == "execute"
+        and row["status"] == "error"
+        and row["metrics"].get("scheduler.admitted_operations") == 1
+        for row in found
+    ), found
     return Result("failed-copy-cause-and-outcome", len(found))
 
 
@@ -417,8 +431,157 @@ def scheduler_profile(binary: Path, fixture: Path) -> Result:
             ).fetchone()[0]
             > 0
         )
+        totals: dict[str, int] = dict(
+            connection.execute(
+                """SELECT key,value_int FROM spans JOIN metrics ON id=record_id
+               WHERE name='execute' AND key GLOB 'scheduler.*'"""
+            )
+        )
+        assert totals["scheduler.admitted_operations"] == 1, totals
+        assert totals["scheduler.admitted_transfers"] == 1, totals
+        assert totals["scheduler.resource_nodes_visited"] > 0, totals
+        assert totals["scheduler.submitted_plans"] == 1, totals
+        assert totals["scheduler.submitted_batches"] == 1, totals
+        assert totals["scheduler.admission_ns"] > 0, totals
         count: int = connection.execute("SELECT count(*) FROM records").fetchone()[0]
+    count += scheduler_hazard(binary, fixture / "hazard")
     return Result("sqlite-profile-scheduler-causality-and-payload", count)
+
+
+def scheduler_hazard(binary: Path, fixture: Path) -> int:
+    fixture.mkdir()
+    payload: str = "gated scheduler payload"
+    (fixture / "source.txt").write_bytes(b"typed Path source bytes")
+    (fixture / "producer.py").write_text(
+        "from pathlib import Path\nimport sys\nimport time\n"
+        "Path('child-ready').touch()\n"
+        "while not Path('gate').exists():\n    time.sleep(0.01)\n"
+        + f"sys.stdout.write({payload!r})\n",
+        encoding="utf-8",
+    )
+    python: str = json.dumps(Path(sys.executable).resolve().as_posix())
+    (fixture / "hazard.msync").write_text(
+        f"""let child = $std::process::spawn({python}, ["producer.py"]);
+child::stdout -> ./held.txt;
+"independent bytes" -> ./independent.txt;
+$std::io::write_text(./at-query, "entered");
+if $std::fs::exists(./held.txt) {{ $std::io::println("visible"); }};
+acquire child;
+let path_child = $std::process::spawn({python}, ["-c", "print('source.txt', end='')"]);
+(path_child::stdout as Path) -> ./from-path.txt;
+acquire path_child;
+""",
+        encoding="utf-8",
+    )
+    database: Path = fixture / "hazard.sqlite"
+    with subprocess.Popen(
+        [
+            str(binary),
+            "--no-config",
+            "--jobs",
+            "2",
+            "--telemetry-db",
+            str(database),
+            "--telemetry-level",
+            "diagnostics",
+            "hazard.msync",
+        ],
+        cwd=fixture,
+        text=True,
+        encoding="utf-8",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ) as process:
+        try:
+            assert wait_for_file(fixture / "child-ready", 10), process.poll()
+            assert wait_for_file(fixture / "at-query", 10), process.poll()
+            assert wait_for_file(fixture / "independent.txt", 5), process.poll()
+            assert (fixture / "independent.txt").read_bytes() == b"independent bytes"
+            assert not (fixture / "held.txt").exists() and process.poll() is None
+            assert wait_for_scheduler_dependency(database), process.poll()
+        finally:
+            (fixture / "gate").touch()
+            stdout, stderr = process.communicate(timeout=25)
+    assert process.returncode == 0 and stdout.strip() == "visible", (stdout, stderr)
+    assert (fixture / "held.txt").read_text(encoding="utf-8") == payload
+    assert (fixture / "from-path.txt").read_bytes() == b"typed Path source bytes"
+    with sqlite3.connect(database) as connection:
+        totals: dict[str, int] = dict(
+            connection.execute(
+                """SELECT key,value_int FROM spans JOIN metrics ON id=record_id
+            WHERE name='execute' AND key GLOB 'scheduler.*'"""
+            )
+        )
+        for metric in (
+            "admitted_operations",
+            "admitted_transfers",
+            "resource_nodes_visited",
+            "dependency_edges",
+            "native_hazard_waits",
+            "admission_ns",
+            "wait_ns",
+        ):
+            assert totals[f"scheduler.{metric}"] > 0, totals
+        assert totals["scheduler.submitted_plans"] == 0, totals
+        assert totals["scheduler.submitted_batches"] == 0, totals
+        footprints: dict[str, int] = dict(
+            connection.execute(
+                """SELECT destination.value,reads.value_int FROM spans AS admission
+            JOIN attributes AS destination ON destination.record_id=admission.id AND destination.key='transfer.destination'
+            JOIN metrics AS reads ON reads.record_id=admission.id AND reads.key='resources.reads'
+            WHERE admission.name='scheduler.admission'"""
+            )
+        )
+        assert (
+            next(
+                reads for path, reads in footprints.items() if path.endswith("held.txt")
+            )
+            == 0
+        ), footprints
+        assert (
+            next(
+                reads
+                for path, reads in footprints.items()
+                if path.endswith("from-path.txt")
+            )
+            == 1
+        ), footprints
+        assert (
+            connection.execute(
+                """SELECT count(*) FROM spans AS waiting
+            JOIN attributes AS reason ON reason.record_id=waiting.id AND reason.key='wait.reason'
+            JOIN metrics AS pending ON pending.record_id=waiting.id AND pending.key='dependencies.pending'
+            JOIN metrics AS suspended ON suspended.record_id=waiting.id AND suspended.key='await.suspended'
+            JOIN events AS edge ON edge.trace_id=waiting.trace_id AND edge.span_id=waiting.span_id
+            JOIN attributes AS producer ON producer.record_id=edge.id AND producer.key='dependency.span_id'
+            JOIN spans AS admission ON admission.trace_id=edge.trace_id AND admission.span_id=producer.value
+            JOIN attributes AS destination ON destination.record_id=admission.id AND destination.key='transfer.destination'
+            WHERE waiting.name='scheduler.wait' AND reason.value='native.resources'
+            AND pending.value_int>0 AND suspended.value_int=1 AND waiting.duration_ns>0
+            AND edge.name='runtime.dependency' AND admission.name='scheduler.admission'
+            AND destination.value LIKE '%held.txt'"""
+            ).fetchone()[0]
+            > 0
+        )
+        return int(connection.execute("SELECT count(*) FROM records").fetchone()[0])
+
+
+def wait_for_scheduler_dependency(database: Path) -> bool:
+    deadline: float = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        with sqlite3.connect(database) as connection:
+            found: int = connection.execute(
+                """SELECT count(*) FROM events AS edge
+                JOIN attributes AS producer ON producer.record_id=edge.id AND producer.key='dependency.span_id'
+                JOIN spans AS admission ON admission.trace_id=edge.trace_id AND admission.span_id=producer.value
+                JOIN attributes AS destination ON destination.record_id=admission.id AND destination.key='transfer.destination'
+                WHERE edge.name='runtime.dependency' AND admission.name='scheduler.admission'
+                AND destination.value LIKE '%held.txt'"""
+            ).fetchone()[0]
+        if found > 0:
+            return True
+        time.sleep(0.005)
+    return False
 
 
 def repl_profile(binary: Path, fixture: Path) -> Result:

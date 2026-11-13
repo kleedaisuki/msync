@@ -8,12 +8,16 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Msync.Compiler;
 using Msync.Core;
+using Msync.Core.Native;
+using Msync.Runtime.Native;
+using Msync.Probes;
 using Msync.Runtime;
-using Module = Msync.Core.Module;
 
 int size = int.Parse(Option("--size", "1024"), CultureInfo.InvariantCulture);
 int samples = int.Parse(Option("--samples", "15"), CultureInfo.InvariantCulture);
 int iterations = int.Parse(Option("--iterations", "16"), CultureInfo.InvariantCulture);
+if (size < 1 || samples < 1 || iterations < 1)
+    throw new ArgumentException("Size, samples and iterations must be positive.");
 string root = Path.GetFullPath(Option("--root", ".temp/number-runtime/work"));
 Directory.CreateDirectory(root);
 ExecutionOptions options = new(WorkingDirectory: root, Output: TextWriter.Null, Error: TextWriter.Null);
@@ -29,7 +33,7 @@ foreach (string scenario in Option("--cases", "sum,arithmetic,powers,comparisons
         "arithmetic" => $"fn run(items: Range) {{ let total = 0; for item in items {{ total = total + ((item*3.5+2)/1.25-4)%17; }}; total }}; run([{items}])",
         "powers" => $"fn run(items: Range) {{ let total = 0; for item in items {{ total = total + (item+1)**2/4; }}; total }}; run([{items}])",
         "comparisons" => $"fn run(items: Range) {{ let total = 0; for item in items {{ if item*3.5+2 >= 20 {{ total = total + item; }}; }}; total }}; run([{items}])",
-        "captured" => $"let total = 0; fn run(items: Range) {{ global total; for item in items {{ total = total + ((item*3.5+2)/1.25-4)%17; }}; total }}; run([{items}])",
+        "captured" => $"let total = 0; fn run(items: Range) {{ for item in items {{ total = total + ((item*3.5+2)/1.25-4)%17; }}; total }}; run([{items}])",
         "last" => $"fn run(items: Range) {{ let last = 0; for item in items {{ last = item; }}; last }}; run([{items}])",
         "literal" => "42",
         _ => throw new ArgumentException(scenario)
@@ -45,14 +49,14 @@ foreach (string scenario in Option("--cases", "sum,arithmetic,powers,comparisons
     };
     foreach (int level in new[] { 0, 2, 3 })
     {
-        Module relocatable = Compiler.Compile(source, scenario + ".msync", level);
-        foreach (Module variant in new[] { relocatable, RoundTrip(relocatable), RoundTrip(Binding.Bind(relocatable, new(root, root))) })
-            Verify(Interpreter.ExecuteAsync(variant, options).GetAwaiter().GetResult(), expected, scenario + " O" + level);
+        NativeProgram relocatable = Compiler.Compile(source, scenario + ".msync", level);
+        foreach (NativeProgram variant in new[] { relocatable, RoundTrip(relocatable), RoundTrip(NativeProbe.Prepare(relocatable, new(root, root))) })
+            Verify(NativeProbe.RunAsync(variant, options).GetAwaiter().GetResult(), expected, scenario + " O" + level);
     }
     if (args.Contains("--check", StringComparer.Ordinal)) continue;
-    Module executable = RoundTrip(Binding.Bind(Compiler.Compile(source, scenario + ".msync", 2), new(root, root)));
-    Interpreter vm = new(executable, options);
-    Value Run() => vm.ExecuteAsync().GetAwaiter().GetResult();
+    NativeProgram executable = RoundTrip(NativeProbe.Prepare(Compiler.Compile(source, scenario + ".msync", 2), new(root, root)));
+    await using NativeInterpreter vm = new(executable, options);
+    NativeValue Run() => vm.ExecuteAsync().GetAwaiter().GetResult();
     for (int warmup = 0; warmup < 64; warmup++) Verify(Run(), expected, scenario);
     double[] times = new double[samples];
     for (int sample = 0; sample < samples; sample++)
@@ -66,10 +70,11 @@ foreach (string scenario in Option("--cases", "sum,arithmetic,powers,comparisons
     double allocated = (GC.GetTotalAllocatedBytes(precise: true) - before) / (double)iterations;
     double[] sorted = times.Order().ToArray();
     using MemoryStream imageBytes = new();
-    Artifact.Write(executable, imageBytes);
-    Instruction[] code = executable.Functions.SelectMany(function => function.Instructions).ToArray();
-    int numericSites = code.Count(instruction => instruction.Op is OpCode.Add or OpCode.Subtract or OpCode.Multiply
-        or OpCode.Divide or OpCode.Remainder or OpCode.Negate || instruction.Op == OpCode.NativeCall && instruction.Text == "math.pow");
+    NativeArtifact.Write(executable, imageBytes);
+    NativeInstruction[] code = executable.Functions.SelectMany(function => function.Instructions).ToArray();
+    int numericSites = code.Count(instruction => instruction.Op == NativeOp.Binary
+        && instruction.Immediate <= (long)NativeBinary.Power || instruction.Op == NativeOp.Unary
+        && instruction.Immediate == (long)NativeUnary.Negate || instruction.Op == NativeOp.CallNative && instruction.Symbol == "math.pow");
     observations.Add(new(scenario, size, code.Length, numericSites,
         Convert.ToHexStringLower(SHA256.HashData(imageBytes.ToArray())), times,
         sorted[sorted.Length / 2], sorted[(int)Math.Ceiling(sorted.Length * .95) - 1], allocated));
@@ -78,7 +83,7 @@ foreach (string scenario in Option("--cases", "sum,arithmetic,powers,comparisons
 string image = Path.Combine(AppContext.BaseDirectory, "Msync.Runtime.dll");
 string runtimeIdentity = File.Exists(image) ? image : Environment.ProcessPath!;
 Report report = new(runtimeIdentity, Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(runtimeIdentity))),
-    System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription, checks, observations.ToArray());
+    System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription, Environment.GetEnvironmentVariable("MSYNC_JIT"), checks, observations.ToArray());
 string output = Path.GetFullPath(Option("--output", ".temp/number-runtime/result.json"));
 Directory.CreateDirectory(Path.GetDirectoryName(output)!);
 File.WriteAllText(output, JsonSerializer.Serialize(report, ReportJson.Default.Report));
@@ -90,37 +95,40 @@ void CheckRepresentations()
         double.PositiveInfinity, double.NegativeInfinity,
         BitConverter.Int64BitsToDouble(0x7ff8000000000042),
         BitConverter.Int64BitsToDouble(unchecked((long)0xfff8000000000024))];
-    foreach (OpCode operation in new[] { OpCode.Add, OpCode.Subtract, OpCode.Multiply, OpCode.Divide, OpCode.Remainder })
+    foreach (NativeBinary operation in new[] { NativeBinary.Add, NativeBinary.Subtract, NativeBinary.Multiply, NativeBinary.Divide, NativeBinary.Remainder })
         foreach (double left in values)
             foreach (double right in values)
             {
                 double expected = operation switch
                 {
-                    OpCode.Add => left + right,
-                    OpCode.Subtract => left - right,
-                    OpCode.Multiply => left * right,
-                    OpCode.Divide => left / right,
+                    NativeBinary.Add => left + right,
+                    NativeBinary.Subtract => left - right,
+                    NativeBinary.Multiply => left * right,
+                    NativeBinary.Divide => left / right,
                     _ => left % right
                 };
-                Module module = new([new NumberValue(left), new NumberValue(right)],
-                    [new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Constant, 1),
-                        new(operation), new(OpCode.Return)], TypeRef.Number)], OptimizationLevel: 0);
-                foreach (Module variant in new[] { module, RoundTrip(module), RoundTrip(Binding.Bind(module, new(root, root))) })
-                    Verify(Interpreter.ExecuteAsync(variant, options).GetAwaiter().GetResult(), expected, "IEEE " + operation);
+                NativeProgram module = new([new(NativeKind.Number, Number: left), new(NativeKind.Number, Number: right)],
+                    [new("main", [new(0), new(0), new(0)],
+                        [new(NativeOp.Constant, 0, 0), new(NativeOp.Constant, 1, 1),
+                         new(NativeOp.Binary, 2, 0, 1, Immediate: (long)operation), new(NativeOp.Return, A: 2)], new([], 0, []))],
+                    [new(TypeKind.Number)], []);
+                foreach (NativeProgram variant in new[] { module, RoundTrip(module), RoundTrip(NativeProbe.Prepare(module, new(root, root))) })
+                    Verify(NativeProbe.RunAsync(variant, options).GetAwaiter().GetResult(), expected, "IEEE " + operation);
             }
     foreach (double number in values)
     {
-        Module module = new([new NumberValue(number)], [new("main", 0, 0,
-            [new(OpCode.Constant, 0), new(OpCode.Negate), new(OpCode.Dup), new(OpCode.Add),
-                new(OpCode.Pop), new(OpCode.Constant, 0), new(OpCode.Return)], TypeRef.Number)], OptimizationLevel: 0);
-        Verify(Interpreter.ExecuteAsync(module, options).GetAwaiter().GetResult(), number, "duplicate/discard retains original constant");
+        NativeProgram module = new([new(NativeKind.Number, Number: number)], [new("main", [new(0), new(0), new(0), new(0)],
+            [new(NativeOp.Constant, 0, 0), new(NativeOp.Unary, 1, 0, Immediate: (long)NativeUnary.Negate),
+             new(NativeOp.Copy, 2, 1), new(NativeOp.Binary, 3, 1, 2, Immediate: (long)NativeBinary.Add),
+             new(NativeOp.Drop, A: 3), new(NativeOp.Return, A: 0)], new([], 0, []))], [new(TypeKind.Number)], []);
+        Verify(NativeProbe.RunAsync(module, options).GetAwaiter().GetResult(), number, "duplicate/discard retains original constant");
     }
 }
 
-void Verify(Value actual, double expected, string scenario)
+void Verify(NativeValue actual, double expected, string scenario)
 {
     checks++;
-    if (actual is not NumberValue number || BitConverter.DoubleToInt64Bits(number.Data) != BitConverter.DoubleToInt64Bits(expected))
+    if (actual.Kind != NativeKind.Number || BitConverter.DoubleToInt64Bits(actual.AsNumber()) != BitConverter.DoubleToInt64Bits(expected))
         throw new InvalidOperationException($"{scenario}: expected {expected}, found {actual}");
 }
 string Option(string name, string fallback)
@@ -128,14 +136,14 @@ string Option(string name, string fallback)
     int index = Array.IndexOf(args, name);
     return index < 0 ? fallback : args[index + 1];
 }
-static Module RoundTrip(Module module)
+static NativeProgram RoundTrip(NativeProgram module)
 {
     using MemoryStream bytes = new();
-    Artifact.Write(module, bytes); bytes.Position = 0;
-    return Artifact.Read(bytes);
+    NativeArtifact.Write(module, bytes); bytes.Position = 0;
+    return NativeArtifact.Read(bytes);
 }
 internal sealed record Observation(string Scenario, int Size, int Instructions, int NumericSites, string ArtifactSha256, double[] Milliseconds,
     double P50Milliseconds, double P95Milliseconds, double AllocatedBytes);
-internal sealed record Report(string RuntimeImage, string RuntimeSha256, string Framework, int Checks, Observation[] Observations);
+internal sealed record Report(string RuntimeImage, string RuntimeSha256, string Framework, string? JitPolicy, int Checks, Observation[] Observations);
 [JsonSerializable(typeof(Report))]
 internal sealed partial class ReportJson : JsonSerializerContext;

@@ -11,33 +11,60 @@ internal sealed partial class SemanticAnalyzer
 
     private SemanticValue Standard(HirNode node, SemanticContext context)
     {
+        SemanticValue rootValue = EnsureStandardRoot(node.Source, context);
         HirLocationId root = program.StandardLocations[""];
-        if (entryState!.ActivatedModules.Contains(root))
-            return context.Values.GetValueOrDefault(root) ?? entryState.Values[root];
-        ImmutableDictionary<string, SemanticValue>.Builder values = ImmutableDictionary.CreateBuilder<string, SemanticValue>(StringComparer.Ordinal);
-        ImmutableDictionary<string, HirLocationId>.Builder locations = ImmutableDictionary.CreateBuilder<string, HirLocationId>(StringComparer.Ordinal);
-        foreach (string module in StandardSourceCatalog.Read().Keys.Where(name => !name.StartsWith('_')).Order(StringComparer.Ordinal))
-        {
-            SemanticValue value = EnsureModule(module, node.Source, context);
-            values.Add(module, value);
-            if (program.StandardLocations.TryGetValue(module, out var location)) locations.Add(module, location);
-        }
-        var fields = values.ToImmutable();
-        int layout = Shape(fields);
-        int region = nextRegion++;
-        SemanticScope scope = new(region, layout, fields, locations.ToImmutable(), Named: true);
-        context.Objects[region] = scope;
-        HirTypeId type = hir.Type(HirType.ConstructedScope(layout));
-        if (!context.Publish) return new(type, HirNodeId.None, Scope: scope);
-        int construction = hir.Scopes.Count;
-        context.Output!.AddScope(new(layout, locations.Values.ToImmutableArray()));
-        SemanticValue result = new(type, context.Output!.Add(HirKind.Scope, type, node.Source, data: construction), Scope: scope);
-        PublishModule(root, result, node.Source, context);
+        var fields = ImmutableDictionary.CreateBuilder<string, SemanticValue>(StringComparer.Ordinal);
+        foreach (string name in PublicStandardModules()) fields.Add(name, EnsureModule(name, node.Source, context));
+        var scope = rootValue.Scope! with { Layout = Shape(fields.ToImmutable()), Fields = fields.ToImmutable() };
+        var declared = hir.Types[rootValue.Type.Value];
+        HirTypeId type = hir.Type(declared with { Shape = scope.Layout });
+        var result = rootValue with { Type = type, Scope = scope };
+        SemanticContext target = context.Publish ? entryState! : context;
+        target.Objects[scope.Region] = scope;
+        target.Values[root] = result;
+        context.Objects[scope.Region] = scope;
+        context.Values[root] = result;
         return result;
+    }
+
+    private static IEnumerable<string> PublicStandardModules() =>
+        StandardSourceCatalog.Read().Keys.Where(name => !name.StartsWith('_')).Order(StringComparer.Ordinal);
+
+    private SemanticValue EnsureStandardRoot(HirSourceRange source, SemanticContext context)
+    {
+        HirLocationId root = program.StandardLocations[""];
+        SemanticContext target = context.Publish ? entryState! : context;
+        if (target.Values.TryGetValue(root, out var existing)) return existing;
+        string[] names = PublicStandardModules().ToArray();
+        HirTypeId storage = hir.Type(TypeRef.Scope);
+        int layout = hir.InternScopeLayout(new(names.Select(name => new HirField(name, storage)).ToImmutableArray()));
+        var fields = names.ToImmutableDictionary(name => name, _ => ValueForType(storage), StringComparer.Ordinal);
+        var locations = names.ToImmutableDictionary(name => name, name => program.StandardLocations[name], StringComparer.Ordinal);
+        var scope = new SemanticScope(++nextRegion, layout, fields, locations, Named: true);
+        target.Objects[scope.Region] = scope;
+        HirTypeId type = hir.Type(HirType.ConstructedScope(layout));
+        HirNodeId expression = HirNodeId.None;
+        if (context.Publish)
+        {
+            int construction = hir.Scopes.Count;
+            context.Output!.AddScope(new(layout, names.Select(name => locations[name]).ToImmutableArray()));
+            expression = context.Output.Add(HirKind.AllocateScope, type, source, data: construction,
+                effects: HirEffects.WriteLocation | HirEffects.WriteMemory);
+        }
+        var value = new SemanticValue(type, expression, Scope: scope);
+        target.Values[root] = value;
+        context.Values[root] = value;
+        if (context.Publish)
+        {
+            // Canonical module cells exist before any initializer can capture their addresses.
+            entryPrelude.Insert(0, PublishModule(root, value, source, context));
+        }
+        return value;
     }
 
     private SemanticValue EnsureModule(string name, HirSourceRange source, SemanticContext context)
     {
+        if (!name.StartsWith('_')) _ = EnsureStandardRoot(source, context);
         HirLocationId shared = program.StandardLocations[name];
         if (entryState!.ActivatedModules.Contains(shared))
             return StorageValue(shared, context) ?? entryState.Values[shared];
@@ -56,28 +83,28 @@ internal sealed partial class SemanticAnalyzer
         if (!context.Publish)
         {
             context.Values[location] = value;
-            context.Storage[location] = value.Type;
+            context.Storage[location] = hir.Type(TypeRef.Scope);
             return value;
         }
-        PublishModule(location, value, source, context);
+        entryPrelude.Add(PublishModule(location, value, source, context));
         return value;
     }
 
-    private void PublishModule(HirLocationId location, SemanticValue value, HirSourceRange source,
+    private HirNodeId PublishModule(HirLocationId location, SemanticValue value, HirSourceRange source,
         SemanticContext context)
     {
         SemanticContext target = entryState!;
         target.Values[location] = value;
         context.Values[location] = value;
         if (value.Scope is { } scope) target.Objects[scope.Region] = scope;
-        var storage = StructuralStorageType(value.Type);
+        HirTypeId storage = hir.Type(TypeRef.Scope);
         target.Storage[location] = storage;
         context.Storage[location] = storage;
         target.ActivatedModules = target.ActivatedModules.Add(location);
         context.ActivatedModules = context.ActivatedModules.Add(location);
         foreach (var pair in target.Objects) context.Objects[pair.Key] = pair.Value;
         SealStorage(location, storage, target);
-        entryPrelude.Add(context.Output!.Add(HirKind.Declare, hir.Type(TypeRef.Null), source, [value.Node], location.Value));
+        return context.Output!.Add(HirKind.Declare, hir.Type(TypeRef.Null), source, [value.Node], location.Value);
     }
 
     private BoundDeclaration? StandardDeclaration(HirLocationId source)

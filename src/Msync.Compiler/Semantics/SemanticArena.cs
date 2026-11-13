@@ -6,9 +6,11 @@ namespace Msync.Compiler.Semantics;
 // Semantic readers may intern canonical metadata, but cannot publish executable bodies.
 internal sealed class SemanticArena(HirBuilder builder)
 {
+    private readonly SemanticLocations locations = new(builder.Locations);
     public IReadOnlyList<HirSource> Sources => builder.Sources;
     public IReadOnlyList<HirType> Types => builder.Types;
-    public IReadOnlyList<HirLocation> Locations => builder.Locations;
+    public IReadOnlyList<HirLocation> Locations => locations;
+    public HirLocationId QueryLocation(HirLocation location) => locations.AddQuery(location);
     public IReadOnlyList<HirFunction> Functions => builder.Functions;
     public IReadOnlyList<HirTemplate> Templates => builder.Templates;
     public IReadOnlyList<HirNode> Nodes => builder.Nodes;
@@ -32,6 +34,25 @@ internal sealed class SemanticArena(HirBuilder builder)
         System.Runtime.InteropServices.CollectionsMarshal.AsSpan(builder.Edges)
             .Slice(node.Children.Start, node.Children.Count);
     public int InternScopeLayout(HirScopeLayout layout) => builder.InternScopeLayout(layout);
+    public HirTypeId RecursiveScope(string identity, Func<HirTypeId, HirScopeLayout> fields) =>
+        builder.RecursiveScope(identity, fields);
+    // Fresh query cells are not executable HIR locations; -1 remains the missing-ID sentinel.
+    private sealed class SemanticLocations(IReadOnlyList<HirLocation> declared) : IReadOnlyList<HirLocation>
+    {
+        private readonly Dictionary<int, HirLocation> queries = [];
+        private int next = -2;
+        public int Count => declared.Count;
+        public HirLocation this[int index] => index >= 0 ? declared[index] : queries[index];
+        public HirLocationId AddQuery(HirLocation location)
+        {
+            HirLocationId id = new(next--);
+            queries.Add(id.Value, location);
+            return id;
+        }
+        public IEnumerator<HirLocation> GetEnumerator() => declared.GetEnumerator();
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
     public int InternSignature(HirSignature signature)
     {
         int index = builder.Signatures.Count;

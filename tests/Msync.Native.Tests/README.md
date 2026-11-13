@@ -6,8 +6,10 @@ Run from the repository root:
 dotnet run --project tests/Msync.Native.Tests/Msync.Native.Tests.csproj --artifacts-path .temp/build-natives -m:1 -nr:false
 ```
 
-The harness uses actual local files and, on Unix, a native POSIX shell behind an
-SSH-argv fixture. It does not require or claim an authenticated SSH server.
+The harness invokes `NativeBuiltins` with `NativeRuntimeContext` and closed
+`NativeValue`/`NativePath`/`NativeRange` descriptors; it does not adapt through the
+retired `NativeRegistry`, `Value` hierarchy or interpreter. The harness uses
+actual local files and, on Unix, a native POSIX shell behind an SSH-argv fixture. It does not require or claim an authenticated SSH server.
 Fixtures are owned under `.temp` and removed on completion. The journey checks
 copy/mutation, hard-link identity, dangling symlinks, FIFO classification,
 permissions, Unicode/backslash/newline path preservation, lazy ranges and
@@ -25,7 +27,7 @@ all hosts and retain endpoint identity without invoking transport.
 - Remote metadata uses GNU `stat`/`find`/`realpath`, matching the Linux endpoint
   transport. Its C-locale not-found diagnostic distinguishes absence from access
   errors. Metadata and publication errors remain visible through native stderr.
-- Lazy `IAsyncEnumerable<Value>` factories defer directory enumeration and
+- Lazy `IAsyncEnumerable<NativeValue>` factories defer directory enumeration and
   callback invocation. `take(0)` does not invoke a missing source directory;
   `front`/`any_of` do not consume unneeded items. See Microsoft's
   [async stream cancellation contract](https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/generate-consume-asynchronous-stream).
@@ -34,7 +36,7 @@ all hosts and retain endpoint identity without invoking transport.
   rather than `GetFullPath`,
   which would resolve lexical operations against the host working directory.
 
-The initial integration passes 120 assertions. It also checks the legacy status
+The native-only migration preserves and passes all 120 original assertions. It also checks the legacy status
 labels (`regular`, `block`, `character`, `unknown`), octal/aggregate permission
 flags, String-as-filename native copy arguments and zero-argument `ranges.of()`. Native Windows filesystem API
 bindings compile with the same project; actual Windows execution is a separate
@@ -42,7 +44,7 @@ platform acceptance responsibility.
 
 ## Selector plans through native range adaptors
 
-The native adaptor implementation preserves `PathSelection` provenance and
+The native adaptor implementation preserves `NativePathSelection` provenance and
 composes its `Apply` projection over the transfer owner's discovered candidate
 values. This reuses the ordinary async iterator functions; it never re-enumerates
 the selector's original `Items` stream while the SSH channel is already open.

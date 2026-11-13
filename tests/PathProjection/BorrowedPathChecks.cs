@@ -1,41 +1,39 @@
 using Msync.Core;
+using Msync.Core.Native;
 using Msync.Runtime;
+using Msync.Runtime.Native;
 
 internal static class BorrowedPathChecks
 {
     public static async Task<int> Run(string root)
     {
         int assertions = 0;
-        var remote = new ConnectionValue(ConnectionKind.Ssh, "unused");
-        var unbound = new PathValue("left/symbolic.md", root, LocalSpelling: "right/native.txt");
-        var local = unbound with { Connection = new(ConnectionKind.Local) };
-        var qualified = unbound with { Connection = remote };
+        NativeConnection remote = new(ConnectionKind.Ssh, "unused");
+        NativePath unbound = new("left/symbolic.md", root, HomeDirectory: root, LocalSpelling: "right/native.txt");
+        NativePath local = unbound with { Connection = new(ConnectionKind.Local) };
+        NativePath qualified = unbound with { Connection = remote };
+        Check(PathSemantics.FileName(new("folder/name/", Connection: remote)) == "name", "Regex basename discards trailing separators");
+        await Compare(new NativePath("folder/name/", root, remote), "filename", NativeBinary.Equal, "", false);
+        await Compare(new NativePath("folder/.gitignore", root, remote), "extension", NativeBinary.Equal, "", true);
+        await Compare(new NativePath("folder/..", root, remote), "stem", NativeBinary.Equal, "..", false);
+        await Compare(new NativePath("folder/name.", root, remote), "extension", NativeBinary.Equal, ".", true);
+        await Compare(new NativePath("folder/left\\stem.md", root, remote), "stem", NativeBinary.Equal, "left\\stem", true);
+        await Compare(new NativePath("folder/\U00010000", root, remote), "filename", NativeBinary.Greater, "\uE000", false);
+        await Compare(NativeValue.FromString("folder/left\\stem.md"), "stem", NativeBinary.Equal, OperatingSystem.IsWindows() ? "stem" : "left\\stem", true);
+        await Compare(NativeValue.FromString("folder\\left/other.md\\"), "filename", NativeBinary.Equal, OperatingSystem.IsWindows() ? "" : "other.md\\", false);
+        await Compare(unbound, "extension", NativeBinary.Equal, OperatingSystem.IsWindows() ? ".txt" : ".md", true);
+        await Compare(local, "extension", NativeBinary.Equal, ".md", true);
+        await Compare(qualified, "extension", NativeBinary.Equal, ".md", true);
 
-        Check(PathSemantics.FileName(new("folder/name/", Connection: remote)) == "name",
-            "Regex selection's basename discards trailing separators");
-        await Compare(new PathValue("folder/name/", root, remote), "filename", OpCode.Equal, "", true, explicitCast: false);
-        await Compare(new PathValue("folder/.gitignore", root, remote), "extension", OpCode.Equal, "", true, explicitCast: true);
-        await Compare(new PathValue("folder/..", root, remote), "stem", OpCode.Equal, "..", true, explicitCast: false);
-        await Compare(new PathValue("folder/name.", root, remote), "extension", OpCode.Equal, ".", true, explicitCast: true);
-        await Compare(new PathValue("folder/left\\stem.md", root, remote), "stem", OpCode.Equal, "left\\stem", true, explicitCast: true);
-        await Compare(new PathValue("folder/\U00010000", root, remote), "filename", OpCode.Greater, "\uE000", true, explicitCast: false);
-        await Compare(new StringValue("folder/left\\stem.md"), "stem", OpCode.Equal,
-            OperatingSystem.IsWindows() ? "stem" : "left\\stem", true, explicitCast: true);
-        await Compare(new StringValue("folder\\left/other.md\\"), "filename", OpCode.Equal,
-            OperatingSystem.IsWindows() ? "" : "other.md\\", true, explicitCast: false);
-        await Compare(unbound, "extension", OpCode.Equal,
-            OperatingSystem.IsWindows() ? ".txt" : ".md", true, explicitCast: true);
-        await Compare(local, "extension", OpCode.Equal, ".md", true, explicitCast: true);
-        await Compare(qualified, "extension", OpCode.Equal, ".md", true, explicitCast: true);
-
-        var captured = unbound with { WorkingDirectory = Path.Combine(root, "old"), HomeDirectory = Path.Combine(root, "home") };
+        NativePath captured = unbound with { WorkingDirectory = Path.Combine(root, "old"), HomeDirectory = Path.Combine(root, "home") };
         await Owned(captured, "extension", captured.WithRaw(".md", OperatingSystem.IsWindows() ? ".txt" : null));
         await Owned(captured with { LocalSpelling = "other/native.md" }, "extension", captured.WithRaw(".md"));
         await Owned(local, "filename", local.WithRaw("symbolic.md") with { HomeDirectory = root });
         await Owned(qualified, "stem", qualified.WithRaw("symbolic") with { HomeDirectory = root });
-        await Owned(new StringValue("folder/left\\leaf.txt"), "filename",
-            new PathValue(OperatingSystem.IsWindows() ? "leaf.txt" : "left\\leaf.txt", root, HomeDirectory: root));
-        await Owned(new StringValue("folder/"), "filename", new PathValue("", root, HomeDirectory: root));
+        await Owned(new NativePath("folder/leaf.txt", root), "filename", new("leaf.txt", root));
+        await Owned(NativeValue.FromString("folder/left\\leaf.txt"), "filename",
+            new(OperatingSystem.IsWindows() ? "leaf.txt" : "left\\leaf.txt", root, HomeDirectory: root));
+        await Owned(NativeValue.FromString("folder/"), "filename", new("", root, HomeDirectory: root));
         return assertions;
 
         void Check(bool condition, string message)
@@ -44,45 +42,39 @@ internal static class BorrowedPathChecks
             if (!condition) throw new InvalidOperationException(message);
         }
 
-        async Task Compare(Value operand, string native, OpCode comparison, string text, bool expected, bool explicitCast)
+        async Task Compare(NativeValue operand, string native, NativeBinary comparison, string text, bool explicitCast)
         {
-            string name = "fs." + native;
-            List<Instruction> code = [new(OpCode.Constant, 0), new(OpCode.NativeCall, 1, Text: name)];
-            if (explicitCast)
-                code.AddRange([new(OpCode.Constant, 2), new(OpCode.NativeCall, 2, Text: "cast")]);
-            else
-                code.Add(new(OpCode.Convert, Text: "String"));
-            code.AddRange([new(OpCode.Constant, 1), new(comparison), new(OpCode.Return)]);
-
-            var result = await Execute(name, code, TypeRef.Bool, [operand, new StringValue(text), new TypeValue(TypeRef.String)]);
-            Check(result is BoolValue boolean && boolean.Data == expected,
-                $"Borrowed lexical comparison changed {operand} ({name} {comparison} {text})");
+            NativeProgram program = new([NativeFixture.Constant(operand), new(NativeKind.String, text)],
+                [new("projection", [new(0), new(1), new(2), new(2), new(3)],
+                    [new(NativeOp.Constant, 0, 0), new(NativeOp.CallNative, 1, Symbol: "fs." + native, Inputs: [0]),
+                     new(NativeOp.Convert, 2, 1, Type: 2, Immediate: explicitCast ? 1 : 0), new(NativeOp.Constant, 3, 1),
+                     new(NativeOp.Binary, 4, 2, 3, Immediate: (long)comparison), new(NativeOp.Return, A: 4)], new([], 3, []))],
+                [new(operand.Type.Kind), new(TypeKind.Path), new(TypeKind.String), new(TypeKind.Bool)], []);
+            NativeValue result = await Execute(program, "fs." + native);
+            Check(result.AsBool(), $"Lexical comparison changed {operand} ({native} {comparison} {text})");
         }
 
-        async Task Owned(Value operand, string native, PathValue expected)
+        async Task Owned(NativeValue operand, string native, NativePath expected)
         {
-            string name = "fs." + native;
-            Instruction[] code = [new(OpCode.Constant, 0), new(OpCode.NativeCall, 1, Text: name), new(OpCode.Return)];
-            var result = await Execute(name, code, TypeRef.Path, [operand]);
-            Check(result is PathValue path && path == expected,
-                $"Owned lexical operation changed {operand} ({name}): {result} != {expected}");
+            NativeProgram program = new([NativeFixture.Constant(operand)],
+                [new("projection", [new(0), new(1)], [new(NativeOp.Constant, 0, 0),
+                    new(NativeOp.CallNative, 1, Symbol: "fs." + native, Inputs: [0]), new(NativeOp.Return, A: 1)], new([], 1, []))],
+                [new(operand.Type.Kind), new(TypeKind.Path)], []);
+            NativeValue result = await Execute(program, "fs." + native);
+            Check(result.AsPath() == expected, $"Owned lexical operation changed {operand} ({native}): {System.Text.Json.JsonSerializer.Serialize(result.AsPath())} != {System.Text.Json.JsonSerializer.Serialize(expected)}");
         }
 
-        async Task<Value> Execute(string name, IReadOnlyList<Instruction> code, TypeRef resultType, IReadOnlyList<Value> constants)
+        async Task<NativeValue> Execute(NativeProgram program, string name)
         {
-            Module executable = new(constants, [new("projection", 0, 0, code, resultType)],
-                Stage: ArtifactStage.Executable, Context: new(root, root));
-            using MemoryStream encoded = new();
-            Artifact.Write(executable, encoded);
-            encoded.Position = 0;
-            var profile = new RuntimeProfile(instructionSites: true);
-            var options = new ExecutionOptions(WorkingDirectory: root) { Profile = profile };
-            var result = await Interpreter.ExecuteAsync(Artifact.Read(encoded), options);
-            var samples = profile.Drain();
-            var nativeCall = samples.Single(sample => sample.Name == "vm.native" && sample.Attributes["native.name"] == name);
-            Check(nativeCall.Metrics["fast_calls"] == 1, $"{name} bypassed the lexical target");
-            Check(samples.Count(sample => sample.Name == "vm.instruction") == code.Count,
-                "Lexical projection lost logical instructions");
+            RuntimeProfile profile = new(instructionSites: true);
+            await using NativeInterpreter interpreter = new(NativeFixture.Codec(program with
+            { Stage = ArtifactStage.Executable, Context = new(root, root) }), new(WorkingDirectory: root) { Profile = profile });
+            NativeValue result = await interpreter.ExecuteAsync();
+            IReadOnlyList<RuntimeProfileSample> samples = profile.Drain();
+            RuntimeProfileSample call = samples.Single(sample => sample.Name == "vm.native" && sample.Attributes["native.name"] == name);
+            Check(call.Metrics["calls"] == 1, $"{name} did not execute exactly once");
+            Check(samples.Count(sample => sample.Name == "vm.instruction") == program.Functions[0].Instructions.Count,
+                "Lexical projection lost logical instruction sites");
             return result;
         }
     }

@@ -1,3 +1,4 @@
+using Msync.Core.Native;
 using Msync.Compiler;
 using Msync.Core;
 using Frontend = Msync.Compiler.Compiler;
@@ -5,8 +6,8 @@ using Frontend = Msync.Compiler.Compiler;
 internal static class QualificationContextChecks
 {
     private const string Prefix = "let remote = ssh://forge; ";
-    private static readonly ConnectionValue Remote = new(ConnectionKind.Ssh, "forge");
-    private static readonly ConnectionValue Local = new(ConnectionKind.Local);
+    private static readonly NativeConnection Remote = new(ConnectionKind.Ssh, "forge");
+    private static readonly NativeConnection Local = new(ConnectionKind.Local);
 
     public static void Run()
     {
@@ -118,18 +119,18 @@ internal static class QualificationContextChecks
             "same-key recursive inference stopped reusing its reserved specialization");
     }
 
-    private static void Qualified(string source, ConnectionValue connection, string raw)
+    private static void Qualified(string source, NativeConnection connection, string raw)
     {
         EditorContext context = At(source);
-        PathValue? path = context.Receiver?.KnownPath;
-        Check(path is not null && path.Connection == connection && path.Raw == raw,
+        NativePath? path = context.Receiver?.KnownPath;
+        Check(path is { } known && known.Connection == connection && known.Raw == raw,
             $"grouped path receiver differs from qualification semantics: {source}; expected {connection} @ {raw}, got {context.Receiver}; owner {context.PhysicalEndpoint}");
     }
 
     private static void Unqualified(string source)
     {
-        PathValue? path = At(source).Receiver?.KnownPath;
-        Check(path is not null && path.Connection is null,
+        NativePath? path = At(source).Receiver?.KnownPath;
+        Check(path is { Connection: null },
             "an enclosing qualifier crossed a call/function/condition/discard boundary: " + source);
     }
 
@@ -141,10 +142,10 @@ internal static class QualificationContextChecks
         return EditorCompiler.Analyze(source, "file:///qualification.msync").At(caret);
     }
 
-    private static byte[] Bytes(Module module)
+    private static byte[] Bytes(NativeProgram module)
     {
         using MemoryStream stream = new();
-        Artifact.Write(module, stream);
+        NativeArtifact.Write(module, stream);
         return stream.ToArray();
     }
 

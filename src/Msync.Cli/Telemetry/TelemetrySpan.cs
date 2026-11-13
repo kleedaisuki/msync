@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Msync.Core;
 using Msync.Runtime;
+using Msync.Runtime.Native;
 
 namespace Msync.Cli;
 
@@ -73,6 +74,26 @@ internal sealed class TelemetrySpan(TelemetrySession session, string name, strin
         SetMetric("scheduler.admission_ns", stats.AdmissionNanoseconds);
         SetMetric("scheduler.cohort_admission_ns", stats.CohortAdmissionNanoseconds);
         SetMetric("scheduler.wait_ns", stats.WaitNanoseconds);
+    }
+
+    public void RecordTiering(NativeTierStatistics stats, NativeTierStatistics before = default)
+    {
+        if (session.Level < TelemetryLevel.Phases) return;
+        SetMetric("tier.compilations", stats.Compilations - before.Compilations);
+        SetMetric("tier.compilation_ns", stats.CompilationNanoseconds - before.CompilationNanoseconds);
+        SetMetric("tier.code_bytes", stats.CodeBytes - before.CodeBytes);
+        SetMetric("tier.entries", stats.Entries - before.Entries);
+        SetMetric("tier.linked_entries", stats.LinkedEntries - before.LinkedEntries);
+        SetMetric("tier.linked_operations", stats.LinkedOperations - before.LinkedOperations);
+        SetMetric("tier.operations", stats.Operations - before.Operations);
+        SetMetric("tier.direct_operations", stats.DirectOperations - before.DirectOperations);
+        SetMetric("tier.raw_operations", stats.RawOperations - before.RawOperations);
+        SetMetric("tier.guard_misses", stats.GuardMisses - before.GuardMisses);
+        SetMetric("tier.deoptimizations", stats.Deoptimizations - before.Deoptimizations);
+        SetMetric("tier.suspensions", stats.Suspensions - before.Suspensions);
+        SetMetric("tier.recompilations", stats.Recompilations - before.Recompilations);
+        SetMetric("tier.cancellation_polls", stats.CancellationPolls - before.CancellationPolls);
+        SetMetric("tier.unavailable_compilations", stats.UnavailableCompilations - before.UnavailableCompilations);
     }
 
     public void Dispose() => session.EndSpan(name, id, parent, startedUnix, TelemetrySession.Elapsed(started),

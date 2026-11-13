@@ -2,6 +2,8 @@ using Msync.Compiler;
 using Msync.Compiler.Syntax;
 using Msync.Core;
 using Msync.Runtime;
+using Msync.Core.Native;
+using Msync.Runtime.Native;
 
 namespace Msync.Cli;
 
@@ -9,7 +11,7 @@ internal sealed class ReplSession
 {
     private static readonly string ShellPrelude = CreateShellPrelude();
     private readonly CompilerSession compiler;
-    private readonly ExecutionSession execution;
+    private readonly NativeExecutionSession execution;
     private readonly TextReader? inputReader;
     private readonly string color;
     private readonly TelemetrySession? telemetry;
@@ -53,7 +55,7 @@ internal sealed class ReplSession
     {
         await ExecuteAsync(ShellPrelude, CancellationToken.None, prelude: true);
         await using InteractivePrompt? prompt = InteractivePrompt.IsSupported
-            ? new(syntax.IsIncomplete, PromptNames, color: TerminalPresentation.Colors(color), describe: DescribePromptBindings, analyze: source => compiler.AnalyzeEditor(source), colorPolicy: color,
+            ? new(syntax.IsIncomplete, PromptNames, color: TerminalPresentation.Colors(color), describe: DescribePromptBindings, analyze: source => compiler.AnalyzeEditor(source, execution.GetLocalValue), colorPolicy: color,
                 workingDirectory: () => execution.WorkingDirectory) : null;
         editing = prompt is not null;
         if (!Console.IsInputRedirected)
@@ -128,7 +130,7 @@ internal sealed class ReplSession
         lock (cancellationGate) active = cancellation;
         try
         {
-            Module module;
+            NativeProgram module;
             using (TelemetrySpan? compile = submission?.Begin("compile"))
             {
                 try
@@ -146,10 +148,11 @@ internal sealed class ReplSession
             using TelemetrySpan? execute = submission?.Begin("execute");
             using IDisposable? owner = execute is null ? null : telemetry?.Timeline?.Attach(execute.Id);
             ProcessCounters? before = execute?.MeasureProcess();
+            NativeTierStatistics tiersBefore = execution.TierStatistics;
             try
             {
-                Value result = await execution.ExecuteAsync(module, cancellationToken: cancellation.Token);
-                if (result is not NullValue) await DisplayAsync(result, cancellation.Token);
+                NativeValue result = await execution.ExecuteAsync(module, cancellationToken: cancellation.Token);
+                if (result.Kind != NativeKind.Null) await DisplayAsync(result, cancellation.Token);
                 compiler.AcceptSubmission(execution.GetLocalValue);
                 execute?.Complete();
                 submission?.Complete();
@@ -163,6 +166,7 @@ internal sealed class ReplSession
             finally
             {
                 execute?.RecordProcess(before);
+                execute?.RecordTiering(execution.TierStatistics, tiersBefore);
                 if (execute is not null) telemetry!.PublishProfile(profile, execute.Id);
             }
         }
@@ -170,12 +174,12 @@ internal sealed class ReplSession
         finally { lock (cancellationGate) active = null; }
     }
 
-    private static async ValueTask DisplayAsync(Value value, CancellationToken cancellationToken)
+    private static async ValueTask DisplayAsync(NativeValue value, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (value is RangeValue range)
+        if (value.Kind == NativeKind.Range)
         {
-            await foreach (Value item in range.Items.WithCancellation(cancellationToken))
+            await foreach (NativeValue item in value.AsRange().Items.WithCancellation(cancellationToken))
                 await DisplayAsync(item, cancellationToken);
             return;
         }
@@ -184,30 +188,38 @@ internal sealed class ReplSession
         else Console.WriteLine(text);
     }
 
-    private static string FormatValue(Value value, HashSet<ScopeValue>? path = null) => value switch
+    private static string FormatValue(NativeValue value, HashSet<NativeAddress>? path = null) => value.Kind switch
     {
-        ScopeValue scope => FormatScope(scope, path ?? []),
-        ProcessValue process => FormatProcess(process),
-        StringValue text => text.Data,
-        _ => value.ToString() ?? "null"
+        NativeKind.Address => FormatScope(value.AsAddress(), path ?? []),
+        NativeKind.Process => FormatProcess(value.AsProcess()),
+        _ => value.ToString()
     };
 
-    private static string FormatProcess(ProcessValue process)
+    private static string FormatProcess(NativeProcess process)
     {
-        if (process.Completion is not { } completion) return process.ToString();
-        if (completion.IsCompletedSuccessfully) return completion.Result.ToString();
+        if (process.Completion is not { } completion)
+            return $"Process(exit={process.ExitCode})";
+        if (completion.IsCompletedSuccessfully) return $"Process(exit={completion.Result.ExitCode})";
         string state = completion.IsCanceled ? "cancelled" : completion.IsFaulted ? "failed" : "pending";
         return process.ProcessId is { } id ? $"Process({state}, pid={id})" : $"Process({state})";
     }
 
-    private static string FormatScope(ScopeValue scope, HashSet<ScopeValue> path)
+    private static string FormatScope(NativeAddress address, HashSet<NativeAddress> path)
     {
-        if (!path.Add(scope)) return "scope { ...cycle... }";
-        string result = "scope { " + string.Join(", ", scope.Select(member => member.Key + ": "
-            + (member.Value is StringValue text ? "\"" + text.Data.Replace("\"", "\"\"", StringComparison.Ordinal) + "\""
-                : FormatValue(member.Value, path)))) + " }";
-        path.Remove(scope);
-        return result;
+        if (!path.Add(address)) return "scope { ...cycle... }";
+        List<string> members = [];
+        for (int index = 0; index < address.Allocation.Layout.Fields.Count; index++)
+        {
+            NativeAddress place = address.Field(index);
+            if (!place.IsInitialized) continue;
+            NativeValue member = place.Load();
+            string text = member.Kind == NativeKind.String
+                ? "\"" + member.AsString().Replace("\"", "\"\"", StringComparison.Ordinal) + "\""
+                : FormatValue(member, path);
+            members.Add(address.Allocation.Layout[index].Name + ": " + text);
+        }
+        path.Remove(address);
+        return "scope { " + string.Join(", ", members) + " }";
     }
 
     private void Cancel(object? sender, ConsoleCancelEventArgs error)

@@ -4,23 +4,8 @@ namespace Msync.Core;
 
 public enum CompilationOutcome : byte { Ok, Error, Cancelled }
 
-public readonly record struct CompilationSize(long Functions, long Instructions, long Locals)
+public readonly partial record struct CompilationSize(long Functions, long Instructions, long Locals)
 {
-    public static CompilationSize Of(FunctionCode function) =>
-        new(1, function.Instructions.Count, function.LocalCount);
-
-    public static CompilationSize Of(Module module)
-    {
-        long instructions = 0;
-        long locals = 0;
-        foreach (var function in module.Functions)
-        {
-            instructions += function.Instructions.Count;
-            locals += function.LocalCount;
-        }
-        return new(module.Functions.Count, instructions, locals);
-    }
-
     public static CompilationSize operator +(CompilationSize left, CompilationSize right) =>
         new(left.Functions + right.Functions, left.Instructions + right.Instructions, left.Locals + right.Locals);
 }

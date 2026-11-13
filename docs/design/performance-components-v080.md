@@ -1,5 +1,96 @@
 # Native 0.8 compiler and bytecode component costs
 
+## Current native pipeline
+
+The measurements below are a frozen **0.8 historical experiment**, not the
+current register IR's cost model. The active probe now uses typed HIR analysis,
+native lowering/optimization, `NativeArtifact`, `NativePreparation` and
+`NativeInterpreter`. See the [probe contract](../../tests/Performance/Components/README.md)
+for current stage boundaries and commands. Historical `form_blocks`,
+`execution_lower` and `bind_and_lower` stages are retired, not timing aliases;
+the unavailable legacy block-table count is reported as null. No historical
+generic-object implementation remains as an execution fallback.
+
+The v0.9 migration was checked against one double-hashed, frozen 461-input
+checkpoint (`2603c6ff185e74ac2ec64d13e3706027edaf07d81e398e179ba26f30af248f40`
+is its source-manifest SHA-256), not a changing shared worktree. All three probes
+built in Release managed and Linux Native AOT with locked restore. Native checks
+covered source-free captures/interner rollback/type properties, every active
+component boundary at sizes 1/64, O0/O2 memory/finite-sum/call-DAG workloads at
+sizes 2/16, exact binary64 cases and captured arithmetic at size 64, and full
+object alias/order/session-origin/task-ownership oracles. All passed; retired
+block counts were null and guest tier policy was present in report metadata.
+Those small samples verify the probe contracts, not an uncontended performance
+comparison or a claim that the open end-to-end regression is resolved.
+
+## Native 0.9 recursive-query investigation (2026-11-12)
+
+The full BTree source journey (745 mutations and validation after every step)
+exceeded its existing 180-second command limit. A compile-only probe and managed
+stack established a frontend problem, not slow VM tree execution. The initial
+single `FlowType.Write` stack was not sufficient attribution: bounded clocks in
+a frozen Compiler-only probe measured about 4.72 seconds in FlowType, including
+2.93 seconds in identity encoding, during a 40-second observation. A managed
+20-second EventPipe trace showed distributed formal-input, key-encoding, future
+domain and projection work. These are instrumented/query observations, not
+uncontended end-to-end timing or CPU percentages.
+
+The decisive reproducer needs no large trace: creating an empty BTree and
+asking for its range grows active `visit_range` query instances while executable
+function count stays at twelve. Successive recursive keys retain increasingly
+long `output.last.previous` chains from the append-only accumulator. On the full
+fixture active depth grew from 32 to 332 while published functions stayed at
+1,105. This is failure to close a recursive type/effect promise, not evidence for
+a depth cutoff, an Any fallback, or a larger test timeout. Existing finite scope
+identity traversal already has cycle detection.
+
+Frozen source hashes, minimal/full inputs, successive argument/key dumps and
+managed traces are in `.temp/semantic-fingerprints/`; the original controlled
+compile stop is recorded in
+`.temp/native-source-journeys/final/btree-probe-stop.json`. Per-summary projection
+sharing, cached graph-subnode binding and a sparse alias-pair index were tested
+only in frozen copies; none established completion within the bounded window,
+so none was promoted as a solution. Further work must preserve input alias
+partitions and callable identities while recognizing a recursive input already
+admitted by its active formal contract.
+
+The isolated active-contract experiment completed the unchanged full fixture's
+HIR analysis in 24.01 seconds (7,404,976,088 cumulative allocated bytes), and the
+empty-range reproducer in 3.58 seconds. **This is not a production improvement:**
+the permissive matcher was deliberately kept outside the worktree. Independent
+review found omitted member obligations, mutable-storage invariance, logical
+checked views and original alias provenance. Adding conservative guards again
+prevented convergence. A single completed analysis is not a correctness proof;
+the original independent output/file oracle remains required.
+
+There is also a separate postcondition obligation. `ProjectInvocation` currently
+gives an incomplete recursive instance no effects. Even if a concrete input B
+refines an active invariant I and the callee preserves I, leaving B's more precise
+facts unchanged is invalid: the recursive call must forget/havoc its actual
+writable footprint back to the proved invariant, or prove B itself preserved.
+A provisional Never result can additionally prune statements following a
+recursive call. A closed result contract or a return/effect fixed point is needed.
+
+Original points-to provenance is not interchangeable with normalized key
+identity. `FormalInput(keyOnly: true)` turns structural summary scopes into fresh
+positive regions, clears their Aliases and omits AliasViews. Those normalized
+IDs cannot prove an extra actual subtree disjoint from known inputs. Null-origin
+and unconstrained opaque Scope values are also widened to the same carrier:
+the initial empty `_Chain` link and an arbitrary unknown link must not silently
+share alias assumptions. A future provenance domain needs to distinguish empty,
+known referents and unknown, rather than interpreting an empty normalized alias
+set as proof of independence.
+
+The bound invocation graph for the empty BTree range is finite and reports no
+unknown callees. Its relevant typed member writes are from `_Chain::push`:
+`first`/`last`/`next` receive Scopes and `count` receives arithmetic results.
+This makes a general typed-write frame proof plausible: a recursive invariant
+must already admit every possible write, and its actual caller must be projected
+back to that invariant on the complete alias-aware footprint. Such a proof must
+include callbacks and captured-cell writes, preserve Function/Type obligations,
+and account for return control; it is not permission to special-case a library
+name, add an annotation workaround, or drop the source journey's deadline.
+
 ## Question and reusable probe
 
 The current CLI comparison in [the end-to-end note](performance-v080.md) measures
@@ -31,8 +122,8 @@ this component probe.
 `compile_o1` includes the ordinary optimizer. The public API has no independent
 inference/lowering entrypoint, so no invented per-phase subtraction is reported.
 `artifact_decode` includes production validation and block construction;
-`artifact_validate` isolates validation. `bind_and_lower`, `execution_lower`,
-`form_blocks`, and the real no-I/O VM are measured separately. Cumulative stages
+`artifact_validate` isolates validation. In this frozen experiment,
+`bind_and_lower`, `execution_lower`, `form_blocks`, and the real no-I/O VM were measured separately. Cumulative stages
 must not be summed as if they were disjoint.
 
 A calibration selects 1–256 operations per sample, targeting about 2 ms. Warmups
@@ -367,3 +458,114 @@ optimizer times are 988.76/1,254.59 ms at 32/128 scans, respectively. Actual Nat
 user latency and stage-tail observations determine whether that remaining
 component cost merits another transformation; the call-family result is not
 generalized to all passes.
+
+### Compiler query deletion boundary (November 2026)
+
+Return-policy queries now use the same `PrepareFlow` domain/place construction
+as executable semantic analysis. The separate `RegisterSchemePlaces` and
+`SchemeScopeFacts` traversals are gone. `FlowFact.Eager` also replaces the
+parallel per-location eagerness dictionary; semantic argument values retain that
+fact when entering a query. This removes 97 net physical lines across
+`SemanticAnalyzer.CallPolicy.cs` and `SemanticAnalyzer.FlowPreparation.cs`,
+without changing the abstract query's diagnostic contract.
+
+The isolated batch used the current compiler with frozen coherent dependencies
+from `artifacts/native-mid-back-batch`, to avoid concurrently changing the VM.
+It passes the 8,411 maintained native HIR/source-free artifact contracts,
+NativeSessions' 160 finite mixed source/detached routes, all 63 logical-shape
+source/stripped-HIR/artifact routes (including associated Scope policies and
+captured recursive functions), and the actual `--editor-session` journey.
+Disposable commands, logs and the receipt are under
+`.temp/compiler-query-reduction/`; these are not product dependencies.
+
+A larger candidate replacing the abstract return evaluator directly with
+nonpublishing `Analyze` was rejected, not merged. `Output == null` prevents code
+publication, but does not make a diagnostic-producing evaluator suitable for
+partial abstract facts. The associated-Scope policy journey discriminates this:
+first, the flow callback had erased the callable recipe; retaining that recipe
+then exposed nullable future-policy operands, and abstract BTree node casts.
+The unchanged baseline completes all 15 routes for that journey. Suppressing
+those diagnostics, accepting arbitrary negative location IDs, or widening to
+`Any` would conceal the distinction rather than solve it.
+
+The larger deletion target remains a shared pure typed transfer algebra with
+finite canonical value/provenance identities and explicit obligations. Its
+joins/equality must preserve alias/capture effects without recursively comparing
+whole `SemanticValue` object graphs. The checker may discharge obligations and
+publish diagnostics; advisory return queries must remain capable of computing
+partial facts without pretending an unchecked operation is executable. The
+small CFG consolidation is not completion of that architecture or the overall
+30-percent deletion requirement.
+
+A small changed-image check alternated three fresh-process `--analyze` runs of
+the associated-Scope BTree sample against the frozen baseline compiler, with
+identical test harness/dependencies. Median process times were 7.625 s baseline
+and 7.648 s shared-flow (+0.31%); this does not establish a latency improvement
+or a tail estimate. All six compilations succeeded. The calibration receipt is
+`.temp/compiler-query-reduction/shared-flow-calibration.json`.
+
+#### Canonical input/return graph candidate (not merged)
+
+The next isolated candidate, `.temp/compiler-canonical-graph/`, normalizes input
+once, serializes its key as a view, and uses the existing `InvocationProjection`
+for publication-ID substitution. It removes `keyOnly` and the separate
+read-only-key rejection/fallback machinery. Capture modes remain explicit:
+a live captured cell and a frozen captured value are not the same input.
+The candidate passes 8,515 source/HIR/artifact checks, 160 session routes,
+63 shape routes, the actual editor-session journey and 46 diagnostic negatives.
+These are compatibility evidence, not permission to accept its performance.
+
+Two boundary defects were identified and corrected in the isolated model:
+
+- A shallow type-witness substitution recursively invoked the entire graph
+  resolver, starting a new recursive-row environment. Substituting only the
+  witness root lets the outer resolver own the recursive layout traversal.
+- The return-recipe freezer converted borrowed external cells into recursively
+  nested frozen snapshots. A cached return recipe must instead retain a formal
+  borrowed place, substitute the current capture source through the existing
+  projection, and freeze only true local values. A value capture's source label
+  is not a storage cell to allocate.
+
+A discriminating allocation matrix then **rejected promotion**: although the
+associated-Scope case allocated about 1.00 GB versus 1.075 GB in the frozen
+baseline, `nested-captured-family` regressed from about 1.9 s/70.5 MB to
+14.1 s/4.55 GB. A managed sample of a further storage-resolution variant
+attributed substantial work to semantic Join, input completion and effect
+projection, rather than a VM or JIT path. This uncovered another ownership
+error: equal source spelling in different detached closure environments is not
+proof of one actual cell. The candidate is being revised to distinguish
+live-cell identity from environment-scoped fallback identity. The unchanged
+745-mutation BTree analysis remains open; its original 180-second probe must
+be repeated before claiming that the frontend recurrence is solved.
+
+The relevant established mechanism is separation of abstract-state transfer
+from publication/manifestation, not running a diagnostic-producing checker with
+output disabled. LLVM's [Attributor framework](https://llvm.org/doxygen/structllvm_1_1Attributor.html)
+uses a shared fixpoint analysis and separate manifestation; the abstract-domain
+soundness and convergence requirements are described in
+[Cousot's abstract interpretation overview](https://www.di.ens.fr/~cousot/AI/).
+Our concrete design obligation is to retain alias/capture provenance and effect
+postconditions while eliminating repeated graph interpretations, not to obtain
+convergence by deleting an input distinction.
+
+The shared-flow preparation slice also needed a discriminating initial-domain
+correction. Its first nested-family measurement allocated 89.98 MB versus
+71.13 MB in the original frozen compiler. Executable flow preparation observed
+captured namespaces with `FlowType`; a return scheme already has its supplied
+partial type contract and must not recursively re-observe those namespaces.
+`PrepareFlow` now accepts the initial type projection while retaining one
+location/domain/place collector and one CFG implementation. Return schemes use
+`value.Type`; executable analysis keeps the observed flow type. The corrected
+isolated run measured 1.824 s/70.40 MB, versus 1.953 s/89.98 MB before that
+correction. It passes the 8,411 source/HIR/artifact checks, 63 logical-shape
+routes, 160 session routes, actual editor-session and 46 diagnostic negatives.
+This fixes that concrete regression; it is not a general frontend speedup or a
+solution to the BTree recurrence.
+
+The original 745-mutation source was also rechecked under the candidate
+key/borrowed-return/type-root changes with the original actual-input normalizer
+as a causal control. Input hash
+`ac45fce3abee034431a140b531967d79be5f08058ab75fc28ee2eedce219d79d`
+was unchanged. Analysis again hit the original 180-second bound (180.59 s before
+SIGINT). `.temp/compiler-canonical-graph/original-btree-control.json` identifies
+the exact compiler and command. The recursive accumulator remains open.

@@ -374,3 +374,235 @@ that acceptance or the project's hard 30% net deletion target.
   types and identity observations. It is an experiment, not a result to claim
   for msync; importing its hidden-vtable mechanism is neither necessary nor
   recommended for the already statically linked layouts here.
+
+## Alias-key and untouched-frame discriminators (2026-11-12)
+
+The unmerged canonical-input prototype exposed an alpha-invariance defect in the
+key encoder: sorting `AliasViews` by source region numbers before assigning
+canonical numbers produced `V2V4` versus `V4V2` for the same rooted graph. The
+candidate now emits scope alias relations after ordinary graph paths anchor
+identities. External-only targets are numbered by their complete incidence to
+anchored sources, retaining edge kind and multiplicity of distinct targets.
+Equal-incidence external nodes are interchangeable because this relation has no
+edges with an external-only source. This is **not** a general graph-isomorphism
+algorithm, nor permission to use sorted local neighbourhoods for arbitrary
+recursive graphs. [Nauty/Traces' canonical-labelling discussion](https://pallini.di.uniroma1.it/Introduction.html)
+provides the broader distinction between partition refinement and canonical
+labelling. The candidate property probe covers allocation permutations, shared
+versus disjoint external targets, edge kind, capture mode, detached environment
+cell partitions, and static Type denotations. It does not solve recursive SCC
+admission or the outstanding allocation regression.
+
+A separate, source-reachable frame defect has a bounded main-line correction:
+`InvalidateScopeAliases` used to clear literal, Type-denotation and observation
+facts from *every* field after a write to one field. For a range containing two
+Scopes `{n: Number, Item: Number-as-Type}`, writing the selected view's `n`
+therefore made an annotation using the untouched original `Item` fail. Update
+only the written field's fact/location, retaining all other fields and source
+metadata. Source Scope construction derives field names from each actual HIR
+location name; record construction allocates a fresh location per field. Thus
+source field names cannot disguise different names for one field cell within a
+Scope. The regression journeys are `alias-untouched-Type-frame` and the real
+`nested-captured-scope-write` execution oracle in `ShapeRegressionChecks.cs`.
+The latter replaces an earlier misleading analyze-only claim that an unknown
+alias target implied an empty write domain; it never established that claim.
+
+A graph-import probe also demonstrates that the older normalizer loses an
+existing caller `AliasViews` relation unless it happens to recreate it from
+source-set overlap. The candidate transports the admitted reachable relation
+with one source-to-formal region substitution, including external family nodes.
+That invariant counterexample alone is not proof of a source-visible main-line
+failure. In particular, simple single-element range write/read controls still
+execute correctly on the frozen main control. Missing alias evidence must not
+be interpreted as `NoAlias`; [LLVM's alias-analysis contract](https://llvm.org/docs/AliasAnalysis.html)
+similarly distinguishes `MayAlias` from demonstrated non-aliasing. Empty-source
+summary handling and complete unknown/TOP semantics remain separate obligations.
+
+The source counterexample was subsequently sharpened: pass the selected view
+and its actual original Scope to `alter(view, original)`, write
+`view::Item = String`, then use `original::Item` as a Type annotation. Frozen main
+accepted and executed the annotated Number result, retaining the stale Number
+witness after a possibly aliasing write. A separate same-shaped third Scope must
+remain a valid static Number witness. The correction registers **all** admitted
+Scopes, including ordinary concrete ones, in the actual-source→formal-view
+incidence relation, rather than relating only two Dynamic views. A reverse
+incidence index constructs the same explicit overlap relation without a quadratic
+pairwise scan. Transport existing caller `AliasViews` through the same region
+bijection, admitting reachable external-family nodes; forwarding through another
+function must not erase that relation.
+
+Body admission and key construction share this premise. Main's existing
+`CodeSchema` fallback and capture/type policies are retained, but the alias
+relation is included in the key using the deferred canonical encoder described
+above. Otherwise a specialization first checked for a known-disjoint third
+Scope could bypass the new check when called with the aliased original. This
+bounded alias/frame correction is independent of the still-unmerged one-pass
+input-graph representation. Session regressions exercise both call orders,
+failed-submission reconciliation and subsequent legal calls. Regular source/HIR
+journeys additionally check forwarding. A persisted forwarding function calling
+a future-rebindable session target has a separate deferred-call contract; its
+broadened Type witness must not be mistaken for a proof about concrete aliases.
+
+### Candidate next discriminator: code premises versus external alias arguments
+
+The faithful-alias correction exposed a severe associated-BTree recurrence
+regression (the old two-insert sample exceeds the unchanged300-second gate).
+Borrowing alias-set views instead of allocating every alias edge as another
+HashSet removes a concrete extra graph, and representing external families by
+IDs avoids their field-heap copies, but neither establishes convergence.
+
+A narrower *conditional* interface may separate these two ownership classes:
+
+1. `R` is the set of places reached through actual arguments, captured values,
+   callable environments, field/element values, deferred-write recipes and
+   lexical Type-witness reads. It includes every fact from which the checked
+   body can compute an executable/static observation; it is not a syntactic
+   whitelist of field names.
+2. Code validity depends on current facts on `R` and the may-alias relation
+   **between members of R**. A write to x weakly updates each readable y in R
+   that may alias x; static Type facts and untouched frames retain their usual
+   obligations.
+3. External-only family identities are substitution arguments for replaying
+   `Field(formalBase, field)` against the actual caller alias expansion. If no
+   body read/result/capture can turn one into an additional readable value,
+   their cardinality and external-to-external graph topology need not be code
+   premises. Their relation/identity is still retained by transport and effects,
+   not silently deleted or treated as disjoint.
+4. Nested calls and deferred callables must satisfy the same closure property.
+   A demanded external fact extends the readable interface before reuse, using
+   entry-owned immutable facts, never a retained live caller context.
+
+This is not implemented or an acceptance result. The obstacle is explicit:
+`AliasViews` currently mixes concrete source incidence, view overlap and
+may-alias edges in one untyped integer relation. Shared external incidence must
+still induce the correct overlap among admitted formals; plain transitive
+closure of arbitrary MayAlias edges is not a proof. Existing negative
+external-topology properties remain transport-identity obligations and must not
+be weakened merely to obtain code reuse. A code-key projection needs a checked
+non-observability/substitution argument before excluding any such premise.
+
+### Established cause: replaying alias facts as effects
+
+The bounded interface probe supplied a stronger explanation than a hypothetical
+key projection. Its234 observed key rows contain20 groups with identical
+ordinary fact hashes **and** formal-only alias-relation hashes but changing
+external-family cardinality. For template25, the ordinary prefix stays4291
+characters with15 anchored Scope identities, while the external families grow
+10 →60 →120 →240 →… →2,488,320. The complete key grows4361 →18,799,866 characters.
+Raw evidence and reproducible aggregation are in
+`.temp/compiler-alias-interface-probe/{keys.jsonl,summary.json,summarize.py}`.
+This is diagnostic-only data, not a benchmark: hashing/instrumentation adds work.
+
+The cause is `InvocationProjection.ApplyEffects` replaying **all poststate alias
+facts**, including unchanged entry relations. An external input-family endpoint
+has no ordinary Scope binding, so `ScopeTargets` fell through to generative
+`MapRegion`; every invocation cloned the caller's own input metadata into fresh
+family identities. Even a read-only function could grow the caller alias graph.
+
+The correction keeps owned alias facts for checking/key/graph consumers, but
+publishes a separate `AliasEffects` relation containing only edges introduced
+after the immutable entry relation. Application replays that delta, not its
+premises. New body-created/returned-view edges still project; borrowed input
+relations remain the caller's relations. No key premise or external-topology
+property was removed. The `AliasEffectChecks` property compares zero, one, two
+and eight read-only calls and requires identical caller alias-family counts.
+
+On one coherent frozen image, the unchanged associated two-insert source changed
+from a correctly bounded300.843-second timeout (maximumRSS10,315,856KiB) to
+7.892 seconds /1,091,575,816 allocated bytes /376 functions. The older main
+control was7.523 seconds /1,078,513,120 bytes /366 functions, but lacked the alias
+correctness premise; this single comparison does not establish an acceptable
+performance margin or the30% deletion requirement. Receipts are
+`.temp/compiler-frame-control/{symbolic-view-timeout.json,alias-effect-measure.json}`.
+The original745-mutation program and full coherent user journeys remain required
+before any recurrence-completion claim.
+
+### Entry-reference recipes: a value is not an exit field lookup (2026-11-13)
+
+The next source-SCC footprint obstruction is narrower than a whole new summary
+engine. `_Chain.node` returns an entry reference through a checked Scope view;
+the caller later writes the old tail's `next`. Current origin transport can lose
+that entry value or recompute its path after effects have rebound the owning
+field. Neither a type-only SourceReturnShape nor the returned runtime Scope kind
+identifies the required write receiver.
+
+The isolated entry-reference candidate replaces the existing root-only origin
+bindings with whole producer-place bindings captured during the same input Bind
+traversal. A recipe `EntryValue(root, fields)` denotes the value already read at
+invocation entry. If it is a Scope address, that address is frozen but the fields
+of the addressed allocation remain live. A checked view refines the logical
+schema; it does not allocate a new object or change the reference's producer.
+Formal-to-actual substitution composes the caller's recipe rather than retaining
+a live caller environment in the cached summary.
+
+`SemanticOrigin.Fields` is an ImmutableArray: its default record equality does
+not compare independently constructed paths structurally. The candidate defines
+path equality/hash with ordinal field names and treats default/empty paths as
+the same empty projection. A plain Dictionary keyed by the old record would
+silently miss reconstructed equivalent paths.
+
+Independent review fixtures in `.temp/entry-reference-review/` compare frozen
+main Compiler `8cc7a53b...` with candidate `8646aacf...`, using identical frozen
+Core/HIR/Optimization/Runtime dependencies. The actual private canonical
+InvocationProjection is exercised, not another expression evaluator. Candidate
+properties preserve an opaque recipe without generating a fresh region, retain
+a known borrowed base/cell, and see current cell contents after a change between
+Bind and Project. Structural-path and default/empty equality also pass. The old
+projection loses those identities.
+
+Two real source/native-binary journeys establish why the entry distinction is
+observable, at both O0 and O2:
+
+```text
+prior(box) = { saved = box.flag; box.flag = false; return saved; }
+box.flag = true; if prior(box) { 11 } else { 22 }       // must return 11
+
+priorType(box) = { saved = box.Item; box.Item = String; return saved; }
+box.Item = Number; Old = priorType(box); answer: Old = 7 // must remain legal
+```
+
+The frozen old Compiler produces a runtime narrowing failure in the Bool case
+and incorrectly rejects the Type case as expecting String. The candidate returns
+11 and 7 respectively. Separate controls preserve a Scope address through source
+rebinding while keeping its heap live, distinct fresh wrappers over one borrowed
+value, and a borrowed field inside a fresh wrapper. Raw results, assembly hashes,
+fixtures and initial harness setup failures are kept separately in `results.json`
+and the build/transport logs. These observations are not performance acceptance.
+
+**The candidate does not yet close typed W.** A source helper that checks an
+opaque `owner.last`, then rebinds `owner.last` and writes the saved reference's
+`next`, still leaves stale Null facts in both the old and reviewed candidate
+Compiler. A second control writes String through the saved reference's Item;
+both versions incorrectly retain the original Number annotation witness. An
+unrelated same-shaped object's Item remains a valid witness and must stay so.
+
+The missing boundary is visible in the existing semantic rules:
+
+1. `MemberAssign` receives a checked view with negative structural Region and a
+   meaningful value Origin.
+2. `DynamicElement` creates a dynamic view region whose Aliases are derived from
+   the structural Scope. With no concrete aliases, that array is empty; it does
+   not prove the reference is fresh or disjoint.
+3. `RecordWrite` retains Region/Field but not the receiver's entry-reference
+   recipe. `InvocationProjection.ProjectWrite` cannot bind this new region and
+   drops a dynamic-region write with no aliases.
+
+Thus recording the write as `Field(EntryValue(owner,last), next)` is essential;
+`Field(ReadExit(owner.last), next)` targets the replacement, and a synthetic
+region with no aliases loses the write entirely. The appropriate repair belongs
+in the canonical field-place/write-target representation, using the existing
+entry substitution. A known actual entry value resolves to its old base; a
+still-opaque entry value retains a symbolic/TOP may-write, not an empty effect or
+a new allocation. Do not append entry origins indiscriminately to MemberRead:
+a read after a body write is a current/exit read unless an entry producer proves
+otherwise. Fresh constructor *outer* identity remains generative even when its
+field values have borrowed recipes.
+
+A constructive property must record MemberAssign on the opaque borrowed view
+*inside the generic body*, collect its canonical write event/footprint, then
+substitute the actual entry owner and apply effects. First projecting the receiver
+to a known base and only then assigning a field bypasses this missing boundary.
+Return-recipe properties alone therefore cannot certify the SCC write footprint.
+The complete typed write and static-observation certificate, original 745 trace
+and unchanged deadline remain required; no recursive admission was enabled by
+this review.

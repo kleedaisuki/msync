@@ -1,3 +1,4 @@
+using Msync.Core.Native;
 using Msync.Optimization;
 using Msync.Compiler;
 using Msync.Core;
@@ -5,8 +6,8 @@ using Frontend = Msync.Compiler.Compiler;
 
 internal static class EndpointChecks
 {
-    private static readonly ConnectionValue Forge = new(ConnectionKind.Ssh, "forge");
-    private static readonly ConnectionValue Other = new(ConnectionKind.Ssh, "other");
+    private static readonly NativeConnection Forge = new(ConnectionKind.Ssh, "forge");
+    private static readonly NativeConnection Other = new(ConnectionKind.Ssh, "other");
 
     public static void Run()
     {
@@ -40,21 +41,21 @@ internal static class EndpointChecks
             Check(Binding(analysis, source, name).Endpoint == Forge, "known endpoint identity was lost: " + name);
         Check(Binding(analysis, source, "different").Endpoint is null, "different branch endpoints were collapsed into one host");
         Check(Binding(analysis, source, "absent").Endpoint is null, "a possibly absent endpoint became an unconditional completion target");
-        Check(Binding(analysis, source, "guest").Endpoint == new ConnectionValue(ConnectionKind.Wsl), "$wsl hint differs from runtime semantics");
-        Check(Binding(analysis, source, "local").Endpoint == new ConnectionValue(ConnectionKind.Local), "$local hint differs from runtime semantics");
-        Check(Binding(analysis, source, "directory").Endpoint == new ConnectionValue(ConnectionKind.Local, "pwd"), "$pwd lost its contextual identity");
-        Check(Binding(analysis, source, "file").Endpoint == new ConnectionValue(ConnectionKind.Local, "file"), "$file lost its contextual identity");
-        Check(Binding(analysis, source, "environment").Endpoint == new ConnectionValue(ConnectionKind.Environment), "$env is not a local filesystem endpoint");
-        Check(Binding(analysis, source, "search").Endpoint == new ConnectionValue(ConnectionKind.SearchPath), "$path is not an ordinary local endpoint");
+        Check(Binding(analysis, source, "guest").Endpoint == new NativeConnection(ConnectionKind.Wsl), "$wsl hint differs from runtime semantics");
+        Check(Binding(analysis, source, "local").Endpoint == new NativeConnection(ConnectionKind.Local), "$local hint differs from runtime semantics");
+        Check(Binding(analysis, source, "directory").Endpoint == new NativeConnection(ConnectionKind.Local, "pwd"), "$pwd lost its contextual identity");
+        Check(Binding(analysis, source, "file").Endpoint == new NativeConnection(ConnectionKind.Local, "file"), "$file lost its contextual identity");
+        Check(Binding(analysis, source, "environment").Endpoint == new NativeConnection(ConnectionKind.Environment), "$env is not a local filesystem endpoint");
+        Check(Binding(analysis, source, "search").Endpoint == new NativeConnection(ConnectionKind.SearchPath), "$path is not an ordinary local endpoint");
         SemanticOccurrence hosts = analysis.Occurrences.Single(item => item.Span.Start == source.IndexOf("Hosts", StringComparison.Ordinal));
         Check(hosts.Members!.Single(item => item.Name == "primary").Endpoint == Forge, "Scope member endpoint identity was lost");
         var nested = hosts.Members!.Single(item => item.Name == "nested");
-        Check(nested.Members!.Single().Endpoint == new ConnectionValue(ConnectionKind.Wsl, "Ubuntu"), "nested Scope descriptors lost their endpoint identity");
+        Check(nested.Members!.Single().Endpoint == new NativeConnection(ConnectionKind.Wsl, "Ubuntu"), "nested Scope descriptors lost their endpoint identity");
         const string prefix = "$wsl @ ";
         string incomplete = source + prefix;
         EditorContext recovery = EditorCompiler.Analyze(incomplete, "file:///endpoints.msync").At(incomplete.Length);
         Check(recovery.Bindings.Single(item => item.Name == "alias").Endpoint == Forge, "incomplete qualifier recovery lost its accepted endpoint alias");
-        Check(recovery.HasPhysicalOwner && recovery.PhysicalEndpoint == new ConnectionValue(ConnectionKind.Wsl),
+        Check(recovery.HasPhysicalOwner && recovery.PhysicalEndpoint == new NativeConnection(ConnectionKind.Wsl),
             "an empty WSL operand did not select its physical owner");
     }
 
@@ -93,9 +94,9 @@ internal static class EndpointChecks
         int sharedMember = source.IndexOf("value::host", StringComparison.Ordinal) + "value::".Length;
         Check(analysis.Occurrences.Single(item => item.Span.Start == sharedMember && item.Span.Length == 4).Endpoint is null,
             "a shared generic source occurrence reports the last specialized endpoint");
-        Module module = Frontend.Compile(source, optimization: 0);
-        Check(module.Functions.Count(item => item.Name == "identity" && item.ParameterTypes?.SequenceEqual([TypeRef.Connection]) == true) == 1
-            && module.Functions.Count(item => item.Name == "firstItem") == 1,
+        NativeProgram module = Frontend.Compile(source, optimization: 0);
+        Check(module.Functions.Count(item => !item.IsTemplate && item.Name == "identity" && item.Signature.Parameters.Select(id => module.Types[id].Kind).SequenceEqual([TypeKind.Connection])) == 1
+            && module.Functions.Count(item => !item.IsTemplate && item.Name == "firstItem") == 1,
             "endpoint hints became value-based bytecode specialization");
     }
 
@@ -106,7 +107,7 @@ internal static class EndpointChecks
         session.AcceptSubmission();
         IReadOnlyList<SemanticMember> first = session.DescribeBindings();
         Check(first.Single(item => item.Name == "remote").Endpoint == Forge, "live session lost its accepted endpoint");
-        Check(first.Single(item => item.Name == "Hosts").Members!.Single().Endpoint == new ConnectionValue(ConnectionKind.Wsl), "live Scope members lost endpoint metadata");
+        Check(first.Single(item => item.Name == "Hosts").Members!.Single().Endpoint == new NativeConnection(ConnectionKind.Wsl), "live Scope members lost endpoint metadata");
         Check(first.Single(item => item.Name == "send").Signature.StartsWith("fn send(", StringComparison.Ordinal), "live session lost callable signature metadata");
         const string selected = "remote @ ";
         EditorContext query = session.AnalyzeEditor(selected).At(selected.Length);
@@ -115,8 +116,8 @@ internal static class EndpointChecks
         _ = session.Compile("let remote = ssh://other;");
         session.ReconcileSubmission(_ => false);
         Check(session.DescribeBindings().Single(item => item.Name == "remote").Endpoint == Forge, "failed shadow replaced an accepted endpoint hint");
-        Module changed = session.Compile("let remote = ssh://other; let unfinished = ssh://unreached;");
-        int completed = changed.Functions[0].Instructions.First(item => item.Op == OpCode.InitializeLocal).A;
+        NativeProgram changed = session.Compile("let remote = ssh://other; let unfinished = ssh://unreached;");
+        int completed = changed.SessionRoots!.Single(slot => changed.Functions[changed.EntryPoint].Slots[slot].Name == "remote");
         session.ReconcileSubmission(slot => slot == completed);
         var current = session.DescribeBindings();
         Check(current.Single(item => item.Name == "remote").Endpoint == Other && current.All(item => item.Name != "unfinished"),

@@ -7,6 +7,13 @@ void Require(bool condition, string reason)
     if (!condition) throw new InvalidOperationException(reason);
 }
 
+if (args.Contains("--bound-results", StringComparer.Ordinal))
+{
+    BoundResultChecks.Run(Require);
+    Console.WriteLine($"PASS {checks} bound result editor contracts");
+    return;
+}
+
 if (args.Contains("--editor-revisions", StringComparer.Ordinal))
 {
     EditorRevisionChecks.Run(Require);

@@ -6,12 +6,14 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Msync.Compiler;
 using Msync.Core;
+using Msync.Core.Native;
+using Msync.Runtime.Native;
+using Msync.Probes;
 using Msync.Runtime;
-using Module = Msync.Core.Module;
 using Compiler = Msync.Compiler.Compiler;
 
-internal sealed record Result(string Image, string Sha256, string RuntimeBuild, string Case, int Size,
-    string ArtifactSha256, int Instructions, int Calls, int MappedCalls, int DirectCalls,
+internal sealed record Result(string Image, string Sha256, string RuntimeBuild, string? JitPolicy, string Case, int Size,
+    string SourceSha256, string Representation, string ArtifactSha256, int Instructions, int Calls, int MappedCalls, int DirectCalls,
     double PrepareMilliseconds, double FirstRunMilliseconds, double[] Milliseconds,
     double P50Milliseconds, double P95Milliseconds, double AllocatedBytesPerOperation);
 
@@ -20,7 +22,7 @@ internal sealed partial class ReportContext : JsonSerializerContext;
 
 internal static class Program
 {
-    private static Value? retained;
+    private static NativeValue retained;
 
     public static async Task<int> Main(string[] arguments)
     {
@@ -31,12 +33,14 @@ internal static class Program
         int samples = int.Parse(Option(arguments, "--samples", "15"), System.Globalization.CultureInfo.InvariantCulture);
         int iterations = int.Parse(Option(arguments, "--iterations", "8"), System.Globalization.CultureInfo.InvariantCulture);
         int level = int.Parse(Option(arguments, "--optimization", "2"), System.Globalization.CultureInfo.InvariantCulture);
+        Require(size > 0 && samples > 0 && iterations > 0, "Size, samples and iterations must be positive");
         string root = Path.GetFullPath(Option(arguments, "--root", ".temp/object-allocations/work"));
         string output = Path.GetFullPath(Option(arguments, "--output", ".temp/object-allocations/result.json"));
         Directory.CreateDirectory(root);
         if (name == "io") File.WriteAllBytes(Path.Combine(root, "input"), Enumerable.Repeat((byte)120, 4096).ToArray());
         long preparation = Stopwatch.GetTimestamp();
-        Module module = Binding.Bind(Compiler.Compile(Source(name, size), name + ".msync", level), new(root, root));
+        string source = Source(name, size);
+        NativeProgram module = NativeProbe.Prepare(Compiler.Compile(source, name + ".msync", level), new(root, root));
         byte[] bytes = Encode(module);
         module = Decode(bytes);
         double prepared = Stopwatch.GetElapsedTime(preparation).TotalMilliseconds;
@@ -59,11 +63,12 @@ internal static class Program
         string executable = Environment.ProcessPath!;
         var code = module.Functions.SelectMany(function => function.Instructions).ToArray();
         Result result = new(executable, Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(executable))),
-            typeof(Interpreter).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unknown",
-            name, size, Convert.ToHexStringLower(SHA256.HashData(bytes)), code.Length,
-            code.Count(instruction => instruction.Op == OpCode.Call),
-            code.Count(instruction => instruction.Op == OpCode.Call && instruction.Text is not null),
-            code.Count(instruction => instruction.Op == OpCode.Call && instruction.B != 0),
+            typeof(NativeInterpreter).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unknown",
+            Environment.GetEnvironmentVariable("MSYNC_JIT"), name, size, Convert.ToHexStringLower(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(source))),
+            NativeProgram.Representation, Convert.ToHexStringLower(SHA256.HashData(bytes)), code.Length,
+            code.Count(instruction => instruction.Op == NativeOp.Call),
+            code.Count(instruction => instruction.Op == NativeOp.Call && instruction.Symbol is not null),
+            code.Count(instruction => instruction.Op == NativeOp.Call && instruction.B >= 0),
             prepared, firstRun, times, Quantile(sorted, 0.5), Quantile(sorted, 0.95), allocated);
         if (name == "io") Require(File.ReadAllBytes(Path.Combine(root, "output")).All(value => value == 120) && new FileInfo(Path.Combine(root, "output")).Length == 4096, "Copy bytes differ");
         Directory.CreateDirectory(Path.GetDirectoryName(output)!);
@@ -73,13 +78,13 @@ internal static class Program
         return 0;
     }
 
-    private static async Task Run(Module module, ExecutionOptions runtime, string name, int size, int iterations)
+    private static async Task Run(NativeProgram module, ExecutionOptions runtime, string name, int size, int iterations)
     {
         for (int iteration = 0; iteration < iterations; iteration++)
         {
-            retained = await Interpreter.ExecuteAsync(module, runtime);
+            retained = await NativeProbe.RunAsync(module, runtime);
             string expected = name is "literal" or "io" ? name : "right";
-            Require(retained is StringValue text && text.Data == expected, $"{name}/{size}: {retained}");
+            Require(retained.Kind == NativeKind.String && retained.AsString() == expected, $"{name}/{size}: {retained}");
         }
     }
 
@@ -126,17 +131,17 @@ internal static class Program
         {
             ExecutionOptions runtime = new(WorkingDirectory: root, Output: TextWriter.Null, Error: TextWriter.Null);
             foreach (int level in new[] { 0, 2, 3 })
-            foreach (string name in new[] { "direct", "swap", "captures", "objects", "paths", "literal" })
-            {
-                Module source = Compiler.Compile(Source(name, 16), name + ".msync", level);
-                foreach (Module program in new[] { source, Decode(Encode(source)), Decode(Encode(Binding.Bind(source, new(root, root)))) })
-                    await Run(program, runtime, name, 16, 1);
-            }
-            Require(await Interpreter.ExecuteAsync(EvaluationOrderModule(), runtime) is StringValue { Data: "AB" }, "Typed IR argument evaluation retargeted the already evaluated callee");
+                foreach (string name in new[] { "direct", "swap", "captures", "objects", "paths", "literal" })
+                {
+                    NativeProgram source = Compiler.Compile(Source(name, 16), name + ".msync", level);
+                    foreach (NativeProgram program in new[] { source, Decode(Encode(source)), Decode(Encode(NativeProbe.Prepare(source, new(root, root)))) })
+                        await Run(program, runtime, name, 16, 1);
+                }
+            Require((await NativeProbe.RunAsync(EvaluationOrderModule(), runtime)).AsString() == "AB", "Typed IR argument evaluation retargeted the already evaluated callee");
             await NativeCalls(runtime);
-            await SessionContexts(root);
             await Owners(root, runtime);
             await EmptyClosureIdentity(runtime);
+            await SessionContexts(root);
             Console.WriteLine("PASS: O0/O2/O3 source/mso/mexe calls, objects, paths, reassignment, capture identity, native ABI, selected error, deferred sessions and nested task ownership");
         }
         finally { Directory.Delete(root, recursive: true); }
@@ -144,16 +149,16 @@ internal static class Program
 
     private static async Task EmptyClosureIdentity(ExecutionOptions runtime)
     {
-        Module module = new([], [
-            new("main", 0, 0, [new(OpCode.MakeClosure, 1), new(OpCode.MakeClosure, 1),
-                new(OpCode.MakeRange, 2), new(OpCode.NativeCall, 1, Text: "ranges.unique"),
-                new(OpCode.Return)], new(TypeKind.Range, TypeRef.Function)),
-            new("operation", 0, 0, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null)
-        ], OptimizationLevel: 0);
-        var values = (RangeValue)await Interpreter.ExecuteAsync(module, runtime);
-        int count = 0;
-        await foreach (var value in values.Items) count++;
-        Require(count == 2, "Sharing argument arrays merged distinct closure capture identities");
+        NativeProgram module = new([new(NativeKind.Null)], [
+            new("main", [new(0), new(0), new(1), new(1), new(2)],
+                [new(NativeOp.MakeFunction, 0, 1), new(NativeOp.MakeFunction, 1, 1),
+                 new(NativeOp.MakeRange, 2, Type: 1, Inputs: [0, 1]),
+                 new(NativeOp.CallNative, 3, Symbol: "ranges.unique", Inputs: [2]),
+                 new(NativeOp.CallNative, 4, Symbol: "ranges.size", Inputs: [3]), new(NativeOp.Return, A: 4)], new([], 2, [])),
+            new("operation", [new(3)], [new(NativeOp.Constant, 0, 0), new(NativeOp.Return, A: 0)], new([], 3, []))
+        ], [new(TypeKind.Function), new(TypeKind.Range, Element: 0), new(TypeKind.Number), new(TypeKind.Null)], []);
+        NativeValue count = await NativeProbe.RunAsync(Decode(Encode(module)), runtime);
+        Require(count.AsNumber() == 2, "Sharing empty environments merged distinct closure identities");
     }
 
     private static async Task Owners(string root, ExecutionOptions runtime)
@@ -172,31 +177,23 @@ internal static class Program
         foreach (int level in new[] { 0, 2, 3 })
         {
             var module = Compiler.Compile(source, "nested-owners", level);
-            foreach (var program in new[] { module, Decode(Encode(module)), Decode(Encode(Binding.Bind(module, new(root, root)))) })
+            foreach (var program in new[] { module, Decode(Encode(module)), Decode(Encode(NativeProbe.Prepare(module, new(root, root)))) })
             {
-                Require(await Interpreter.ExecuteAsync(program, runtime) is StringValue { Data: "joined" }, "Nested task ownership changed");
+                Require((await NativeProbe.RunAsync(program, runtime)).AsString() == "joined", "Nested task ownership changed");
                 foreach (string name in new[] { "outer", "inner", "released" })
                     Require(File.ReadAllText(Path.Combine(root, name)) == name, "Owner lost work: " + name);
             }
         }
     }
 
-    private static Module EvaluationOrderModule() => new(
-        [new FunctionValue(1), new FunctionValue(2), new StringValue("A"), new StringValue("B")],
-        [
-            new("main", 0, 5,
-            [
-                new(OpCode.Constant, 0), new(OpCode.StoreLocal, 0),
-                new(OpCode.LoadCell, 0), new(OpCode.MakeClosure, 3, 1), new(OpCode.StoreLocal, 2),
-                new(OpCode.LoadLocal, 0), new(OpCode.LoadLocal, 2), new(OpCode.Call, 0, 4),
-                new(OpCode.Call, 1, Text: "1:1;2:2"), new(OpCode.StoreLocal, 3),
-                new(OpCode.LoadLocal, 0), new(OpCode.False), new(OpCode.Call, 1, Text: "1:1;2:2"), new(OpCode.StoreLocal, 4),
-                new(OpCode.LoadLocal, 3), new(OpCode.LoadLocal, 4), new(OpCode.NativeCall, 2, Text: "string.concat"), new(OpCode.Return)
-            ], TypeRef.String),
-            new("A", 1, 1, [new(OpCode.Constant, 2), new(OpCode.Return)], TypeRef.String, ParameterTypes: [TypeRef.Bool]),
-            new("B", 1, 1, [new(OpCode.Constant, 3), new(OpCode.Return)], TypeRef.String, ParameterTypes: [TypeRef.Bool]),
-            new("change", 0, 1, [new(OpCode.Constant, 1), new(OpCode.StoreLocal, 0), new(OpCode.True), new(OpCode.Return)], TypeRef.Bool, CaptureCount: 1)
-        ], OptimizationLevel: 0);
+    private static NativeProgram EvaluationOrderModule() => Compiler.Compile("""
+        let action = fn(value: Bool) { "A" };
+        let replacement = fn(value: Bool) { "B" };
+        fn change() { action = replacement; true };
+        let first = action(change());
+        let second = action(false);
+        $std::string::concat(first, second)
+        """, optimization: 0);
 
     private static async Task CheckSourceOrder()
     {
@@ -211,34 +208,48 @@ internal static class Program
         bool accepted = true;
         foreach (int level in new[] { 0, 1, 2, 3 })
         {
-            var value = await Interpreter.ExecuteAsync(Compiler.Compile(source, optimization: level), new(Output: TextWriter.Null, Error: TextWriter.Null));
+            var value = await NativeProbe.RunAsync(Compiler.Compile(source, optimization: level), new(Output: TextWriter.Null, Error: TextWriter.Null));
             Console.WriteLine($"O{level}: {value}");
-            accepted &= value is StringValue { Data: "AB" };
+            accepted &= value.Kind == NativeKind.String && value.AsString() == "AB";
         }
         Require(accepted, "The source compiler did not preserve argument mutation at every level");
     }
 
     private static async Task NativeCalls(ExecutionOptions runtime)
     {
-        var functions = new FunctionCode[]
+        NativeFunctionCode[] functions = [
+            new("main", [new(0, NativeSlotRole.Parameter), new(1), new(1)],
+                [new(NativeOp.Constant, 1, 0), new(NativeOp.Call, 2, 0, 2, Inputs: [1]), new(NativeOp.Return, A: 2)],
+                new([0], 1, []), ParameterCount: 1),
+            new("unused", [new(1, NativeSlotRole.Parameter)], [new(NativeOp.Return, A: 0)], new([1], 1, []), ParameterCount: 1),
+            new("other", [new(1, NativeSlotRole.Parameter)], [new(NativeOp.Return, A: 0)], new([1], 1, []), ParameterCount: 1)];
+        NativeProgram native = new([new(NativeKind.Bool, Boolean: true)], functions, [new(TypeKind.Function), new(TypeKind.Bool)], []);
+        NativeArtifact.Validate(native);
+        await using NativeInterpreter interpreter = new(Decode(Encode(native)), runtime);
+        NativeValue result = await interpreter.InvokeAsync(NativeValue.FromFunction(new(0)),
+            [NativeValue.FromFunction(new(1, NativeName: "bool.negate"))]);
+        Require(!result.AsBool(), "A direct source target override changed evaluated native identity");
+        native = native with
         {
-            new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.True), new(OpCode.Call, 1, Text: "1:2"), new(OpCode.Return)], TypeRef.Bool),
-            new("unused", 1, 1, [new(OpCode.LoadLocal, 0), new(OpCode.Return)], TypeRef.Bool, ParameterTypes: [TypeRef.Bool]),
-            new("other", 1, 1, [new(OpCode.LoadLocal, 0), new(OpCode.Return)], TypeRef.Bool, ParameterTypes: [TypeRef.Bool])
+            Functions = functions.Select((function, index) => index == 0 ? function with
+            { Instructions = [new(NativeOp.Constant, 1, 0), new(NativeOp.Call, 2, 0, Symbol: "2:2", Inputs: [1]), new(NativeOp.Return, A: 2)] } : function).ToArray()
         };
-        Module native = new([new FunctionValue(1, NativeName: "bool.negate")], functions, OptimizationLevel: 0);
-        Artifact.Validate(native);
-        Require(await Interpreter.ExecuteAsync(native, runtime) is BoolValue { Data: false }, "Native callee entered textual specialization");
-        native = native with { Functions = functions.Select((function, index) => index == 0 ? function with
-            { Instructions = [new(OpCode.Constant, 0), new(OpCode.True), new(OpCode.Call, 1, 3), new(OpCode.Return)] } : function).ToArray() };
-        Require(await Interpreter.ExecuteAsync(native, runtime) is BoolValue { Data: false }, "B override changed native identity");
-        Module missing = native with { Constants = [new FunctionValue(1)], Functions = functions.Select((function, index) => index == 0 ? function with
-            { Instructions = [new(OpCode.Constant, 0), new(OpCode.True), new(OpCode.Call, 1, Text: "2:2"), new(OpCode.Return)] } : function).ToArray() };
-        try { await Interpreter.ExecuteAsync(missing, runtime); throw new InvalidOperationException("Missing dispatch unexpectedly succeeded"); }
-        catch (MsyncException error) when (error.Message.Contains("no compiled specialization", StringComparison.Ordinal)) { }
-        Module badOverride = native with { Constants = [new PathValue("never-execute")] };
-        try { await Interpreter.ExecuteAsync(badOverride, runtime); throw new InvalidOperationException("Invalid B override unexpectedly ran a process"); }
-        catch (InvalidCastException) { }
+        await using NativeInterpreter dispatched = new(Decode(Encode(native)), runtime);
+        Require(!(await dispatched.InvokeAsync(NativeValue.FromFunction(new(0)), [NativeValue.FromFunction(new(1, NativeName: "bool.negate"))])).AsBool(),
+            "Finite source dispatch changed evaluated native identity");
+        try
+        {
+            await dispatched.InvokeAsync(NativeValue.FromFunction(new(0)), [NativeValue.FromFunction(new(1))]);
+            throw new InvalidOperationException("Missing source dispatch unexpectedly succeeded");
+        }
+        catch (MsyncException error) when (error.Message.Contains("compiled specialization", StringComparison.Ordinal)) { }
+        NativeProgram bad = native with
+        {
+            Functions = [functions[0] with { Slots = [new(2, NativeSlotRole.Parameter), new(1), new(1)] }, .. functions.Skip(1)],
+            Types = [.. native.Types, new(TypeKind.Path)]
+        };
+        try { NativeArtifact.Validate(bad); throw new InvalidOperationException("A typed function Call admitted a Path process callee"); }
+        catch (MsyncException) { }
     }
 
     private static async Task SessionContexts(string root)
@@ -250,8 +261,8 @@ internal static class Program
         {
             Environment.CurrentDirectory = a;
             CompilerSession compiler = new(optimization: 2);
-            ExecutionSession execution = new(new(Output: TextWriter.Null, Error: TextWriter.Null));
-            async Task<Value> Submit(string source)
+            await using NativeExecutionSession execution = new(new(Output: TextWriter.Null, Error: TextWriter.Null));
+            async Task<NativeValue> Submit(string source)
             {
                 var value = await execution.ExecuteAsync(compiler.Compile(source));
                 compiler.AcceptSubmission(execution.GetLocalValue);
@@ -261,16 +272,16 @@ internal static class Program
             Environment.CurrentDirectory = b;
             await Submit("operation = fn { ./b };");
             var first = await Submit("$std::ranges::front(delayed)");
-            Require(first is PathValue path && Path.GetFullPath(path.LocalPath(b)) == Path.Combine(a, "b"), "Old deferred caller lost directory A");
+            Require(first.Kind == NativeKind.Path && Path.GetFullPath(first.AsPath().LocalPath(b)) == Path.Combine(a, "b"), "Old deferred caller lost directory A");
             await Submit("let captured = ./b; operation = fn { captured };");
             var second = await Submit("$std::ranges::front(delayed)");
-            Require(second is PathValue item && Path.GetFullPath(item.LocalPath(a)) == Path.Combine(b, "b"), "New actual closure lost captured directory B");
+            Require(second.Kind == NativeKind.Path && Path.GetFullPath(second.AsPath().LocalPath(a)) == Path.Combine(b, "b"), "New actual closure lost captured directory B");
         }
         finally { Environment.CurrentDirectory = previous; }
     }
 
-    private static byte[] Encode(Module module) { using MemoryStream output = new(); Artifact.Write(module, output); return output.ToArray(); }
-    private static Module Decode(byte[] bytes) { using MemoryStream input = new(bytes); return Artifact.Read(input); }
+    private static byte[] Encode(NativeProgram module) { using MemoryStream output = new(); NativeArtifact.Write(module, output); return output.ToArray(); }
+    private static NativeProgram Decode(byte[] bytes) { using MemoryStream input = new(bytes); return NativeArtifact.Read(input); }
     private static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
     private static string Option(string[] args, string name, string fallback) { int index = Array.IndexOf(args, name); return index < 0 ? fallback : args[index + 1]; }
     private static double Quantile(double[] sorted, double q) { double p = (sorted.Length - 1) * q; int a = (int)p, b = Math.Min(a + 1, sorted.Length - 1); return sorted[a] + (sorted[b] - sorted[a]) * (p - a); }

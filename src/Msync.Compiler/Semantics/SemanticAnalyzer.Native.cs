@@ -1,5 +1,7 @@
 using System.Collections.Immutable;
 using Msync.Core;
+using NativeKind = Msync.Core.Native.NativeKind;
+using NativeValue = Msync.Core.Native.NativeValue;
 using Msync.Hir;
 
 namespace Msync.Compiler.Semantics;
@@ -13,8 +15,7 @@ internal sealed partial class SemanticAnalyzer
             throw Error(source, $"Unknown native '{name}'.", "E0204");
         if (IsDependentMeta(name))
             throw Error(source, "Dependent metadata queries require a direct, statically known invocation.", "E0222");
-        var indexed = IndexedNative.Classify(name);
-        var inputs = CheckNativeArguments(signature, indexed, arguments, source, context).ToArray();
+        var inputs = CheckNativeArguments(signature, arguments, source, context).ToArray();
         if (name is "text.format" or "text.format_fields") CheckFormatCall(name, inputs, source, context);
         SemanticValue? callback = null;
         ImmutableArray<SemanticDeferredWrite> callbackEffects = [];
@@ -48,7 +49,7 @@ internal sealed partial class SemanticAnalyzer
                 or "ranges.all_of" or "ranges.none" or "ranges.none_of" or "ranges.find_if" or "ranges.sort_with")
                 Require(callback, hir.Type(TypeRef.Bool), source, context: context);
         }
-        var value = NativeResult(signature, indexed, inputs, callback, source, context);
+        var value = NativeResult(signature, inputs, callback, source, context);
         NativeBehavior behavior = signature.Behavior.GetValueOrDefault();
         ImmutableArray<SessionCallBinding> openCalls = [];
         foreach (var input in inputs) openCalls = CombineSessionCalls(openCalls, input.OpenSessionCalls);
@@ -233,11 +234,9 @@ internal sealed partial class SemanticAnalyzer
         return Runtime(value) + layouts + fields + element + functions;
     }
 
-    private SemanticValue NativeResult(NativeSignature signature, IndexedNativeOperation indexed, IReadOnlyList<SemanticValue> arguments,
+    private SemanticValue NativeResult(NativeSignature signature, IReadOnlyList<SemanticValue> arguments,
         SemanticValue? callbackResult, HirSourceRange source, SemanticContext context)
     {
-        if (indexed != IndexedNativeOperation.None)
-            return IndexedNativeResult(signature, indexed, arguments, source, context);
         if (signature.Name.StartsWith("meta.", StringComparison.Ordinal)
             && arguments.Count > 0 && arguments.All(argument => argument.DenotedType is not null))
             return StaticMetaResult(signature.Name[5..], arguments, source);
@@ -302,7 +301,7 @@ internal sealed partial class SemanticAnalyzer
         };
     }
 
-    private ImmutableArray<SemanticValue> CheckNativeArguments(NativeSignature signature, IndexedNativeOperation indexed,
+    private ImmutableArray<SemanticValue> CheckNativeArguments(NativeSignature signature,
         IReadOnlyList<SemanticValue> arguments, HirSourceRange source, SemanticContext context)
     {
         if ((!signature.Variadic && arguments.Count != signature.Parameters.Count)
@@ -316,27 +315,6 @@ internal sealed partial class SemanticAnalyzer
             var target = hir.Type(signature.Parameters[index]);
             Require(arguments[index], target, source, allowImplicit: true, context: context);
             converted.Add(Convert(arguments[index], target, source, context));
-        }
-        int written = IndexedNative.WriteIndex(indexed);
-        if (written >= 0)
-        {
-            HirTypeId? uniformCarrier = null;
-            bool differentRepresentation = false;
-            for (int index = 0; index < IndexedResourceCount(arguments[0]); index++)
-            {
-                int region = IndexedResourceAt(arguments[0], index);
-                if (!context.Indexed.TryGetValue(region, out var storage)) continue;
-                for (int constraint = 0; constraint < IndexedCarrierCount(storage); constraint++)
-                {
-                    var carrier = IndexedCarrierAt(storage, constraint);
-                    Require(converted[written], carrier, source, allowImplicit: true, context: context);
-                    if (uniformCarrier is { } previous && hir.Types[previous.Value].RuntimeType != hir.Types[carrier.Value].RuntimeType)
-                        differentRepresentation = true;
-                    uniformCarrier ??= carrier;
-                }
-            }
-            if (!differentRepresentation && uniformCarrier is { } target)
-                converted[written] = Convert(converted[written], target, source, context);
         }
         return converted.MoveToImmutable();
     }
@@ -402,8 +380,8 @@ internal sealed partial class SemanticAnalyzer
     {
         var types = arguments.Select(argument => hir.Types[argument.DenotedType!.Value.Value].RuntimeType).ToArray();
         if (operation == "alternatives") return RangeValue(ValueForType(hir.Type(TypeRef.Type)));
-        Value result = MetaTypes.Evaluate(operation, types);
-        HirTypeId? denoted = result is TypeValue typed ? hir.Type(typed.Data) : null;
+        NativeValue result = MetaTypes.Evaluate(operation, types);
+        HirTypeId? denoted = result.Kind == NativeKind.Type ? hir.Type(result.AsType()) : null;
         if (arguments[0].DenotedType is { } first)
         {
             denoted = operation switch
@@ -416,107 +394,17 @@ internal sealed partial class SemanticAnalyzer
                 _ => denoted
             };
         }
-        HirLiteral literal = result switch
+        HirLiteral literal = result.Kind switch
         {
-            NullValue => new(HirLiteralKind.Null),
-            BoolValue boolean => new(HirLiteralKind.Bool, Boolean: boolean.Data),
-            NumberValue number => new(HirLiteralKind.Number, Number: number.Data),
-            StringValue text => new(HirLiteralKind.String, Text: text.Data),
-            TypeValue type => new(HirLiteralKind.Type, Type: type.Data),
+            NativeKind.Null => new(HirLiteralKind.Null),
+            NativeKind.Bool => new(HirLiteralKind.Bool, Boolean: result.AsBool()),
+            NativeKind.Number => new(HirLiteralKind.Number, Number: result.AsNumber()),
+            NativeKind.String => new(HirLiteralKind.String, Text: result.AsString()),
+            NativeKind.Type => new(HirLiteralKind.Type, Type: result.AsType()),
             _ => throw Error(source, $"Unsupported constant type metadata result '{result.Type}'.")
         };
         return new(hir.Type(result.Type), HirNodeId.None, literal, DenotedType: denoted);
     }
-
-    private SemanticValue IndexedNativeResult(NativeSignature signature, IndexedNativeOperation operation, IReadOnlyList<SemanticValue> arguments,
-        HirSourceRange source, SemanticContext context)
-    {
-        if (operation == IndexedNativeOperation.Typed)
-        {
-            if (arguments[0].DenotedType is not { } carrier)
-                throw Error(source, "A typed storage owner requires a statically inferred element Type.", "E0220");
-            return NewIndexed(new(EmptyIndexedElement(), carrier), context);
-        }
-        if (operation == IndexedNativeOperation.Vector)
-        {
-            var initial = DynamicElement(Item(arguments[0]), context);
-            return NewIndexed(new(initial, initial.Type), context);
-        }
-        int count = IndexedResourceCount(arguments[0]);
-        if (count == 0)
-            throw Error(source, "Indexed operations require an owned storage resource.", "E0222");
-        bool readsElement = operation is IndexedNativeOperation.Element or IndexedNativeOperation.Snapshot;
-        int written = IndexedNative.WriteIndex(operation);
-        SemanticValue? element = null;
-        SemanticIndexed? model = null;
-        for (int index = 0; index < count; index++)
-        {
-            int identity = IndexedResourceAt(arguments[0], index);
-            if (!context.Indexed.TryGetValue(identity, out var storage))
-                throw Error(source, "Indexed operations require a live storage resource description.", "E0222");
-            if (operation == IndexedNativeOperation.EmptyLike)
-            {
-                model = model is null ? storage : JoinIndexed(model, storage);
-                continue;
-            }
-            if (signature.Effect == NativeEffect.Write) context.IndexedWrites.Add(identity);
-            if (written >= 0)
-            {
-                var value = arguments[written];
-                if (storage.FixedCarrier is { } fixedCarrier)
-                {
-                    var carrier = ResolveHirType(fixedCarrier, context);
-                    if (!hir.Types[carrier.Value].RuntimeType.Accepts(Runtime(value)))
-                        value = value with { Type = carrier };
-                }
-                var next = operation == IndexedNativeOperation.Reset ? value : Join(LiveIndexedScope(storage.Element, context), value);
-                storage = storage with { Element = DynamicElement(next, context) };
-                context.Indexed[identity] = storage;
-            }
-            if (signature.Effect == NativeEffect.Write)
-                context.RecordWrite(new(SemanticWriteKind.Indexed, storage.Element, Region: identity, IndexedStorage: storage));
-            if (readsElement)
-            {
-                var current = IndexedReadElement(storage, context);
-                element = element is null ? current : Join(element, current);
-            }
-        }
-        return operation switch
-        {
-            IndexedNativeOperation.Element =>
-                DynamicElement(element!, context) with { Node = HirNodeId.None, Location = null },
-            IndexedNativeOperation.Snapshot => RangeValue(element!) with { EagerRange = true },
-            IndexedNativeOperation.EmptyLike => NewIndexed(model! with { Element = EmptyIndexedElement() }, context),
-            _ => ValueForType(hir.Type(signature.Result))
-        };
-    }
-
-    private SemanticValue NewIndexed(SemanticIndexed description, SemanticContext context)
-    {
-        int region = ++nextRegion;
-        context.Indexed[region] = description;
-        var element = IndexedReadElement(description, context);
-        return new(IndexedType(element.Type), HirNodeId.None, Element: element, IndexedRegion: region);
-    }
-
-    private SemanticValue EmptyIndexedElement() => new(hir.Type(new TypeRef(TypeKind.Never)), HirNodeId.None);
-
-    private SemanticValue IndexedReadElement(SemanticIndexed storage, SemanticContext context)
-    {
-        if (Runtime(storage.Element).Kind != TypeKind.Never) return LiveIndexedScope(storage.Element, context);
-        var element = storage.Element;
-        for (int index = 0; index < IndexedCarrierCount(storage); index++)
-            element = Join(element, ValueForType(IndexedCarrierAt(storage, index)));
-        return element;
-    }
-
-    private static SemanticValue LiveIndexedScope(SemanticValue value, SemanticContext context) =>
-        value.Scope is { Region: >= 0 } scope && context.Objects.TryGetValue(scope.Region, out var current)
-            ? value with { Scope = current }
-            : value;
-
-    private HirTypeId IndexedType(HirTypeId element) =>
-        hir.Type(new HirType(new(TypeKind.Storage, hir.Types[element.Value].RuntimeType), Element: element.Value));
 
     private SemanticValue DynamicElement(SemanticValue value, SemanticContext context)
     {
@@ -549,17 +437,4 @@ internal sealed partial class SemanticAnalyzer
         };
     }
 
-    private SemanticValue RefreshIndexed(SemanticValue value, SemanticContext context)
-    {
-        int count = IndexedResourceCount(value);
-        if (count == 0) return value;
-        SemanticValue? element = null;
-        for (int index = 0; index < count; index++)
-        {
-            var current = IndexedReadElement(context.Indexed[IndexedResourceAt(value, index)], context);
-            element = element is null ? current : Join(element, current);
-        }
-        HirTypeId type = IndexedType(element!.Type);
-        return value with { Type = Runtime(value).Nullable ? Nullable(type) : type, Element = element };
-    }
 }

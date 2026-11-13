@@ -230,9 +230,10 @@ def run(binary: Path) -> dict[str, float]:
         assert diagnostics(client, uri, None)["diagnostics"] == []
         notify(client, uri, 1, 'let emoji = "😀";\rlet bad = null;\r\n', opening=True)
         error = diagnostics(client, uri, 1)["diagnostics"][0]
+        assert error["code"] == "E0201", error
         assert error["range"] == {
-            "start": {"line": 1, "character": 10},
-            "end": {"line": 1, "character": 14},
+            "start": {"line": 1, "character": 4},
+            "end": {"line": 1, "character": 7},
         }, error
         notify(client, uri, 2, 'let emoji = "😀";\rlet active = true;\r\nactive\r')
         client.send(

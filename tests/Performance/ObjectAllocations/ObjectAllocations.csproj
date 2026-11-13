@@ -5,9 +5,10 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <MsyncSourceRoot Condition="'$(MsyncSourceRoot)' == ''">$(MSBuildThisFileDirectory)../../..</MsyncSourceRoot>
   </PropertyGroup>
+  <ItemGroup><Compile Include="../Components/NativeProbe.cs" Link="NativeProbe.cs" /></ItemGroup>
   <ItemGroup>
     <ProjectReference Include="$(MsyncSourceRoot)/src/Msync.Compiler/Msync.Compiler.csproj" />
     <ProjectReference Include="$(MsyncSourceRoot)/src/Msync.Runtime/Msync.Runtime.csproj" />
   </ItemGroup>
-  <ItemGroup><ProjectReference Include="../../../src/Msync.Optimization/Msync.Optimization.csproj" /></ItemGroup>
+  <ItemGroup><ProjectReference Include="$(MsyncSourceRoot)/src/Msync.Optimization/Msync.Optimization.csproj" /></ItemGroup>
 </Project>

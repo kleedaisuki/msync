@@ -14,9 +14,9 @@ internal sealed partial class SemanticAnalyzer
         key.Append(id.Value).Append(caller.DeferredReads ? 'd' : 'i').Append(':');
         if (arguments.All(IsScalarSchema) && captures.All(IsScalarSchema))
         {
-            foreach (var value in arguments) AppendScalarKey(value);
+            foreach (var value in arguments) AppendScalarKey(value, capture: false);
             key.Append('|');
-            foreach (var value in captures) AppendScalarKey(value);
+            foreach (var value in captures) AppendScalarKey(value, capture: true);
             return key.ToString();
         }
         int prefix = key.Length;
@@ -29,8 +29,8 @@ internal sealed partial class SemanticAnalyzer
         AppendInputKey(key, id, schema.Arguments, schema.Captures, schema.Context, new(recursive: recursive));
         return key.ToString();
 
-        void AppendScalarKey(SemanticValue value) => key.Append(value.Type.Value).Append('T')
-            .Append(value.DenotedType?.Value ?? -1).Append(';');
+        void AppendScalarKey(SemanticValue value, bool capture) => key.Append(value.Type.Value).Append('T')
+            .Append(value.DenotedType?.Value ?? -1).Append('S').Append(capture ? value.StorageConstraint?.Value ?? -1 : -1).Append(';');
     }
 
     private bool AppendInputKey(StringBuilder key, HirTemplateId template, IReadOnlyList<SemanticValue> arguments,
@@ -41,7 +41,9 @@ internal sealed partial class SemanticAnalyzer
         HashSet<SemanticValue>? active = provenance.ReadOnlyInput ? null : new(ReferenceEqualityComparer.Instance);
         for (int index = 0; index < arguments.Count && provenance.Supported; index++)
         {
-            AppendValueKey(key, arguments[index], context, active, provenance);
+            SemanticValue argument = arguments[index];
+            AppendValueKey(key, IsScalarSchema(argument) ? argument with { StorageConstraint = null } : argument,
+                context, active, provenance);
             key.Append(';');
         }
         key.Append('|');
@@ -55,6 +57,7 @@ internal sealed partial class SemanticAnalyzer
             }
             key.Append(';');
         }
+        if (provenance.Supported) provenance.AppendAliases(key);
         return provenance.Supported && provenance.HasCompleteDetachedCells;
     }
 
@@ -71,7 +74,11 @@ internal sealed partial class SemanticAnalyzer
 
             void VisitTemplate(HirTemplateId current)
             {
-                if (visited.Add(current)) Visit(hir.Templates[current.Value].Body);
+                if (!visited.Add(current)) return;
+                foreach (var witness in program.TypeWitnesses.Values)
+                    if (hir.Locations[witness.Location.Value].TemplateOwner == current)
+                        reads.Add(program.Original(witness.Location));
+                Visit(hir.Templates[current.Value].Body);
             }
 
             void Visit(HirNodeId id)
@@ -97,7 +104,9 @@ internal sealed partial class SemanticAnalyzer
     private string ValueKey(SemanticValue value)
     {
         StringBuilder key = new();
-        AppendValueKey(key, value, null, new(ReferenceEqualityComparer.Instance), new());
+        KeyProvenance provenance = new();
+        AppendValueKey(key, value, null, new(ReferenceEqualityComparer.Instance), provenance);
+        provenance.AppendAliases(key);
         return key.ToString();
     }
 
@@ -113,7 +122,7 @@ internal sealed partial class SemanticAnalyzer
             provenance.Supported = false;
             return;
         }
-        key.Append(value.Type.Value).Append(value.EagerRange ? '!' : '.');
+        key.Append(value.Type.Value).Append(value.EagerRange ? '!' : '.').Append('S').Append(value.StorageConstraint?.Value ?? -1);
         if (value.DenotedType is { } denoted) key.Append('T').Append(denoted.Value);
         if (active?.Add(value) == false)
         {
@@ -224,7 +233,9 @@ internal sealed partial class SemanticAnalyzer
             return;
         }
         if (!scope.Aliases.IsDefaultOrEmpty)
-            foreach (var alias in scope.Aliases) key.Append('A').Append(provenance.Region(alias));
+            provenance.Alias(scope, 'A', scope.Aliases);
+        if (context?.AliasViews.TryGetValue(scope.Region, out var views) == true)
+            provenance.Alias(scope, 'V', views);
         foreach (var field in scope.Fields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
         {
             key.Append(field.Key).Append(':');
@@ -282,6 +293,37 @@ internal sealed partial class SemanticAnalyzer
                 && IsScalarSchema(previous) && IsScalarSchema(value)
                 && previous.OpenSessionCalls.IsDefaultOrEmpty && value.OpenSessionCalls.IsDefaultOrEmpty);
         }
+        private List<(string Source, char Kind, IEnumerable<int> Targets)>? aliases;
+
+        public void Alias(SemanticScope source, char kind, IEnumerable<int> targets)
+        {
+            string anchor = source.Region >= 0 ? $"S{Region(source.Region)}" : $"V{Structural(source)}";
+            (aliases ??= []).Add((anchor, kind, targets.Distinct()));
+        }
+
+        public void AppendAliases(StringBuilder key)
+        {
+            if (aliases is null) return;
+            // Ordinary graph paths anchor identities before unordered edges are
+            // numbered. External-only targets are distinguished by incidence,
+            // never by their allocation numbers. Equal incidences are symmetric.
+            var external = aliases.SelectMany(group => group.Targets.Select(target => (group.Source, group.Kind, Target: target)))
+                .Where(edge => edge.Target >= 0 && regions?.ContainsKey(edge.Target) != true)
+                .GroupBy(edge => edge.Target)
+                .Select(group => (Target: group.Key, Signature: string.Join(";", group
+                    .Select(edge => $"{edge.Source}{edge.Kind}").Order(StringComparer.Ordinal))))
+                .OrderBy(node => node.Signature, StringComparer.Ordinal);
+            foreach (var node in external) Region(node.Target);
+            key.Append("|aliases[");
+            foreach (var group in aliases.OrderBy(group => group.Source, StringComparer.Ordinal).ThenBy(group => group.Kind))
+            {
+                key.Append(group.Source).Append(group.Kind).Append('(');
+                foreach (int target in group.Targets.Select(Region).Order()) key.Append(target).Append(',');
+                key.Append(");");
+            }
+            key.Append(']');
+        }
+
         public bool DefineScope(SemanticScope scope) => scope.Region >= 0
             ? (definedScopes ??= []).Add(scope.Region)
             : (definedStructural ??= new(ReferenceEqualityComparer.Instance)).Add(scope);

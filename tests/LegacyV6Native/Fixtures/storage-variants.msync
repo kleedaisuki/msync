@@ -1,0 +1,4 @@
+let first = $std::storage::vector_new([1, 2]);
+let second = $std::storage::vector_new(["x", "y"]);
+let selected = if $std::io::read_line() is null { second } else { first };
+$std::io::println($std::storage::vector_get(selected, 1) as String);

@@ -13,7 +13,7 @@ storage. For example, a specialization may receive one exact Scope layout
 under a structural parameter constraint, then rebind that parameter to a
 different satisfying layout. The HIR artifact preserves both facts so the
 portable ABI need not rediscover or re-admit the incoming layout.
-An aliased mutable Cell uses the structural storage contract rather than its
+An aliased mutable location uses the declared storage contract rather than its
 current value's concrete layout. An actual dependent read can establish a
 finite layout at its selected admission boundary.
 
@@ -26,16 +26,23 @@ Finalized callable bodies are closed. An unused generic value has an explicit
 
 ## Lowering boundary
 
-`HirLowerer.Lower(HirModule, HirLoweringOptions?, HirLoweringSession?)` returns
-`HirLoweringResult`, containing bytecode and the explicit logical-to-physical
-`HirLoweringLayout`. The lowerer does not bind names, infer types, execute
+The native path uses `NativeHirLowerer` and `NativeHirLoweringSession`.
+`HirLoweringMap` owns only stable callable, lexical-slot and allocation-site
+identities; `HirLoweringLayout` is its immutable public snapshot. Neither shared
+contract depends on bytecode, old runtime values or the historical lowerer.
+Native physical type/layout tables, persistent storage ABIs and capture
+provenance belong to `NativeHirLoweringSession`. The historical bytecode lowerer
+and its session are removed.
+
+`NativeHirLowerer.Lower` returns the native program and explicit
+logical-to-physical `HirLoweringLayout`. The lowerer does not bind names, infer types, execute
 expressions or call back into the compiler. It selects local/capture slots,
-branch offsets, iterator temporaries, scope allocation sites and constant-table
+branch offsets, iterator temporaries, Scope allocation sites and constant-table
 indices. It consumes resolved conversions and call targets without searching
 for additional specializations. The caller chooses whether to optimize the
-resulting relocatable bytecode.
+resulting relocatable native IR.
 
-`HirLoweringSession` retains layout identities across REPL generations. Captures
+`NativeHirLoweringSession` retains layout identities across REPL generations. Captures
 and parameters precede local slots; declaration initialization reserves a cell
 before constructing recursive closures and stores back through that same cell.
 Session roots are mapped from explicit exports rather than guessed from local
@@ -61,16 +68,15 @@ the read must establish its layout before a typed use. Lowering distinguishes
 those producer locations from ordinary values already constructed or admitted.
 
 Named constructors emit a selected readiness edge and publish fields in
-initializer order. A dominating closed lexical namespace used only for field
-access emits static field places with no Scope handle. Whole-value and
-escaping uses retain the original identity. Lazy Range element flags distinguish already read
-values from explicit thunk closures. Return and break close exited iterators
-and acquire regions while preserving their result value.
+initializer order. Ordinary construction allocates typed builtin storage and
+binds each declaration to its field address before evaluating the initializer.
+Whole-value and escaping uses retain allocation identity. Lazy Range producers
+distinguish already read values from explicit thunk closures. Return and break
+close exited iterators and acquire regions while preserving their result value.
 
 The current HIR artifact schema is format 3, including the separate parameter
 entry types. Serialization and text printing operate on these public tables. Reading an
 export and lowering it does not parse `HirSource.Text`; the source text is
-optional diagnostic material. The focused `tests/HirLowering` executable uses
-intentionally invalid source text and checks source-free artifact round trips,
-control flow, captures, named-self reassignment, generic identities and stable
-session layout.
+optional diagnostic material. Native execution acceptance is in `tests/NativePipeline`,
+`tests/NativeHirLowering`, `tests/NativeSessions` and the real source-free CLI
+journeys; historical old-opcode probes do not define the new representation.

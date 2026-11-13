@@ -67,7 +67,13 @@ internal sealed partial class SemanticAnalyzer
         List<HirNodeId> initializers = [];
         try
         {
-            foreach (var child in children) initializers.Add(Analyze(child, context).Node);
+            foreach (var child in children)
+            {
+                HirNodeId initializer = Analyze(child, context).Node;
+                if (context.Publish && hir.Nodes[initializer.Value] is { Kind: HirKind.Literal } literal
+                    && hir.Literals[literal.Data].Kind == HirLiteralKind.Null) continue;
+                initializers.Add(initializer);
+            }
         }
         finally { context.ActiveSingletonGuards = outerGuards; }
         if (construction.Singleton >= 0 && !initialized)
@@ -245,7 +251,7 @@ internal sealed partial class SemanticAnalyzer
                 if (arm.Pattern.Binding is { } binding) declared.Add(binding);
                 CollectLocations(arm.Value, read, declared);
             }
-        if (node.Kind == HirKind.Scope && hir.Scopes[node.Data].Self is { } self) declared.Add(self);
+        if (node.Kind is (HirKind.Scope or HirKind.AllocateScope) && hir.Scopes[node.Data].Self is { } self) declared.Add(self);
         foreach (var child in program.Children(id)) CollectLocations(child, read, declared);
     }
 }

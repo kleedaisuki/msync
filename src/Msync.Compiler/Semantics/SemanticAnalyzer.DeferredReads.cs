@@ -48,14 +48,16 @@ internal sealed partial class SemanticAnalyzer
         SemanticScope scope = context.Objects.GetValueOrDefault(initial.Region, initial);
         if (scope.Region >= 0 && !active.Add(scope.Region)) return result;
         var fields = ImmutableDictionary.CreateBuilder<string, SemanticValue>(StringComparer.Ordinal);
-        foreach (HirField field in hir.ScopeLayouts[scope.Layout].Fields)
+        HirType fixedType = hir.Types[storage.Value];
+        int layout = fixedType.Shape >= 0 ? fixedType.Shape : scope.Layout;
+        foreach (HirField field in hir.ScopeLayouts[layout].Fields)
         {
             if (!scope.Fields.TryGetValue(field.Name, out SemanticValue? current)) continue;
             HirTypeId domain = field.AdmitsNull ? Nullable(field.StorageType) : field.StorageType;
             if (scope.Locations.TryGetValue(field.Name, out HirLocationId location))
             {
                 current = context.Values.GetValueOrDefault(location, current);
-                domain = context.Storage.GetValueOrDefault(location, domain);
+                if (fixedType.Shape < 0) domain = context.Storage.GetValueOrDefault(location, domain);
             }
             current = FutureCallables(current, scope.Locations.TryGetValue(field.Name, out HirLocationId source)
                 ? source : current.FutureCallableDomain?.Owner, context, scope);
@@ -63,7 +65,7 @@ internal sealed partial class SemanticAnalyzer
             fields[field.Name] = future;
             if (scope.Locations.TryGetValue(field.Name, out location)) context.Values[location] = future;
         }
-        scope = scope with { Fields = fields.ToImmutable() };
+        scope = scope with { Layout = layout, Fields = fields.ToImmutable() };
         if (scope.Region >= 0)
         {
             active.Remove(scope.Region);
@@ -78,7 +80,7 @@ internal sealed partial class SemanticAnalyzer
         location ??= value.FutureCallableDomain?.Owner;
         if (location is not { } source || hir.Types[value.Type.Value].RuntimeType.WithoutNull != Msync.Core.TypeRef.Function)
             return value;
-        if (value.FutureCallableDomain is { } admitted
+        if (value.FutureCallableDomain is { } admitted && !admitted.Choices.IsDefaultOrEmpty
             && StorageOwner(admitted.Owner, context) == StorageOwner(source, context))
             return value with { Callables = admitted.Choices };
         HirLocationId definition = program.Original(context.Definitions.GetValueOrDefault(source, source));
@@ -101,13 +103,14 @@ internal sealed partial class SemanticAnalyzer
                 SemanticCapture capture = candidate.Captures[index];
                 if (capture.Mode != HirCaptureMode.Location) continue;
                 HirLocationId declaration = program.Original(context.Definitions.GetValueOrDefault(capture.Source, capture.Source));
-                // A bound generic local is a declaration recipe, not another live
+                // A bound declaration without a live cell is a recipe, not another
                 // closure. Prefer the matching instantiated capture already in the domain.
-                bool uninstantiated = program.TryDeclaration(capture.Source, out BoundDeclaration bound)
-                    && bound.Template is not null && !context.Values.ContainsKey(capture.Source);
+                bool uninstantiated = program.TryDeclaration(capture.Source, out _)
+                    && !context.Values.ContainsKey(capture.Source);
                 bool programBinding = program.TryDeclaration(declaration, out BoundDeclaration defined)
                     && defined.Template is null
-                    && defined.Kind is DeclarationKind.Scope or DeclarationKind.StandardModule or DeclarationKind.StandardRoot;
+                    && defined.Kind is DeclarationKind.Scope or DeclarationKind.Function
+                        or DeclarationKind.StandardModule or DeclarationKind.StandardRoot;
                 foreach (SemanticCallable current in Choices(value))
                 {
                     if (current.Template != candidate.Template || current.Captures.IsDefaultOrEmpty

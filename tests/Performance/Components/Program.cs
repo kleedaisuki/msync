@@ -8,8 +8,11 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Msync.Compiler.Syntax;
 using Msync.Core;
+using Msync.Core.Native;
+using Msync.Runtime.Native;
+using Msync.Probes;
+using Msync.Hir;
 using Msync.Runtime;
-using Module = Msync.Core.Module;
 using SourceCompiler = Msync.Compiler.Compiler;
 
 namespace Msync.Components;
@@ -37,6 +40,13 @@ internal sealed record Options(string Root, string Output, int[] Sizes, int Samp
                 default: throw new ArgumentException($"Unknown option '{args[i - 1]}'");
             }
         }
+        string[] available = ["parse", "analyze", "lower_native", "compile_o0", "compile_o1", "optimize_o1",
+            "artifact_validate", "artifact_encode", "artifact_decode", "prepare_native", "runtime_initialize_dispose", "vm_no_io",
+            "at_end", "at_start"];
+        if (stages is not null && stages.Any(stage => !available.Contains(stage, StringComparer.Ordinal)))
+            throw new ArgumentException("Unknown or retired component stage. Available stages: " + string.Join(", ", available));
+        if (sizes.Any(size => size < 1) || samples < 1 || warmups < 0)
+            throw new ArgumentException("Sizes and samples must be positive; warmups must be nonnegative.");
         output ??= Path.Combine(root, ".temp/performance-v080/current/components/results.json");
         return new(root, output, sizes, samples, warmups, stages);
     }
@@ -45,8 +55,8 @@ internal sealed record Options(string Root, string Output, int[] Sizes, int Samp
 }
 
 internal sealed record ImageIdentity(string Executable, string Sha256, string CheckoutCommitAtRun, string CompilerBuild,
-    string CoreBuild, string RuntimeBuild, string Framework, string Architecture);
-internal sealed record InputShape(string Workload, int Size, int SourceBytes, int Constants, int Functions, int Instructions, int Locals, int Blocks, int ArtifactBytes);
+    string CoreBuild, string RuntimeBuild, string Framework, string Architecture, string? JitPolicy);
+internal sealed record InputShape(string Workload, int Size, int SourceBytes, int Constants, int Functions, int Instructions, int Locals, int? Blocks, int ArtifactBytes);
 internal sealed record Observation(string Workload, int Size, string Stage, int IterationsPerSample, double[] Microseconds,
     double P50Microseconds, double P95Microseconds, double MinMicroseconds, double MaxMicroseconds,
     double AllocatedBytesPerOperation, int[] Collections);
@@ -77,9 +87,9 @@ internal static class Program
         Directory.CreateDirectory(Path.GetDirectoryName(options.Output)!);
         string executable = Environment.ProcessPath!;
         ImageIdentity image = new(executable, Digest(executable), Commit(options.Root),
-            Build(typeof(SourceCompiler)), Build(typeof(Artifact)), Build(typeof(Interpreter)),
+            Build(typeof(SourceCompiler)), Build(typeof(NativeArtifact)), Build(typeof(NativeInterpreter)),
             System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
-            System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString());
+            System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(), Environment.GetEnvironmentVariable("MSYNC_JIT"));
         List<InputShape> inputs = [];
         List<Observation> observations = [];
         foreach (string workload in new[] { "transfers", "generic_values", "scope_values" })
@@ -97,33 +107,35 @@ internal static class Program
         string source = Source(workload, size);
         string sourceName = $"{workload}-{size}.msync";
         File.WriteAllText(Path.Combine(Path.GetDirectoryName(options.Output)!, sourceName), source);
-        Module raw = SourceCompiler.Compile(source, sourceName, 0);
-        Module optimized = SourceCompiler.Compile(source, sourceName, 1);
+        NativeProgram raw = SourceCompiler.Compile(source, sourceName, 0);
+        NativeProgram optimized = SourceCompiler.Compile(source, sourceName, 1);
+        HirModule hir = SourceCompiler.Analyze(source, sourceName);
         byte[] encoded = Encode(optimized);
         BindingContext binding = new(options.Root, options.Root, Path.Combine(options.Root, sourceName));
-        Module bound = Binding.Bind(optimized, binding);
+        NativeProgram bound = NativeProbe.Prepare(optimized, binding);
         ExecutionOptions runtime = new(WorkingDirectory: options.Root, SourceFile: binding.SourceFile, Output: TextWriter.Null, Error: TextWriter.Null);
         inputs.Add(new(workload, size, Encoding.UTF8.GetByteCount(source), raw.Constants.Count, raw.Functions.Count,
-            raw.Functions.Sum(f => f.Instructions.Count), raw.Functions.Sum(f => f.LocalCount), raw.Blocks?.Count ?? 0, encoded.Length));
+            raw.Functions.Sum(f => f.Instructions.Count), raw.Functions.Sum(f => f.Slots.Count), null, encoded.Length));
         List<(string Name, Func<object> Run)> stages =
         [
             ("parse", () => Parser.Parse(source, sourceName)),
+            ("analyze", () => SourceCompiler.Analyze(source, sourceName)),
+            ("lower_native", () => NativeHirLowerer.Lower(hir).Program),
             ("compile_o0", () => SourceCompiler.Compile(source, sourceName, 0)),
             ("compile_o1", () => SourceCompiler.Compile(source, sourceName, 1)),
-            ("optimize_o1", () => Optimizer.Optimize(raw, 1)),
-            ("form_blocks", () => BlockBuilder.Form(raw)),
-            ("artifact_validate", () => { Artifact.Validate(optimized); return optimized; }),
+            ("optimize_o1", () => NativeOptimizer.Optimize(raw, 1)),
+            ("artifact_validate", () => { NativeArtifact.Validate(optimized); return optimized; }),
             ("artifact_encode", () => Encode(optimized)),
             ("artifact_decode", () => Decode(encoded)),
-            ("bind_and_lower", () => Binding.Bind(optimized, binding)),
-            ("execution_lower", () => ExecutionLowering.Lower(bound))
+            ("prepare_native", () => NativeProbe.Prepare(optimized, binding)),
+            ("runtime_initialize_dispose", () => Initialize(bound, runtime))
         ];
         if (workload != "transfers")
         {
-            Value result = Interpreter.ExecuteAsync(bound, runtime).GetAwaiter().GetResult();
-            if (result is not PathValue path || !path.Raw.EndsWith($"input_{size - 1}", StringComparison.Ordinal))
+            NativeValue result = NativeProbe.RunAsync(bound, runtime).GetAwaiter().GetResult();
+            if (result.Kind != NativeKind.Path || !result.AsPath().Raw.EndsWith($"input_{size - 1}", StringComparison.Ordinal))
                 throw new InvalidOperationException($"Unexpected no-I/O result: {result}");
-            stages.Add(("vm_no_io", () => Interpreter.ExecuteAsync(bound, runtime).GetAwaiter().GetResult()));
+            stages.Add(("vm_no_io", () => NativeProbe.RunAsync(bound, runtime).GetAwaiter().GetResult()));
         }
         foreach (var stage in stages)
         {
@@ -132,6 +144,13 @@ internal static class Program
             observations.Add(measurement);
             Console.WriteLine($"{workload,-14} {size,4} {stage.Name,-18} p50={measurement.P50Microseconds,10:F3} us p95={measurement.P95Microseconds,10:F3} us alloc={measurement.AllocatedBytesPerOperation,12:F0} B/op");
         }
+    }
+
+    private static object Initialize(NativeProgram program, ExecutionOptions options)
+    {
+        NativeInterpreter interpreter = new(program, options);
+        interpreter.DisposeAsync().GetAwaiter().GetResult();
+        return program;
     }
 
     private static Observation Measure(Options options, string workload, int size, string stage, Func<object> operation)
@@ -164,17 +183,17 @@ internal static class Program
 
     private static double Percentile(double[] sorted, double fraction) => sorted[(int)Math.Ceiling(sorted.Length * fraction) - 1];
 
-    private static byte[] Encode(Module module)
+    private static byte[] Encode(NativeProgram module)
     {
         using MemoryStream stream = new();
-        Artifact.Write(module, stream);
+        NativeArtifact.Write(module, stream);
         return stream.ToArray();
     }
 
-    private static Module Decode(byte[] bytes)
+    private static NativeProgram Decode(byte[] bytes)
     {
         using MemoryStream stream = new(bytes, writable: false);
-        return Artifact.Read(stream);
+        return NativeArtifact.Read(stream);
     }
 
     private static string Source(string workload, int size)

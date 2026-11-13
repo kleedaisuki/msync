@@ -25,6 +25,7 @@ internal sealed partial class SemanticAnalyzer
         bool keyOnly = false)
     {
         private readonly Dictionary<int, int> regions = [];
+        private readonly List<int> admittedRegions = [];
         private readonly Dictionary<int, int> indexedRegions = [];
         private readonly Dictionary<SemanticValue, SemanticValue> active = new(ReferenceEqualityComparer.Instance);
         private readonly Dictionary<(SemanticValue Value, SemanticInputRole Role), SemanticValue> completed = new(ReferenceRoleComparer<SemanticValue>.Instance);
@@ -33,7 +34,7 @@ internal sealed partial class SemanticAnalyzer
         private readonly Dictionary<SemanticInputRole, int> scopeRoles = [];
         private readonly Dictionary<SemanticInputRole, int> resourceRoles = [];
         private readonly SemanticInputRoles roles = new();
-        private readonly List<(int Formal, ImmutableHashSet<int> Sources)> scopeViews = [];
+        private readonly Dictionary<int, HashSet<int>> scopeSources = [];
         private int nextRoot;
         public Dictionary<HirLocationId, HirLocationId> Locations { get; } = [];
 
@@ -65,17 +66,19 @@ internal sealed partial class SemanticAnalyzer
             if (value.Scope is { } scope)
             {
                 scope = caller.Objects.GetValueOrDefault(scope.Region, scope);
-                if (scope.Region >= 0 && regions.TryGetValue(scope.Region, out var existing))
-                    result = result with { Scope = formal.Objects[existing] };
+                if (scope.Region >= 0 && regions.TryGetValue(scope.Region, out var existing)
+                    && formal.Objects.TryGetValue(existing, out var admitted))
+                    result = result with { Scope = admitted };
                 else
                 {
                     bool summary = scope.Region < 0;
-                    int region = summary && scopeRoles.TryGetValue(role, out var prototype) ? prototype : ++owner.nextRegion;
+                    int region = scope.Region >= 0 && regions.TryGetValue(scope.Region, out var family) ? family
+                        : summary && scopeRoles.TryGetValue(role, out var prototype) ? prototype : ++owner.nextRegion;
                     if (summary) scopeRoles[role] = region;
-                    if (scope.Region >= 0) regions[scope.Region] = region;
+                    if (scope.Region >= 0 && !regions.ContainsKey(scope.Region)) AddRegion(scope.Region, region);
                     var sources = scope.Aliases.IsDefaultOrEmpty ? (scope.Region >= 0 ? ImmutableHashSet.Create(scope.Region) : [])
                         : scope.Aliases.ToImmutableHashSet();
-                    if (!keyOnly && (summary || scope.Dynamic)) scopeViews.Add((region, sources));
+                    RegisterScopeSources(region, sources);
                     var symbolic = scope with
                     {
                         Region = region,
@@ -90,8 +93,16 @@ internal sealed partial class SemanticAnalyzer
                     var fields = ImmutableDictionary.CreateBuilder<string, SemanticValue>(StringComparer.Ordinal);
                     foreach (var (name, original) in scope.Fields)
                     {
-                        var field = scope.Locations.TryGetValue(name, out var location)
-                            ? caller.Values.GetValueOrDefault(location, original) : original;
+                        bool located = scope.Locations.TryGetValue(name, out var location);
+                        var field = located ? caller.Values.GetValueOrDefault(location, original) : original;
+                        HirTypeId? carrier = located ? owner.StorageType(location, caller) : field.StorageConstraint;
+                        if (carrier is { } storage && owner.hir.Types[storage.Value].TypeParameter < 0)
+                        {
+                            TypeRef stored = owner.hir.Types[storage.Value].RuntimeType;
+                            if (owner.Runtime(field) == TypeRef.Null
+                                || (stored.Kind & (TypeKind.Scope | TypeKind.Range | TypeKind.Function | TypeKind.Type)) == 0)
+                                field = field with { Type = storage };
+                        }
                         fields.Add(name, Abstract(field, roles.Field(role, name)));
                     }
                     symbolic = symbolic with { Fields = fields.ToImmutable() };
@@ -247,10 +258,9 @@ internal sealed partial class SemanticAnalyzer
 
         private int MapSourceRegion(int source)
         {
-            if (regions.TryGetValue(source, out var region)) return region;
             if (caller.Objects.TryGetValue(source, out var scope))
                 return Abstract(new(owner.hir.Type(new HirType(TypeRef.Scope, Shape: scope.Layout)), HirNodeId.None, Scope: scope)).Scope!.Region;
-            regions[source] = region = ++owner.nextRegion;
+            if (!regions.TryGetValue(source, out var region)) AddRegion(source, region = ++owner.nextRegion);
             return region;
         }
 
@@ -276,19 +286,53 @@ internal sealed partial class SemanticAnalyzer
             return result with { Scope = scope };
         }
 
+        private void RegisterScopeSources(int region, IEnumerable<int> sources)
+        {
+            foreach (int source in sources)
+            {
+                if (!scopeSources.TryGetValue(source, out var views)) scopeSources[source] = views = [];
+                foreach (int view in views)
+                {
+                    if (view == region) continue;
+                    formal.AliasViews[region] = formal.AliasViews.GetValueOrDefault(region, ImmutableHashSet<int>.Empty).Add(view);
+                    formal.AliasViews[view] = formal.AliasViews.GetValueOrDefault(view, ImmutableHashSet<int>.Empty).Add(region);
+                }
+                views.Add(region);
+            }
+        }
+
+        private int AliasRegion(int source)
+        {
+            if (source < 0) return -1;
+            if (regions.TryGetValue(source, out int target)) return target;
+            // An external alias endpoint names a place family, not another
+            // demanded value graph. Reads import facts through Abstract.
+            AddRegion(source, target = ++owner.nextRegion);
+            return target;
+        }
+
+        private void AddRegion(int source, int target)
+        {
+            regions.Add(source, target);
+            admittedRegions.Add(source);
+        }
+
         public void Complete()
         {
-            for (int first = 0; first < scopeViews.Count; first++)
-                for (int second = first + 1; second < scopeViews.Count; second++)
-                {
-                    var a = scopeViews[first]; var b = scopeViews[second];
-                    if (a.Formal == b.Formal || !a.Sources.Overlaps(b.Sources)) continue;
-                    formal.AliasViews[a.Formal] = formal.AliasViews.GetValueOrDefault(a.Formal, ImmutableHashSet<int>.Empty).Add(b.Formal);
-                    formal.AliasViews[b.Formal] = formal.AliasViews.GetValueOrDefault(b.Formal, ImmutableHashSet<int>.Empty).Add(a.Formal);
-                }
             foreach (var pair in Locations.ToArray())
                 if (caller.Values.TryGetValue(pair.Key, out var value))
                     formal.Values[pair.Value] = Abstract(value, roles.Capture(pair.Value));
+            for (int index = 0; index < admittedRegions.Count; index++)
+            {
+                int source = admittedRegions[index];
+                if (!caller.AliasViews.TryGetValue(source, out var views)) continue;
+                int target = regions[source];
+                foreach (int alias in views)
+                {
+                    int mapped = AliasRegion(alias);
+                    formal.AliasViews[target] = formal.AliasViews.GetValueOrDefault(target, ImmutableHashSet<int>.Empty).Add(mapped);
+                }
+            }
         }
 
         private HirLocationId FormalLocation(HirLocationId source)

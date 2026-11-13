@@ -1,6 +1,8 @@
 using Msync.Compiler;
 using Msync.Core;
+using Msync.Core.Native;
 using Msync.Runtime;
+using Msync.Runtime.Native;
 
 if (args.Contains("--descriptions", StringComparer.Ordinal))
 {
@@ -26,16 +28,16 @@ try
         Directory.CreateDirectory(origin);
         Directory.CreateDirectory(next);
         CompilerSession compiler = new(optimization: level);
-        await using ExecutionSession execution = new(new(WorkingDirectory: origin));
+        await using NativeExecutionSession execution = new(new(WorkingDirectory: origin));
 
-        async Task<Value> Submit(string source)
+        async Task<NativeValue> Submit(string source)
         {
-            Module module;
+            NativeProgram module;
             try { module = compiler.Compile(source); }
             catch { compiler.ReconcileSubmission(_ => false); throw; }
             try
             {
-                Value result = await execution.ExecuteAsync(module);
+                NativeValue result = await execution.ExecuteAsync(module);
                 compiler.AcceptSubmission(execution.GetLocalValue);
                 return result;
             }
@@ -76,7 +78,7 @@ try
             Check(!File.Exists(Path.Combine(origin, "analysis-must-not-write.txt")),
                 "analysis does not perform file effects");
         }
-        Check(await Submit("counter::get()") is NumberValue { Data: 0 },
+        Check(await Submit("counter::get()") == NativeValue.FromNumber(0),
             "analysis does not invoke captured mutation");
         Check(compiler.AnalyzeEditor("let invalid: Number = true;", execution.GetLocalValue).Diagnostic is not null,
             "failed analysis returns a diagnostic");
@@ -89,12 +91,12 @@ try
         _ = compiler.AnalyzeEditor("let unfinished = {", execution.GetLocalValue);
         Check(!compiler.BindingNames.Contains("unfinished"),
             "an unfinished editor declaration does not reserve a session name");
-        Check(await Submit("let alias = counter; alias::inc(); counter::get()") is NumberValue { Data: 1 },
+        Check(await Submit("let alias = counter; alias::inc(); counter::get()") == NativeValue.FromNumber(1),
             "accepted feedback preserves Scope and captured-cell identity");
 
         await Submit("let watched = scope { text: \"before\" };");
-        ScopeValue watched = (ScopeValue)await Submit("watched");
-        watched.SetMember("text", new StringValue("native update"));
+        NativeAddress watched = (await Submit("watched")).AsAddress();
+        watched.Field(0).Store(NativeValue.FromString("native update"));
         const string watchedPrefix = "watched::";
         EditorAnalysis live = compiler.AnalyzeEditor(watchedPrefix, execution.GetLocalValue);
         Check(live.At(watchedPrefix.Length).Receiver?.Members?.Single(member => member.Name == "text")
@@ -104,20 +106,20 @@ try
             "an editor feedback overlay does not publish facts into the accepted generation");
 
         await Submit("let shared = 0; fn bump() { global shared; shared = shared + 1; shared };");
-        Check(await Submit("bump()") is NumberValue { Data: 1 }, "global import uses its definition location");
+        Check(await Submit("bump()") == NativeValue.FromNumber(1), "global import uses its definition location");
         await Submit("let shared = \"shadow\";");
-        Check(await Submit("bump()") is NumberValue { Data: 2 }, "shadowing does not retarget an existing capture");
-        Check(await Submit("shared") is StringValue { Data: "shadow" }, "the new lexical binding remains selected");
+        Check(await Submit("bump()") == NativeValue.FromNumber(2), "shadowing does not retarget an existing capture");
+        Check(await Submit("shared") == NativeValue.FromString("shadow"), "the new lexical binding remains selected");
 
         await Submit("let text = \"before\"; fn once(value: String) { [value] }; let delayed = once(text);");
         await Submit("text = \"after\";");
-        Check(await Submit("$std::ranges::first(delayed)") is StringValue { Data: "after" },
+        Check(await Submit("$std::ranges::first(delayed)") == NativeValue.FromString("after"),
             "deferred arguments read their shared location on demand");
 
         await Submit("fn identity(value) { value }; fn invalid_later(value) { value + true };");
-        Check(await Submit("identity(42)") is NumberValue { Data: 42 },
+        Check(await Submit("identity(42)") == NativeValue.FromNumber(42),
             "a retained generic body specializes for a new Number call");
-        Check(await Submit("identity(\"later\")") is StringValue { Data: "later" },
+        Check(await Submit("identity(\"later\")") == NativeValue.FromString("later"),
             "the same retained generic body specializes for a later String call");
         Check(compiler.AnalyzeEditor("invalid_later(1)", execution.GetLocalValue).Diagnostic is not null,
             "a deferred generic body is checked when an editor query supplies its arguments");
@@ -129,7 +131,7 @@ try
         catch (CompileException) { }
         Check(!compiler.BindingNames.Contains("unpublished"),
             "a failed generic specialization publishes no part of its submission");
-        Check(await Submit("identity(7)") is NumberValue { Data: 7 },
+        Check(await Submit("identity(7)") == NativeValue.FromNumber(7),
             "failed query and compilation leave prior generic definitions usable");
 
         await Submit("""
@@ -139,14 +141,14 @@ try
             };
             let recurse = make_recursion();
             """);
-        Check(await Submit("recurse(3)") is NumberValue { Data: 0 },
+        Check(await Submit("recurse(3)") == NativeValue.FromNumber(0),
             "a returned private recursive closure retains its shared self location");
 
         await Submit("let values?: Range<Number> = [1];");
-        Check(await Submit("if values is not null { $std::ranges::size(values) } else { 0 }") is NumberValue { Data: 1 },
+        Check(await Submit("if values is not null { $std::ranges::size(values) } else { 0 }") == NativeValue.FromNumber(1),
             "current non-null facts apply to an immediate read");
         await Submit("values = null;");
-        Check(await Submit("if values is not null { $std::ranges::size(values) } else { 0 }") is NumberValue { Data: 0 },
+        Check(await Submit("if values is not null { $std::ranges::size(values) } else { 0 }") == NativeValue.FromNumber(0),
             "future submissions retain nullable storage admission");
 
         try
@@ -157,26 +159,26 @@ try
         catch (MsyncException) { }
         Check(compiler.BindingNames.Contains("retained") && !compiler.BindingNames.Contains("broken"),
             "runtime reconciliation keeps only initialized new declarations");
-        Check(await Submit("retained") is StringValue { Data: "accepted prefix" },
+        Check(await Submit("retained") == NativeValue.FromString("accepted prefix"),
             "the accepted prefix remains usable after a failed submission");
 
         await Submit("scope FirstSite { value: 1 };");
         await Submit("scope SecondSite { value: \"second\" };");
-        Check(await Submit("FirstSite::value") is NumberValue { Data: 1 },
+        Check(await Submit("FirstSite::value") == NativeValue.FromNumber(1),
             "a prior named Scope retains its own singleton allocation site");
-        Check(await Submit("SecondSite::value") is StringValue { Data: "second" },
+        Check(await Submit("SecondSite::value") == NativeValue.FromString("second"),
             "a later named Scope does not reuse another generation's compacted constructor index");
         await Submit("let retained_site = FirstSite; fn read_site(seed) { retained_site::value + seed };");
         await Submit("let different_layout = scope { tag: true, text: \"layout\" }; FirstSite::value = 22;");
-        Check(await Submit("read_site(3)") is NumberValue { Data: 25 },
+        Check(await Submit("read_site(3)") == NativeValue.FromNumber(25),
             "a later specialization retains the escaped static identity and the original capture contract");
 
         await Submit("let saved = ./value;");
         execution.ChangeWorkingDirectory(next);
-        ScopeValue paths = (ScopeValue)await Submit("scope { saved: saved, current: ./value }");
-        Check(paths["saved"] is PathValue saved && saved.WorkingDirectory == origin,
+        NativeAddress paths = (await Submit("scope { saved: saved, current: ./value }")).AsAddress();
+        Check(paths.Field(0).Load().AsPath().WorkingDirectory == origin,
             "existing Path values retain their origin");
-        Check(paths["current"] is PathValue current && current.WorkingDirectory == next,
+        Check(paths.Field(1).Load().AsPath().WorkingDirectory == next,
             "new Path values use the session directory");
     }
     Console.WriteLine($"PASS {checks} persistent semantic-session contracts");

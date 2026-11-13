@@ -1,0 +1,17 @@
+let owner = $std::storage::vector_new([1]);
+let owners = [owner];
+let kind = if $std::io::read_line() is null { decltype(owners) } else { Range<Number> };
+$std::io::println((owners is kind) as String);
+let scalar = if $std::io::read_line() is null { 1 } else { "x" };
+let scalar_range = [scalar];
+let expected = if $std::io::read_line() is null { Range<Number> } else { Range<String> };
+$std::io::println((scalar_range is expected) as String);
+let nested = [owners];
+let nested_kind = if $std::io::read_line() is null { decltype(nested) } else { Range<String> };
+$std::io::println((nested is nested_kind) as String);
+let repeated = $std::ranges::transform([0, 1], fn(n: Number) { owner });
+let repeated_kind = if $std::io::read_line() is null { decltype(repeated) } else { Range<Number> };
+$std::io::println((repeated is repeated_kind) as String);
+let empty = $std::ranges::empty_of(decltype(owner));
+let empty_kind = if $std::io::read_line() is null { decltype(empty) } else { Range<Number> };
+$std::io::println((empty is empty_kind) as String);

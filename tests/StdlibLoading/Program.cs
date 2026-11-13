@@ -1,8 +1,15 @@
-using Msync.Optimization;
 using Msync.Compiler;
 using Msync.Core;
+using Msync.Core.Native;
+using Msync.Runtime.Native;
 using Msync.Runtime;
-using Module = Msync.Core.Module;
+
+
+if (args.Contains("--query-modules", StringComparer.Ordinal))
+{
+    await CapturedModuleChecks.RunQueries();
+    return;
+}
 
 if (args.Contains("--captured-modules", StringComparer.Ordinal))
 {
@@ -17,6 +24,8 @@ if (args.Contains("--demand-loading", StringComparer.Ordinal))
     return;
 }
 
+await CapturedModuleChecks.RunQueries();
+
 int assertions = 0;
 void Check(bool value, string message)
 {
@@ -26,7 +35,7 @@ void Check(bool value, string message)
 
 var raw = Compiler.Compile("$std::bool::identity(true)", "module-selection", 0);
 Check(raw.Functions.Count < 12, $"A Bool reference eagerly instantiated unrelated modules ({raw.Functions.Count} functions)");
-Check(raw.Constants.OfType<FunctionValue>().All(value => value.NativeName is null || value.NativeName.StartsWith("bool.", StringComparison.Ordinal)),
+Check(raw.Functions.SelectMany(function => function.Instructions).Where(instruction => instruction.Op is NativeOp.MakeFunction or NativeOp.CallNative).All(instruction => instruction.Symbol is null || instruction.Symbol.StartsWith("bool.", StringComparison.Ordinal)),
     "A Bool reference populated unrelated native capabilities");
 foreach ((string name, string source, string expected) in new[]
 {
@@ -43,13 +52,22 @@ foreach ((string name, string source, string expected) in new[]
 {
     foreach (int level in new[] { 0, 2, 3 })
     {
-        Module portable = Compiler.Compile(source, name, level);
+        NativeProgram portable = Compiler.Compile(source, name, level);
+        Console.WriteLine($"Module loading: {name} O{level}");
         foreach (bool bound in new[] { false, true })
         {
-            Module program = bound ? Binding.Bind(portable, new(Environment.CurrentDirectory, Environment.CurrentDirectory)) : portable;
+            NativeProgram program = bound ? NativePreparation.Prepare(portable, new BindingContext(Environment.CurrentDirectory, Environment.CurrentDirectory)) : portable;
             using MemoryStream data = new();
-            Artifact.Write(program, data); data.Position = 0;
-            Value result = await Interpreter.ExecuteAsync(Artifact.Read(data));
+            try { NativeArtifact.Write(program, data); }
+            catch
+            {
+                string directory = Path.Combine(Environment.CurrentDirectory, ".temp", "stdlib-loading-failures");
+                Directory.CreateDirectory(directory);
+                File.WriteAllText(Path.Combine(directory, $"{name}-O{level}-{bound}.json"), NativeArtifact.ToJson(program));
+                throw;
+            }
+            data.Position = 0;
+            NativeValue result = await StdlibFixture.Execute(NativeArtifact.Read(data));
             Check(result.ToString() == expected, $"{name} O{level} bound={bound}: expected '{expected}', got '{result}'");
         }
     }

@@ -1,6 +1,8 @@
 using System.Collections.Immutable;
 using Msync.Compiler.Syntax;
 using Msync.Core;
+using Msync.Core.Native;
+using Msync.Optimization;
 using Msync.Compiler.Semantics;
 using Msync.Hir;
 
@@ -12,7 +14,7 @@ namespace Msync.Compiler.Session;
 internal sealed class SemanticSession(string sourceName, int optimization)
 {
     private readonly HirBuilder workspace = new();
-    private readonly HirLoweringSession lowering = new();
+    private readonly NativeHirLoweringSession lowering = new();
     private readonly SemanticInstanceCache instances = new();
     private BoundProgram? accepted;
     private SemanticContext? facts;
@@ -27,7 +29,7 @@ internal sealed class SemanticSession(string sourceName, int optimization)
 
     public IReadOnlyCollection<string> BindingNames => accepted?.Exports.Keys.ToArray() ?? [];
 
-    public Module Compile(string source, Document? document = null, CompilationTrace? trace = null)
+    public NativeProgram Compile(string source, Document? document = null, CompilationTrace? trace = null)
     {
         using var transaction = workspace.BeginTransaction();
         using var additions = instances.BeginAdditions();
@@ -35,12 +37,15 @@ internal sealed class SemanticSession(string sourceName, int optimization)
         SemanticSessionDispatch nextDispatches = dispatches.Fork();
         SemanticAnalyzer analyzer = new(bound, codeCache: instances, sessionDispatch: nextDispatches);
         HirModule module = Compiler.Analyze(analyzer, facts, trace);
-        var options = new HirLoweringOptions(optimization, PreserveLocals: true);
-        HirLoweringResult result = trace is null ? lowering.Lower(module, options)
+        var options = new NativeHirLoweringOptions(optimization, PreserveLocals: true);
+        NativeHirLoweringResult result = trace is null ? lowering.Lower(module, options)
             : trace.Measure("compiler.lower", (lowering, module, options),
                 static state => state.lowering.Lower(state.module, state.options),
-                size: static result => CompilationSize.Of(result.Module));
-        Module executable = Compiler.Optimize(result.Module, optimization, trace);
+                size: static lowered => CompilationSize.Of(lowered.Program));
+        NativeProgram executable = trace is null ? NativeOptimizer.Optimize(result.Program, optimization)
+            : trace.Measure("compiler.optimize", (result.Program, optimization, trace),
+                static state => NativeOptimizer.Optimize(state.Program, state.optimization, state.trace),
+                CompilationSize.Of(result.Program), CompilationSize.Of);
         pending = new(bound, analyzer.FinalState, result.Layout, nextDispatches);
         additions.Commit();
         transaction.Commit();
@@ -48,7 +53,7 @@ internal sealed class SemanticSession(string sourceName, int optimization)
     }
 
     internal SemanticEditorResult AnalyzeEditor(string source, Document? document = null,
-        Func<int, Value?>? resolveAcceptedValue = null)
+        Func<int, NativeValue?>? resolveAcceptedValue = null)
     {
         using var transaction = workspace.BeginTransaction();
         using var additions = instances.BeginAdditions();
@@ -56,7 +61,7 @@ internal sealed class SemanticSession(string sourceName, int optimization)
         if (resolveAcceptedValue is not null && accepted is not null && facts is not null)
         {
             seed = facts.QueryFork();
-            new SemanticSessionValues(accepted, acceptedLayout, seed, acceptedSites!)
+            new NativeSemanticSessionValues(accepted, acceptedLayout, seed, acceptedSites!)
                 .Refresh(accepted.Exports.Values, resolveAcceptedValue);
         }
         BoundProgram bound = Binder(observations: true, editorMode: true).Bind(source, sourceName, document);
@@ -85,7 +90,7 @@ internal sealed class SemanticSession(string sourceName, int optimization)
         return new EditorSemanticIndex(descriptions).ConceptsAt(0);
     }
 
-    public void AcceptSubmission(Func<int, Value?>? resolve = null)
+    public void AcceptSubmission(Func<int, NativeValue?>? resolve = null)
     {
         if (pending is not { } submission) return;
         accepted = submission.Program;
@@ -99,7 +104,7 @@ internal sealed class SemanticSession(string sourceName, int optimization)
         descriptions = null;
     }
 
-    public void ReconcileSubmission(Func<int, bool> initialized, Func<int, Value?>? resolve = null)
+    public void ReconcileSubmission(Func<int, bool> initialized, Func<int, NativeValue?>? resolve = null)
     {
         if (pending is not { } submission) return;
         var exports = accepted?.Exports ?? ImmutableDictionary<string, HirLocationId>.Empty;
@@ -122,8 +127,8 @@ internal sealed class SemanticSession(string sourceName, int optimization)
         descriptions = null;
     }
 
-    private void Refresh(HirLoweringLayout layout, Func<int, Value?> resolve) =>
-        new SemanticSessionValues(accepted!, layout, facts!, acceptedSites!, dispatches).Refresh(accepted!.Exports.Values, resolve);
+    private void Refresh(HirLoweringLayout layout, Func<int, NativeValue?> resolve) =>
+        new NativeSemanticSessionValues(accepted!, layout, facts!, acceptedSites!, dispatches).Refresh(accepted!.Exports.Values, resolve);
 
     private SourceBinder Binder(bool observations = false, bool editorMode = false) => accepted is null
         ? new(workspace, observations: observations, editorMode: editorMode, isSession: true)

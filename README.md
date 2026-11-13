@@ -1,8 +1,8 @@
 # msync
 
-msync is a typed file-synchronization language. Version 0.8 uses C# and .NET
+msync is a typed file-synchronization language. The v0.9 implementation uses C# and .NET
 Native AOT, with a brace-based expression language, source-backed standard
-library, typed semantic HIR, binary bytecode artifacts, and a block interpreter. The previous Rust
+library, typed semantic HIR, static builtin layouts and a native-IR interpreter. The previous Rust
 implementation is retained in [Git history at v0.7.3](https://github.com/kleedaisuki/msync/tree/v0.7.3),
 not in the current checkout or distribution.
 
@@ -37,6 +37,10 @@ build the existing per-user installer when Inno Setup is installed. The
 installation lifecycle. Published older release tags and assets are unchanged.
 The local-check command builds with strict static/AOT analysis, checks only
 changed C# formatting, and runs explicitly selected real-process journeys.
+
+[Benchmarks](BENCHMARK.md) describes the maintained performance suite;
+[research status](RESEARCH.md) separates merged results, open investigations
+and possible directions.
 
 ## Built-in reference
 
@@ -332,10 +336,13 @@ shell command or an unrestricted dynamic library loader. The registry owns
 arity, types, dependent range results, and effect classification. Checking and
 compilation do not execute filesystem or process effects.
 
-Optimization defaults to `-O2`. Select `-O1` for lower compilation latency or
-`-O3` for larger inlining and finite-range expansion budgets; `-O0` retains
-unoptimized typed bytecode. See `msync skill workflow artifacts` for the staged
-optimization policy.
+Optimization defaults to `-O2`; `-O0` retains unoptimized typed IR. `-O1` runs
+local cleanup, lifetime/placement analysis, CFG compaction and typed temporary-slot
+allocation. `-O2` also propagates must-facts across blocks and inlines proved
+transparent static calls within bounded code-growth budgets; `-O3` admits larger
+callee and growth budgets. These are native-IR policies, not a promise that a
+higher level is faster for every workload. See `msync skill workflow artifacts`
+and [research status](RESEARCH.md) for the contracts and remaining work.
 
 ## Typed compilation pipeline
 
@@ -346,7 +353,7 @@ optimization policy.
                                                 |            |
                                            .mhir export   pure lowering
                                                              |
-                                      typed bytecode -> O0/O1/O2/O3 optimization
+                                      layout/address IR -> O0/O1/O2/O3 optimization
                                                              |
                                                      relocatable .mso
                                                              |
@@ -370,18 +377,26 @@ msync run-ir sync.mexe
 ```
 
 Semantic analysis resolves declarations, types, storage constraints, captures,
-call targets and evaluation policy before bytecode generation. `Compiler.Analyze`
+call targets and evaluation policy before native IR generation. `Compiler.Analyze`
 returns the immutable semantic program; `Compiler.Compile` lowers that program
-and then optimizes the bytecode. The lowerer consumes no syntax tree and does
+and then optimizes its `NativeProgram`. The lowerer consumes no syntax tree and does
 not call back into type inference. Editor queries use semantic observations,
-not speculative bytecode compilation.
+not speculative IR compilation.
+
+`scope { ... }` allocates builtin storage on the logical heap and binds its
+namespace fields to statically laid-out locations. Scope is not a generic
+runtime object. String, Path, Connection and the other builtins have complete
+native representations; captures distinguish values from locations. Compiler
+and VM may eliminate or coallocate physical storage while preserving identity,
+aliases, effects and resource lifetimes. There is no source allocator or
+`Storage` type. See the [native model](docs/design/native-model-v090.md).
 
 A self-contained `.mhir` can be inspected, rewritten and lowered after deleting
 its source. Its source text is optional diagnostic data, not executable input;
 live session values and credentials are not stored in it. HIR cannot be
-reconstructed from `.mso` or `.mexe`: export it before bytecode lowering.
+reconstructed from `.mso` or `.mexe`: export it before native IR lowering.
 
-Both bytecode formats execute without the original source. A `.mso` is prepared
+Both binary stages execute without the original source. A `.mso` is prepared
 for the selected execution context. The contextual backend computes known values
 and control flow, expands selections, removes unobserved overwritten transfers,
 and forms a dependency graph and batches. A `.mexe` carries the resulting plan
@@ -395,7 +410,7 @@ typed IR, never debug source or serialized AST. See the
 [contextual backend contract](docs/design/contextual-io-backend.md).
 
 The six C# projects separate model, analysis and execution responsibilities:
-`Core` owns types and bytecode; `Hir` owns semantic programs, persistence and pure
+`Core` owns native representations, layouts and portable IR; `Hir` owns semantic programs, persistence and pure
 lowering; `Compiler` owns source semantics; `Optimization` owns IR transforms;
 `Runtime` contains the contextual backend and owns execution/resources; `Cli` owns commands and editor/terminal
 hosting. The graph is acyclic and Native AOT still links one native executable.
@@ -425,9 +440,11 @@ The current checkout and packages contain only the C# implementation. Historical
 Rust sources, standard modules and tests remain available at the immutable
 [`v0.7.3` tag](https://github.com/kleedaisuki/msync/tree/v0.7.3); they are not a
 build or execution dependency. There is no legacy command or executable routing.
-Current bytecode artifacts use format 6 with portable layout and field-place
-tables. Recompile earlier artifacts from source; there is no old bytecode
-execution path. Typed HIR uses its independently versioned format 3. Scripts use
+New `.mso`/`.mexe` artifacts use native IR format 1. Historical bytecode format 6
+is read as closed portable data and imported into the same native pipeline;
+there is no second VM or source replay. Earlier binary formats require
+recompilation from source. Typed HIR uses its independently versioned format 3;
+language semantics and stdlib URIs remain versioned separately at 0.8.0. Scripts use
 `fn`, `let`, brace blocks and semicolons instead of
 `symbol`/`boolean`/`macro`, indentation, `:=`, and `=>` bindings. `async`, `await`,
 and `delete` are not language keywords; deletion is an ordinary native function.

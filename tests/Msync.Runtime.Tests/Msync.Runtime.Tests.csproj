@@ -2,4 +2,5 @@
   <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework></PropertyGroup>
   <ItemGroup><ProjectReference Include="../../src/Msync.Runtime/Msync.Runtime.csproj" /></ItemGroup>
   <ItemGroup><ProjectReference Include="../../src/Msync.Optimization/Msync.Optimization.csproj" /></ItemGroup>
+  <ItemGroup><ProjectReference Include="../../src/Msync.Compiler/Msync.Compiler.csproj" /></ItemGroup>
 </Project>

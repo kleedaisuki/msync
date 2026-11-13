@@ -108,6 +108,9 @@ internal sealed partial class SemanticAnalyzer
     private void SealStorage(HirLocationId location, HirTypeId type, SemanticContext context)
     {
         var owner = StorageOwner(location, context);
+        HirLocationId definition = context.Definitions.GetValueOrDefault(owner, owner);
+        if (program.TryDeclaration(definition, out var declaration) && declaration.Annotation is null)
+            type = InferredStorageType(type);
         if (hir.Locations[owner.Value].AdmitsNull) type = Nullable(type);
         context.Storage[location] = type;
         var graph = StorageGraph(context, false);

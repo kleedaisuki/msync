@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import heapq
+import random
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -183,23 +184,30 @@ def _inventory(_directory: Path, size: int, seed: int) -> Fixture:
 
 
 SCHEDULER: str = """let Heap = $std::containers::Heap;
-let pending = Heap::new(Number);
-let payloads = $std::storage::vector_empty(decltype(scope {
+let Item = decltype(scope {
+    ticket: 0,
     request: scope { lane: 0, rate: 0, units: 0 }
-}));
+});
+let pending = Heap::with_policy(Item, scope {
+    Self: Item,
+    sample?: null,
+    less: fn(left, right) { left::ticket < right::ticket }
+});
 let stats = scope {
     consumed: 0,
     sequence: 0,
-    work: $std::storage::vector_new([0, 0, 0, 0, 0, 0, 0, 0])
+    work: $std::ranges::materialize([scope { value: 0 }, scope { value: 0 }, scope { value: 0 }, scope { value: 0 },
+        scope { value: 0 }, scope { value: 0 }, scope { value: 0 }, scope { value: 0 }])
 };
 
-fn account(stats, payloads, ticket: Number, stride: Number) {
+fn account(stats, entry, stride: Number) {
+    let ticket = entry::ticket;
     let serial = ticket % stride;
     let priority = (ticket - serial) / stride;
-    let request = $std::storage::vector_get(payloads, serial)::request;
+    let request = entry::request;
     let work = request::rate * request::units;
-    let prior = $std::storage::vector_get(stats::work, request::lane);
-    $std::storage::vector_set(stats::work, request::lane, prior + work);
+    let lane = $std::ranges::at(stats::work, request::lane);
+    lane::value = lane::value + work;
     stats::consumed = stats::consumed + 1;
     stats::sequence = (stats::sequence * 65599 + serial * 31 + priority * 13
         + request::lane * 101 + work) % 1000003;
@@ -211,7 +219,7 @@ let arrived = 0;
 let epoch = 0;
 let peak = 0;
 let total = JOB_COUNT;
-# A Number ticket orders by priority, then by arrival. Requests stay out of the heap.
+# A ticket orders by priority, then by arrival; the queued record owns its request.
 let stride = total + 1;
 loop {
     if arrived == total { break; };
@@ -226,8 +234,10 @@ loop {
         let rate = rng % 251 + 1;
         rng = rng * 48271 % 2147483647;
         let units = rng % 83 + 1;
-        $std::storage::vector_push(payloads, scope { request: scope { lane: lane, rate: rate, units: units } });
-        Heap::push(pending, priority * stride + arrived);
+        Heap::push(pending, scope {
+            ticket: priority * stride + arrived,
+            request: scope { lane: lane, rate: rate, units: units }
+        });
         arrived = arrived + 1;
     };
     let depth = Heap::size(pending);
@@ -236,7 +246,7 @@ loop {
     for _ in $std::ranges::iota(0, quota) {
         let ticket? = Heap::pop(pending);
         if ticket is null { break; };
-        account(stats, payloads, ticket, stride);
+        account(stats, ticket, stride);
     };
     epoch = epoch + 1;
 };
@@ -245,14 +255,14 @@ let backlog = Heap::size(pending);
 loop {
     let ticket? = Heap::pop(pending);
     if ticket is null { break; };
-    account(stats, payloads, ticket, stride);
+    account(stats, ticket, stride);
 };
 $std::io::println(stats::consumed as String);
 $std::io::println(stats::sequence as String);
 $std::io::println(peak as String);
 $std::io::println(backlog as String);
 for lane in $std::ranges::iota(0, 8) {
-    $std::io::println($std::storage::vector_get(stats::work, lane) as String);
+    $std::io::println($std::ranges::at(stats::work, lane)::value as String);
 };
 """
 
@@ -306,8 +316,121 @@ def _scheduler(_directory: Path, size: int, seed: int) -> Fixture:
     )
 
 
+_DEDUP: str = """let Set = $std::containers::Set;
+let seen = Set::new(Number);
+fn read_number() -> Number {
+    let line? = $std::io::read_line();
+    if line is null { return -1; };
+    line as Number
+};
+let accepted = 0;
+let duplicates = 0;
+for _ in $std::ranges::iota(0, EVENT_COUNT) {
+    if Set::insert(seen, read_number()) {
+        accepted = accepted + 1;
+    } else {
+        duplicates = duplicates + 1;
+    };
+};
+let before = Set::snapshot(seen);
+let hits = 0;
+let misses = 0;
+let expired = 0;
+let absent = 0;
+for _ in $std::ranges::iota(0, QUERY_COUNT) {
+    let encoded = read_number();
+    let key = $std::math::floor(encoded / 2);
+    if encoded % 2 == 0 {
+        if Set::contains(seen, key) { hits = hits + 1; }
+        else { misses = misses + 1; };
+    } else {
+        if Set::remove(seen, key) { expired = expired + 1; }
+        else { absent = absent + 1; };
+    };
+};
+fn checksum(values: Range<Number>) -> Number {
+    let result = 0;
+    for key in values { result = (result * 65599 + key) % 1000003; };
+    result
+};
+$std::io::println(accepted as String);
+$std::io::println(duplicates as String);
+$std::io::println(hits as String);
+$std::io::println(misses as String);
+$std::io::println(expired as String);
+$std::io::println(absent as String);
+$std::io::println(Set::size(seen) as String);
+$std::io::println(checksum(Set::snapshot(seen)) as String);
+$std::io::println($std::ranges::size(before) as String);
+$std::io::println(checksum(before) as String);
+"""
+
+
+def _dedup(_directory: Path, size: int, seed: int) -> Fixture:
+    generator: random.Random = random.Random(seed)
+    universe: int = max(32, size // 2)
+    hot: int = max(4, universe // 8)
+    events: list[int] = [
+        generator.randrange(hot if generator.randrange(10) < 7 else universe)
+        for _ in range(size)
+    ]
+    initial: set[int] = set(events)
+    retained: tuple[int, ...] = tuple(sorted(initial))
+    seen: set[int] = initial.copy()
+    trace: list[int] = []
+    hits = misses = expired = absent = 0
+    for _ in range(max(1, size // 2)):
+        key: int = generator.randrange(universe + universe // 4)
+        remove: bool = generator.randrange(4) == 0
+        trace.append(key * 2 + int(remove))
+        if remove:
+            if key in seen:
+                expired += 1
+                seen.remove(key)
+            else:
+                absent += 1
+        elif key in seen:
+            hits += 1
+        else:
+            misses += 1
+
+    def checksum(values: tuple[int, ...]) -> int:
+        current: int = 0
+        for key in values:
+            current = _checksum(current, key)
+        return current
+
+    return Fixture(
+        source=_DEDUP.replace("EVENT_COUNT", str(size)).replace(
+            "QUERY_COUNT", str(len(trace))
+        ),
+        stdin=_lines(tuple(events + trace)),
+        stdout=_lines(
+            (
+                len(initial),
+                size - len(initial),
+                hits,
+                misses,
+                expired,
+                absent,
+                len(seen),
+                checksum(tuple(sorted(seen))),
+                len(retained),
+                checksum(retained),
+            )
+        ),
+    )
+
+
 def cases() -> tuple[Case, ...]:
     return (
+        Case(
+            "set-dedup",
+            "collections",
+            "Runtime-fed event deduplication, membership queries, expiration and retained membership snapshots",
+            8_192,
+            _dedup,
+        ),
         Case(
             "bplus-inventory",
             "collections",

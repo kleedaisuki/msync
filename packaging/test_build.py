@@ -7,10 +7,58 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import TypedDict, cast
 from unittest.mock import patch
 
 import build
 from language_upgrade import product_assembly_files
+
+
+class LockedPackage(TypedDict):
+    type: str
+
+
+class LockedGraph(TypedDict):
+    dependencies: dict[str, dict[str, LockedPackage]]
+
+
+def direct_packages(path: Path) -> frozenset[str]:
+    graph: LockedGraph = cast(LockedGraph, json.loads(path.read_text(encoding="utf-8")))
+    return frozenset(
+        name
+        for target in graph["dependencies"].values()
+        for name, package in target.items()
+        if package["type"] == "Direct"
+    )
+
+
+class DependencyLockTests(unittest.TestCase):
+    def test_global_aot_probes_cannot_replace_production_graphs(self) -> None:
+        compiler: str = "Microsoft.DotNet.ILCompiler"
+        linker: str = "Microsoft.NET.ILLink.Tasks"
+        projects: tuple[str, ...] = (
+            "src/Msync.Cli",
+            "src/Msync.Core",
+            "src/Msync.Hir",
+            "src/Msync.Compiler",
+            "src/Msync.Runtime",
+            "src/Msync.Optimization",
+            "vendor/PrettyPrompt",
+        )
+        for rid in build.RID_NAMES:
+            for project in projects:
+                directory: Path = build.ROOT / project
+                with self.subTest(rid=rid, project=project):
+                    production: frozenset[str] = direct_packages(
+                        directory / f"packages.{rid}.lock.json"
+                    )
+                    probe: frozenset[str] = direct_packages(
+                        directory / f"packages.aot.{rid}.lock.json"
+                    )
+                    self.assertEqual(compiler in production, project == "src/Msync.Cli")
+                    self.assertTrue({compiler, linker}.issubset(probe))
+                    if project in {"src/Msync.Core", "src/Msync.Runtime"}:
+                        self.assertNotIn(linker, production)
 
 
 class PackageTests(unittest.TestCase):

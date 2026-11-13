@@ -1,17 +1,19 @@
 using Msync.Core;
 using Msync.Runtime;
+using Msync.Core.Native;
+using Msync.Runtime.Native;
 
 internal static class RelayBatchChecks
 {
     internal static async Task RunAsync()
     {
         string root = Environment.GetEnvironmentVariable("MSYNC_TRANSFER_WORK")!;
-        ConnectionValue source = new(ConnectionKind.Ssh, Environment.GetEnvironmentVariable("MSYNC_TRANSFER_REMOTE")!);
-        ConnectionValue target = new(ConnectionKind.Ssh, Environment.GetEnvironmentVariable("MSYNC_TRANSFER_SECOND_REMOTE")!);
+        NativeConnection source = new(ConnectionKind.Ssh, Environment.GetEnvironmentVariable("MSYNC_TRANSFER_REMOTE")!);
+        NativeConnection target = new(ConnectionKind.Ssh, Environment.GetEnvironmentVariable("MSYNC_TRANSFER_SECOND_REMOTE")!);
         Directory.CreateDirectory(Path.Combine(root, "source"));
         Directory.CreateDirectory(Path.Combine(root, "target"));
-        PathValue A(string name) => new(Path.Combine(root, "source", name), Connection: source);
-        PathValue B(string name) => new(Path.Combine(root, "target", name), Connection: target);
+        NativeValue A(string name) => NativeValue.FromPath(new(Path.Combine(root, "source", name), Connection: source));
+        NativeValue B(string name) => NativeValue.FromPath(new(Path.Combine(root, "target", name), Connection: target));
         int checks = 0;
         void Check(bool condition, string description)
         {
@@ -22,17 +24,13 @@ internal static class RelayBatchChecks
         names.AddRange(["two words", "line\n可莉%0A%25\\'"]);
         for (int index = 0; index < names.Count; index++)
             await File.WriteAllTextAsync(Path.Combine(root, "source", names[index]), $"relay payload {index}\n");
-        await using var producer = TransferEngine.OpenSession(source);
-        await using var consumer = TransferEngine.OpenSession(target);
-        using var sourceScope = TransferEngine.UseSession(producer);
-        using var targetScope = TransferEngine.UseSession(consumer);
-        Check(await producer.QueryAsync("printf 'source metadata'", []) == "source metadata", "Source metadata uses its selected lease.");
-        Check(await consumer.QueryAsync("printf 'target metadata'", []) == "target metadata", "Target metadata uses its selected lease.");
-        Check((await producer.ReadDirectoryMetadataAsync(A(""))).Count == names.Count, "Selected source metadata is acquired before relay.");
+        Check(await NativeHostIO.RunCommandAsync(source, "printf 'source metadata'", [], null) == "source metadata", "Source metadata remains observable.");
+        Check(await NativeHostIO.RunCommandAsync(target, "printf 'target metadata'", [], null) == "target metadata", "Target metadata remains observable.");
+        Check((await NativeTransfers.DirectoryAsync(A(""), new())).Count == names.Count, "Selected source metadata is acquired before relay.");
         Directory.CreateDirectory(Path.Combine(root, "target", names[10]));
-        var items = names.Select(name => new TransferBatchItem(A(name), B(name), PlannedTransferKind.CopyFile)).ToList();
+        var items = names.Select(name => new NativeTransferItem(A(name), B(name), PlannedTransferKind.CopyFile)).ToList();
         items.Insert(5, new(A("missing"), B("missing"), PlannedTransferKind.CopyFile));
-        var outcomes = await TransferEngine.CopyBatchAsync(items, new RuntimeContext(), CancellationToken.None);
+        var outcomes = await NativeTransfers.CopyBatchAsync(items, new NativeRuntimeContext(), CancellationToken.None);
         Check(!outcomes[5].Success && !outcomes[11].Success, "Relay retains missing-source and obstructed-target failures.");
         Check(outcomes.Where((_, index) => index != 5 && index != 11).All(item => item.Success),
             "A failed relay item does not consume the next archive or suppress later independent members: "
@@ -45,25 +43,24 @@ internal static class RelayBatchChecks
         await File.WriteAllTextAsync(Path.Combine(root, "source", "tree", "nested", "file"), "tree data");
         const string linkTarget = "missing%0A\n可莉";
         File.CreateSymbolicLink(Path.Combine(root, "source", "link"), linkTarget);
-        var structured = await TransferEngine.CopyBatchAsync([
+        var structured = await NativeTransfers.CopyBatchAsync([
             new(A("tree"), B("trees/"), PlannedTransferKind.CopyDirectory),
             new(A("link"), B("link"), PlannedTransferKind.CopyLink)
-        ], new RuntimeContext());
+        ], new NativeRuntimeContext());
         Check(structured.All(item => item.Success), "Directory and link archives retain their relay modes.");
         Check(await File.ReadAllTextAsync(Path.Combine(root, "target", "trees", "tree", "nested", "file")) == "tree data", "Container relay directory placement.");
         Check(new FileInfo(Path.Combine(root, "target", "link")).LinkTarget == linkTarget, "Relay wire decoding restores exact symbolic-link targets.");
 
         await File.WriteAllTextAsync(Path.Combine(root, "source", "left"), "left");
         await File.WriteAllTextAsync(Path.Combine(root, "target", "right"), "right");
-        var forward = TransferEngine.CopyBatchAsync([new TransferBatchItem(A("left"), B("left-out"), PlannedTransferKind.CopyFile)], new RuntimeContext());
-        var reverse = TransferEngine.CopyBatchAsync([new TransferBatchItem(B("right"), A("right-out"), PlannedTransferKind.CopyFile)], new RuntimeContext());
+        var forward = NativeTransfers.CopyBatchAsync([new NativeTransferItem(A("left"), B("left-out"), PlannedTransferKind.CopyFile)], new NativeRuntimeContext());
+        var reverse = NativeTransfers.CopyBatchAsync([new NativeTransferItem(B("right"), A("right-out"), PlannedTransferKind.CopyFile)], new NativeRuntimeContext());
         var opposite = await Task.WhenAll(forward, reverse);
-        Check(opposite.All(batch => batch[0].Success), "Opposite-direction disjoint relays use one stable gate order.");
+        Check(opposite.All(batch => batch[0].Success), "Opposite-direction disjoint relays both finish.");
         Check(await File.ReadAllTextAsync(Path.Combine(root, "target", "left-out")) == "left"
             && await File.ReadAllTextAsync(Path.Combine(root, "source", "right-out")) == "right", "Both relay directions finish without ABBA deadlock.");
-        Check(producer.IsActive && consumer.IsActive, "Ordinary item failures keep both channels usable.");
-        Check(await producer.QueryAsync("printf 'source after data'", []) == "source after data"
-            && await consumer.QueryAsync("printf 'target after data'", []) == "target after data", "Both metadata leases remain the same after relay.");
-        Console.WriteLine($"PASS {checks} two-lease relay checks");
+        Check(await NativeHostIO.RunCommandAsync(source, "printf 'source after data'", [], null) == "source after data"
+            && await NativeHostIO.RunCommandAsync(target, "printf 'target after data'", [], null) == "target after data", "Both endpoints remain available after independent relay failures.");
+        Console.WriteLine($"PASS {checks} prepared relay checks");
     }
 }

@@ -1,8 +1,10 @@
+using Msync.Core.Native;
 using System.Buffers;
 using System.Diagnostics;
 using System.Text;
 using Msync.Core;
 using Msync.Runtime;
+using Msync.Runtime.Native;
 
 namespace Msync.Cli;
 
@@ -11,13 +13,13 @@ internal sealed record RemoteDirectoryEntry(string Name, bool IsDirectory);
 internal sealed class RemoteDirectoryCompletion(Func<SshPrompt, CancellationToken, Task<string?>>? prompt = null) : IAsyncDisposable
 {
     private readonly object gate = new();
-    private readonly Dictionary<ConnectionValue, Session> sessions = [];
+    private readonly Dictionary<NativeConnection, Session> sessions = [];
     private bool disposed;
 
-    public Task<IReadOnlyList<RemoteDirectoryEntry>> ListAsync(ConnectionValue endpoint, string directory, CancellationToken cancellationToken) =>
+    public Task<IReadOnlyList<RemoteDirectoryEntry>> ListAsync(NativeConnection endpoint, string directory, CancellationToken cancellationToken) =>
         ListAsync(endpoint, directory, "", cancellationToken);
 
-    public async Task<IReadOnlyList<RemoteDirectoryEntry>> ListAsync(ConnectionValue endpoint, string directory, string prefix, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<RemoteDirectoryEntry>> ListAsync(NativeConnection endpoint, string directory, string prefix, CancellationToken cancellationToken)
     {
         while (true)
         {
@@ -37,7 +39,7 @@ internal sealed class RemoteDirectoryCompletion(Func<SshPrompt, CancellationToke
         }
     }
 
-    private async Task RemoveAsync(ConnectionValue endpoint, Session session)
+    private async Task RemoveAsync(NativeConnection endpoint, Session session)
     {
         lock (gate)
             if (sessions.TryGetValue(endpoint, out Session? current) && ReferenceEquals(current, session)) sessions.Remove(endpoint);
@@ -59,7 +61,7 @@ internal sealed class RemoteDirectoryCompletion(Func<SshPrompt, CancellationToke
 
     private sealed class RetiredSessionException : Exception;
 
-    private sealed class Session(ConnectionValue endpoint, Func<SshPrompt, CancellationToken, Task<string?>>? prompt) : IAsyncDisposable
+    private sealed class Session(NativeConnection endpoint, Func<SshPrompt, CancellationToken, Task<string?>>? prompt) : IAsyncDisposable
     {
         private readonly SemaphoreSlim serial = new(1);
         private readonly CancellationTokenSource lifetime = new();
@@ -148,7 +150,7 @@ internal sealed class RemoteDirectoryCompletion(Func<SshPrompt, CancellationToke
 
         private async Task StartAsync(CancellationToken cancellationToken)
         {
-            ProcessStartInfo start = TransferEngine.CreateRemoteShellProcessStartInfo(endpoint);
+            ProcessStartInfo start = NativeHostIO.CreateRemoteShellProcessStartInfo(endpoint);
             start.RedirectStandardError = true;
             if (endpoint.Kind == ConnectionKind.Ssh && prompt is not null)
             {

@@ -22,9 +22,11 @@ internal sealed partial class SemanticAnalyzer
         public ImmutableArray<SemanticValue> Arguments { get; set; } = [];
         public ImmutableArray<SemanticValue> Captures { get; set; } = [];
         public ImmutableArray<HirLocationId> CaptureTargets { get; set; } = [];
+        public ImmutableDictionary<int, ImmutableHashSet<int>> AliasEffects { get; set; } = ImmutableDictionary<int, ImmutableHashSet<int>>.Empty;
         public ImmutableDictionary<int, SemanticScope> Objects { get; set; } = ImmutableDictionary<int, SemanticScope>.Empty;
         public ImmutableDictionary<int, SemanticIndexed> Indexed { get; set; } = ImmutableDictionary<int, SemanticIndexed>.Empty;
         public ImmutableDictionary<HirLocationId, SemanticValue> Cells { get; set; } = ImmutableDictionary<HirLocationId, SemanticValue>.Empty;
+        public ImmutableDictionary<HirLocationId, HirTypeId> Storage { get; set; } = ImmutableDictionary<HirLocationId, HirTypeId>.Empty;
         public ImmutableHashSet<HirLocationId> NamedCells { get; set; } = [];
         public ImmutableDictionary<int, ImmutableHashSet<int>> AliasViews { get; set; } = ImmutableDictionary<int, ImmutableHashSet<int>>.Empty;
         public ImmutableDictionary<(int Region, string Field), ImmutableArray<SemanticMemberContract>> MemberContracts { get; set; }
@@ -288,7 +290,7 @@ internal sealed partial class SemanticAnalyzer
                 parameterType = argument.Type;
             }
             else Require(argument, parameterType, source, true, context);
-            if (!definition.AdmitsNull && Runtime(argument).Nullable)
+            if (!AdmitsNull(original, parameterType) && Runtime(argument).Nullable)
                 throw Error(source, $"Nullable argument requires nullable parameter '{definition.Name}?'.", "E0201");
             HirLocationId incoming = target;
             bool coercion = !hir.Types[parameterType.Value].RuntimeType.Accepts(Runtime(argument))
@@ -312,9 +314,14 @@ internal sealed partial class SemanticAnalyzer
             if (coercion && context.Publish)
                 parameterInitializers.Add(context.Output!.Add(HirKind.Declare, hir.Type(TypeRef.Null), definition.Source,
                     [converted.Node], data: target.Value));
-            var value = converted with { Location = target, Node = HirNodeId.None };
+            var value = converted with { Location = target, Node = HirNodeId.None,
+                RuntimeDependentMetadata = converted.RuntimeDependentMetadata
+                    || IsScalarSchema(converted) && Runtime(converted).WithoutNull != TypeRef.Type
+                        && (Runtime(converted).Kind & TypeKind.Scope) == 0 };
             context.Values[target] = value;
-            context.Storage[target] = StructuralStorageType(definition.AdmitsNull ? Nullable(parameterType) : parameterType);
+            HirTypeId storageType = definition.AdmitsNull ? Nullable(parameterType) : parameterType;
+            context.Storage[target] = program.Declaration(original).Annotation is null
+                ? InferredStorageType(storageType) : StructuralStorageType(storageType);
             caller.Output?.SetLocation(target, hir.Locations[target.Value] with { StorageType = context.Storage[target] });
             parameters.Add(incoming);
             formalArguments.Add(value);
@@ -343,6 +350,7 @@ internal sealed partial class SemanticAnalyzer
             CaptureTargets = captureTargets.ToImmutable()
         };
         // Both query and code generation reserve before examining a recursive body.
+        var entryAliases = context.AliasViews.ToImmutableDictionary();
         cache.Add(key, instance);
         cache.Active.Add(recursiveKey, instance);
         try
@@ -368,8 +376,9 @@ internal sealed partial class SemanticAnalyzer
             }
             var observation = context.Publish && Runtime(result) == TypeRef.Path
                 ? observations?.ReturnedPath(body, context) : null;
+            result = ResolveSummaryTypes(result, context);
             instance.Result = result with { Node = HirNodeId.None, Location = null, Observation = observation ?? result.Observation };
-            FreezeSummary(instance, context);
+            FreezeSummary(instance, context, entryAliases);
             instance.Complete = true;
             caller.Output?.SealFunction(function, new(template.Name,
                 parameters.ToImmutable(), captures.ToImmutable(), result.Type, body.Node, id)
@@ -392,7 +401,8 @@ internal sealed partial class SemanticAnalyzer
         }
     }
 
-    private void FreezeSummary(FunctionInstance instance, SemanticContext context)
+    private void FreezeSummary(FunctionInstance instance, SemanticContext context,
+        IReadOnlyDictionary<int, ImmutableHashSet<int>> entryAliases)
     {
         Dictionary<int, SemanticScope> objects = [];
         Dictionary<int, SemanticIndexed> indexed = [];
@@ -418,12 +428,24 @@ internal sealed partial class SemanticAnalyzer
             if (argument.Location is { } location) reachedLocations.Add(location);
         foreach (var scope in objects.Values)
             reachedLocations.UnionWith(scope.Locations.Values);
+        instance.Storage = reachedLocations.ToImmutableDictionary(location => location, location => StorageType(location, context));
         instance.Definitions = context.Definitions.Where(pair => reachedLocations.Contains(pair.Key))
             .ToImmutableDictionary(pair => pair.Key, pair => pair.Value);
         instance.CallableContracts = context.EstablishedCallableContracts.Where(pair => reachedLocations.Contains(pair.Key))
             .ToImmutableDictionary(pair => pair.Key, pair => pair.Value);
         instance.AliasViews = context.AliasViews.Where(pair => objects.ContainsKey(pair.Key))
             .ToImmutableDictionary(pair => pair.Key, pair => pair.Value);
+
+        // Entry aliases are premises, not creations. Replaying them would give
+        // borrowed external families fresh identities on every invocation.
+        var aliasEffects = ImmutableDictionary.CreateBuilder<int, ImmutableHashSet<int>>();
+        foreach (var pair in context.AliasViews)
+        {
+            if (!objects.ContainsKey(pair.Key)) continue;
+            var introduced = pair.Value.Except(entryAliases.GetValueOrDefault(pair.Key, ImmutableHashSet<int>.Empty));
+            if (!introduced.IsEmpty) aliasEffects.Add(pair.Key, introduced);
+        }
+        instance.AliasEffects = aliasEffects.ToImmutable();
 
         void VisitRegion(int region)
         {

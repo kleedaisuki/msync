@@ -1,4 +1,5 @@
 using Msync.Core;
+using Msync.Core.Native;
 using Msync.Hir;
 using Msync.Compiler.Semantics;
 using Msync.Compiler.Syntax;
@@ -8,6 +9,24 @@ namespace Msync.Compiler;
 
 public static class Compiler
 {
+    public static NativeProgram Compile(string source, string? sourceName = null,
+        int optimization = 2, CompilationTrace? trace = null) =>
+        LowerInstructions(Analyze(source, sourceName, trace), optimization, trace);
+
+    public static NativeProgram LowerInstructions(HirModule module, int optimization = 2,
+        CompilationTrace? trace = null)
+    {
+        var options = new NativeHirLoweringOptions(OptimizationLevel: optimization);
+        NativeProgram lowered = trace is null ? NativeHirLowerer.Lower(module, options).Program
+            : trace.Measure("compiler.lower", (module, options),
+                static state => NativeHirLowerer.Lower(state.module, state.options).Program,
+                size: CompilationSize.Of);
+        return trace is null ? NativeOptimizer.Optimize(lowered, optimization)
+            : trace.Measure("compiler.optimize", (lowered, optimization, trace),
+                static state => NativeOptimizer.Optimize(state.lowered, state.optimization, state.trace),
+                CompilationSize.Of(lowered), CompilationSize.Of);
+    }
+
     public static HirModule Analyze(string source, string? sourceName = null) =>
         new SemanticAnalyzer(new SourceBinder().Bind(source, sourceName ?? "<source>")).Analyze();
 
@@ -18,25 +37,16 @@ public static class Compiler
         return Analyze(new SemanticAnalyzer(bound), null, trace);
     }
 
-    public static Module Compile(string source, string? sourceName = null, int optimization = 2)
-        => Optimizer.Optimize(LowerSource(source, sourceName, optimization), optimization);
+    public static NativeProgram CompileInstructions(string source, string? sourceName = null,
+        int optimization = 2, CompilationTrace? trace = null) =>
+        Compile(source, sourceName, optimization, trace);
 
-    public static Module CompileInstructions(string source, string? sourceName = null, int optimization = 2)
-        => Optimizer.OptimizeInstructions(LowerSource(source, sourceName, optimization), optimization);
+    public static NativeProgram CompileNative(string source, string? sourceName = null,
+        int optimization = 2, CompilationTrace? trace = null) =>
+        Compile(source, sourceName, optimization, trace);
 
-    public static Module CompileInstructions(string source, string? sourceName, int optimization, CompilationTrace? trace) =>
-        trace is null ? CompileInstructions(source, sourceName, optimization)
-            : LowerInstructions(Analyze(source, sourceName, trace), optimization, trace);
-
-    public static Module LowerInstructions(HirModule module, int optimization, CompilationTrace? trace = null)
-    {
-        var options = new HirLoweringOptions(OptimizationLevel: optimization, RetainLayout: false);
-        Module lowered = trace is null ? HirLowerer.Lower(module, options).Module
-            : trace.Measure("compiler.lower", (module, options),
-                static state => HirLowerer.Lower(state.module, state.options).Module,
-                size: CompilationSize.Of);
-        return Optimize(lowered, optimization, trace);
-    }
+    public static NativeProgram LowerNative(HirModule module, int optimization = 2,
+        CompilationTrace? trace = null) => LowerInstructions(module, optimization, trace);
 
     internal static BoundProgram Bind(SourceBinder binder, string source, string sourceName, Document? document,
         CompilationTrace? trace)
@@ -52,13 +62,4 @@ public static class Compiler
         trace is null ? analyzer.Analyze(facts)
             : trace.Measure("compiler.analyze", (analyzer, facts), static state => state.analyzer.Analyze(state.facts));
 
-    internal static Module Optimize(Module module, int optimization, CompilationTrace? trace) =>
-        trace is null ? Optimizer.OptimizeInstructions(module, optimization)
-            : trace.Measure("compiler.optimize", (module, optimization, trace),
-                static state => Optimizer.OptimizeInstructions(state.module, state.optimization, state.trace),
-                CompilationSize.Of(module), CompilationSize.Of);
-
-    private static Module LowerSource(string source, string? sourceName, int optimization) =>
-        HirLowerer.Lower(Analyze(source, sourceName),
-            new(OptimizationLevel: optimization, RetainLayout: false)).Module;
 }

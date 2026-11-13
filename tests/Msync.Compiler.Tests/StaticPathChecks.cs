@@ -1,3 +1,4 @@
+using Msync.Core.Native;
 using Msync.Optimization;
 using Msync.Compiler;
 using Msync.Core;
@@ -7,10 +8,32 @@ internal static class StaticPathChecks
 {
     public static void Run()
     {
+        RunDescriptors();
         LiteralFacts();
         GenericIsolation();
         ReceiverAndArtifactIsolation();
         Console.WriteLine("static Path values, pure derivation, generic isolation and unchanged artifacts ok");
+    }
+
+    public static void RunDescriptors()
+    {
+        NativeConnection[] endpoints = [new(ConnectionKind.Local), new(ConnectionKind.Ssh, "forge"), new(ConnectionKind.Wsl, "Ubuntu")];
+        foreach (NativeConnection endpoint in endpoints)
+        foreach (bool windows in new[] { false, true })
+        foreach (string raw in new[] { "~/base", "/root/", @"C:\base", "folder/emoji-😀" })
+        {
+            NativePath path = new(raw, "/captured", HomeDirectory: "/home/captured", LocalSpelling: @"C:\captured");
+            NativePath joined = PathSemantics.JoinValue(path, "child", windows);
+            Check(joined.Raw == raw.TrimEnd('/') + "/child", "symbolic join depends on host spelling");
+            Check(joined.WorkingDirectory == path.WorkingDirectory && joined.HomeDirectory == path.HomeDirectory,
+                "join lost captured path context");
+            NativePath qualified = PathSemantics.Qualify(path, endpoint);
+            Check(PathSemantics.Qualify(qualified, endpoint) == qualified, "qualification is not idempotent");
+            Check(qualified.Raw == raw && qualified.Connection == endpoint, "qualification changed symbolic path identity");
+            Check(endpoint.Kind == ConnectionKind.Local || qualified is { WorkingDirectory: null, HomeDirectory: null, LocalSpelling: null },
+                "remote qualification retained local context");
+        }
+        Console.WriteLine("closed Path descriptor qualification, context and symbolic/native spelling properties ok");
     }
 
     private static void LiteralFacts()
@@ -22,7 +45,7 @@ internal static class StaticPathChecks
             let member = Config::root;
             let joined = folder / "child";
             let textJoined = "base" / "child";
-            let remote = Config::remote::folder;
+            let remote = Config::remote @ folder;
             let remoteChild = remote / "child";
             let same = if exists ~/condition { ~/real } else { ~/real };
             let different = if exists ~/condition { ~/real } else { ~/other };
@@ -39,22 +62,22 @@ internal static class StaticPathChecks
             """;
         EditorAnalysis analysis = EditorCompiler.Analyze(source, "file:///known-paths.msync");
         Check(analysis.Diagnostic is null, "known Path sample rejected: " + analysis.Diagnostic?.EditorMessage);
-        foreach (string name in new[] { "folder", "alias", "member", "same" }) Path(analysis, source, name, new PathValue("~/real"));
-        Path(analysis, source, "joined", PathSemantics.JoinValue(new("~/real"), new StringValue("child")));
-        Path(analysis, source, "textJoined", PathSemantics.JoinValue(new("base"), new StringValue("child")));
-        var qualified = PathSemantics.Qualify(new("~/real"), new(ConnectionKind.Ssh, "forge"));
+        foreach (string name in new[] { "folder", "alias", "member", "same" }) Path(analysis, source, name, new NativePath("~/real"));
+        Path(analysis, source, "joined", PathSemantics.JoinValue(new("~/real"), "child"));
+        Path(analysis, source, "textJoined", PathSemantics.JoinValue(new("base"), "child"));
+        var qualified = PathSemantics.Qualify(new NativePath("~/real"), new NativeConnection(ConnectionKind.Ssh, "forge"));
         Path(analysis, source, "remote", qualified);
-        Path(analysis, source, "remoteChild", PathSemantics.JoinValue(qualified, new StringValue("child")));
+        Path(analysis, source, "remoteChild", PathSemantics.JoinValue(qualified, "child"));
         Path(analysis, source, "fromText", new("folder with spaces"));
         Check(Binding(analysis, source, "toText").KnownText == "~/real" && Binding(analysis, source, "toText").KnownPath is null,
-            "Path-to-String conversion retained a Path value fact");
-        Path(analysis, source, "result", PathSemantics.JoinValue(new("~/fixed"), new StringValue("child")));
+            $"Path-to-String conversion facts differ: {Binding(analysis, source, "toText")}");
+        Path(analysis, source, "result", PathSemantics.JoinValue(new("~/fixed"), "child"));
         Path(analysis, source, "annotatedResult", new("declared"));
         Path(analysis, source, "returnedResult", new("returned"));
         foreach (string name in new[] { "different", "nullable", "contextual" })
             Check(Binding(analysis, source, name).KnownPath is null, "runtime-dependent path was treated as a static location: " + name);
         var config = analysis.Occurrences.Single(item => item.Span.Start == source.IndexOf("Config", StringComparison.Ordinal));
-        Check(config.Members!.Single(member => member.Name == "root").KnownPath == new PathValue("~/real"), "Scope field lost its static Path value");
+        Check(config.Members!.Single(member => member.Name == "root").KnownPath == new NativePath("~/real"), "Scope field lost its static Path value");
     }
 
     private static void GenericIsolation()
@@ -90,7 +113,7 @@ internal static class StaticPathChecks
     {
         const string incomplete = "fn make() { ~/fixed / \"child\" }; make()/";
         EditorAnalysis analysis = EditorCompiler.Analyze(incomplete, "file:///path-receiver.msync");
-        Check(analysis.At(incomplete.Length).Receiver?.KnownPath == PathSemantics.JoinValue(new("~/fixed"), new StringValue("child")),
+        Check(analysis.At(incomplete.Length).Receiver?.KnownPath == PathSemantics.JoinValue(new("~/fixed"), "child"),
             "incomplete slash completion lost the known factory result");
         const string source = "let folder = ~/root / \"child\"; folder -> ~/target;";
         byte[] before = Bytes(Frontend.Compile(source, "source.msync", 0));
@@ -99,10 +122,10 @@ internal static class StaticPathChecks
         Check(before.AsSpan().SequenceEqual(after), "editor path facts changed relocatable artifact bytes");
     }
 
-    private static byte[] Bytes(Module module)
+    private static byte[] Bytes(NativeProgram module)
     {
         using MemoryStream stream = new();
-        Artifact.Write(module, stream);
+        NativeArtifact.Write(module, stream);
         return stream.ToArray();
     }
 
@@ -112,7 +135,7 @@ internal static class StaticPathChecks
         return analysis.Occurrences.Single(item => item.Span.Start == start && item.Span.Length == name.Length);
     }
 
-    private static void Path(EditorAnalysis analysis, string source, string name, PathValue expected) =>
+    private static void Path(EditorAnalysis analysis, string source, string name, NativePath expected) =>
         Check(Binding(analysis, source, name).KnownPath == expected,
             $"static Path does not match runtime path construction: {name}, expected {expected}, found {Binding(analysis, source, name).KnownPath?.ToString() ?? "unknown"}");
 

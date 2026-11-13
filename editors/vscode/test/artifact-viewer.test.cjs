@@ -438,6 +438,14 @@ test('manifest offers binary opening without routing IR through source diagnosti
     assert.ok(manifest.contributes.commands.some(item => item.command === 'msync.refreshArtifact'));
 });
 
+test('native register-result instructions retain opcode and location styling', () => {
+    const html = syntax('    0042: %f2_12 = ProjectAddress %f2_1, @d3 type @t4')
+        + syntax('    0043: Branch %f2_12, true -> @b2_0044, false -> @b2_0045');
+    for (const [role, value] of [['local', '%f2_12'], ['local', '%f2_1'], ['local', '@d3'],
+        ['opcode', 'ProjectAddress'], ['control', 'Branch'], ['block', '@b2_0044']])
+        assert.ok(html.includes(`<span class="${role}">${value}</span>`), html);
+});
+
 test('IR grammar colors real labels and future instruction mnemonics without source-language parsing', async () => {
     const textmate = require('vscode-textmate'), oniguruma = require('vscode-oniguruma');
     const wasm = fs.readFileSync(require.resolve('vscode-oniguruma/release/onig.wasm'));
@@ -450,6 +458,9 @@ test('IR grammar colors real labels and future instruction mnemonics without sou
     for (const [line, token, expected] of [
         ['const @c0: Path = path(raw="./可莉")', '@c0', 'constant.other.reference.msync-ir'],
         ['fn @f0 "main"(%0: Path) -> Bool', '@f0', 'entity.name.function.msync-ir'],
+        ['  0042: %f2_12 = ProjectAddress %f2_1, @d3', 'ProjectAddress', 'keyword.operator.msync-ir'],
+        ['  0042: %f2_12 = ProjectAddress %f2_1, @d3', '%f2_12', 'variable.other.msync-ir'],
+        ['  0043: Branch %f2_12, true -> @b2_0044', 'Branch', 'keyword.control.msync-ir'],
         ['block @b0_0000 [0..4) pure successors []:', '@b0_0000', 'entity.name.label.msync-ir'],
         ['execution_plan @p0 owner @f0 region [0..42) eliminated 1 {', 'execution_plan', 'keyword.declaration.msync-ir'],
         ['execution_plan @p0 owner @f0 region [0..42) eliminated 1 {', '@p0', 'entity.name.label.msync-ir'],

@@ -28,26 +28,35 @@ public sealed partial class HirBuilder
     public int InternScopeLayout(HirScopeLayout layout)
     {
         var indexByLayout = scopeLayoutIndex ??= new(ScopeLayoutComparer.Instance);
-        var keys = scopeLayoutKeys ??= [];
         // Binding can append open rows directly. Index each such row once,
         // retaining its original ID and the first canonical structural match.
         while (indexedScopeLayouts < ScopeLayouts.Count)
         {
             int index = indexedScopeLayouts++;
+            if (reservedScopeLayouts.Contains(index)) continue;
             var existing = ScopeLayouts[index];
-            if (indexByLayout.TryAdd(existing, index)) keys.Add((existing, index));
+            if (indexByLayout.TryAdd(existing, index)) RecordScopeLayout(existing, index);
         }
         if (indexByLayout.TryGetValue(layout, out int found)) return found;
         int result = ScopeLayouts.Count;
         ScopeLayouts.Add(layout);
         indexByLayout.Add(layout, result);
-        keys.Add((layout, result));
+        RecordScopeLayout(layout, result);
         indexedScopeLayouts++;
         return result;
     }
 
+    private void RecordScopeLayout(HirScopeLayout layout, int index)
+    {
+        var keys = scopeLayoutKeys ??= [];
+        int position = keys.Count;
+        while (position > 0 && keys[position - 1].Index > index) position--;
+        keys.Insert(position, (layout, index));
+    }
+
     private void RewindScopeLayouts(int count)
     {
+        reservedScopeLayouts.RemoveWhere(index => index >= count);
         if (scopeLayoutKeys is null) return;
         while (scopeLayoutKeys.Count != 0 && scopeLayoutKeys[^1].Index >= count)
         {

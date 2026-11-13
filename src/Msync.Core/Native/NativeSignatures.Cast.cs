@@ -1,3 +1,5 @@
+using Msync.Core.Native;
+
 namespace Msync.Core;
 
 public static partial class NativeSignatures
@@ -9,7 +11,7 @@ public static partial class NativeSignatures
 
 public static class ExplicitConversions
 {
-    public static ConnectionValue? ConnectionFromText(string text) => text switch
+    public static NativeConnection? ConnectionFromText(string text) => text switch
     {
         "local" or "$local" => new(ConnectionKind.Local),
         "wsl" or "$wsl" => new(ConnectionKind.Wsl),

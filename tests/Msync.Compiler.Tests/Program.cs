@@ -1,4 +1,5 @@
 using Msync.Compiler.Syntax;
+if (args.Contains("--native-descriptors", StringComparer.Ordinal)) { StaticPathChecks.RunDescriptors(); return; }
 if (args.Contains("--upgrade-editor", StringComparer.Ordinal)) { UpgradeEditorChecks.Run(); return; }
 if (args.Contains("--nullable-payloads", StringComparer.Ordinal)) { NullablePayloadChecks.Run(); return; }
 if (args.Contains("--contextual-directories", StringComparer.Ordinal)) { ContextualDirectoryChecks.Run(); return; }

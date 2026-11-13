@@ -5,7 +5,8 @@ public sealed partial class HirBuilder
     private Transaction? transaction;
 
     // Source-generation acceptance/editor workspaces are transactional. Generic
-    // inference queries have no writer and never begin an arena transaction.
+    // inference queries have no executable writer. Recursive metadata factories
+    // use a nested transaction to publish their complete type equations together.
     public Transaction BeginTransaction() => transaction = new(this, transaction);
 
     public void SetExports(IEnumerable<HirExport> values) => exports = [.. values];
@@ -116,6 +117,7 @@ public sealed partial class HirBuilder
                 foreach (var pair in locationWrites) owner.Locations[pair.Key] = pair.Value;
             for (int index = types; index < owner.Types.Count; index++)
                 owner.types.Remove(owner.Types[index]);
+            owner.RewindRecursiveScopes(types);
             owner.Sources.RemoveRange(sources, owner.Sources.Count - sources);
             owner.Types.RemoveRange(types, owner.Types.Count - types);
             owner.Locations.RemoveRange(locations, owner.Locations.Count - locations);

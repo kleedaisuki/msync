@@ -1,6 +1,9 @@
 using System.Diagnostics;
 using System.Text.Json;
 using Msync.Core;
+using Msync.Core.Native;
+using Msync.Runtime.Native;
+using Msync.Probes;
 
 namespace Msync.Components;
 
@@ -72,8 +75,10 @@ internal static class TypeValueChecks
     {
         TypeKind core = type.Kind & ~TypeKind.Null;
         if (core == TypeKind.Never) return type.Kind == TypeKind.Null ? "Null" : "Never";
+        if (core == TypeKind.Range || core == TypeKind.Storage)
+            return core + (type.Element is null ? "" : $"<{OldText(type.Element)}>") + (type.Nullable ? "?" : "");
         var names = Enum.GetValues<TypeKind>().Where(kind => kind != TypeKind.Never && kind != TypeKind.Null
-                && kind != TypeKind.Any && (core & kind) != 0)
+                && System.Numerics.BitOperations.IsPow2((uint)kind) && (core & kind) != 0)
             .Select(kind => kind == TypeKind.Range && type.Element is not null ? $"Range<{OldText(type.Element)}>" : kind.ToString());
         return string.Join(" | ", names) + (type.Nullable ? "?" : "");
     }

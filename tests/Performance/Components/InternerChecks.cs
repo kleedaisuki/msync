@@ -1,6 +1,9 @@
 using System.Text;
 using Msync.Compiler;
 using Msync.Core;
+using Msync.Core.Native;
+using Msync.Runtime.Native;
+using Msync.Probes;
 using Msync.Runtime;
 using SourceCompiler = Msync.Compiler.Compiler;
 
@@ -21,12 +24,12 @@ internal static class InternerChecks
         StringBuilder source = new();
         for (int i = 0; i < 128; i++) source.AppendLine($"let item_{i} = \"value_{i % 16}\";");
         var module = SourceCompiler.Compile(source.ToString(), "interner-order.msync", 0);
-        var actual = module.Constants.OfType<StringValue>().Select(value => value.Data).ToArray();
+        var actual = module.Constants.Where(value => value.Kind == NativeKind.String).Select(value => value.Text).ToArray();
         var expected = Enumerable.Range(0, 16).Select(i => $"value_{i}").ToArray();
         if (!actual.SequenceEqual(expected)) throw new Exception("Constant interning changed first-insertion order or retained duplicate values");
         var distinctKinds = SourceCompiler.Compile("let text = \"same\"; let path = ./same; let again = \"same\";", optimization: 0);
-        if (distinctKinds.Constants.OfType<StringValue>().Count(value => value.Data == "same") != 1
-            || !distinctKinds.Constants.OfType<PathValue>().Any(value => value.Raw == "same"))
+        if (distinctKinds.Constants.Count(value => value.Kind == NativeKind.String && value.Text == "same") != 1
+            || !distinctKinds.Constants.Any(value => value.Kind == NativeKind.Path && value.Text == "same"))
             throw new Exception("String and Path constants must retain distinct value identities");
     }
 
@@ -34,26 +37,35 @@ internal static class InternerChecks
     {
         CompilerSession compiler = new("interner-rollback.msync", 0);
         var first = compiler.Compile("\"prefix\";");
+        compiler.AcceptSubmission();
         Reject(compiler);
         var recovered = compiler.Compile("let accepted = \"stale\"; accepted");
-        if (!recovered.Constants.Take(first.Constants.Count).SequenceEqual(first.Constants)) throw new Exception("Failed submission changed accepted constant IDs");
+        CompilerSession control = new("interner-rollback.msync", 0);
+        control.Compile("\"prefix\";");
+        control.AcceptSubmission();
+        var expected = control.Compile("let accepted = \"stale\"; accepted");
+        if (!recovered.Constants.SequenceEqual(expected.Constants))
+            throw new Exception("Failed submission changed the next image's constant values or IDs");
         using MemoryStream encoded = new();
-        Artifact.Write(recovered, encoded);
+        NativeArtifact.Write(SourceCompiler.Compile("let accepted = \"stale\"; accepted", optimization: 0), encoded);
         encoded.Position = 0;
-        var imported = Artifact.Read(encoded);
-        var value = Interpreter.ExecuteAsync(imported, new(Output: TextWriter.Null, Error: TextWriter.Null)).GetAwaiter().GetResult();
-        if (value is not StringValue { Data: "stale" }) throw new Exception("Rolled-back constant index did not survive source-free execution");
+        var imported = NativeArtifact.Read(encoded);
+        var value = NativeProbe.RunAsync(imported, new(Output: TextWriter.Null, Error: TextWriter.Null)).GetAwaiter().GetResult();
+        if (value.Kind != NativeKind.String || value.AsString() != "stale") throw new Exception("Rolled-back constant index did not survive source-free execution");
     }
 
     private static void CheckPersistentValues()
     {
         CompilerSession compiler = new("interner-session.msync", 0);
-        ExecutionSession runtime = new(new(Output: TextWriter.Null, Error: TextWriter.Null));
+        NativeExecutionSession runtime = new(new(Output: TextWriter.Null, Error: TextWriter.Null));
         runtime.ExecuteAsync(compiler.Compile("let keep = \"prefix\";")).GetAwaiter().GetResult();
+        compiler.AcceptSubmission(runtime.GetLocalValue);
         Reject(compiler);
         var recovered = compiler.Compile("let accepted = \"stale\"; accepted == \"stale\" and keep == \"prefix\"");
         var value = runtime.ExecuteAsync(recovered).GetAwaiter().GetResult();
-        if (value is not BoolValue { Data: true }) throw new Exception("Failed compilation changed persistent values or reused a stale constant ID");
+        compiler.AcceptSubmission(runtime.GetLocalValue);
+        runtime.DisposeAsync().GetAwaiter().GetResult();
+        if (value.Kind != NativeKind.Bool || !value.AsBool()) throw new Exception("Failed compilation changed persistent values or reused a stale constant ID");
     }
 
     private static void Reject(CompilerSession compiler)

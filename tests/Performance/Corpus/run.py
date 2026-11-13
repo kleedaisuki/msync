@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import platform
+import shutil
 import sqlite3
 import statistics
 import subprocess
@@ -20,6 +21,7 @@ import collections_workloads
 import compute
 import pipelines
 import text_paths
+from catalog import CORE_CASES, DIAGNOSTIC_CASES
 from model import Case, Fixture
 
 ROOT: Path = Path(__file__).resolve().parents[3]
@@ -35,7 +37,7 @@ CASES: tuple[Case, ...] = (
     *pipelines.cases(),
     *text_paths.cases(),
 )
-REPORT_VERSION: int = 1
+REPORT_VERSION: int = 2
 ROUTES: dict[str, tuple[str, ...]] = {
     "bound": ("bound",),
     "object": ("object",),
@@ -50,12 +52,63 @@ EXTENSION: dict[str, str] = {"bound": "mexe", "object": "mso", "source": "msync"
 class Variant:
     name: str
     binary: Path
+    original: Path | None = None
+
+
+def payload(directory: Path) -> dict[str, str]:
+    return {
+        path.relative_to(directory).as_posix(): file_digest(path)
+        for path in sorted(directory.rglob("*"))
+        if path.is_file()
+    }
+
+
+def freeze(variant: Variant, directory: Path) -> Variant:
+    destination: Path = directory / "images" / variant.name
+    destination.mkdir(parents=True)
+    manifests: set[str] = {
+        f"{variant.binary.stem}.deps.json",
+        f"{variant.binary.stem}.runtimeconfig.json",
+    }
+    files: list[Path] = [
+        path
+        for path in sorted(variant.binary.parent.iterdir())
+        if path.is_file()
+        and (
+            path == variant.binary
+            or path.suffix in {".dll", ".so", ".dylib"}
+            or path.name in manifests
+            or ".so." in path.name
+        )
+    ]
+    for source in files:
+        expected: str = file_digest(source)
+        target: Path = destination / source.name
+        shutil.copy2(source, target)
+        if file_digest(target) != expected or file_digest(source) != expected:
+            raise RuntimeError(f"Product payload changed while freezing: {source}")
+    runtime: Path = variant.binary.parent / "runtimes"
+    if runtime.is_dir():
+        expected_runtime: dict[str, str] = payload(runtime)
+        shutil.copytree(runtime, destination / "runtimes")
+        if (
+            payload(destination / "runtimes") != expected_runtime
+            or payload(runtime) != expected_runtime
+        ):
+            raise RuntimeError(f"Runtime payload changed while freezing: {runtime}")
+    return Variant(variant.name, destination / variant.binary.name, variant.binary)
 
 
 @dataclass(frozen=True)
 class Execution:
     elapsed_ms: float
     stdout: bytes
+
+
+class InvocationFailure(RuntimeError):
+    def __init__(self, message: str, details: dict[str, object]) -> None:
+        super().__init__(message)
+        self.details: dict[str, object] = details
 
 
 def digest(data: bytes) -> str:
@@ -87,14 +140,35 @@ def invoke(
     )
     command: list[str] = [str(variant.binary), "--no-config", *telemetry, *arguments]
     started: int = perf_counter_ns()
-    result: subprocess.CompletedProcess[bytes] = subprocess.run(
-        command, cwd=cwd, input=stdin, capture_output=True, check=False, timeout=300
-    )
+    context: dict[str, object] = {"command": command, "cwd": str(cwd)}
+    try:
+        result: subprocess.CompletedProcess[bytes] = subprocess.run(
+            command, cwd=cwd, input=stdin, capture_output=True, check=False, timeout=300
+        )
+    except subprocess.TimeoutExpired as error:
+        context.update(
+            timeout_seconds=error.timeout,
+            stdout=(error.stdout or b"").decode("utf-8", errors="replace"),
+            stderr=(error.stderr or b"").decode("utf-8", errors="replace"),
+        )
+        raise InvocationFailure(f"{command!r} in {cwd} timed out", context) from error
+    except OSError as error:
+        context.update(error_type=type(error).__name__, error=str(error))
+        raise InvocationFailure(
+            f"Cannot launch {command!r} in {cwd}: {error}", context
+        ) from error
     elapsed: float = (perf_counter_ns() - started) / 1e6
     if result.returncode != 0:
-        raise RuntimeError(
+        context.update(
+            exit_code=result.returncode,
+            stdout=result.stdout.decode("utf-8", errors="replace"),
+            stderr=result.stderr.decode("utf-8", errors="replace"),
+            elapsed_ms=elapsed,
+        )
+        raise InvocationFailure(
             f"{command!r} in {cwd} exited {result.returncode}: "
-            f"stdout={result.stdout!r}; stderr={result.stderr!r}"
+            f"stdout={result.stdout!r}; stderr={result.stderr!r}",
+            context,
         )
     return Execution(elapsed, result.stdout)
 
@@ -263,6 +337,69 @@ def summarize(samples: list[float]) -> dict[str, float | list[float]]:
     return {"samples_ms": samples, "p50_ms": statistics.median(samples), "p95_ms": p95}
 
 
+def measure_samples(
+    variants: Sequence[Variant],
+    directory: Path,
+    fixture: Fixture,
+    stdin: bytes,
+    artifacts: dict[str, str],
+    args: argparse.Namespace,
+    phase: int,
+    result: dict[str, object],
+) -> dict[str, list[float]]:
+    samples: dict[str, list[float]] = {variant.name: [] for variant in variants}
+    timings: dict[str, object] = {
+        name: {"samples_ms": values} for name, values in samples.items()
+    }
+    result["timings"] = timings
+    for pair in range(-args.warmups, args.pairs):
+        order: Sequence[Variant] = (
+            variants if (pair + phase) % 2 == 0 else variants[::-1]
+        )
+        for variant in order:
+            result["active"] = {
+                "phase": "warmup" if pair < 0 else "timing",
+                "pair": pair,
+                "variant": variant.name,
+                "artifact": artifacts[variant.name],
+                "cwd": str(directory),
+            }
+            elapsed: float = checked(
+                variant, directory, artifacts[variant.name], fixture, stdin
+            )
+            if pair >= 0:
+                samples[variant.name].append(elapsed)
+                timings[variant.name] = summarize(samples[variant.name])
+    return samples
+
+
+def measure_profiles(
+    variants: Sequence[Variant],
+    directory: Path,
+    fixture: Fixture,
+    stdin: bytes,
+    artifacts: dict[str, str],
+    level: str,
+    result: dict[str, object],
+) -> None:
+    profiles: dict[str, dict[str, object]] = {}
+    result["profiles"] = profiles
+    for variant in variants:
+        db: Path = (
+            directory
+            / f"{variant.name}-{Path(artifacts[variant.name]).suffix[1:]}.sqlite"
+        )
+        result["active"] = {
+            "phase": "profile",
+            "variant": variant.name,
+            "artifact": artifacts[variant.name],
+            "cwd": str(directory),
+            "database": str(db),
+        }
+        checked(variant, directory, artifacts[variant.name], fixture, stdin, db, level)
+        profiles[variant.name] = profile(db)
+
+
 def measure(
     variants: Sequence[Variant],
     directory: Path,
@@ -271,49 +408,42 @@ def measure(
     artifacts: dict[str, str],
     args: argparse.Namespace,
     phase: int,
-) -> dict[str, object]:
-    samples: dict[str, list[float]] = {variant.name: [] for variant in variants}
-    for pair in range(-args.warmups, args.pairs):
-        order: Sequence[Variant] = (
-            variants if (pair + phase) % 2 == 0 else variants[::-1]
+    result: dict[str, object],
+) -> None:
+    result["status"] = "running"
+    try:
+        samples: dict[str, list[float]] = measure_samples(
+            variants,
+            directory,
+            fixture,
+            stdin,
+            artifacts,
+            args,
+            phase,
+            result,
         )
-        for variant in order:
-            elapsed: float = checked(
-                variant, directory, artifacts[variant.name], fixture, stdin
+        if "candidate" in samples:
+            deltas: list[float] = [
+                (right / left - 1.0) * 100.0
+                for left, right in zip(
+                    samples["baseline"], samples["candidate"], strict=True
+                )
+            ]
+            result.update(
+                paired_percent_change=deltas,
+                paired_median_percent_change=statistics.median(deltas),
             )
-            if pair >= 0:
-                samples[variant.name].append(elapsed)
-    result: dict[str, object] = {
-        "timings": {name: summarize(values) for name, values in samples.items()}
-    }
-    if "candidate" in samples:
-        deltas: list[float] = [
-            (right / left - 1.0) * 100.0
-            for left, right in zip(
-                samples["baseline"], samples["candidate"], strict=True
+        if args.profile != "off":
+            measure_profiles(
+                variants, directory, fixture, stdin, artifacts, args.profile, result
             )
-        ]
-        result["paired_percent_change"] = deltas
-        result["paired_median_percent_change"] = statistics.median(deltas)
-    if args.profile != "off":
-        profiles: dict[str, dict[str, object]] = {}
-        for variant in variants:
-            db: Path = (
-                directory
-                / f"{variant.name}-{Path(artifacts[variant.name]).suffix[1:]}.sqlite"
-            )
-            checked(
-                variant,
-                directory,
-                artifacts[variant.name],
-                fixture,
-                stdin,
-                db,
-                args.profile,
-            )
-            profiles[variant.name] = profile(db)
-        result["profiles"] = profiles
-    return result
+    except BaseException as error:
+        result.update(status="failed", error=str(error))
+        if isinstance(error, InvocationFailure):
+            result["invocation_failure"] = error.details
+        raise
+    result["status"] = "complete"
+    result.pop("active", None)
 
 
 def run(
@@ -336,7 +466,9 @@ def run(
             {
                 "name": v.name,
                 "path": str(v.binary),
+                "original_path": str(v.original or v.binary),
                 "sha256": file_digest(v.binary),
+                "payload_sha256": payload(v.binary.parent),
                 "version": invoke(v, directory, ["--version"])
                 .stdout.decode("utf-8")
                 .strip(),
@@ -357,6 +489,9 @@ def run(
     metadata["cases"] = rows
     path: Path = directory / "result.json"
     current: str = ""
+    frozen_payloads: dict[str, dict[str, str]] = {
+        variant.name: payload(variant.binary.parent) for variant in variants
+    }
     try:
         for case in selected:
             for scale in scales:
@@ -376,6 +511,9 @@ def run(
                     row: dict[str, object] = {
                         "case": case.name,
                         "family": case.family,
+                        "role": "diagnostic"
+                        if case.name in DIAGNOSTIC_CASES
+                        else "core",
                         "scale": scale,
                         "size": size,
                         "seed": seed,
@@ -401,8 +539,17 @@ def run(
                             else f"{'baseline' if args.same_artifact else variant.name}.{EXTENSION[route]}"
                             for variant in variants
                         }
-                        routes[route] = measure(
-                            variants, work, fixture, stdin, artifacts, args, phase
+                        route_result: dict[str, object] = {}
+                        routes[route] = route_result
+                        measure(
+                            variants,
+                            work,
+                            fixture,
+                            stdin,
+                            artifacts,
+                            args,
+                            phase,
+                            route_result,
                         )
                     path.write_text(
                         json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
@@ -411,9 +558,23 @@ def run(
         metadata["status"] = "complete"
     except BaseException as error:
         metadata.update(status="failed", failure_case=current, error=str(error))
+        if isinstance(error, InvocationFailure):
+            metadata["invocation_failure"] = error.details
         raise
     finally:
+        changed: list[str] = [
+            variant.name
+            for variant in variants
+            if payload(variant.binary.parent) != frozen_payloads[variant.name]
+        ]
+        metadata["frozen_payloads_unchanged"] = not changed
+        if changed:
+            metadata.update(
+                status="failed", error=f"Frozen product payload changed: {changed}"
+            )
         path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+        if changed:
+            raise RuntimeError(metadata["error"])
 
 
 def main() -> None:
@@ -442,17 +603,30 @@ def main() -> None:
     parser.add_argument("--cpu", type=int)
     parser.add_argument("--work", type=Path)
     parser.add_argument("--list", action="store_true")
+    parser.add_argument(
+        "--include-diagnostics",
+        action="store_true",
+        help="Include optimizer-shaped controls as well as the core application corpus",
+    )
     args: argparse.Namespace = parser.parse_args()
     selected: tuple[Case, ...] = tuple(
         case
         for case in CASES
         if (not args.case or case.name in args.case)
         and (not args.family or case.family in args.family)
+        and (
+            args.list
+            or args.case
+            or args.family
+            or args.include_diagnostics
+            or case.name in CORE_CASES
+        )
     )
     if args.list:
         for case in selected:
             print(
-                f"{case.name:28} {case.family:16} {case.default_size:6}  {case.description}"
+                f"{case.name:28} {'diagnostic' if case.name in DIAGNOSTIC_CASES else 'core':10} "
+                f"{case.family:16} {case.default_size:6}  {case.description}"
             )
         return
     if (
@@ -473,7 +647,7 @@ def main() -> None:
     if (
         not directory.is_relative_to(ROOT / ".temp")
         or directory.exists()
-        and any(directory.iterdir())
+        and (not directory.is_dir() or any(directory.iterdir()))
     ):
         parser.error(
             "--work must be a new or empty directory under repository-root .temp"
@@ -486,6 +660,7 @@ def main() -> None:
     variants: list[Variant] = [Variant("baseline", args.baseline.resolve(strict=True))]
     if args.candidate is not None:
         variants.append(Variant("candidate", args.candidate.resolve(strict=True)))
+    variants = [freeze(variant, directory) for variant in variants]
     run(args, variants, selected, scales, seeds, directory)
 
 

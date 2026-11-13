@@ -99,6 +99,66 @@ compare matching workloads/optimization levels. Root attributes include
 | `instructions` | Aggregate dynamic bytecode positions, branch/iterator edges and actual source call-site targets |
 | `diagnostics` | Exact operation timeline: VM frames and awaits that see incomplete work, scheduler admission and dependency links, transfer/transport and process lifecycle; lossless queue backpressure |
 
+### Native guest-tier counters (0.9)
+
+At phases/profile/instructions levels, the actual `execute` span includes
+`tier.compilations`, `tier.compilation_ns`, `tier.code_bytes`, `tier.entries`,
+`tier.operations`, `tier.direct_operations`, `tier.raw_operations`, `tier.guard_misses`,
+`tier.deoptimizations`, `tier.suspensions`, `tier.recompilations`,
+`tier.cancellation_polls` and `tier.unavailable_compilations`. These describe
+the guest execution backend, not the host CLR JIT or retired numeric workers.
+JIT-off emits real zeros. An entry count does not prove a useful optimization;
+compare direct/bridge work and compilation costs with uninstrumented timing.
+`tier.linked_entries` and `tier.linked_operations` separately count prelinked
+managed Tier-1 regions; they are not reported as generated-native entries.
+
+CLI snapshots are recorded even when execution fails. A persistent REPL records
+per-submission differences rather than repeatedly publishing lifetime totals.
+`tests/Telemetry/tiering.py PATH_TO_MSYNC` verifies actual native entry and the
+JIT-off control through SQLite, then checks two real REPL submissions each
+report only their own compilation/entry. Diagnostic executions are separate
+from benchmark samples, and counters must not be inferred from disassembly.
+
+### Native scheduler counters (0.9)
+
+The native interpreter exposes the neutral `SchedulingStatistics` snapshot and
+the CLI records it on the actual `execute` span, including failed execution.
+These are native admission events, not historical interpreter-tier estimates:
+
+| Metric | Native meaning |
+| --- | --- |
+| `scheduler.admitted_operations` | Actually admitted transfer dispatches, including directory/metadata actions; one Range admission is one operation, not a guessed file count. |
+| `scheduler.admitted_transfers` | Payload transfer dispatches, excluding EnsureDirectory/ApplyDirectoryMetadata plan actions. |
+| `scheduler.submitted_plans` | Executed plan submissions, not plans merely present in an image. |
+| `scheduler.submitted_batches` | Actual prepared-plan dispatch units; the current native executor submits individual nodes rather than executing recorded grouping hints as batches. |
+| `scheduler.eliminated_transfers` | Recorded eliminated nodes associated with plans actually submitted. |
+| `scheduler.resource_nodes_visited` | Real `ResourceIndex` prefix-tree lookup/registration visits. |
+| `scheduler.dependency_edges` | Unique resource, ordering and explicit plan predecessors matched by transfer admission or native resource queries. |
+| `scheduler.native_hazard_waits` | Native resource-query awaits that actually encounter incomplete predecessors. |
+
+Counters remain available without recording. Admission and wait clocks run only
+when an observer/timeline is enabled; otherwise timing fields remain zero.
+Admission time includes synchronous dispatch work; accumulated wait time may
+overlap across operations and is not command wall time. Detailed mode records
+`scheduler.admission`, `scheduler.native_dependencies` and `scheduler.wait`, with
+actual task links, pending counts and suspension flags. Transfer observations
+cover real planned or residual I/O intervals, retain concrete errors, and use a
+kind label rather than copying String payloads into source metadata.
+
+An unresolved source preserves its statically proven kind: a deferred String
+payload does not read the filesystem, whereas Path/Range/unknown sources retain
+conservative read footprints. This classification does not demand the future;
+its payload dependency and Process lifetime remain intact. The scheduler journey
+in `tests/Telemetry/journeys.py --case scheduler` checks a prepared literal copy
+and a process-gated source: independent publication succeeds while a relevant
+query waits, the wait links to the held admission, and a deferred Path control
+copies checked file bytes rather than the path spelling.
+`tests/NativeExecution/SchedulingChecks.cs` additionally checks actual residual
+file work and public counters with recording disabled (zero timing fields),
+then the same source with an observer and one real transfer interval. Failure
+journeys retain scheduler counts on the failed execute span and concrete I/O
+causes on the transfer record.
+
 Object and executable loads are artifact reads, not compiler stages.
 An executable submitted for replay does not report binding or planning;
 relocatable source, HIR and objects report the stages their route actually

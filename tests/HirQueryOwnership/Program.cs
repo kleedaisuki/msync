@@ -9,7 +9,10 @@ if (args is ["--allocations", var path])
     return;
 }
 
-int checks = TransactionChecks.Run();
+int checks = CanonicalAliasChecks.Run();
+checks += FormalAliasImportChecks.Run();
+checks += AliasEffectChecks.Run();
+checks += TransactionChecks.Run();
 checks += SessionSnapshotChecks.Run();
 BindingRollback();
 await Query("decltype(match true { true => 1, _ => 2 }); 7", 7);

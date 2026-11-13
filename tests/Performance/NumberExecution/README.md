@@ -1,8 +1,8 @@
 # Number execution and allocation probe
 
 This executable compiles real source at O0/O2/O3 and checks source, serialized
-relocatable bytecode and source-free executable bytecode. Measured O2 programs
-retain dynamic loops, arithmetic, comparisons and captured mutation: each report
+relocatable native IR and source-free executable native IR. Measured O2 programs
+exercise consumed loops, arithmetic, comparisons and captured mutation: each report
 records the bound artifact SHA256 and residual numeric instruction count. It
 also checks 1,500 binary64 arithmetic/codec cases bit-for-bit, including negative
 zero, subnormals, infinities and distinct NaN payloads, plus duplication/discard.
@@ -18,7 +18,7 @@ semantic/codec checks. All outputs default below `.temp/number-runtime`; the
 probe does not perform transfers or start external processes. Object/IO controls
 belong to the adjacent ObjectAllocations probe and the end-to-end journey.
 
-A frozen pre-change set of Msync.Core/Compiler/Runtime assemblies may be supplied
+A frozen **native-ABI-compatible** set of Msync.Core/Compiler/Runtime assemblies may be supplied
 with `-p:FrozenAssemblies=/absolute/directory` for a matched before/after probe.
 Use a separate `NuGetLockFilePath` for that mode because direct assembly
 references intentionally have a different dependency graph from product project
@@ -29,6 +29,8 @@ For managed comparisons set `DOTNET_TieredCompilation=0` identically on both
 processes; otherwise the first measured scenario can include tiered compilation
 of the large interpreter dispatch loop. Native AOT does not have that phase.
 Compare alternating before/after processes with identical artifact hashes and
-parameters. Values retained in local slots, calls, fields and Ranges remain boxed
-at public Value boundaries: the raw-double operand stack removes arithmetic
-intermediates, not the entire object representation.
+parameters. All Number fields/slots now use the native physical ABI, and real unions use
+their declared finite alternatives. There is no Number sidecar/raw stack versus
+boxed public Value representation: that implementation was retired. This probe
+is a numerical diagnostic, not a representative application score. Use the mixed
+corpus and actual CLI phases for end-to-end conclusions.

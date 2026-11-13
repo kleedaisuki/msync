@@ -39,7 +39,10 @@ internal sealed partial class SemanticAnalyzer
     private int OpenSessionCall(SemanticValue callee, IReadOnlyList<SemanticValue> arguments,
         HirTypeId result, HirSourceRange source, SemanticContext context)
     {
-        if (sessionDispatch is null || !context.Publish || !context.DeferredReads
+        // Persisted function bodies retain their call ABI even when their result is eager.
+        // A consumed top-level scalar call can be specialized anew in the next submission.
+        if (sessionDispatch is null || !context.Publish
+            || !context.DeferredReads && context.Function == program.Entry
             || SessionSource(callee, context) is not { } address) return -1;
         if (address.Fields.IsDefaultOrEmpty && Stable(address.Root)) return -1;
 
@@ -60,7 +63,8 @@ internal sealed partial class SemanticAnalyzer
         return new(slot, address, values,
             [.. arguments.Select(argument => argument.Location is { } location ? StorageOwner(location, context) : (HirLocationId?)null)],
             result, source, prototype.Objects.ToImmutableDictionary(), prototype.Indexed.ToImmutableDictionary(),
-            prototype.Values.ToImmutableDictionary(), prototype.Storage.ToImmutableDictionary(), []);
+            prototype.Values.ToImmutableDictionary(), prototype.Storage.ToImmutableDictionary(),
+            prototype.Definitions.ToImmutableDictionary(), []);
     }
 
     private SessionCallableSource? SessionSource(SemanticValue callee, SemanticContext context)
@@ -194,6 +198,7 @@ internal sealed partial class SemanticAnalyzer
         foreach (var item in requirement.Indexed) target.Indexed[item.Key] = item.Value;
         foreach (var item in requirement.Cells) target.Values[item.Key] = item.Value;
         foreach (var item in requirement.Storage) target.Storage[item.Key] = item.Value;
+        foreach (var item in requirement.Definitions) target.Definitions[item.Key] = item.Value;
         SemanticValue[] arguments = requirement.Arguments.ToArray();
         for (int index = 0; index < arguments.Length; index++)
         {

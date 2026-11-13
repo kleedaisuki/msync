@@ -36,9 +36,10 @@ internal sealed partial class SemanticAnalyzer
             ? projection.ProjectEvents(instance.WriteEvents) : default;
         var effects = !instance.Complete ? [] : events.IsDefault
             ? projection.ProjectWrites() : projection.EventEffects(events);
+        // Deferred execution suppresses writes, not the ABI obligations of escaped code.
+        projection.ApplyCallableContracts(caller);
         if (applyEffects)
         {
-            projection.ApplyCallableContracts();
             if (events.IsDefault) projection.ApplyEffects(effects);
             else projection.ApplyEvents(events);
         }
@@ -57,6 +58,7 @@ internal sealed partial class SemanticAnalyzer
             Literal = literal,
             DenotedType = actual.DenotedType,
             Observation = actual.Observation,
+            RuntimeDependentMetadata = formal.RuntimeDependentMetadata || actual.RuntimeDependentMetadata,
             Node = HirNodeId.None,
             Location = null,
             Origin = null
@@ -97,7 +99,7 @@ internal sealed partial class SemanticAnalyzer
                 // A structural summary has fields, but no region identity to bind.
                 if (shape.Region >= 0)
                 {
-                    shape = instance.Objects.GetValueOrDefault(shape.Region, shape);
+                    // Match caller aliases against the input graph, not fields replaced by this call.
                     scopeBindings[shape.Region] = scope;
                     if (scope.Region >= 0) regions[shape.Region] = scope.Region;
                 }
@@ -425,8 +427,8 @@ internal sealed partial class SemanticAnalyzer
                 else return [];
             }
             var projected = Project(write.After);
-            var actualTargets = scopeBindings.TryGetValue(write.Region, out var binding) && binding.Region < 0
-                ? binding.Aliases : ImmutableArray.Create(MapRegion(write.Region));
+            IEnumerable<int> actualTargets = scopeBindings.TryGetValue(write.Region, out var binding) && binding.Region < 0
+                ? ScopeAliases(binding) : [MapRegion(write.Region)];
             return actualTargets.Select(target =>
             {
                 var after = projected;
@@ -546,7 +548,7 @@ internal sealed partial class SemanticAnalyzer
                         .AddRange(pair.Value).Distinct().ToImmutableArray();
                 }
             }
-            foreach (var pair in instance.AliasViews)
+            foreach (var pair in instance.AliasEffects)
             {
                 var views = pair.Value.SelectMany(scope => ScopeTargets(scope)).ToImmutableHashSet();
                 foreach (int source in ScopeTargets(pair.Key))
@@ -621,12 +623,16 @@ internal sealed partial class SemanticAnalyzer
             singletonViews.TryGetValue(region, out singleton!) || caller.Publish && !commitEffects
             && owner.projectedSingletons.TryGetValue(region, out singleton!);
 
-        public void ApplyCallableContracts()
+        public void ApplyCallableContracts(SemanticContext destination)
         {
             foreach (var (formal, contracts) in instance.CallableContracts)
             {
-                var actual = MapLocation(formal);
-                foreach (int slot in contracts) EstablishSessionContract(actual, slot, caller);
+                var actual = owner.StorageOwner(MapLocation(formal), caller);
+                foreach (int slot in contracts)
+                {
+                    EstablishSessionContract(actual, slot, caller);
+                    if (!ReferenceEquals(caller, destination)) EstablishSessionContract(actual, slot, destination);
+                }
             }
         }
 
@@ -647,18 +653,20 @@ internal sealed partial class SemanticAnalyzer
                 return actual;
             }
             var declaration = owner.hir.Locations[formal.Value];
-            HirTypeId storage = declaration.StorageType;
+            HirTypeId storage = instance.Storage.GetValueOrDefault(formal, declaration.StorageType);
             // A shared body owns the schema variable, not the carrier inferred
             // later for each freshly returned cell. Borrowed cells were bound above.
             if (owner.hir.Types[storage.Value].TypeParameter >= 0 && !IsNamedField(ownerLocation))
                 storage = ProjectStorageType(storage);
-            else storage = owner.StorageType(formal, caller);
+            else if (!instance.Storage.ContainsKey(formal)) storage = owner.StorageType(formal, caller);
             actual = formal;
+            HirLocation projected = declaration with { Owner = caller.Function, TemplateOwner = null, StorageType = storage };
             if (caller.Publish)
             {
                 actual = new(owner.hir.Locations.Count);
-                caller.Output!.ReserveLocation(declaration with { Owner = caller.Function, TemplateOwner = null, StorageType = storage });
+                caller.Output!.ReserveLocation(projected);
             }
+            else actual = owner.hir.QueryLocation(projected);
             Locations[formal] = actual;
             Locations[ownerLocation] = actual;
             caller.Storage[actual] = storage;

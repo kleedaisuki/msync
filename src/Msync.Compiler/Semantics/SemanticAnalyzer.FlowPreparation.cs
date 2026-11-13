@@ -9,7 +9,8 @@ internal sealed partial class SemanticAnalyzer
     private readonly HashSet<HirLocationId> flowCapturedWrites = [];
     private int flowDeclarationCount;
 
-    private HirFlowAnalysis PrepareFlow(HirNodeId root, SemanticContext context, SemanticValue? iterationSource = null)
+    private HirFlowAnalysis PrepareFlow(HirNodeId root, SemanticContext context, SemanticValue? iterationSource = null,
+        Func<SemanticValue, HirTypeId>? initialType = null)
     {
         var domains = ImmutableDictionary.CreateBuilder<HirLocationId, FlowLocationDomain>();
         var visited = new HashSet<HirNodeId>();
@@ -40,14 +41,18 @@ internal sealed partial class SemanticAnalyzer
                 StorageSemanticType: storage, InitialSemanticType: assigned ? value!.Type : null,
                 DeferredSemanticType: storage));
         }
+        Dictionary<HirNodeId, HirLocationId> returnPlaces = [];
         HirLocationId? Place(HirNodeId id)
         {
             HirNode node = program.Node(id);
             if (node.Kind is not (HirKind.MemberRead or HirKind.MemberAssign)) return null;
-            if (Subject(program.Children(id)[0], context)?.Scope is not { } scope) return null;
-            if (context.Objects.TryGetValue(scope.Region, out var current)) scope = current;
-            if (!scope.Locations.TryGetValue(node.Text!, out var field)) return null;
-            Location(field, new(scope.Region));
+            SemanticScope? scope = Subject(program.Children(id)[0], context)?.Scope;
+            if (scope is not null) scope = context.Objects.GetValueOrDefault(scope.Region, scope);
+            HirLocationId? location = scope is not null && scope.Locations.TryGetValue(node.Text!, out var known)
+                ? known : SchemePlace(id, context);
+            if (location is not { } field) return null;
+            Location(field, scope is not null ? new(scope.Region) : null);
+            returnPlaces[id] = field;
             return field;
         }
         void Visit(HirNodeId id)
@@ -68,18 +73,20 @@ internal sealed partial class SemanticAnalyzer
                 }
         }
         Visit(root);
+        context.ReturnPlaces = returnPlaces;
         var algebra = new HirFlowTypeAlgebra(hir);
         FlowFacts facts = FlowFacts.Create(domains.ToImmutable(), algebra);
         foreach (var pair in domains)
             if (pair.Value.InitiallyAssigned && context.Values.TryGetValue(pair.Key, out var value))
-                facts = facts.Assign(pair.Key, new(Runtime(value), Boolean: value.KnownBool, SemanticType: value.Type,
+                facts = facts.Assign(pair.Key, new(Runtime(value), Boolean: value.KnownBool, SemanticType: initialType?.Invoke(value) ?? FlowType(value, context),
                     Callables: value.Callables.IsDefaultOrEmpty ? null : new(value.Callables.Select(choice =>
                         new FlowCallableIdentity(choice.Template, choice.NativeName))),
                     Denotations: value.DenotedType is { } denoted ? new([denoted]) : null,
                     Eager: value.EagerRange));
         var projection = new HirTypeProjection(program, hir, context, algebra,
             (callable, arguments) => SourceFlowReturn(callable, arguments, context), Place,
-            id => BoundCallables(id, context));
+            id => BoundCallables(id, context),
+            type => TypeWitnessAvailable(type, context) ? ResolveHirType(type, context) : type);
         FlowFact? evaluated = null;
         if (iterationSource is { Element: { } element } source && hir.Types[element.Type.Value].ScopeDomain.Count != 0)
         {
@@ -109,7 +116,7 @@ internal sealed partial class SemanticAnalyzer
             type = fact.SemanticType ?? type;
             if (type != value.Type && (hir.Types[type.Value].Shape != hir.Types[value.Type.Value].Shape
                 || !hir.Types[type.Value].Alternatives.IsDefaultOrEmpty))
-                result = RetypeFlowValue(value, type, []);
+                result = RetypeFlowValue(value, type, context, []);
         }
         bool stable = facts.Domain(location).StableForLifetime;
         result = result with
@@ -155,7 +162,6 @@ internal sealed partial class SemanticAnalyzer
             }
             scope = scope with { Fields = fields };
             result = result with { Scope = scope };
-            if (scope.Region >= 0) context.Objects[scope.Region] = scope;
         }
         if (fact.Callables is { } callables)
             result = result with { Callables = ResolveFlowCallables(value, callables, context) };
@@ -166,6 +172,17 @@ internal sealed partial class SemanticAnalyzer
     private FlowFact ConstrainFlowRead(FlowFact fact, FlowFacts facts, HirLocationId location,
         SemanticValue value, SemanticContext context)
     {
+        HirTypeId fixedType = StorageType(location, context);
+        HirType projected = hir.Types[(fact.SemanticType ?? hir.Type(fact.Type)).Value];
+        if (projected.Shape < 0 && fact.Type.WithoutNull == TypeRef.Scope)
+        {
+            HirTypeId schema = hir.Types[fixedType.Value].Shape >= 0 ? fixedType : FlowType(value, context);
+            fact = fact with
+            {
+                SemanticType = SchemaType(new(fact.SemanticType ?? hir.Type(fact.Type),
+                HirNodeId.None, StorageConstraint: schema))
+            };
+        }
         if (Runtime(value).Accepts(fact.Type)) return fact;
         // The loop graph may predate the declaration's inferred carrier.
         // Its edge facts refine storage; they cannot admit additional values.
@@ -207,18 +224,38 @@ internal sealed partial class SemanticAnalyzer
         return new(template, Captures: captures);
     }
 
-    private SemanticValue RetypeFlowValue(SemanticValue value, HirTypeId type, HashSet<int> active)
+    private SemanticValue RetypeFlowValue(SemanticValue value, HirTypeId type, SemanticContext context, HashSet<int> active)
     {
+        if (value.StorageConstraint is { } constraint)
+        {
+            HirType storage = hir.Types[constraint.Value], projectedType = hir.Types[type.Value];
+            if (!storage.RuntimeType.Accepts(projectedType.RuntimeType)
+                && (storage.RuntimeType.Kind & projectedType.RuntimeType.Kind) != TypeKind.Never)
+            {
+                TypeRef narrowed = new(storage.RuntimeType.Kind & projectedType.RuntimeType.Kind,
+                    storage.RuntimeType.Element ?? projectedType.RuntimeType.Element);
+                type = hir.Type(projectedType with
+                {
+                    RuntimeType = narrowed,
+                    Nullable = narrowed.Nullable,
+                    Shape = projectedType.Shape >= 0 ? projectedType.Shape : storage.Shape,
+                    Element = projectedType.Element >= 0 ? projectedType.Element : storage.Element
+                });
+            }
+        }
         SemanticValue projected = ValueForType(type);
         if (projected.Scope is not { } shape)
             return value with { Type = type, Literal = null, DenotedType = null, Observation = null };
         if (value.Scope is not { } existing)
             return projected with { Location = value.Location, Origin = value.Origin };
+        existing = context.Objects.GetValueOrDefault(existing.Region, existing);
         if (existing.Region >= 0 && !active.Add(existing.Region)) return value with { Type = type };
         var fields = shape.Fields;
         foreach (var (name, target) in shape.Fields)
+        {
             if (existing.Fields.TryGetValue(name, out var previous) && Runtime(target).Accepts(Runtime(previous)))
-                fields = fields.SetItem(name, RetypeFlowValue(previous, target.Type, active));
+                fields = fields.SetItem(name, RetypeFlowValue(previous, target.Type, context, active));
+        }
         if (existing.Region >= 0) active.Remove(existing.Region);
         return value with
         {

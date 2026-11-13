@@ -621,8 +621,177 @@ scope NaturalOrder {
     },
 };
 
-# Arena edges are Number indices; live nodes own bounded indexed key/value pages.
-# A minimum degree of eight keeps page moves bounded and avoids recursive rows.
+# Source-only sequence used for bounded page contents, traversal stacks and
+# append-only snapshot assembly. Each link is an ordinary logical allocation.
+scope _Chain {
+    empty: fn(element: Type) {
+        let link?: Scope = null;
+        scope {
+            first?: link,
+            last?: link,
+            count: 0,
+            seed: $std::ranges::empty_of(element),
+        }
+    },
+    node: fn(self, reference?) {
+        let Item = decltype($std::ranges::front(self::seed));
+        let value?: Item = null;
+        let link?: Scope = null;
+        let Node = decltype(scope { value?: value, previous?: link, next?: link });
+        reference as Node?
+    },
+    size: fn(self) {
+        self::count
+    },
+    clear: fn(self) {
+        self::first = null;
+        self::last = null;
+        self::count = 0;
+    },
+    push: fn(self, value?) {
+        let Item = decltype($std::ranges::front(self::seed));
+        let typed: Item = value;
+        let previous? = _Chain::node(self, self::last);
+        let link?: Scope = null;
+        let node = scope {
+            value?: typed,
+            previous?: previous,
+            next?: link
+        };
+        if previous is not null {
+            previous::next = node;
+        } else {
+            self::first = node;
+        };
+        self::last = node;
+        let index = self::count;
+        self::count = index + 1;
+        index
+    },
+    at: fn(self, index: Number) {
+        let position = 0;
+        let node? = _Chain::node(self, self::first);
+        loop {
+            if node is null {
+                return null;
+            };
+            if position == index {
+                return node;
+            };
+            node = _Chain::node(self, node::next);
+            position = position + 1;
+        }
+    },
+    value: fn(self, node) {
+        let Item = decltype($std::ranges::front(self::seed));
+        let value? = node::value;
+        if value is null {
+            if $std::meta::accepts(Item, Null) { null }
+            else { $std::ranges::front(self::seed) }
+        } else { value as Item }
+    },
+    get: fn(self, index: Number) {
+        let node? = _Chain::at(self, index);
+        if node is null {
+            $std::ranges::front(self::seed)
+        } else {
+            _Chain::value(self, node)
+        }
+    },
+    set: fn(self, index: Number, value?) {
+        let Item = decltype($std::ranges::front(self::seed));
+        let typed: Item = value;
+        let node? = _Chain::at(self, index);
+        if node is null { $std::ranges::front(self::seed); return; };
+        node::value = typed;
+    },
+    pop: fn(self) {
+        let node? = _Chain::node(self, self::last);
+        if node is null {
+            return $std::ranges::front(self::seed);
+        };
+        self::last = node::previous;
+        let previous? = _Chain::node(self, self::last);
+        if previous is null {
+            self::first = null;
+        } else {
+            previous::next = null;
+        };
+        self::count = self::count - 1;
+        _Chain::value(self, node)
+    },
+    insert: fn(self, index: Number, value?) {
+        let Item = decltype($std::ranges::front(self::seed));
+        let typed: Item = value;
+        if index == self::count {
+            _Chain::push(self, value);
+            return;
+        };
+        let next? = _Chain::at(self, index);
+        if next is null {
+            $std::ranges::front(self::seed); return;
+        };
+        let previous? = _Chain::node(self, next::previous);
+        let node = scope {
+            value?: typed,
+            previous?: previous,
+            next?: next
+        };
+        if previous is null {
+            self::first = node;
+        } else {
+            previous::next = node;
+        };
+        next::previous = node;
+        self::count = self::count + 1;
+    },
+    remove: fn(self, index: Number) {
+        let node? = _Chain::at(self, index);
+        if node is null {
+            return $std::ranges::front(self::seed);
+        };
+        let previous? = _Chain::node(self, node::previous);
+        let next? = _Chain::node(self, node::next);
+        if previous is null {
+            self::first = next;
+        } else {
+            previous::next = next;
+        };
+        if next is null {
+            self::last = previous;
+        } else {
+            next::previous = previous;
+        };
+        self::count = self::count - 1;
+        _Chain::value(self, node)
+    },
+    snapshot: fn(self) {
+        let node? = _Chain::node(self, self::first);
+        let values = $std::ranges::generate(
+            self::count,
+            fn(_) {
+                if node is null {
+                    return $std::ranges::front(self::seed);
+                };
+                let value? = _Chain::value(self, node);
+                node = _Chain::node(self, node::next);
+                value
+            }
+        );
+        $std::ranges::materialize(values)
+    },
+    take: fn(self) {
+        let values = _Chain::snapshot(self);
+        _Chain::clear(self);
+        values
+    },
+};
+
+# Identity is tested only by explicit structure inspection, not tree operations.
+fn _same_scope(left?, right?) {
+    $std::ranges::contains([left], right)
+};
+
 scope BTree {
     new: fn(key_prototype?, value_prototype?) {
         BTree::with_policy(
@@ -643,31 +812,50 @@ scope BTree {
         BTree::from_seeds(
             $std::ranges::empty_of(decltype(key_prototype)),
             $std::ranges::empty_of(decltype(value_prototype)),
-            order, key_prototype, value_prototype
+            order,
+            key_prototype,
+            value_prototype
         )
     },
     of_types: fn(key: Type, value: Type) {
         BTree::from_seeds(
             $std::ranges::empty_of(key),
             $std::ranges::empty_of(value),
-            scope { Self: key, sample?: null, less: NaturalOrder::less },
-            null, null
+            scope {
+                Self: key,
+                sample?: null,
+                less: NaturalOrder::less
+            },
+            null,
+            null
         )
     },
-    of_types_with: fn(key: Type, value: Type, order: $std::concepts::StrictOrder) {
+    of_types_with: fn(
+        key: Type,
+        value: Type,
+        order: $std::concepts::StrictOrder
+    ) {
         BTree::from_seeds(
-            $std::ranges::empty_of(key), $std::ranges::empty_of(value), order, null, null
+            $std::ranges::empty_of(key),
+            $std::ranges::empty_of(value),
+            order,
+            null,
+            null
         )
     },
-    from_seeds: fn(keys: Range, values: Range, order: $std::concepts::StrictOrder,
-        key_prototype?, value_prototype?) {
+    from_seeds: fn(
+        keys: Range,
+        values: Range,
+        order: $std::concepts::StrictOrder,
+        key_prototype?,
+        value_prototype?
+    ) {
         let key_seed = $std::ranges::take(keys, 0);
         let value_seed = $std::ranges::take(values, 0);
         let first = BTree::page(key_seed, value_seed, true);
-        let nodes = $std::slots::new(decltype(first));
-        let root = $std::slots::allocate(nodes, first);
+        let root = first;
         scope {
-            nodes: nodes,
+            pages: 1,
             root: root,
             count: 0,
             degree: 8,
@@ -681,35 +869,32 @@ scope BTree {
     page: fn(key_seed: Range, value_seed: Range, leaf: Bool) {
         scope {
             leaf: leaf,
-            keys: $std::storage::vector_empty(decltype($std::ranges::front(key_seed))),
-            values: $std::storage::vector_empty(decltype($std::ranges::front(value_seed))),
-            children: $std::storage::vector_empty(Number),
+            keys: _Chain::empty(decltype($std::ranges::front(key_seed))),
+            values: _Chain::empty(decltype($std::ranges::front(value_seed))),
+            children: _Chain::empty(Scope),
         }
     },
-    node: fn(self, index: Number) {
-        $std::slots::get(self::nodes, index)
+    node: fn(self, node) {
+        let Page = decltype(BTree::page(self::key_seed, self::value_seed, false));
+        node as Page
     },
-    allocate: fn(self, leaf: Bool) {
-        $std::slots::allocate(
-            self::nodes,
-            BTree::page(self::key_seed, self::value_seed, leaf)
-        )
+    new_page: fn(self, leaf: Bool) {
+        self::pages = self::pages + 1;
+        BTree::page(self::key_seed, self::value_seed, leaf)
     },
-    retire: fn(self, index: Number) {
-        $std::slots::release(self::nodes, index);
+    retire: fn(self, node) {
+        self::pages = self::pages - 1;
     },
     lower: fn(self, node, key?) {
+        let node = BTree::node(self, node);
         let low = 0;
-        let high = $std::storage::vector_size(node::keys);
+        let high = _Chain::size(node::keys);
         loop {
             if low >= high {
                 break;
             };
             let middle = $std::math::floor((low + high) / 2);
-            if self::order::less(
-                $std::storage::vector_get(node::keys, middle),
-                key
-            ) {
+            if self::order::less(_Chain::get(node::keys, middle), key) {
                 low = middle + 1;
             } else {
                 high = middle;
@@ -728,12 +913,8 @@ scope BTree {
         loop {
             let node = BTree::node(self, current);
             let index = BTree::lower(self, node, key);
-            if index < $std::storage::vector_size(node::keys) {
-                if BTree::equal(
-                    self,
-                    $std::storage::vector_get(node::keys, index),
-                    key
-                ) {
+            if index < _Chain::size(node::keys) {
+                if BTree::equal(self, _Chain::get(node::keys, index), key) {
                     return scope {
                         node: current,
                         index: index
@@ -743,7 +924,7 @@ scope BTree {
             if node::leaf {
                 return null;
             };
-            current = $std::storage::vector_get(node::children, index);
+            current = _Chain::get(node::children, index);
         }
     },
     get: fn(self, key?) {
@@ -752,7 +933,7 @@ scope BTree {
             null
         } else {
             $std::data::Option::some(
-                $std::storage::vector_get(
+                _Chain::get(
                     BTree::node(self, found::node)::values,
                     found::index
                 )
@@ -768,65 +949,53 @@ scope BTree {
     is_empty: fn(self) {
         self::count == 0
     },
-    split_child: fn(self, parent_index: Number, index: Number) {
+    split_child: fn(self, parent_index, index: Number) {
         let parent = BTree::node(self, parent_index);
-        let left_index = $std::storage::vector_get(parent::children, index);
+        let left_index = _Chain::get(parent::children, index);
         let left = BTree::node(self, left_index);
-        let right_index = BTree::allocate(self, left::leaf);
+        let right_index = BTree::new_page(self, left::leaf);
         let right = BTree::node(self, right_index);
         let degree = self::degree;
-        let pivot_key? = $std::storage::vector_get(left::keys, degree - 1);
-        let pivot_value? = $std::storage::vector_get(left::values, degree - 1);
+        let pivot_key? = _Chain::get(left::keys, degree - 1);
+        let pivot_value? = _Chain::get(left::values, degree - 1);
         for i in $std::ranges::sequence(degree, 2 * degree - 1, 1) {
-            $std::storage::vector_push(
-                right::keys,
-                $std::storage::vector_get(left::keys, i)
-            );
-            $std::storage::vector_push(
-                right::values,
-                $std::storage::vector_get(left::values, i)
-            );
+            _Chain::push(right::keys, _Chain::get(left::keys, i));
+            _Chain::push(right::values, _Chain::get(left::values, i));
         };
         if not left::leaf {
             for i in $std::ranges::sequence(degree, 2 * degree, 1) {
-                $std::storage::vector_push(
-                    right::children,
-                    $std::storage::vector_get(left::children, i)
-                );
+                _Chain::push(right::children, _Chain::get(left::children, i));
             };
             for i in $std::ranges::sequence(0, degree, 1) {
-                $std::storage::vector_pop(left::children);
+                _Chain::pop(left::children);
             };
         };
         for i in $std::ranges::sequence(0, degree, 1) {
-            $std::storage::vector_pop(left::keys);
-            $std::storage::vector_pop(left::values);
+            _Chain::pop(left::keys);
+            _Chain::pop(left::values);
         };
-        $std::storage::vector_insert(parent::keys, index, pivot_key);
-        $std::storage::vector_insert(parent::values, index, pivot_value);
-        $std::storage::vector_insert(parent::children, index + 1, right_index);
+        _Chain::insert(parent::keys, index, pivot_key);
+        _Chain::insert(parent::values, index, pivot_value);
+        _Chain::insert(parent::children, index + 1, right_index);
     },
-    insert_nonfull: fn(self, current: Number, key?, value?) {
+    insert_nonfull: fn(self, current, key?, value?) {
         let node = BTree::node(self, current);
         let index = BTree::lower(self, node, key);
         if node::leaf {
-            $std::storage::vector_insert(node::keys, index, key);
-            $std::storage::vector_insert(node::values, index, value);
+            _Chain::insert(node::keys, index, key);
+            _Chain::insert(node::values, index, value);
         } else {
-            let child = $std::storage::vector_get(node::children, index);
-            if $std::storage::vector_size(BTree::node(self, child)::keys) == 2
-                * self::degree - 1 {
+            let child = _Chain::get(node::children, index);
+            if _Chain::size(BTree::node(self, child)::keys) == 2 * self::degree
+                - 1 {
                 BTree::split_child(self, current, index);
-                if self::order::less(
-                    $std::storage::vector_get(node::keys, index),
-                    key
-                ) {
+                if self::order::less(_Chain::get(node::keys, index), key) {
                     index = index + 1;
                 };
             };
             BTree::insert_nonfull(
                 self,
-                $std::storage::vector_get(node::children, index),
+                _Chain::get(node::children, index),
                 key,
                 value
             );
@@ -835,200 +1004,125 @@ scope BTree {
     insert: fn(self, key?, value?) {
         let found? = BTree::locate(self, key);
         if found is not null {
-            $std::storage::vector_set(
+            _Chain::set(
                 BTree::node(self, found::node)::values,
                 found::index,
                 value
             );
             return false;
         };
-        if $std::storage::vector_size(BTree::node(self, self::root)::keys) == 2
-            * self::degree - 1 {
+        if _Chain::size(BTree::node(self, self::root)::keys) == 2 * self::degree
+            - 1 {
             let previous = self::root;
-            self::root = BTree::allocate(self, false);
-            $std::storage::vector_push(
-                BTree::node(self, self::root)::children,
-                previous
-            );
+            self::root = BTree::new_page(self, false);
+            _Chain::push(BTree::node(self, self::root)::children, previous);
             BTree::split_child(self, self::root, 0);
         };
         BTree::insert_nonfull(self, self::root, key, value);
         self::count = self::count + 1;
         true
     },
-    extreme: fn(self, current: Number, last: Bool) {
+    extreme: fn(self, current, last: Bool) {
         let index = current;
         loop {
             let node = BTree::node(self, index);
             if node::leaf {
                 let item = if last {
-                    $std::storage::vector_size(node::keys) - 1
+                    _Chain::size(node::keys) - 1
                 } else {
                     0
                 };
                 return scope {
-                    key?: $std::storage::vector_get(node::keys, item),
-                    value?: $std::storage::vector_get(node::values, item),
+                    key?: _Chain::get(node::keys, item),
+                    value?: _Chain::get(node::values, item),
                 };
             };
             let child = if last {
-                $std::storage::vector_size(node::children) - 1
+                _Chain::size(node::children) - 1
             } else {
                 0
             };
-            index = $std::storage::vector_get(node::children, child);
+            index = _Chain::get(node::children, child);
         }
     },
-    merge: fn(self, parent_index: Number, index: Number) {
+    merge: fn(self, parent_index, index: Number) {
         let parent = BTree::node(self, parent_index);
-        let left_index = $std::storage::vector_get(parent::children, index);
-        let right_index = $std::storage::vector_get(
-            parent::children,
-            index + 1
-        );
+        let left_index = _Chain::get(parent::children, index);
+        let right_index = _Chain::get(parent::children, index + 1);
         let left = BTree::node(self, left_index);
         let right = BTree::node(self, right_index);
-        $std::storage::vector_push(
-            left::keys,
-            $std::storage::vector_remove(parent::keys, index)
-        );
-        $std::storage::vector_push(
-            left::values,
-            $std::storage::vector_remove(parent::values, index)
-        );
-        for i in $std::ranges::sequence(0, $std::storage::vector_size(right::keys), 1) {
-            $std::storage::vector_push(left::keys, $std::storage::vector_get(right::keys, i));
-            $std::storage::vector_push(left::values, $std::storage::vector_get(right::values, i));
+        _Chain::push(left::keys, _Chain::remove(parent::keys, index));
+        _Chain::push(left::values, _Chain::remove(parent::values, index));
+        for i in $std::ranges::sequence(0, _Chain::size(right::keys), 1) {
+            _Chain::push(left::keys, _Chain::get(right::keys, i));
+            _Chain::push(left::values, _Chain::get(right::values, i));
         };
-        for i in $std::ranges::sequence(0, $std::storage::vector_size(right::children), 1) {
-            $std::storage::vector_push(left::children, $std::storage::vector_get(right::children, i));
+        for i in $std::ranges::sequence(0, _Chain::size(right::children), 1) {
+            _Chain::push(left::children, _Chain::get(right::children, i));
         };
-        $std::storage::vector_remove(parent::children, index + 1);
+        _Chain::remove(parent::children, index + 1);
         BTree::retire(self, right_index);
         left_index
     },
-    borrow_left: fn(self, parent_index: Number, index: Number) {
+    borrow_left: fn(self, parent_index, index: Number) {
         let parent = BTree::node(self, parent_index);
-        let child = BTree::node(
-            self,
-            $std::storage::vector_get(parent::children, index)
-        );
+        let child = BTree::node(self, _Chain::get(parent::children, index));
         let sibling = BTree::node(
             self,
-            $std::storage::vector_get(parent::children, index - 1)
+            _Chain::get(parent::children, index - 1)
         );
-        $std::storage::vector_insert(
-            child::keys,
-            0,
-            $std::storage::vector_get(parent::keys, index - 1)
-        );
-        $std::storage::vector_insert(
+        _Chain::insert(child::keys, 0, _Chain::get(parent::keys, index - 1));
+        _Chain::insert(
             child::values,
             0,
-            $std::storage::vector_get(parent::values, index - 1)
+            _Chain::get(parent::values, index - 1)
         );
-        $std::storage::vector_set(
-            parent::keys,
-            index - 1,
-            $std::storage::vector_pop(sibling::keys)
-        );
-        $std::storage::vector_set(
-            parent::values,
-            index - 1,
-            $std::storage::vector_pop(sibling::values)
-        );
+        _Chain::set(parent::keys, index - 1, _Chain::pop(sibling::keys));
+        _Chain::set(parent::values, index - 1, _Chain::pop(sibling::values));
         if not child::leaf {
-            $std::storage::vector_insert(
-                child::children,
-                0,
-                $std::storage::vector_pop(sibling::children)
-            );
+            _Chain::insert(child::children, 0, _Chain::pop(sibling::children));
         };
     },
-    borrow_right: fn(self, parent_index: Number, index: Number) {
+    borrow_right: fn(self, parent_index, index: Number) {
         let parent = BTree::node(self, parent_index);
-        let child = BTree::node(
-            self,
-            $std::storage::vector_get(parent::children, index)
-        );
+        let child = BTree::node(self, _Chain::get(parent::children, index));
         let sibling = BTree::node(
             self,
-            $std::storage::vector_get(parent::children, index + 1)
+            _Chain::get(parent::children, index + 1)
         );
-        $std::storage::vector_push(
-            child::keys,
-            $std::storage::vector_get(parent::keys, index)
-        );
-        $std::storage::vector_push(
-            child::values,
-            $std::storage::vector_get(parent::values, index)
-        );
-        $std::storage::vector_set(
-            parent::keys,
-            index,
-            $std::storage::vector_remove(sibling::keys, 0)
-        );
-        $std::storage::vector_set(
-            parent::values,
-            index,
-            $std::storage::vector_remove(sibling::values, 0)
-        );
+        _Chain::push(child::keys, _Chain::get(parent::keys, index));
+        _Chain::push(child::values, _Chain::get(parent::values, index));
+        _Chain::set(parent::keys, index, _Chain::remove(sibling::keys, 0));
+        _Chain::set(parent::values, index, _Chain::remove(sibling::values, 0));
         if not child::leaf {
-            $std::storage::vector_push(
-                child::children,
-                $std::storage::vector_remove(sibling::children, 0)
-            );
+            _Chain::push(child::children, _Chain::remove(sibling::children, 0));
         };
     },
-    delete_node: fn(self, current: Number, key?) -> Bool {
+    delete_node: fn(self, current, key?) -> Bool {
         let node = BTree::node(self, current);
         let index = BTree::lower(self, node, key);
-        let length = $std::storage::vector_size(node::keys);
+        let length = _Chain::size(node::keys);
         if index < length {
-            if BTree::equal(
-                self,
-                $std::storage::vector_get(node::keys, index),
-                key
-            ) {
+            if BTree::equal(self, _Chain::get(node::keys, index), key) {
                 if node::leaf {
-                    $std::storage::vector_remove(node::keys, index);
-                    $std::storage::vector_remove(node::values, index);
+                    _Chain::remove(node::keys, index);
+                    _Chain::remove(node::values, index);
                     return true;
                 };
-                let left_index = $std::storage::vector_get(
-                    node::children,
-                    index
-                );
-                let right_index = $std::storage::vector_get(
-                    node::children,
-                    index + 1
-                );
-                if $std::storage::vector_size(
-                    BTree::node(self, left_index)::keys
-                ) >= self::degree {
+                let left_index = _Chain::get(node::children, index);
+                let right_index = _Chain::get(node::children, index + 1);
+                if _Chain::size(BTree::node(self, left_index)::keys)
+                    >= self::degree {
                     let previous = BTree::extreme(self, left_index, true);
-                    $std::storage::vector_set(
-                        node::keys,
-                        index,
-                        previous::key
-                    );
-                    $std::storage::vector_set(
-                        node::values,
-                        index,
-                        previous::value
-                    );
+                    _Chain::set(node::keys, index, previous::key);
+                    _Chain::set(node::values, index, previous::value);
                     return BTree::delete_node(self, left_index, previous::key);
                 };
-                if $std::storage::vector_size(
-                    BTree::node(self, right_index)::keys
-                ) >= self::degree {
+                if _Chain::size(BTree::node(self, right_index)::keys)
+                    >= self::degree {
                     let next = BTree::extreme(self, right_index, false);
-                    $std::storage::vector_set(node::keys, index, next::key);
-                    $std::storage::vector_set(
-                        node::values,
-                        index,
-                        next::value
-                    );
+                    _Chain::set(node::keys, index, next::key);
+                    _Chain::set(node::values, index, next::value);
                     return BTree::delete_node(self, right_index, next::key);
                 };
                 let merged = BTree::merge(self, current, index);
@@ -1038,15 +1132,14 @@ scope BTree {
         if node::leaf {
             return false;
         };
-        let child_index = $std::storage::vector_get(node::children, index);
-        if $std::storage::vector_size(BTree::node(self, child_index)::keys)
-            < self::degree {
+        let child_index = _Chain::get(node::children, index);
+        if _Chain::size(BTree::node(self, child_index)::keys) < self::degree {
             if index > 0 {
                 let sibling = BTree::node(
                     self,
-                    $std::storage::vector_get(node::children, index - 1)
+                    _Chain::get(node::children, index - 1)
                 );
-                if $std::storage::vector_size(sibling::keys) >= self::degree {
+                if _Chain::size(sibling::keys) >= self::degree {
                     BTree::borrow_left(self, current, index);
                     return BTree::delete_node(self, child_index, key);
                 };
@@ -1054,9 +1147,9 @@ scope BTree {
             if index < length {
                 let sibling = BTree::node(
                     self,
-                    $std::storage::vector_get(node::children, index + 1)
+                    _Chain::get(node::children, index + 1)
                 );
-                if $std::storage::vector_size(sibling::keys) >= self::degree {
+                if _Chain::size(sibling::keys) >= self::degree {
                     BTree::borrow_right(self, current, index);
                     return BTree::delete_node(self, child_index, key);
                 };
@@ -1070,9 +1163,9 @@ scope BTree {
     remove: fn(self, key?) {
         let removed = BTree::delete_node(self, self::root, key);
         let root = BTree::node(self, self::root);
-        if not root::leaf and $std::storage::vector_size(root::keys) == 0 {
+        if not root::leaf and _Chain::size(root::keys) == 0 {
             let previous = self::root;
-            self::root = $std::storage::vector_get(root::children, 0);
+            self::root = _Chain::get(root::children, 0);
             BTree::retire(self, previous);
         };
         if removed {
@@ -1080,70 +1173,68 @@ scope BTree {
         };
         removed
     },
-    visit: fn(self, current: Number, output) {
+    visit: fn(self, current, output) {
         let node = BTree::node(self, current);
-        let length = $std::storage::vector_size(node::keys);
+        let length = _Chain::size(node::keys);
         for index in $std::ranges::sequence(0, length, 1) {
             if not node::leaf {
-                BTree::visit(
-                    self,
-                    $std::storage::vector_get(node::children, index),
-                    output
-                );
+                BTree::visit(self, _Chain::get(node::children, index), output);
             };
-            $std::storage::vector_push(
+            _Chain::push(
                 output,
                 scope {
-                    key?: $std::storage::vector_get(node::keys, index),
-                    value?: $std::storage::vector_get(node::values, index),
+                    key?: _Chain::get(node::keys, index),
+                    value?: _Chain::get(node::values, index),
                 }
             );
         };
         if not node::leaf {
-            BTree::visit(
-                self,
-                $std::storage::vector_get(node::children, length),
-                output
-            );
+            BTree::visit(self, _Chain::get(node::children, length), output);
         };
     },
-    cursor: fn(self) { $std::ranges::Cursor::begin(BTree::entries(self)) },
+    cursor: fn(self) {
+        $std::ranges::Cursor::begin(BTree::entries(self))
+    },
     entries: fn(self) {
-        let output = $std::storage::vector_empty(
-            decltype($std::ranges::front(entry_seed(self::key_seed, self::value_seed)))
+        let output = _Chain::empty(
+            decltype(
+                $std::ranges::front(
+                    entry_seed(self::key_seed, self::value_seed)
+                )
+            )
         );
         BTree::visit(self, self::root, output);
-        $std::storage::vector_take(output)
+        _Chain::take(output)
     },
-    visit_range: fn(self, current: Number, low?, high?, output) {
+    visit_range: fn(self, current, low?, high?, output) {
         let node = BTree::node(self, current);
         let first = BTree::lower(self, node, low);
-        let length = $std::storage::vector_size(node::keys);
+        let length = _Chain::size(node::keys);
         if not node::leaf {
             BTree::visit_range(
                 self,
-                $std::storage::vector_get(node::children, first),
+                _Chain::get(node::children, first),
                 low,
                 high,
                 output
             );
         };
         for index in $std::ranges::sequence(first, length, 1) {
-            let key? = $std::storage::vector_get(node::keys, index);
+            let key? = _Chain::get(node::keys, index);
             if not self::order::less(key, high) {
                 return;
             };
-            $std::storage::vector_push(
+            _Chain::push(
                 output,
                 scope {
                     key?: key,
-                    value?: $std::storage::vector_get(node::values, index),
+                    value?: _Chain::get(node::values, index),
                 }
             );
             if not node::leaf {
                 BTree::visit_range(
                     self,
-                    $std::storage::vector_get(node::children, index + 1),
+                    _Chain::get(node::children, index + 1),
                     low,
                     high,
                     output
@@ -1152,28 +1243,31 @@ scope BTree {
         };
     },
     range: fn(self, low?, high?) {
-        let output = $std::storage::vector_empty(
-            decltype($std::ranges::front(entry_seed(self::key_seed, self::value_seed)))
+        let output = _Chain::empty(
+            decltype(
+                $std::ranges::front(
+                    entry_seed(self::key_seed, self::value_seed)
+                )
+            )
         );
         if self::order::less(low, high) {
             BTree::visit_range(self, self::root, low, high, output);
         };
-        $std::storage::vector_take(output)
+        _Chain::take(output)
     },
-    validate_walk: fn(self, current: Number, root: Bool, depth: Number, state)
-        -> Null {
+    validate_walk: fn(self, current, root: Bool, depth: Number, state) -> Null {
         let node = BTree::node(self, current);
-        let length = $std::storage::vector_size(node::keys);
+        let length = _Chain::size(node::keys);
         state::nodes = state::nodes + 1;
         if length > 2 * self::degree - 1
             or (not root
             and length < self::degree - 1)
-            or $std::storage::vector_size(node::values) != length {
+            or _Chain::size(node::values) != length {
             state::valid = false;
             return;
         };
         if node::leaf {
-            if $std::storage::vector_size(node::children) != 0 {
+            if _Chain::size(node::children) != 0 {
                 state::valid = false;
                 return;
             };
@@ -1185,8 +1279,7 @@ scope BTree {
                 };
             };
         } else {
-            if length == 0
-                or $std::storage::vector_size(node::children) != length + 1 {
+            if length == 0 or _Chain::size(node::children) != length + 1 {
                 state::valid = false;
                 return;
             };
@@ -1195,27 +1288,27 @@ scope BTree {
             if not node::leaf {
                 BTree::validate_walk(
                     self,
-                    $std::storage::vector_get(node::children, index),
+                    _Chain::get(node::children, index),
                     false,
                     depth + 1,
                     state
                 );
             };
-            let key? = $std::storage::vector_get(node::keys, index);
+            let key? = _Chain::get(node::keys, index);
             if state::count == 0 {
-                $std::storage::vector_push(state::previous, key);
+                _Chain::push(state::previous, key);
             } else {
-                if not self::order::less($std::storage::vector_get(state::previous, 0), key) {
+                if not self::order::less(_Chain::get(state::previous, 0), key) {
                     state::valid = false;
                 };
-                $std::storage::vector_set(state::previous, 0, key);
+                _Chain::set(state::previous, 0, key);
             };
             state::count = state::count + 1;
         };
         if not node::leaf {
             BTree::validate_walk(
                 self,
-                $std::storage::vector_get(node::children, length),
+                _Chain::get(node::children, length),
                 false,
                 depth + 1,
                 state
@@ -1228,12 +1321,14 @@ scope BTree {
             count: 0,
             depth: -1,
             nodes: 0,
-            previous: $std::storage::vector_empty(decltype($std::ranges::front(self::key_seed))),
+            previous: _Chain::empty(
+                decltype($std::ranges::front(self::key_seed))
+            ),
         };
         BTree::validate_walk(self, self::root, true, 0, state);
         state::valid
             and state::count == self::count
-            and state::nodes == $std::slots::count(self::nodes)
+            and state::nodes == self::pages
     },
     height: fn(self) {
         let current = self::root;
@@ -1243,21 +1338,21 @@ scope BTree {
             if node::leaf {
                 return depth;
             };
-            current = $std::storage::vector_get(node::children, 0);
+            current = _Chain::get(node::children, 0);
             depth = depth + 1;
         }
     },
     page_count: fn(self) {
-        $std::slots::count(self::nodes)
+        self::pages
     },
     clear: fn(self) {
         let root = BTree::node(self, self::root);
-        $std::storage::vector_clear(root::keys);
-        $std::storage::vector_clear(root::values);
-        $std::storage::vector_clear(root::children);
+        _Chain::clear(root::keys);
+        _Chain::clear(root::values);
+        _Chain::clear(root::children);
         root::leaf = true;
-        $std::slots::reset(self::nodes, root);
-        self::root = 0;
+        self::root = root;
+        self::pages = 1;
         self::count = 0;
     },
 };
@@ -1283,37 +1378,50 @@ scope BPlusTree {
         BPlusTree::from_seeds(
             $std::ranges::empty_of(decltype(key_prototype)),
             $std::ranges::empty_of(decltype(value_prototype)),
-            order, key_prototype, value_prototype
+            order,
+            key_prototype,
+            value_prototype
         )
     },
     of_types: fn(key: Type, value: Type) {
         BPlusTree::from_seeds(
             $std::ranges::empty_of(key),
             $std::ranges::empty_of(value),
-            scope { Self: key, sample?: null, less: NaturalOrder::less },
-            null, null
+            scope {
+                Self: key,
+                sample?: null,
+                less: NaturalOrder::less
+            },
+            null,
+            null
         )
     },
-    of_types_with: fn(key: Type, value: Type, order: $std::concepts::StrictOrder) {
+    of_types_with: fn(
+        key: Type,
+        value: Type,
+        order: $std::concepts::StrictOrder
+    ) {
         BPlusTree::from_seeds(
-            $std::ranges::empty_of(key), $std::ranges::empty_of(value), order, null, null
+            $std::ranges::empty_of(key),
+            $std::ranges::empty_of(value),
+            order,
+            null,
+            null
         )
     },
-    from_seeds: fn(keys: Range, values: Range, order: $std::concepts::StrictOrder,
-        key_prototype?, value_prototype?) {
+    from_seeds: fn(
+        keys: Range,
+        values: Range,
+        order: $std::concepts::StrictOrder,
+        key_prototype?,
+        value_prototype?
+    ) {
         let key_seed = $std::ranges::take(keys, 0);
         let value_seed = $std::ranges::take(values, 0);
-        let first = scope {
-            leaf: true,
-            keys: $std::storage::vector_empty(decltype($std::ranges::front(key_seed))),
-            values: $std::storage::vector_empty(decltype($std::ranges::front(value_seed))),
-            children: $std::storage::vector_empty(Number),
-            next: -1,
-        };
-        let nodes = $std::slots::new(decltype(first));
-        let root = $std::slots::allocate(nodes, first);
+        let first = BPlusTree::page(key_seed, value_seed, true);
+        let root = first;
         scope {
-            nodes: nodes,
+            pages: 1,
             root: root,
             count: 0,
             degree: 8,
@@ -1324,21 +1432,26 @@ scope BPlusTree {
             value_prototype?: value_prototype,
         }
     },
-    node: fn(self, index: Number) {
-        $std::slots::get(self::nodes, index)
-    },
-    allocate: fn(self, leaf: Bool) -> Number {
-        let node = scope {
+    page: fn(key_seed: Range, value_seed: Range, leaf: Bool) {
+        let link?: Scope = null;
+        scope {
             leaf: leaf,
-            keys: $std::storage::vector_empty(decltype($std::ranges::front(self::key_seed))),
-            values: $std::storage::vector_empty(decltype($std::ranges::front(self::value_seed))),
-            children: $std::storage::vector_empty(Number),
-            next: -1,
-        };
-        $std::slots::allocate(self::nodes, node)
+            keys: _Chain::empty(decltype($std::ranges::front(key_seed))),
+            values: _Chain::empty(decltype($std::ranges::front(value_seed))),
+            children: _Chain::empty(Scope),
+            next?: link,
+        }
     },
-    retire: fn(self, index: Number) {
-        $std::slots::release(self::nodes, index);
+    node: fn(self, node) {
+        let Page = decltype(BPlusTree::page(self::key_seed, self::value_seed, false));
+        node as Page
+    },
+    new_page: fn(self, leaf: Bool) {
+        self::pages = self::pages + 1;
+        BPlusTree::page(self::key_seed, self::value_seed, leaf)
+    },
+    retire: fn(self, node) {
+        self::pages = self::pages - 1;
     },
     equal: fn(self, left?, right?) {
         not self::order::less(left, right) and not self::order::less(
@@ -1347,17 +1460,15 @@ scope BPlusTree {
         )
     },
     lower: fn(self, node, key?) {
+        let node = BPlusTree::node(self, node);
         let low = 0;
-        let high = $std::storage::vector_size(node::keys);
+        let high = _Chain::size(node::keys);
         loop {
             if low >= high {
                 break;
             };
             let middle = $std::math::floor((low + high) / 2);
-            if self::order::less(
-                $std::storage::vector_get(node::keys, middle),
-                key
-            ) {
+            if self::order::less(_Chain::get(node::keys, middle), key) {
                 low = middle + 1;
             } else {
                 high = middle;
@@ -1366,13 +1477,10 @@ scope BPlusTree {
         low
     },
     child_position: fn(self, node, key?) {
+        let node = BPlusTree::node(self, node);
         let index = BPlusTree::lower(self, node, key);
-        if index < $std::storage::vector_size(node::keys) {
-            if BPlusTree::equal(
-                self,
-                $std::storage::vector_get(node::keys, index),
-                key
-            ) {
+        if index < _Chain::size(node::keys) {
+            if BPlusTree::equal(self, _Chain::get(node::keys, index), key) {
                 index = index + 1;
             };
         };
@@ -1386,31 +1494,34 @@ scope BPlusTree {
                 return current;
             };
             let index = BPlusTree::child_position(self, node, key);
-            $std::storage::vector_push(
+            _Chain::push(
                 path,
                 scope {
                     node: current,
                     index: index
                 }
             );
-            current = $std::storage::vector_get(node::children, index);
+            current = _Chain::get(node::children, index);
         }
     },
     leaf: fn(self, key?) {
-        let path = $std::storage::vector_empty(decltype(scope { node: 0, index: 0 }));
+        let path = _Chain::empty(
+            decltype(
+                scope {
+                    node: self::root,
+                    index: 0
+                }
+            )
+        );
         BPlusTree::descend(self, key, path)
     },
     get: fn(self, key?) {
         let node = BPlusTree::node(self, BPlusTree::leaf(self, key));
         let index = BPlusTree::lower(self, node, key);
-        if index < $std::storage::vector_size(node::keys) {
-            if BPlusTree::equal(
-                self,
-                $std::storage::vector_get(node::keys, index),
-                key
-            ) {
+        if index < _Chain::size(node::keys) {
+            if BPlusTree::equal(self, _Chain::get(node::keys, index), key) {
                 return $std::data::Option::some(
-                    $std::storage::vector_get(node::values, index)
+                    _Chain::get(node::values, index)
                 );
             };
         };
@@ -1425,50 +1536,44 @@ scope BPlusTree {
     is_empty: fn(self) {
         self::count == 0
     },
-    split: fn(self, current: Number) {
+    split: fn(self, current) {
         let left = BPlusTree::node(self, current);
-        let right_index = BPlusTree::allocate(self, left::leaf);
+        let right_index = BPlusTree::new_page(self, left::leaf);
         let right = BPlusTree::node(self, right_index);
         let middle = self::degree;
-        let length = $std::storage::vector_size(left::keys);
-        let separator? = $std::storage::vector_get(left::keys, middle);
+        let length = _Chain::size(left::keys);
+        let separator? = _Chain::get(left::keys, middle);
         let first = if left::leaf {
             middle
         } else {
             middle + 1
         };
         for index in $std::ranges::sequence(first, length, 1) {
-            $std::storage::vector_push(
-                right::keys,
-                $std::storage::vector_get(left::keys, index)
-            );
+            _Chain::push(right::keys, _Chain::get(left::keys, index));
             if left::leaf {
-                $std::storage::vector_push(
-                    right::values,
-                    $std::storage::vector_get(left::values, index)
-                );
+                _Chain::push(right::values, _Chain::get(left::values, index));
             };
         };
         if left::leaf {
             right::next = left::next;
             left::next = right_index;
             for index in $std::ranges::sequence(middle, length, 1) {
-                $std::storage::vector_pop(left::values);
+                _Chain::pop(left::values);
             };
         } else {
-            let children = $std::storage::vector_size(left::children);
+            let children = _Chain::size(left::children);
             for index in $std::ranges::sequence(middle + 1, children, 1) {
-                $std::storage::vector_push(
+                _Chain::push(
                     right::children,
-                    $std::storage::vector_get(left::children, index)
+                    _Chain::get(left::children, index)
                 );
             };
             for index in $std::ranges::sequence(middle + 1, children, 1) {
-                $std::storage::vector_pop(left::children);
+                _Chain::pop(left::children);
             };
         };
         for index in $std::ranges::sequence(middle, length, 1) {
-            $std::storage::vector_pop(left::keys);
+            _Chain::pop(left::keys);
         };
         scope {
             key?: separator,
@@ -1476,62 +1581,57 @@ scope BPlusTree {
         }
     },
     insert: fn(self, key?, value?) {
-        let path = $std::storage::vector_empty(decltype(scope { node: 0, index: 0 }));
+        let path = _Chain::empty(
+            decltype(
+                scope {
+                    node: self::root,
+                    index: 0
+                }
+            )
+        );
         let current = BPlusTree::descend(self, key, path);
         let node = BPlusTree::node(self, current);
         let index = BPlusTree::lower(self, node, key);
-        if index < $std::storage::vector_size(node::keys) {
-            if BPlusTree::equal(
-                self,
-                $std::storage::vector_get(node::keys, index),
-                key
-            ) {
-                $std::storage::vector_set(node::values, index, value);
+        if index < _Chain::size(node::keys) {
+            if BPlusTree::equal(self, _Chain::get(node::keys, index), key) {
+                _Chain::set(node::values, index, value);
                 return false;
             };
         };
-        $std::storage::vector_insert(node::keys, index, key);
-        $std::storage::vector_insert(node::values, index, value);
+        _Chain::insert(node::keys, index, key);
+        _Chain::insert(node::values, index, value);
         self::count = self::count + 1;
         loop {
             let page = BPlusTree::node(self, current);
-            if $std::storage::vector_size(page::keys) <= 2 * self::degree - 1 {
+            if _Chain::size(page::keys) <= 2 * self::degree - 1 {
                 break;
             };
             let split = BPlusTree::split(self, current);
-            if $std::storage::vector_size(path) == 0 {
-                let root = BPlusTree::allocate(self, false);
+            if _Chain::size(path) == 0 {
+                let root = BPlusTree::new_page(self, false);
                 let parent = BPlusTree::node(self, root);
-                $std::storage::vector_push(parent::keys, split::key);
-                $std::storage::vector_push(parent::children, current);
-                $std::storage::vector_push(parent::children, split::right);
+                _Chain::push(parent::keys, split::key);
+                _Chain::push(parent::children, current);
+                _Chain::push(parent::children, split::right);
                 self::root = root;
                 break;
             };
-            let entry = $std::storage::vector_pop(path);
+            let entry = _Chain::pop(path);
             let parent = BPlusTree::node(self, entry::node);
-            $std::storage::vector_insert(
-                parent::keys,
-                entry::index,
-                split::key
-            );
-            $std::storage::vector_insert(
-                parent::children,
-                entry::index + 1,
-                split::right
-            );
+            _Chain::insert(parent::keys, entry::index, split::key);
+            _Chain::insert(parent::children, entry::index + 1, split::right);
             current = entry::node;
         };
         true
     },
     refresh_minimum: fn(self, path, minimum?) {
         loop {
-            if $std::storage::vector_size(path) == 0 {
+            if _Chain::size(path) == 0 {
                 break;
             };
-            let entry = $std::storage::vector_pop(path);
+            let entry = _Chain::pop(path);
             if entry::index > 0 {
-                $std::storage::vector_set(
+                _Chain::set(
                     BPlusTree::node(self, entry::node)::keys,
                     entry::index - 1,
                     minimum
@@ -1542,142 +1642,95 @@ scope BPlusTree {
     },
     borrow_left: fn(self, parent, index: Number, child, sibling) {
         if child::leaf {
-            $std::storage::vector_insert(
-                child::keys,
-                0,
-                $std::storage::vector_pop(sibling::keys)
-            );
-            $std::storage::vector_insert(
-                child::values,
-                0,
-                $std::storage::vector_pop(sibling::values)
-            );
-            $std::storage::vector_set(
-                parent::keys,
-                index - 1,
-                $std::storage::vector_get(child::keys, 0)
-            );
+            _Chain::insert(child::keys, 0, _Chain::pop(sibling::keys));
+            _Chain::insert(child::values, 0, _Chain::pop(sibling::values));
+            _Chain::set(parent::keys, index - 1, _Chain::get(child::keys, 0));
         } else {
-            $std::storage::vector_insert(
+            _Chain::insert(
                 child::keys,
                 0,
-                $std::storage::vector_get(parent::keys, index - 1)
+                _Chain::get(parent::keys, index - 1)
             );
-            $std::storage::vector_insert(
-                child::children,
-                0,
-                $std::storage::vector_pop(sibling::children)
-            );
-            $std::storage::vector_set(
-                parent::keys,
-                index - 1,
-                $std::storage::vector_pop(sibling::keys)
-            );
+            _Chain::insert(child::children, 0, _Chain::pop(sibling::children));
+            _Chain::set(parent::keys, index - 1, _Chain::pop(sibling::keys));
         };
     },
     borrow_right: fn(self, parent, index: Number, child, sibling) {
         if child::leaf {
-            $std::storage::vector_push(
-                child::keys,
-                $std::storage::vector_remove(sibling::keys, 0)
-            );
-            $std::storage::vector_push(
-                child::values,
-                $std::storage::vector_remove(sibling::values, 0)
-            );
-            $std::storage::vector_set(
-                parent::keys,
-                index,
-                $std::storage::vector_get(sibling::keys, 0)
-            );
+            _Chain::push(child::keys, _Chain::remove(sibling::keys, 0));
+            _Chain::push(child::values, _Chain::remove(sibling::values, 0));
+            _Chain::set(parent::keys, index, _Chain::get(sibling::keys, 0));
         } else {
-            $std::storage::vector_push(
-                child::keys,
-                $std::storage::vector_get(parent::keys, index)
-            );
-            $std::storage::vector_push(
-                child::children,
-                $std::storage::vector_remove(sibling::children, 0)
-            );
-            $std::storage::vector_set(
-                parent::keys,
-                index,
-                $std::storage::vector_remove(sibling::keys, 0)
-            );
+            _Chain::push(child::keys, _Chain::get(parent::keys, index));
+            _Chain::push(child::children, _Chain::remove(sibling::children, 0));
+            _Chain::set(parent::keys, index, _Chain::remove(sibling::keys, 0));
         };
     },
     merge: fn(self, parent, index: Number) {
-        let left_index = $std::storage::vector_get(parent::children, index);
-        let right_index = $std::storage::vector_get(
-            parent::children,
-            index + 1
-        );
+        let left_index = _Chain::get(parent::children, index);
+        let right_index = _Chain::get(parent::children, index + 1);
         let left = BPlusTree::node(self, left_index);
         let right = BPlusTree::node(self, right_index);
         if left::leaf {
             left::next = right::next;
         } else {
-            $std::storage::vector_push(
-                left::keys,
-                $std::storage::vector_get(parent::keys, index)
-            );
+            _Chain::push(left::keys, _Chain::get(parent::keys, index));
         };
         let keys = right::keys;
-        for item in $std::ranges::sequence(0, $std::storage::vector_size(keys), 1) {
-            $std::storage::vector_push(left::keys, $std::storage::vector_get(keys, item));
+        for item in $std::ranges::sequence(0, _Chain::size(keys), 1) {
+            _Chain::push(left::keys, _Chain::get(keys, item));
         };
         let values = right::values;
-        for item in $std::ranges::sequence(0, $std::storage::vector_size(values), 1) {
-            $std::storage::vector_push(left::values, $std::storage::vector_get(values, item));
+        for item in $std::ranges::sequence(0, _Chain::size(values), 1) {
+            _Chain::push(left::values, _Chain::get(values, item));
         };
         let children = right::children;
-        for item in $std::ranges::sequence(0, $std::storage::vector_size(children), 1) {
-            $std::storage::vector_push(left::children, $std::storage::vector_get(children, item));
+        for item in $std::ranges::sequence(0, _Chain::size(children), 1) {
+            _Chain::push(left::children, _Chain::get(children, item));
         };
-        $std::storage::vector_remove(parent::keys, index);
-        $std::storage::vector_remove(parent::children, index + 1);
+        _Chain::remove(parent::keys, index);
+        _Chain::remove(parent::children, index + 1);
         BPlusTree::retire(self, right_index);
         left_index
     },
     remove: fn(self, key?) {
-        let path = $std::storage::vector_empty(decltype(scope { node: 0, index: 0 }));
+        let path = _Chain::empty(
+            decltype(
+                scope {
+                    node: self::root,
+                    index: 0
+                }
+            )
+        );
         let current = BPlusTree::descend(self, key, path);
         let leaf = BPlusTree::node(self, current);
         let index = BPlusTree::lower(self, leaf, key);
-        if index == $std::storage::vector_size(leaf::keys) {
+        if index == _Chain::size(leaf::keys) {
             return false;
         };
-        if not BPlusTree::equal(
-            self,
-            $std::storage::vector_get(leaf::keys, index),
-            key
-        ) {
+        if not BPlusTree::equal(self, _Chain::get(leaf::keys, index), key) {
             return false;
         };
-        $std::storage::vector_remove(leaf::keys, index);
-        $std::storage::vector_remove(leaf::values, index);
+        _Chain::remove(leaf::keys, index);
+        _Chain::remove(leaf::values, index);
         self::count = self::count - 1;
-        if current == self::root {
+        if _Chain::size(path) == 0 {
             return true;
         };
         let changed = index == 0;
-        let minimum? = $std::storage::vector_get(leaf::keys, 0);
+        let minimum? = _Chain::get(leaf::keys, 0);
         loop {
-            if $std::storage::vector_size(path) == 0 {
+            if _Chain::size(path) == 0 {
                 break;
             };
-            let entry = $std::storage::vector_pop(path);
+            let entry = _Chain::pop(path);
             let parent = BPlusTree::node(self, entry::node);
             let child = BPlusTree::node(self, current);
             if changed and entry::index > 0 {
-                $std::storage::vector_set(
-                    parent::keys,
-                    entry::index - 1,
-                    minimum
-                );
+                _Chain::set(parent::keys, entry::index - 1, minimum);
                 changed = false;
             };
-            if $std::storage::vector_size(child::keys) >= self::degree - 1 {
+            if _Chain::size(child::keys) >= self::degree - 1 {
                 if changed {
                     BPlusTree::refresh_minimum(self, path, minimum);
                 };
@@ -1686,12 +1739,9 @@ scope BPlusTree {
             if entry::index > 0 {
                 let sibling = BPlusTree::node(
                     self,
-                    $std::storage::vector_get(
-                        parent::children,
-                        entry::index - 1
-                    )
+                    _Chain::get(parent::children, entry::index - 1)
                 );
-                if $std::storage::vector_size(sibling::keys) >= self::degree {
+                if _Chain::size(sibling::keys) >= self::degree {
                     BPlusTree::borrow_left(
                         self,
                         parent,
@@ -1702,15 +1752,12 @@ scope BPlusTree {
                     break;
                 };
             };
-            if entry::index < $std::storage::vector_size(parent::keys) {
+            if entry::index < _Chain::size(parent::keys) {
                 let sibling = BPlusTree::node(
                     self,
-                    $std::storage::vector_get(
-                        parent::children,
-                        entry::index + 1
-                    )
+                    _Chain::get(parent::children, entry::index + 1)
                 );
-                if $std::storage::vector_size(sibling::keys) >= self::degree {
+                if _Chain::size(sibling::keys) >= self::degree {
                     BPlusTree::borrow_right(
                         self,
                         parent,
@@ -1730,9 +1777,9 @@ scope BPlusTree {
             current = entry::node;
         };
         let root = BPlusTree::node(self, self::root);
-        if not root::leaf and $std::storage::vector_size(root::keys) == 0 {
+        if not root::leaf and _Chain::size(root::keys) == 0 {
             let previous = self::root;
-            self::root = $std::storage::vector_get(root::children, 0);
+            self::root = _Chain::get(root::children, 0);
             BPlusTree::retire(self, previous);
         };
         true
@@ -1744,45 +1791,56 @@ scope BPlusTree {
             if node::leaf {
                 return current;
             };
-            current = $std::storage::vector_get(node::children, 0);
+            current = _Chain::get(node::children, 0);
         }
     },
-    collect: fn(self, current: Number, first: Number, output) {
+    collect: fn(self, current, first: Number, output) {
         let page = current;
         let start = first;
         loop {
             let node = BPlusTree::node(self, page);
             for index in $std::ranges::sequence(
                 start,
-                $std::storage::vector_size(node::keys),
+                _Chain::size(node::keys),
                 1
             ) {
-                $std::storage::vector_push(
+                _Chain::push(
                     output,
                     scope {
-                        key?: $std::storage::vector_get(node::keys, index),
-                        value?: $std::storage::vector_get(node::values, index),
+                        key?: _Chain::get(node::keys, index),
+                        value?: _Chain::get(node::values, index),
                     }
                 );
             };
-            if node::next < 0 {
+            let next? = node::next;
+            if next is null {
                 break;
             };
-            page = node::next;
+            page = next;
             start = 0;
         };
     },
-    cursor: fn(self) { $std::ranges::Cursor::begin(BPlusTree::entries(self)) },
+    cursor: fn(self) {
+        $std::ranges::Cursor::begin(BPlusTree::entries(self))
+    },
     entries: fn(self) {
-        let output = $std::storage::vector_empty(
-            decltype($std::ranges::front(entry_seed(self::key_seed, self::value_seed)))
+        let output = _Chain::empty(
+            decltype(
+                $std::ranges::front(
+                    entry_seed(self::key_seed, self::value_seed)
+                )
+            )
         );
         BPlusTree::collect(self, BPlusTree::first_leaf(self), 0, output);
-        $std::storage::vector_take(output)
+        _Chain::take(output)
     },
     range: fn(self, low?, high?) {
-        let output = $std::storage::vector_empty(
-            decltype($std::ranges::front(entry_seed(self::key_seed, self::value_seed)))
+        let output = _Chain::empty(
+            decltype(
+                $std::ranges::front(
+                    entry_seed(self::key_seed, self::value_seed)
+                )
+            )
         );
         if self::order::less(low, high) {
             let page = BPlusTree::leaf(self, low);
@@ -1795,47 +1853,44 @@ scope BPlusTree {
                 let node = BPlusTree::node(self, page);
                 for index in $std::ranges::sequence(
                     start,
-                    $std::storage::vector_size(node::keys),
+                    _Chain::size(node::keys),
                     1
                 ) {
-                    let key? = $std::storage::vector_get(node::keys, index);
+                    let key? = _Chain::get(node::keys, index);
                     if not self::order::less(key, high) {
-                        return $std::storage::vector_take(output);
+                        return _Chain::take(output);
                     };
-                    $std::storage::vector_push(
+                    _Chain::push(
                         output,
                         scope {
                             key?: key,
-                            value?: $std::storage::vector_get(
-                                node::values,
-                                index
-                            ),
+                            value?: _Chain::get(node::values, index),
                         }
                     );
                 };
-                if node::next < 0 {
+                let next? = node::next;
+                if next is null {
                     break;
                 };
-                page = node::next;
+                page = next;
                 start = 0;
             };
         };
-        $std::storage::vector_take(output)
+        _Chain::take(output)
     },
-    minimum: fn(self, current: Number) {
+    minimum: fn(self, current) {
         let page = current;
         loop {
             let node = BPlusTree::node(self, page);
             if node::leaf {
-                return $std::storage::vector_get(node::keys, 0);
+                return _Chain::get(node::keys, 0);
             };
-            page = $std::storage::vector_get(node::children, 0);
+            page = _Chain::get(node::children, 0);
         }
     },
-    validate_walk: fn(self, current: Number, root: Bool, depth: Number, state)
-        -> Null {
+    validate_walk: fn(self, current, root: Bool, depth: Number, state) -> Null {
         let node = BPlusTree::node(self, current);
-        let length = $std::storage::vector_size(node::keys);
+        let length = _Chain::size(node::keys);
         state::nodes = state::nodes + 1;
         if length > 2 * self::degree - 1
             or (not root
@@ -1844,8 +1899,8 @@ scope BPlusTree {
             return;
         };
         if node::leaf {
-            if $std::storage::vector_size(node::children) != 0
-                or $std::storage::vector_size(node::values) != length {
+            if _Chain::size(node::children) != 0
+                or _Chain::size(node::values) != length {
                 state::valid = false;
                 return;
             };
@@ -1856,39 +1911,42 @@ scope BPlusTree {
                     state::valid = false;
                 };
             };
-            if state::previous_leaf >= 0 {
-                if BPlusTree::node(self, state::previous_leaf)::next != current {
+            if state::previous_leaf is not null {
+                if not _same_scope(
+                    BPlusTree::node(self, state::previous_leaf)::next,
+                    current
+                ) {
                     state::valid = false;
                 };
             };
             state::previous_leaf = current;
             let previous = state::previous;
             for index in $std::ranges::sequence(0, length, 1) {
-                let key? = $std::storage::vector_get(node::keys, index);
+                let key? = _Chain::get(node::keys, index);
                 if state::count == 0 {
-                    $std::storage::vector_push(previous, key);
+                    _Chain::push(previous, key);
                 } else {
-                    if not self::order::less($std::storage::vector_get(previous, 0), key) {
+                    if not self::order::less(_Chain::get(previous, 0), key) {
                         state::valid = false;
                     };
-                    $std::storage::vector_set(previous, 0, key);
+                    _Chain::set(previous, 0, key);
                 };
                 state::count = state::count + 1;
             };
         } else {
             if length == 0
-                or $std::storage::vector_size(node::values) != 0
-                or $std::storage::vector_size(node::children) != length + 1 {
+                or _Chain::size(node::values) != 0
+                or _Chain::size(node::children) != length + 1 {
                 state::valid = false;
                 return;
             };
             for index in $std::ranges::sequence(0, length + 1, 1) {
-                let child = $std::storage::vector_get(node::children, index);
+                let child = _Chain::get(node::children, index);
                 BPlusTree::validate_walk(self, child, false, depth + 1, state);
                 if index > 0 {
                     if not BPlusTree::equal(
                         self,
-                        $std::storage::vector_get(node::keys, index - 1),
+                        _Chain::get(node::keys, index - 1),
                         BPlusTree::minimum(self, child)
                     ) {
                         state::valid = false;
@@ -1898,19 +1956,23 @@ scope BPlusTree {
         };
     },
     validate: fn(self) {
+        let link?: Scope = null;
         let state = scope {
             valid: true,
             count: 0,
             depth: -1,
             nodes: 0,
-            previous: $std::storage::vector_empty(decltype($std::ranges::front(self::key_seed))),
-            previous_leaf: -1,
+            previous: _Chain::empty(
+                decltype($std::ranges::front(self::key_seed))
+            ),
+            previous_leaf?: link,
         };
         BPlusTree::validate_walk(self, self::root, true, 0, state);
         state::valid
             and state::count == self::count
-            and BPlusTree::node(self, state::previous_leaf)::next == -1
-            and state::nodes == $std::slots::count(self::nodes)
+            and state::previous_leaf is not null
+            and BPlusTree::node(self, state::previous_leaf)::next is null
+            and state::nodes == self::pages
     },
     height: fn(self) {
         let current = self::root;
@@ -1920,37 +1982,81 @@ scope BPlusTree {
             if node::leaf {
                 return depth;
             };
-            current = $std::storage::vector_get(node::children, 0);
+            current = _Chain::get(node::children, 0);
             depth = depth + 1;
         }
     },
     page_count: fn(self) {
-        $std::slots::count(self::nodes)
+        self::pages
     },
     clear: fn(self) {
         let root = BPlusTree::node(self, self::root);
-        $std::storage::vector_clear(root::keys);
-        $std::storage::vector_clear(root::values);
-        $std::storage::vector_clear(root::children);
+        _Chain::clear(root::keys);
+        _Chain::clear(root::values);
+        _Chain::clear(root::children);
         root::leaf = true;
-        root::next = -1;
-        self::root = $std::slots::reset(self::nodes, root);
+        root::next = null;
+        self::root = root;
+        self::pages = 1;
         self::count = 0;
     },
 };
 
-# The row indices below are private to the arena. The collection only exposes keys.
-fn _set_find(self, key?) -> Number {
-    let arena = self::arena;
-    let index = $std::arena::root(arena);
+fn _set_ref(tree, node) {
+    let Node = decltype(tree::nil);
+    node as Node
+};
+
+fn _set_child(tree, node, left: Bool) {
+    let Node = decltype(tree::nil);
+    let current = node as Node;
+    let child? = if left { current::left } else { current::right };
+    if child is null { current } else { child as Node }
+};
+
+fn _set_parent(tree, node) {
+    let Node = decltype(tree::nil);
+    let current = node as Node;
+    let parent? = current::parent;
+    if parent is null { current } else { parent as Node }
+};
+
+fn _set_key(self, node) {
+    let Item = decltype($std::ranges::front(self::seed));
+    let key? = node::key;
+    if key is null {
+        if $std::meta::accepts(Item, Null) { null }
+        else { $std::ranges::front(self::seed) }
+    } else { key as Item }
+};
+
+fn _set_link(tree, node, left: Bool, child) {
+    let node = _set_ref(tree, node);
+    let child = _set_ref(tree, child);
+    if left {
+        node::left = child;
+    } else {
+        node::right = child;
+    };
+    if not child::nil {
+        child::on_left = left;
+    };
+};
+
+# Links below are ordinary Scope references; tree nodes are logical allocations.
+fn _set_find(self, key?) {
+    let tree = self;
+    let index = _set_ref(tree, tree::root);
     loop {
-        if index == 0 { return 0; };
-        let value? = $std::arena::key(arena, index);
+        if index::nil {
+            return tree::nil;
+        };
+        let value? = _set_key(self, index);
         if self::order::less(key, value) {
-            index = $std::arena::child(arena, index, true);
+            index = _set_child(tree, index, true);
         } else {
             if self::order::less(value, key) {
-                index = $std::arena::child(arena, index, false);
+                index = _set_child(tree, index, false);
             } else {
                 return index;
             };
@@ -1959,133 +2065,149 @@ fn _set_find(self, key?) -> Number {
 };
 
 # Mirroring the direction keeps insertion and removal repair identical.
-fn _set_rotate(arena: Storage, index: Number, left: Bool) {
-    let child = $std::arena::child(arena, index, not left);
-    let middle = $std::arena::child(arena, child, left);
-    let parent = $std::arena::parent(arena, index);
-    $std::arena::set_child(arena, index, not left, middle);
-    if middle != 0 { $std::arena::set_parent(arena, middle, index); };
-    $std::arena::set_parent(arena, child, parent);
-    if parent == 0 {
-        $std::arena::set_root(arena, child);
-    } else {
-        let on_left = index == $std::arena::child(arena, parent, true);
-        $std::arena::set_child(arena, parent, on_left, child);
+fn _set_rotate(tree, index, left: Bool) {
+    let child = _set_child(tree, index, not left);
+    let middle = _set_child(tree, child, left);
+    let parent = _set_parent(tree, index);
+    _set_link(tree, index, not left, middle);
+    if not middle::nil {
+        middle::parent = index;
     };
-    $std::arena::set_child(arena, child, left, index);
-    $std::arena::set_parent(arena, index, child);
+    child::parent = parent;
+    child::on_left = index::on_left;
+    if parent::nil {
+        tree::root = child;
+    } else {
+        let on_left = index::on_left;
+        _set_link(tree, parent, on_left, child);
+    };
+    _set_link(tree, child, left, index);
+    index::parent = child;
 };
 
-fn _set_repair_insert(arena: Storage, inserted: Number) {
+fn _set_repair_insert(tree, inserted) {
     let index = inserted;
     loop {
-        let parent = $std::arena::parent(arena, index);
-        if not $std::arena::red(arena, parent) { break; };
-        let grand = $std::arena::parent(arena, parent);
-        let on_left = parent == $std::arena::child(arena, grand, true);
-        let uncle = $std::arena::child(arena, grand, not on_left);
-        if $std::arena::red(arena, uncle) {
-            $std::arena::set_red(arena, parent, false);
-            $std::arena::set_red(arena, uncle, false);
-            $std::arena::set_red(arena, grand, true);
+        let parent = _set_parent(tree, index);
+        if not parent::red {
+            break;
+        };
+        let grand = _set_parent(tree, parent);
+        let on_left = parent::on_left;
+        let uncle = _set_child(tree, grand, not on_left);
+        if uncle::red {
+            parent::red = false;
+            uncle::red = false;
+            grand::red = true;
             index = grand;
         } else {
-            if index == $std::arena::child(arena, parent, not on_left) {
+            if index::on_left != on_left {
                 index = parent;
-                _set_rotate(arena, index, on_left);
+                _set_rotate(tree, index, on_left);
             };
-            let next_parent = $std::arena::parent(arena, index);
-            let next_grand = $std::arena::parent(arena, next_parent);
-            $std::arena::set_red(arena, next_parent, false);
-            $std::arena::set_red(arena, next_grand, true);
-            _set_rotate(arena, next_grand, not on_left);
+            let next_parent = _set_parent(tree, index);
+            let next_grand = _set_parent(tree, next_parent);
+            next_parent::red = false;
+            next_grand::red = true;
+            _set_rotate(tree, next_grand, not on_left);
         };
     };
-    $std::arena::set_red(arena, $std::arena::root(arena), false);
+    tree::root::red = false;
 };
 
-fn _set_edge(arena: Storage, start: Number, left: Bool) -> Number {
-    let index = start;
+fn _set_edge(tree, start, left: Bool) {
+    let index = _set_ref(tree, start);
     loop {
-        let child = $std::arena::child(arena, index, left);
-        if child == 0 { return index; };
+        let child = _set_child(tree, index, left);
+        if child::nil {
+            return index;
+        };
         index = child;
     }
 };
 
-fn _set_next(arena: Storage, start: Number) -> Number {
-    let right = $std::arena::child(arena, start, false);
-    if right != 0 { return _set_edge(arena, right, true); };
-    let index = start;
-    let parent = $std::arena::parent(arena, start);
+fn _set_next(tree, start) {
+    let right = _set_child(tree, start, false);
+    if not right::nil {
+        return _set_edge(tree, right, true);
+    };
+    let index = _set_ref(tree, start);
+    let parent = _set_parent(tree, start);
     loop {
-        if parent == 0 { return 0; };
-        if index == $std::arena::child(arena, parent, true) { return parent; };
+        if parent::nil {
+            return tree::nil;
+        };
+        if index::on_left {
+            return parent;
+        };
         index = parent;
-        parent = $std::arena::parent(arena, index);
+        parent = _set_parent(tree, index);
     }
 };
 
-fn _set_transplant(arena: Storage, removed: Number, replacement: Number) {
-    let parent = $std::arena::parent(arena, removed);
-    if parent == 0 {
-        $std::arena::set_root(arena, replacement);
+fn _set_transplant(tree, removed, replacement) {
+    let parent = _set_parent(tree, removed);
+    if parent::nil {
+        tree::root = replacement;
     } else {
-        let on_left = removed == $std::arena::child(arena, parent, true);
-        $std::arena::set_child(arena, parent, on_left, replacement);
+        let on_left = removed::on_left;
+        _set_link(tree, parent, on_left, replacement);
     };
-    $std::arena::set_parent(arena, replacement, parent);
+    replacement::parent = parent;
+    replacement::on_left = removed::on_left;
 };
 
-fn _set_repair_remove(arena: Storage, removed: Number) {
+fn _set_repair_remove(tree, removed) {
     let index = removed;
     loop {
-        if index == $std::arena::root(arena) or $std::arena::red(arena, index) {
+        if _set_parent(tree, index)::nil or index::red {
             break;
         };
-        let parent = $std::arena::parent(arena, index);
-        let on_left = index == $std::arena::child(arena, parent, true);
-        let sibling = $std::arena::child(arena, parent, not on_left);
-        if $std::arena::red(arena, sibling) {
-            $std::arena::set_red(arena, sibling, false);
-            $std::arena::set_red(arena, parent, true);
-            _set_rotate(arena, parent, on_left);
-            sibling = $std::arena::child(arena, parent, not on_left);
+        let parent = _set_parent(tree, index);
+        let on_left = index::on_left;
+        let sibling = _set_child(tree, parent, not on_left);
+        if sibling::red {
+            sibling::red = false;
+            parent::red = true;
+            _set_rotate(tree, parent, on_left);
+            sibling = _set_child(tree, parent, not on_left);
         };
-        let near = $std::arena::child(arena, sibling, on_left);
-        let far = $std::arena::child(arena, sibling, not on_left);
-        if not $std::arena::red(arena, near) and not $std::arena::red(arena, far) {
-            $std::arena::set_red(arena, sibling, true);
+        let near = _set_child(tree, sibling, on_left);
+        let far = _set_child(tree, sibling, not on_left);
+        if not near::red and not far::red {
+            sibling::red = true;
             index = parent;
         } else {
-            if not $std::arena::red(arena, far) {
-                $std::arena::set_red(arena, near, false);
-                $std::arena::set_red(arena, sibling, true);
-                _set_rotate(arena, sibling, not on_left);
+            if not far::red {
+                near::red = false;
+                sibling::red = true;
+                _set_rotate(tree, sibling, not on_left);
             };
-            let next_sibling = $std::arena::child(arena, parent, not on_left);
-            $std::arena::set_red(arena, next_sibling, $std::arena::red(arena, parent));
-            $std::arena::set_red(arena, parent, false);
-            let next_far = $std::arena::child(arena, next_sibling, not on_left);
-            $std::arena::set_red(arena, next_far, false);
-            _set_rotate(arena, parent, on_left);
-            index = $std::arena::root(arena);
+            let next_sibling = _set_child(tree, parent, not on_left);
+            next_sibling::red = parent::red;
+            parent::red = false;
+            let next_far = _set_child(tree, next_sibling, not on_left);
+            next_far::red = false;
+            _set_rotate(tree, parent, on_left);
+            index = tree::root;
         };
     };
-    $std::arena::set_red(arena, index, false);
+    index::red = false;
 };
 
-fn _set_bound(self, key?) -> Number {
-    let arena = self::arena;
-    let index = $std::arena::root(arena);
-    let candidate = 0;
+fn _set_bound(self, key?) {
+    let tree = self;
+    let index = _set_ref(tree, tree::root);
+    let candidate = tree::nil;
     loop {
-        if index == 0 { return candidate; };
-        if self::order::less($std::arena::key(arena, index), key) {
-            index = $std::arena::child(arena, index, false);
+        if index::nil {
+            return candidate;
+        };
+        if self::order::less(_set_key(self, index), key) {
+            index = _set_child(tree, index, false);
         } else {
             candidate = index;
-            index = $std::arena::child(arena, index, true);
+            index = _set_child(tree, index, true);
         };
     }
 };
@@ -2097,7 +2219,9 @@ scope Set {
         Set::with_policy(
             initial,
             scope {
-                Self: decltype($std::ranges::front(construction_range(initial))),
+                Self: decltype(
+                    $std::ranges::front(construction_range(initial))
+                ),
                 sample?: null,
                 less: NaturalOrder::less,
             }
@@ -2108,9 +2232,29 @@ scope Set {
     },
     with_policy: fn(initial: Range | Type, order: $std::concepts::StrictOrder) {
         let source = construction_range(initial);
-        let arena = $std::arena::new(decltype($std::ranges::front(source)));
-        let self = scope { arena: arena, order: order };
-        if not (decltype(initial) is Type) {
+        let Item = decltype($std::ranges::front(source));
+        let nil_key?: Item = null;
+        let link?: Scope = null;
+        let nil = scope {
+            key?: nil_key,
+            left?: link,
+            right?: link,
+            parent?: link,
+            red: false,
+            nil: true,
+            on_left: false
+        };
+        nil::left = nil;
+        nil::right = nil;
+        nil::parent = nil;
+        let self = scope {
+            root: nil,
+            nil: nil,
+            count: 0,
+            order: order,
+            seed: $std::ranges::take(source, 0)
+        };
+        if not(decltype(initial) is Type) {
             for value? in $std::ranges::materialize(source) {
                 Set::insert(self, value);
             };
@@ -2118,161 +2262,310 @@ scope Set {
         self
     },
     size: fn(self) -> Number {
-        $std::arena::size(self::arena)
+        self::count
     },
     is_empty: fn(self) -> Bool {
         Set::size(self) == 0
     },
     contains: fn(self, key?) -> Bool {
-        _set_find(self, key) != 0
+        not _set_find(self, key)::nil
     },
     insert: fn(self, key?) -> Bool {
-        let arena = self::arena;
-        let parent = 0;
-        let index = $std::arena::root(arena);
-        let left = false;
+        let Item = decltype($std::ranges::front(self::seed));
+        let typed: Item = key;
+        let tree = self;
+        let parent = tree::nil;
+        let index = _set_ref(tree, tree::root);
+        let direction = false;
         loop {
-            if index == 0 { break; };
-            parent = index;
-            let value? = $std::arena::key(arena, index);
-            if self::order::less(key, value) {
-                left = true;
-            } else {
-                if not self::order::less(value, key) { return false; };
-                left = false;
+            if index::nil {
+                break;
             };
-            index = $std::arena::child(arena, index, left);
+            parent = index;
+            let value? = _set_key(self, index);
+            if self::order::less(key, value) {
+                direction = true;
+            } else {
+                if not self::order::less(value, key) {
+                    return false;
+                };
+                direction = false;
+            };
+            index = _set_child(tree, index, direction);
         };
-        let inserted = $std::arena::allocate(arena, key, parent);
-        if parent == 0 {
-            $std::arena::set_root(arena, inserted);
+        let inserted = scope {
+            key?: typed,
+            left?: tree::nil,
+            right?: tree::nil,
+            parent?: parent,
+            red: true,
+            nil: false,
+            on_left: direction
+        };
+        tree::count = tree::count + 1;
+        if parent::nil {
+            tree::root = inserted;
         } else {
-            $std::arena::set_child(arena, parent, left, inserted);
+            _set_link(tree, parent, direction, inserted);
         };
-        _set_repair_insert(arena, inserted);
+        _set_repair_insert(tree, inserted);
         true
     },
     remove: fn(self, key?) -> Bool {
-        let arena = self::arena;
+        let tree = self;
         let removed = _set_find(self, key);
-        if removed == 0 { return false; };
-        let left = $std::arena::child(arena, removed, true);
-        let right = $std::arena::child(arena, removed, false);
-        let was_red = $std::arena::red(arena, removed);
-        let replacement = 0;
-        if left == 0 {
+        if removed::nil {
+            return false;
+        };
+        let left = _set_child(tree, removed, true);
+        let right = _set_child(tree, removed, false);
+        let was_red = removed::red;
+        let replacement = tree::nil;
+        if left::nil {
             replacement = right;
-            _set_transplant(arena, removed, right);
+            _set_transplant(tree, removed, right);
         } else {
-            if right == 0 {
+            if right::nil {
                 replacement = left;
-                _set_transplant(arena, removed, left);
+                _set_transplant(tree, removed, left);
             } else {
-                let successor = _set_edge(arena, right, true);
-                was_red = $std::arena::red(arena, successor);
-                replacement = $std::arena::child(arena, successor, false);
-                if $std::arena::parent(arena, successor) == removed {
-                    $std::arena::set_parent(arena, replacement, successor);
+                let successor = _set_edge(tree, right, true);
+                was_red = successor::red;
+                replacement = _set_child(tree, successor, false);
+                if _set_child(tree, right, true)::nil {
+                    replacement::parent = successor;
+                    replacement::on_left = false;
                 } else {
-                    _set_transplant(arena, successor, replacement);
-                    $std::arena::set_child(arena, successor, false, right);
-                    $std::arena::set_parent(arena, right, successor);
+                    _set_transplant(tree, successor, replacement);
+                    _set_link(tree, successor, false, right);
+                    right::parent = successor;
                 };
-                _set_transplant(arena, removed, successor);
-                $std::arena::set_child(arena, successor, true, left);
-                $std::arena::set_parent(arena, left, successor);
-                $std::arena::set_red(arena, successor, $std::arena::red(arena, removed));
+                _set_transplant(tree, removed, successor);
+                _set_link(tree, successor, true, left);
+                left::parent = successor;
+                successor::red = removed::red;
             };
         };
-        if not was_red { _set_repair_remove(arena, replacement); };
-        $std::arena::release(arena, removed);
+        if not was_red {
+            _set_repair_remove(tree, replacement);
+        };
+        tree::count = tree::count - 1;
         true
     },
     lower_bound: fn(self, key?) -> $std::concepts::Option? {
-        let arena = self::arena;
+        let tree = self;
         let index = _set_bound(self, key);
-        if index == 0 { null } else { $std::data::Option::some($std::arena::key(arena, index)) }
+        if index::nil {
+            null
+        } else {
+            $std::data::Option::some(_set_key(self, index))
+        }
     },
     get: fn(self, key?) -> $std::concepts::Option? {
-        let arena = self::arena;
+        let tree = self;
         let index = _set_find(self, key);
-        if index == 0 { null } else { $std::data::Option::some($std::arena::key(arena, index)) }
+        if index::nil {
+            null
+        } else {
+            $std::data::Option::some(_set_key(self, index))
+        }
     },
     first: fn(self) -> $std::concepts::Option? {
-        let arena = self::arena;
-        let root = $std::arena::root(arena);
-        if root == 0 { null } else {
-            $std::data::Option::some($std::arena::key(arena, _set_edge(arena, root, true)))
+        let tree = self;
+        let root = tree::root;
+        if root::nil {
+            null
+        } else {
+            $std::data::Option::some(_set_key(self, _set_edge(tree, root, true)))
         }
     },
     last: fn(self) -> $std::concepts::Option? {
-        let arena = self::arena;
-        let root = $std::arena::root(arena);
-        if root == 0 { null } else {
-            $std::data::Option::some($std::arena::key(arena, _set_edge(arena, root, false)))
+        let tree = self;
+        let root = tree::root;
+        if root::nil {
+            null
+        } else {
+            $std::data::Option::some(_set_key(self, _set_edge(tree, root, false)))
         }
     },
     pop_first: fn(self) -> $std::concepts::Option? {
-        let arena = self::arena;
-        let root = $std::arena::root(arena);
-        if root == 0 { return null; };
-        let value? = $std::arena::key(arena, _set_edge(arena, root, true));
+        let tree = self;
+        let root = tree::root;
+        if root::nil {
+            return null;
+        };
+        let value? = _set_key(self, _set_edge(tree, root, true));
         Set::remove(self, value);
         $std::data::Option::some(value)
     },
     pop_last: fn(self) -> $std::concepts::Option? {
-        let arena = self::arena;
-        let root = $std::arena::root(arena);
-        if root == 0 { return null; };
-        let value? = $std::arena::key(arena, _set_edge(arena, root, false));
+        let tree = self;
+        let root = tree::root;
+        if root::nil {
+            return null;
+        };
+        let value? = _set_key(self, _set_edge(tree, root, false));
         Set::remove(self, value);
         $std::data::Option::some(value)
     },
     extend: fn(self, values: Range) -> Number {
         let added = 0;
         for value? in values {
-            if Set::insert(self, value) { added = added + 1; };
+            if Set::insert(self, value) {
+                added = added + 1;
+            };
         };
         added
     },
-    cursor: fn(self) { $std::ranges::Cursor::begin(Set::snapshot(self)) },
+    cursor: fn(self) {
+        $std::ranges::Cursor::begin(Set::snapshot(self))
+    },
     snapshot: fn(self) {
-        let arena = self::arena;
-        let output = $std::storage::vector_empty(decltype($std::arena::key(arena, 0)));
-        let index = _set_edge(arena, $std::arena::root(arena), true);
+        let tree = self;
+        let output = _Chain::empty(decltype($std::ranges::front(self::seed)));
+        let index = _set_edge(tree, tree::root, true);
         loop {
-            if index == 0 { break; };
-            $std::storage::vector_push(output, $std::arena::key(arena, index));
-            index = _set_next(arena, index);
+            if index::nil {
+                break;
+            };
+            _Chain::push(output, _set_key(self, index));
+            index = _set_next(tree, index);
         };
-        $std::storage::vector_take(output)
+        _Chain::take(output)
     },
     range: fn(self, lower?, upper?) {
-        let arena = self::arena;
-        let output = $std::storage::vector_empty(decltype($std::arena::key(arena, 0)));
+        let tree = self;
+        let output = _Chain::empty(decltype($std::ranges::front(self::seed)));
         let index = _set_bound(self, lower);
         loop {
-            if index == 0 { break; };
-            let value? = $std::arena::key(arena, index);
-            if not self::order::less(value, upper) { break; };
-            $std::storage::vector_push(output, value);
-            index = _set_next(arena, index);
+            if index::nil {
+                break;
+            };
+            let value? = _set_key(self, index);
+            if not self::order::less(value, upper) {
+                break;
+            };
+            _Chain::push(output, value);
+            index = _set_next(tree, index);
         };
-        $std::storage::vector_take(output)
+        _Chain::take(output)
     },
     clear: fn(self) {
-        $std::arena::clear(self::arena);
+        self::root = self::nil;
+        self::nil::parent = self::nil;
+        self::count = 0;
     },
 };
 
-# Array-backed binary heap. The selected strict order defines priority: less(a,
-# b) means a is removed before b. Equal-priority elements are not stable.
+# A complete binary tree retains the array heap's breadth-first positions without
+# a native vector carrier. Sifts follow ordinary parent/child references.
+fn _heap_ref(self, node) {
+    let Node = decltype(self::nil);
+    node as Node
+};
+
+fn _heap_link(self, node, left: Bool) {
+    let Node = decltype(self::nil);
+    let current = node as Node;
+    let child? = if left { current::left } else { current::right };
+    if child is null { current } else { child as Node }
+};
+
+fn _heap_parent(self, node) {
+    let Node = decltype(self::nil);
+    let current = node as Node;
+    let parent? = current::parent;
+    if parent is null { current } else { parent as Node }
+};
+
+fn _heap_value(self, node) {
+    let Item = decltype($std::ranges::front(self::seed));
+    let Node = decltype(self::nil);
+    let current = node as Node;
+    let value? = current::value;
+    if value is null {
+        if $std::meta::accepts(Item, Null) { null }
+        else { $std::ranges::front(self::seed) }
+    } else { value as Item }
+};
+
+fn _heap_node(self, index: Number) {
+    if index < 0 or index >= self::count or index != $std::math::trunc(index) {
+        $std::ranges::at(self::seed, index);
+        return self::nil;
+    };
+    let position = index + 1;
+    let bit = 1;
+    loop {
+        if bit * 2 > position {
+            break;
+        };
+        bit = bit * 2;
+    };
+    let node = self::root;
+    loop {
+        if bit == 1 {
+            return _heap_ref(self, node);
+        };
+        bit = bit / 2;
+        if $std::math::floor(position/bit) % 2 == 0 {
+            node = _heap_link(self, node, true);
+        } else {
+            node = _heap_link(self, node, false);
+        };
+    }
+};
+
+fn _heap_sift_up(self, start) {
+    let node = _heap_ref(self, start);
+    let value? = _heap_value(self, node);
+    loop {
+        let parent = _heap_parent(self, node);
+        if parent::nil {
+            break;
+        };
+        let above? = _heap_value(self, parent);
+        if not self::order::less(value, above) {
+            break;
+        };
+        node::value = above;
+        node = parent;
+    };
+    node::value = value;
+};
+
+fn _heap_sift_down(self, start) {
+    let node = _heap_ref(self, start);
+    let value? = _heap_value(self, node);
+    loop {
+        let child = _heap_link(self, node, true);
+        if child::nil {
+            break;
+        };
+        let right = _heap_link(self, node, false);
+        if not right::nil {
+            if self::order::less(_heap_value(self, right), _heap_value(self, child)) {
+                child = right;
+            };
+        };
+        let below? = _heap_value(self, child);
+        if not self::order::less(below, value) {
+            break;
+        };
+        node::value = below;
+        node = child;
+    };
+    node::value = value;
+};
+
 scope Heap {
     new: fn(initial: Range | Type) {
         Heap::with_policy(
             initial,
             scope {
-                Self: decltype($std::ranges::front(construction_range(initial))),
+                Self: decltype(
+                    $std::ranges::front(construction_range(initial))
+                ),
                 sample?: null,
                 less: NaturalOrder::less,
             }
@@ -2282,79 +2575,157 @@ scope Heap {
         Heap::new($std::ranges::take([prototype], 0))
     },
     with_policy: fn(initial: Range | Type, order: $std::concepts::StrictOrder) {
-        let self = scope {
-            items: if decltype(initial) is Type {
-                $std::storage::vector_empty(initial)
-            } else {
-                $std::storage::vector_new(initial)
-            },
-            order: order,
+        let source = construction_range(initial);
+        let Item = decltype($std::ranges::front(source));
+        let nil_value?: Item = null;
+        let link?: Scope = null;
+        let nil = scope {
+            value?: nil_value,
+            left?: link,
+            right?: link,
+            parent?: link,
+            nil: true
         };
-        if not (decltype(initial) is Type) {
-            let index = $std::math::floor(Heap::size(self) / 2);
+        nil::left = nil;
+        nil::right = nil;
+        nil::parent = nil;
+        let self = scope {
+            root: nil,
+            nil: nil,
+            count: 0,
+            order: order,
+            seed: $std::ranges::take(source, 0)
+        };
+        if not(decltype(initial) is Type) {
+            let parents = _Chain::empty(Scope);
+            let rows = _Chain::empty(Scope);
+            for value? in $std::ranges::materialize(source) {
+                let typed: Item = value;
+                let node = scope {
+                    value?: typed,
+                    left?: nil,
+                    right?: nil,
+                    parent?: nil,
+                    nil: false
+                };
+                if self::count == 0 {
+                    self::root = node;
+                } else {
+                    let parent = _heap_ref(self, _Chain::get(parents, 0));
+                    node::parent = parent;
+                    if _heap_link(self, parent, true)::nil {
+                        parent::left = node;
+                    } else {
+                        parent::right = node;
+                        _Chain::remove(parents, 0);
+                    };
+                };
+                _Chain::push(parents, node);
+                _Chain::push(rows, node);
+                self::count = self::count + 1;
+            };
             loop {
-                if index == 0 {
+                if _Chain::size(rows) == 0 {
                     break;
                 };
-                index = index - 1;
-                Heap::sift_down(self, index);
+                let node = _Chain::pop(rows);
+                _heap_sift_down(self, node);
             };
         };
         self
     },
     size: fn(self) {
-        $std::storage::vector_size(self::items)
+        self::count
     },
     is_empty: fn(self) {
-        Heap::size(self) == 0
+        self::count == 0
     },
     clear: fn(self) {
-        $std::storage::vector_clear(self::items)
+        self::root = self::nil;
+        self::count = 0;
     },
     peek: fn(self) {
-        if Heap::is_empty(self) {
+        if self::count == 0 {
             null
         } else {
-            $std::storage::vector_get(self::items, 0)
+            _heap_value(self, self::root)
         }
     },
     push: fn(self, value?) {
-        let index = $std::storage::vector_push(self::items, value);
-        Heap::sift_up(self, index);
+        let Item = decltype($std::ranges::front(self::seed));
+        let typed: Item = value;
+        let index = self::count;
+        let parent = if index == 0 {
+            self::nil
+        } else {
+            _heap_node(self, $std::math::floor((index - 1) / 2))
+        };
+        let node = scope {
+            value?: typed,
+            left?: self::nil,
+            right?: self::nil,
+            parent?: parent,
+            nil: false
+        };
+        if index == 0 {
+            self::root = node;
+        } else {
+            if index % 2 == 1 {
+                parent::left = node;
+            } else {
+                parent::right = node;
+            };
+        };
+        self::count = index + 1;
+        _heap_sift_up(self, node);
     },
     pop: fn(self) {
-        if Heap::is_empty(self) {
-            return null;
-        };
-        Heap::remove_top(self)
+        if self::count == 0 {
+            null
+        } else {
+            Heap::remove_top(self)
+        }
     },
     remove_top: fn(self) {
-        let first? = $std::storage::vector_get(self::items, 0);
-        let last? = $std::storage::vector_pop(self::items);
-        if not Heap::is_empty(self) {
-            $std::storage::vector_set(self::items, 0, last);
-            Heap::sift_down(self, 0);
+        let first? = _heap_value(self, self::root);
+        let index = self::count - 1;
+        let tail = _heap_node(self, index);
+        let last? = _heap_value(self, tail);
+        let parent = _heap_parent(self, tail);
+        if not parent::nil {
+            if index % 2 == 1 {
+                parent::left = self::nil;
+            } else {
+                parent::right = self::nil;
+            };
+        };
+        self::count = index;
+        if index == 0 {
+            self::root = self::nil;
+        } else {
+            self::root::value = last;
+            _heap_sift_down(self, self::root);
         };
         first
     },
     replace_top: fn(self, value?) {
-        if Heap::is_empty(self) {
+        if self::count == 0 {
             Heap::push(self, value);
             return null;
         };
-        let first? = $std::storage::vector_get(self::items, 0);
-        $std::storage::vector_set(self::items, 0, value);
-        Heap::sift_down(self, 0);
+        let first? = _heap_value(self, self::root);
+        self::root::value = value;
+        _heap_sift_down(self, self::root);
         first
     },
     push_pop: fn(self, value?) {
-        if Heap::is_empty(self) {
+        if self::count == 0 {
             return value;
         };
-        let first? = $std::storage::vector_get(self::items, 0);
+        let first? = _heap_value(self, self::root);
         if self::order::less(first, value) {
-            $std::storage::vector_set(self::items, 0, value);
-            Heap::sift_down(self, 0);
+            self::root::value = value;
+            _heap_sift_down(self, self::root);
             first
         } else {
             value
@@ -2365,82 +2736,88 @@ scope Heap {
             Heap::push(self, value);
         };
     },
-    cursor: fn(self) { $std::ranges::Cursor::begin(Heap::snapshot(self)) },
+    cursor: fn(self) {
+        $std::ranges::Cursor::begin(Heap::snapshot(self))
+    },
     snapshot: fn(self) {
-        $std::storage::vector_snapshot(self::items)
+        let output = _Chain::empty(decltype($std::ranges::front(self::seed)));
+        let pending = _Chain::empty(Scope);
+        if self::count > 0 {
+            _Chain::push(pending, self::root);
+        };
+        loop {
+            if _Chain::size(pending) == 0 {
+                break;
+            };
+            let node = _Chain::remove(pending, 0);
+            _Chain::push(output, _heap_value(self, node));
+            if not _heap_link(self, node, true)::nil {
+                _Chain::push(pending, _heap_link(self, node, true));
+            };
+            if not _heap_link(self, node, false)::nil {
+                _Chain::push(pending, _heap_link(self, node, false));
+            };
+        };
+        _Chain::take(output)
     },
     drain: fn(self) {
-        let result = $std::storage::vector_empty_like(self::items);
+        let output = _Chain::empty(decltype($std::ranges::front(self::seed)));
         loop {
-            if Heap::is_empty(self) {
+            if self::count == 0 {
                 break;
             };
-            $std::storage::vector_push(result, Heap::remove_top(self));
+            _Chain::push(output, Heap::remove_top(self));
         };
-        $std::storage::vector_take(result)
+        _Chain::take(output)
     },
     sorted: fn(self) {
-        let copy = Heap::with_policy(Heap::snapshot(self), self::order);
-        Heap::drain(copy)
+        Heap::drain(Heap::with_policy(Heap::snapshot(self), self::order))
     },
     validate: fn(self) -> Bool {
-        let count = Heap::size(self);
-        let index = 1;
+        let pending = _Chain::empty(Scope);
+        if self::count > 0 {
+            _Chain::push(pending, self::root);
+        };
+        let count = 0;
+        let gap = false;
         loop {
-            if index >= count {
+            if _Chain::size(pending) == 0 {
                 break;
             };
-            let parent = $std::math::floor((index - 1) / 2);
-            let value? = $std::storage::vector_get(self::items, index);
-            let above? = $std::storage::vector_get(self::items, parent);
-            if self::order::less(value, above) {
+            let node = _Chain::remove(pending, 0);
+            count = count + 1;
+            if count > self::count {
                 return false;
             };
-            index = index + 1;
+            if _heap_link(self, node, true)::nil {
+                gap = true;
+            } else {
+                if gap or not _same_scope(_heap_link(self, node, true)::parent, node) {
+                    return false;
+                };
+                if self::order::less(_heap_value(self, _heap_link(self, node, true)), _heap_value(self, node)) {
+                    return false;
+                };
+                _Chain::push(pending, _heap_link(self, node, true));
+            };
+            if _heap_link(self, node, false)::nil {
+                gap = true;
+            } else {
+                if gap or not _same_scope(_heap_link(self, node, false)::parent, node) {
+                    return false;
+                };
+                if self::order::less(_heap_value(self, _heap_link(self, node, false)), _heap_value(self, node)) {
+                    return false;
+                };
+                _Chain::push(pending, _heap_link(self, node, false));
+            };
         };
-        true
+        count == self::count
     },
     sift_up: fn(self, index: Number) {
-        let value? = $std::storage::vector_get(self::items, index);
-        loop {
-            if index == 0 {
-                break;
-            };
-            let parent = $std::math::floor((index - 1) / 2);
-            let above? = $std::storage::vector_get(self::items, parent);
-            if not self::order::less(value, above) {
-                break;
-            };
-            $std::storage::vector_set(self::items, index, above);
-            index = parent;
-        };
-        $std::storage::vector_set(self::items, index, value);
+        _heap_sift_up(self, _heap_node(self, index));
     },
     sift_down: fn(self, index: Number) {
-        let count = Heap::size(self);
-        let value? = $std::storage::vector_get(self::items, index);
-        loop {
-            let child = index * 2 + 1;
-            if child >= count {
-                break;
-            };
-            if child + 1 < count {
-                let left? = $std::storage::vector_get(self::items, child);
-                let right? = $std::storage::vector_get(
-                    self::items,
-                    child + 1
-                );
-                if self::order::less(right, left) {
-                    child = child + 1;
-                }
-            };
-            let below? = $std::storage::vector_get(self::items, child);
-            if not self::order::less(below, value) {
-                break;
-            };
-            $std::storage::vector_set(self::items, index, below);
-            index = child;
-        };
-        $std::storage::vector_set(self::items, index, value);
+        _heap_sift_down(self, _heap_node(self, index));
     },
 };

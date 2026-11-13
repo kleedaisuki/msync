@@ -1,4 +1,14 @@
-# Resource scheduling contracts
+# Historical resource scheduling probes
+
+This directory preserves the retired stack-backend graph/lease whiteboxes; it
+is not an active native executable. `packaging/state_contracts.py` maps the old
+`scheduler-retirement` selection to NativeExecution and `path-namespace` to
+NativeExecution, NativePreparation and ContextBinding. Native transfer tests and
+the real CLI companions below retain byte, failure, metadata and namespace
+oracles. Historical affine visit/admission counts are not native guarantees.
+See [active acceptance catalog](../../docs/design/native-model-v090.md#active-acceptance-catalog).
+
+The remaining text describes the historical mechanism and its original controls.
 
 The default entry copies real sibling files and checks affine prefix-index
 visits, actual payloads, RAW/WAR order and selected native observations.

@@ -5,7 +5,8 @@ namespace Msync.Compiler.Syntax;
 
 internal enum TokenKind { End, Atom, Number, String, Regex, LeftBrace, RightBrace, LeftParen, RightParen, LeftBracket, RightBracket, Comma, Semicolon, Colon, Select, Equal, Arrow, FatArrow, Question, Dollar, Slash, Pipe, At, EqualEqual, NotEqual, Less, LessEqual, Greater, GreaterEqual }
 internal readonly record struct Token(TokenKind Kind, string Text, SourceSpan Span);
-internal sealed class Lexer(string source, string sourceName, CancellationToken cancellationToken = default)
+internal sealed class Lexer(string source, string sourceName, CancellationToken cancellationToken = default,
+    Action<EditorLexeme>? observe = null)
 {
     private int position;
     private readonly List<Token> tokens = [];
@@ -27,7 +28,7 @@ internal sealed class Lexer(string source, string sourceName, CancellationToken 
             cancellationToken.ThrowIfCancellationRequested();
             if (char.IsWhiteSpace(source[position])) { position++; continue; }
             if (source[position] == '#' && (position == 0 || char.IsWhiteSpace(source[position - 1])))
-            { while (position < source.Length && source[position] is not ('\r' or '\n')) position++; continue; }
+            { ReadComment(position); continue; }
             int start = position;
             bool numericStart = char.IsAsciiDigit(source[start]) || source[start] == '.' &&
                 start + 1 < source.Length && char.IsAsciiDigit(source[start + 1]);
@@ -48,7 +49,7 @@ internal sealed class Lexer(string source, string sourceName, CancellationToken 
             if (c == '<' && IsRegexStart()) { ReadRegex(start); continue; }
             if (c == '/' && position < source.Length && source[position] == '/' &&
                 (start == 0 || char.IsWhiteSpace(source[start - 1])))
-            { while (position < source.Length && source[position] is not ('\r' or '\n')) position++; continue; }
+            { ReadComment(start); continue; }
             TokenKind? kind = c switch
             {
                 '{' => TokenKind.LeftBrace,
@@ -83,7 +84,27 @@ internal sealed class Lexer(string source, string sourceName, CancellationToken 
         if (position == source.Length || source[position] != c) return false;
         position++; return true;
     }
-    private void Add(TokenKind kind, string text, int start) => tokens.Add(new(kind, text, new(start, position - start)));
+    private void Add(TokenKind kind, string text, int start)
+    {
+        SourceSpan span = new(start, position - start);
+        tokens.Add(new(kind, text, span));
+        observe?.Invoke(new(kind switch
+        {
+            TokenKind.Atom => EditorLexemeKind.Atom,
+            TokenKind.Number => EditorLexemeKind.Number,
+            TokenKind.String => EditorLexemeKind.String,
+            TokenKind.Regex => EditorLexemeKind.Regex,
+            TokenKind.LeftBrace or TokenKind.RightBrace or TokenKind.LeftParen or TokenKind.RightParen
+                or TokenKind.LeftBracket or TokenKind.RightBracket or TokenKind.Comma or TokenKind.Semicolon
+                => EditorLexemeKind.Delimiter,
+            _ => EditorLexemeKind.Operator
+        }, span));
+    }
+    private void ReadComment(int start)
+    {
+        while (position < source.Length && source[position] is not ('\r' or '\n')) position++;
+        observe?.Invoke(new(EditorLexemeKind.Comment, new(start, position - start)));
+    }
     private void ReadString(int start)
     {
         StringBuilder value = new();
@@ -128,6 +149,8 @@ internal sealed class Lexer(string source, string sourceName, CancellationToken 
     }
     private SyntaxException Unterminated(string message, int start, string help)
     {
+        observe?.Invoke(new(source[start] == '"' ? EditorLexemeKind.String : EditorLexemeKind.Regex,
+            new(start, source.Length - start), Complete: false));
         SyntaxException error = new(message, source, sourceName, new(start, source.Length - start), isIncomplete: true);
         error.Diagnostic = error.Diagnostic with { Code = "E0104", Label = "literal starts here but never closes", Help = help };
         return error;

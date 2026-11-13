@@ -1,7 +1,8 @@
-using Msync.Optimization;
 using Msync.Compiler;
 using Msync.Core;
 using Msync.Runtime;
+using Msync.Runtime.Native;
+using Msync.Core.Native;
 
 int checks = 0;
 void Check(bool condition, string reason)
@@ -9,12 +10,12 @@ void Check(bool condition, string reason)
     checks++;
     if (!condition) throw new InvalidOperationException(reason);
 }
-Value Query(string operation, params TypeRef[] types) => MetaTypes.Evaluate(operation, types);
-bool Predicate(string operation, params TypeRef[] types) => ((BoolValue)Query(operation, types)).Data;
-TypeRef Transform(string operation, params TypeRef[] types) => ((TypeValue)Query(operation, types)).Data;
-RuntimeContext context = new(new(WorkingDirectory: Environment.CurrentDirectory));
-async Task<Value> Native(string operation, params TypeRef[] types) => await NativeRegistry.InvokeAsync("meta." + operation,
-    types.Select(type => (Value)new TypeValue(type)).ToArray(), context,
+NativeValue Query(string operation, params TypeRef[] types) => MetaTypes.Evaluate(operation, types);
+bool Predicate(string operation, params TypeRef[] types) => Query(operation, types).AsBool();
+TypeRef Transform(string operation, params TypeRef[] types) => Query(operation, types).AsType();
+NativeRuntimeContext context = new(new(WorkingDirectory: Environment.CurrentDirectory));
+async Task<NativeValue> Native(string operation, params TypeRef[] types) => await NativeBuiltins.InvokeAsync("meta." + operation,
+    types.Select(NativeValue.FromType).ToArray(), context,
     (_, _, _) => throw new InvalidOperationException("Type traits must not invoke callbacks"));
 
 var categories = new (string Name, TypeRef Type)[]
@@ -26,12 +27,12 @@ var categories = new (string Name, TypeRef Type)[]
 };
 foreach (var (name, type) in categories)
 {
-    Check(await Native("is_same", type, type) is BoolValue { Data: true }, "native Type equality " + name);
+    Check((await Native("is_same", type, type)).AsBool(), "native Type equality " + name);
     foreach (var (otherName, otherType) in categories)
         Check(Predicate("is_" + name, otherType) == (name == otherName), "category " + name + "/" + otherName);
 }
-Check(await Native("is_convertible", TypeRef.Number, TypeRef.String) is BoolValue { Data: false }, "runtime conversion relation");
-Check(await Native("range_of", TypeRef.String) is TypeValue { Data.Element: var nativeElement } && nativeElement == TypeRef.String,
+Check(!(await Native("is_convertible", TypeRef.Number, TypeRef.String)).AsBool(), "runtime conversion relation");
+Check((await Native("range_of", TypeRef.String)).AsType().Element == TypeRef.String,
     "runtime type transformation");
 Check(!Predicate("is_number", TypeRef.Number.WithNull), "nullable Number is not the Number category");
 Check(Predicate("is_scalar", new TypeRef(TypeKind.Path | TypeKind.String)), "a text union contains only scalars");
@@ -75,14 +76,14 @@ Check(!Predicate("is_convertible", new TypeRef(TypeKind.Range | TypeKind.Path, T
 Check(Predicate("is_castable", TypeRef.String, TypeRef.Number), "String has a legal explicit Number conversion");
 Check(!Predicate("is_castable", TypeRef.String, TypeRef.Process), "String cannot be cast to Process");
 Check(Predicate("is_castable", new TypeRef(TypeKind.Range, TypeRef.Path), new TypeRef(TypeKind.Range, TypeRef.String)), "explicit Range element conversion");
-Check(Query("element_type", TypeRef.String) is NullValue, "non-Range element_type");
+Check(Query("element_type", TypeRef.String).Kind == NativeKind.Null, "non-Range element_type");
 Check(Transform("element_type", new TypeRef(TypeKind.Range)) == TypeRef.Any, "unspecified Range element is Any");
 Check(Transform("element_type", new TypeRef(TypeKind.Range | TypeKind.Null, TypeRef.String)) == TypeRef.String, "nullable Range element");
-Check(((NumberValue)Query("range_rank", new TypeRef(TypeKind.Range, new TypeRef(TypeKind.Range, TypeRef.Number)))).Data == 2, "nested Range rank");
-Check(((NumberValue)Query("range_rank", TypeRef.String)).Data == 0, "non-Range rank");
-var alternatives = (RangeValue)Query("alternatives", new TypeRef(TypeKind.Null | TypeKind.Path | TypeKind.Range, TypeRef.Number));
+Check(Query("range_rank", new TypeRef(TypeKind.Range, new TypeRef(TypeKind.Range, TypeRef.Number))).AsNumber() == 2, "nested Range rank");
+Check(Query("range_rank", TypeRef.String).AsNumber() == 0, "non-Range rank");
+var alternatives = Query("alternatives", new TypeRef(TypeKind.Null | TypeKind.Path | TypeKind.Range, TypeRef.Number)).AsRange();
 List<TypeRef> actualAlternatives = [];
-await foreach (Value value in alternatives.Items) actualAlternatives.Add(((TypeValue)value).Data);
+await foreach (NativeValue value in alternatives.Items) actualAlternatives.Add(value.AsType());
 Check(actualAlternatives.SequenceEqual(new[] { TypeRef.Null, TypeRef.Path, new TypeRef(TypeKind.Range, TypeRef.Number) }), "alternatives retain Range schema and stable order");
 
 const string source = """
@@ -112,23 +113,24 @@ const string source = """
     """;
 foreach (int level in new[] { 0, 2, 3 })
 {
-    Module module = Compiler.Compile(source, "meta-type-values.msync", level);
+    NativeProgram module = Compiler.CompileNative(source, "meta-type-values.msync", level);
     using MemoryStream bytes = new();
-    Artifact.Write(module, bytes); bytes.Position = 0;
-    Module relocatable = Artifact.Read(bytes);
-    Module bound = Binding.Bind(relocatable, new(Environment.CurrentDirectory, Environment.CurrentDirectory));
+    NativeArtifact.Write(module, bytes); bytes.Position = 0;
+    NativeProgram relocatable = NativeArtifact.Read(bytes);
+    NativeProgram bound = relocatable with { Context = new(Environment.CurrentDirectory, Environment.CurrentDirectory), Stage = ArtifactStage.Executable };
     using MemoryStream executableBytes = new();
-    Artifact.Write(bound, executableBytes); executableBytes.Position = 0;
-    Module executable = Artifact.Read(executableBytes);
+    NativeArtifact.Write(bound, executableBytes); executableBytes.Position = 0;
+    NativeProgram executable = NativeArtifact.Read(executableBytes);
     Check(executable.Stage == ArtifactStage.Executable, "serialized executable stage");
-    foreach (Module image in new[] { module, relocatable, executable })
+    foreach (NativeProgram image in new[] { module, relocatable, executable })
     {
-        Value value = await Interpreter.ExecuteAsync(image);
-        Check(value is RangeValue, "trait program returns its observations");
+        await using NativeInterpreter interpreter = new(image);
+        NativeValue value = await interpreter.ExecuteAsync();
+        Check(value.Kind == NativeKind.Range, "trait program returns its observations");
         int count = 0;
-        await foreach (Value observation in ((RangeValue)value).Items)
+        await foreach (NativeValue observation in value.AsRange().Items)
         {
-            Check(observation is BoolValue { Data: true }, "trait program false observation " + count + " at O" + level);
+            Check(observation.Kind == NativeKind.Bool && observation.AsBool(), "trait program false observation " + count + " at O" + level);
             count++;
         }
         Check(count == 29, "trait program observation count");
@@ -136,7 +138,7 @@ foreach (int level in new[] { 0, 2, 3 })
 }
 try
 {
-    Compiler.Compile("$std::meta::is_number(3)", "meta-invalid.msync");
+    Compiler.CompileNative("$std::meta::is_number(3)", "meta-invalid.msync");
     throw new InvalidOperationException("A value was accepted where a Type is required");
 }
 catch (CompileException error) { Check(error.Diagnostic.Code == "E0203", "non-Type diagnostic"); }

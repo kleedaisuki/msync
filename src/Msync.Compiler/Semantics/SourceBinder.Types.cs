@@ -26,7 +26,6 @@ internal sealed partial class SourceBinder
         {
             result = hir.Type(new HirType(TypeRef.Scope, Concept: concept));
         }
-        else if (nativeModule is not null && syntax.Name == "Storage") result = hir.Type(TypeRef.Storage);
         else if (LanguageTypes.TryResolve(syntax.Name, out var builtin))
         {
             if (syntax.Name == "Range" && syntax.Arguments.Count == 1)
@@ -53,6 +52,13 @@ internal sealed partial class SourceBinder
             if (!concepts.Concepts.TryGetValue(name, out int declared))
                 throw Error($"Unknown concept '{syntax.Name}'.", syntax.Span, "E0202");
             result = hir.Type(new HirType(TypeRef.Scope, Concept: declared));
+        }
+        else if (context.Values.TryGetValue(syntax.Name, out var witness))
+        {
+            result = OpenType(syntax.Name);
+            HirLocationId location = Capture(witness, syntax.Name);
+            program.TypeWitnesses.Add(hir.Types[result.Value].TypeParameter, new(location, Range(syntax.Span), syntax.Name));
+            Observe(syntax.Span, location);
         }
         else throw Error($"Unknown type '{syntax.Name}'.", syntax.Span, "E0202");
 

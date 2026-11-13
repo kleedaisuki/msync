@@ -1,5 +1,5 @@
 using System.Text.Json.Nodes;
-using Msync.Core;
+using Msync.Core.Native;
 
 namespace Msync.Cli;
 
@@ -13,7 +13,7 @@ internal sealed record ArtifactDisassemblyResult(string Text, int FormatVersion,
         {
             ["schemaVersion"] = 1,
             ["formatVersion"] = FormatVersion,
-            ["languageVersion"] = Artifact.LanguageVersion,
+            ["languageVersion"] = NativeArtifact.LanguageVersion,
             ["stage"] = Stage,
             ["optimizationLevel"] = OptimizationLevel,
             ["text"] = Text,

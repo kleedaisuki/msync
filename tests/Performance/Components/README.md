@@ -1,72 +1,64 @@
 # Native component profile
 
-This probe calls the production parser, compiler, optimizer, artifact codec,
-contextual lowering and interpreter APIs directly. It has no alternate evaluator
-and does not execute filesystem observations or transfers. The two value-oriented
-workloads finish by returning an actual Path; the expected value is checked
-before measuring VM execution.
+This diagnostic probe calls the canonical parser, typed HIR analysis/lowering,
+native optimizer, native artifact codec, contextual preparation and native VM.
+There is no historical evaluator or generic-object fallback. It is not a default
+application benchmark or evidence of a general VM speedup.
 
 ```sh
 dotnet publish tests/Performance/Components/Msync.Components.csproj \
-  -c Release -r linux-x64 \
-  --artifacts-path .temp/performance-v080/current/components/build \
-  -o .temp/performance-v080/current/components/native
-.temp/performance-v080/current/components/native/msync-components \
-  --sizes 1,64,256,1024 --samples 31 --warmups 3 \
-  --output .temp/performance-v080/current/components/baseline.json
+  -c Release -p:RuntimeIdentifier=linux-x64 --artifacts-path artifacts/component-probe-build \
+  -o artifacts/component-probe
+artifacts/component-probe/msync-components \
+  --sizes 1,64,256 --samples 31 --warmups 3 \
+  --output .temp/component-probe/results.json
 ```
 
-On Windows, publish for `win-x64` and invoke `msync-components.exe`; the APIs and
-fixtures are otherwise identical. Use `--stages parse,artifact_decode,vm_no_io`
-to select only the affected components after a change. Coordinate with other
-benchmark owners before building or collecting samples.
+Use `--stages parse,analyze,lower_native,artifact_decode,vm_no_io` for a changed
+question. The default source shapes remain transfers (never executed), ordinary
+Path-returning calls, and calls selected through lexical namespaces. Result Path
+oracles run before measurement. No transfer writes occur during preparation;
+contextual metadata queries may occur and are part of that stage's cost.
 
-Three shapes distinguish different costs:
+| Stage | Actual boundary |
+| --- | --- |
+| `parse` | Source to syntax document |
+| `analyze` | Source to immutable semantic HIR, including parsing/binding |
+| `lower_native` | Already analyzed HIR to unoptimized native IR |
+| `compile_o0` / `compile_o1` | Complete source compilation at that level |
+| `optimize_o1` | Native portable optimizer on the same O0 input |
+| `artifact_validate` | Native portable contract validation |
+| `artifact_encode` / `artifact_decode` | Production codec including its validation boundary |
+| `prepare_native` | Context-selected computation and native I/O planning |
+| `runtime_initialize_dispose` | Native execution image construction and idle disposal, no guest execution |
+| `vm_no_io` | Fresh interpreter construction, execution and cleanup of the prepared program |
 
-| Shape | Constants and locals | Measured VM work |
-| --- | --- | --- |
-| `transfers` | Unique source/target constants, no local bindings | Not executed |
-| `generic_values` | One typed function, N retained Path bindings | Call and join paths |
-| `scope_values` | Same function selected through a lexical Scope | Member lookup, call, join |
+Retired `form_blocks` and `execution_lower` stages are rejected, not assigned
+fabricated timings. `Blocks` is JSON null: the native register program has no
+old materialized block table. Shapes report actual slots, instructions, native
+opcodes and encoded bytes. Cumulative stages overlap; neither sum them nor
+subtract route medians to invent disjoint phase costs.
 
-`compile_o0` includes parsing, inference/lowering and basic-block construction;
-`compile_o1` additionally includes the normal optimizer. There is no separate
-public inference/lowering entrypoint, so those phases are not assigned invented
-individual timings. `artifact_encode` includes the production validation and
-in-memory serialization; `artifact_decode` includes validation and block
-construction. `artifact_validate` and `form_blocks` isolate those mechanisms.
-`bind_and_lower` includes contextual binding and execution lowering, while
-`execution_lower` operates on an already-bound module. Cumulative stages are not
-summed as though they were disjoint.
+Calibration chooses 1–256 operations per sample, targeting roughly 2 ms. Reports
+retain all wall-clock samples, empirical p50/p95, separately measured managed
+allocation traffic, and timed GC counts. These are not RSS, retained memory or
+CPU time. Setup/oracles/serialization are outside timed batches. Build/image
+hashes and compiler/Core/runtime informational versions are recorded separately
+from the checkout revision. Managed runs validate contracts, not production AOT
+latency. Guest tier policy comes from the explicit `MSYNC_JIT` environment; use
+matched policy and frozen complete payloads for comparisons.
 
-One calibration invocation selects 1–256 operations per timed sample, targeting
-about 2 ms. Three untimed batches warm the static APIs; 31 sample values supply
-nearest-rank p50/p95 and retain every observation. Allocation bytes/op are
-cumulative managed allocation traffic measured in a separate batch, not RSS or
-live heap size. Gen0/1/2 collection counts cover the timed interval. The final
-result is retained to prevent eliminating returned values. Fixture generation,
-artifact setup, source identity, expected-result checks and report serialization
-occur outside timed intervals.
-
-Reports include the native image SHA-256 and the actual compiler/Core/runtime
-assembly informational versions, including their build commits. The checkout
-commit at execution is recorded separately because an independently frozen image
-can run after the shared checkout has advanced. A managed build may check probe
-correctness, but its timings are not production-performance evidence.
-
-`msync-components --check-interner` runs the focused constant-index contract
-without timing: first-insertion order, duplicate identity, rollback of a failed
-submission, source-free artifact execution, and retained runtime values.
-
-`--check-snapshots` exercises closure capture, lexical shadowing, recursion,
-Scopes, deferred Range arguments and null refinement after `.mso`/`.mexe`
-serialization. `--emit-capture` writes one deterministic relocatable capture
-artifact to binary stdout. The driver checks both contracts and exact artifact
-bytes from two independent native processes:
+`--check-interner` checks per-image first-insertion order and duplicate identity,
+failed-vs-clean submission constant-table equality, and actual persistent values.
+Constant IDs are image-local: native session projection may discard unused old
+constants, so cross-generation prefix indices are not a language contract.
+`--check-snapshots` preserves source-free closure/capture/shadow/recursion/Scope/
+lazy Range/null-refinement oracles. `--emit-capture` emits one deterministic
+native artifact. `verify.py` checks both and fresh-process byte identity while
+hashing adjacent executable dependencies as well as the apphost.
 
 ```sh
-python3 tests/Performance/Components/verify.py \
-  .temp/performance-v080/current/components/native/msync-components
+python3 tests/Performance/Components/verify.py artifacts/component-probe/msync-components
 ```
 
 ## Typed editor analysis
@@ -96,18 +88,17 @@ and warm-up policy identical (the follow-up study used
 ## Staged optimizer cost and residual program
 
 `--optimizer-pipeline` measures the optimizer itself as well as its output. The
-same probe source can be built against two product revisions; no new production
-API or alternate evaluator is needed. All default workloads are valid in the
-previous C# baseline: straight-line generic calls, nested Scope factories with
-captured methods, finite literal loops, and repeated branch expressions. The
-optional `mutable_scopes` workload uses the new mutable-field contract and is
-candidate-only, not a fabricated old-language comparison.
+same probe source can be built against native-ABI-compatible revisions; no
+alternate evaluator is needed. Source shapes are straight-line generic calls, nested Scope factories with
+captured methods, finite literal loops, and repeated branch expressions. The optional `mutable_scopes` workload exercises nullable field updates. Old
+object-backend probe binaries remain historical experiments; these native API
+sources do not promise to build against their deleted assembly contract.
 
-The explicit `call_dag` case builds valid direct-call bytecode:
+The explicit `call_dag` case builds valid typed native register IR:
 `f0(v) = v + 1`, `fN(v) = fN-1(v) + fN-1(v)`, entry `fN(2)`.
 Here `--sizes` denotes depths (use `4 8 12`, not ordinary binding counts).
 There is no invented source-compilation timing for this case. Its optimize,
-bind and actual execution phases expose expansion before DCE in linked/object
+preparation and actual execution phases expose expansion before DCE in native
 programs; the expected Number is independently `3 * 2^depth`. This complements
 source functions that capture their callee and therefore exercise a different
 inlining path. A large final-IR reduction does not justify exponential optimizer
@@ -116,23 +107,24 @@ work or retained dead local slots.
 The explicit `transfers` case compiles ordinary straight-line file transfers,
 without declaring unused values. Use `--case transfers --sizes 128 1024` in the
 paired driver to inspect the dominant I/O-script compiler workload. It measures
-compilation, raw optimization and binding only, and validates both typed codec
+compilation, raw optimization and native preparation only, and validates both typed codec
 roundtrips; it does not execute fixture paths that do not exist. Actual transfer
 bytes and publication behavior belong to the separate CLI/scheduler journeys,
 not a fabricated zero-I/O VM timing for this case.
 
-The explicit `finite_sum` case activates O2/O3 compile-time evaluation rather
-than measuring an unused loop: a zero-argument function adds 1 through N in order,
+The explicit `finite_sum` case consumes the result of its loop rather
+than measuring unused work: a zero-argument function adds 1 through N in order,
 and the caller selects the expected Path only if its result is `N * (N + 1) / 2`.
-Use `--cases finite_sum --sizes 200 --levels 1,2,3` on one final native image.
-The value must be consumed; a wrong sum takes the independently rejected Path.
+Use `--cases finite_sum --sizes 200 --levels 1,2,3` on one native image.
+Whether a particular pipeline evaluates or retains the loop is observed in its
+IR, not presumed by this case. The value must be consumed; a wrong sum takes the independently rejected Path.
 This is a new mutable-language workload, so the paired driver exposes it only
 as `--candidate-case finite_sum` when an older product control is also present.
 
 ### Cross-block memory and compact layouts
 
-Three explicit workloads compare the same production source against the accepted
-0.8 baseline; they do not require a new benchmark-only runtime API:
+Three explicit workloads compare the same production source across compatible
+native revisions; they do not require a benchmark-only runtime API:
 
 | Case | Consumed work and interpretation |
 | --- | --- |
@@ -184,19 +176,22 @@ python3 tests/Performance/optimizer_pipeline.py \
 The paired driver alternates AB/BA fresh processes. Inside each process the
 probe warms each API independently and calibrates repeated operations to about
 2 ms per sample. It reports complete source compilation, optimization of the
-same O0 module, contextual binding, and actual relocatable/executable VM runs at
+same O0 native program, native contextual preparation, and actual relocatable/executable VM runs at
 each O0–O3 level. These stages overlap in responsibilities and must not be summed
 as disjoint phase times. p50/p95 use linearly interpolated empirical quantiles;
 all observations, allocations and timed GC counts are retained.
+The optimizer report retains its `bind` JSON stage key for existing consumers;
+it now measures `NativePreparation.Prepare`, not the retired object binding API.
+`run_relocatable` includes contextual preparation; `run_executable` does not.
 
-Both stages record constants, functions, locals, blocks, instructions, opcode
+Both stages record constants, functions, slots, unavailable legacy block count, instructions, opcode
 counts and serialized byte sizes. Every level is executed before measurement,
 including `.mso`/`.mexe` codec roundtrips, and checked against an independent
 expected Path suffix (or the direct-call Number oracle). Scope instances are
 recreated by the production runtime, not cached by the probe. Fixture writing,
 verification and serialization for
-shape reporting are outside timed intervals. The run phases contain no user
-filesystem I/O, isolating interpreter and graph work; the actual CLI and copy
+shape reporting are outside timed intervals. The run phases perform no transfers;
+`memory_branches` includes its documented metadata query. Actual CLI and copy
 journeys remain necessary for user-visible latency and I/O conclusions.
 
 Use `--case`, `--sizes` and `--levels` to test a scaling hypothesis without

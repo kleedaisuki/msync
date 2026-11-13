@@ -208,7 +208,7 @@ jobs:
               subprocess.run(['python', 'tests/Performance/journeys.py', '--previous-aot', previous, '--aot', str(binary), '--samples', '9', '--warmups', '2', '--case', 'check-batch', '--case', 'check-values', '--case', 'values-object', '--case', 'values-bound', '--statements', str(size), '--files', '1', '--bytes', '4096', '--output', f'.temp/platform-results/language-upgrade/latency-{size}.json'], check=True)
       - name: Exercise changed frozen-context paths on Windows
         if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.upgrade == 'true' && (inputs.upgrade_phases == '' || contains(format(',{0},', inputs.upgrade_phases), ',language,') || contains(format(',{0},', inputs.upgrade_phases), ',path-display,')) && inputs.reuse_run == '' && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
-        run: dotnet run --project tests/ContextBinding/Msync.ContextBinding.Tests.csproj -c Release -p:RestoreLockedMode=true -p:BuildInParallel=false
+        run: dotnet run --project tests/ContextBinding/Msync.ContextBinding.Tests.csproj -c Release --artifacts-path artifacts/context-binding-contract -p:RestoreLockedMode=true -p:BuildInParallel=false
       - name: Exercise changed terminal, compiler insight and formatter user journeys
         if: inputs.polish_only && (steps.polish.outputs.portable == 'true' || steps.polish.outputs.editor == 'true' || steps.polish.outputs.editing == 'true' || steps.polish.outputs.identifiers == 'true' || steps.polish.outputs.state == 'true' || steps.polish.outputs.closing == 'true' || steps.polish.outputs.linear == 'true' || steps.polish.outputs.memory == 'true' || steps.polish.outputs.artifacts == 'true' || steps.polish.outputs.artifact_protocol == 'true' || steps.polish.outputs.call_order == 'true' || steps.polish.outputs.scheduler == 'true' || steps.polish.outputs.stdlib == 'true' || steps.polish.outputs.stdlib_docs == 'true' || steps.polish.outputs.completion == 'true' || (steps.polish.outputs.authentication == 'true' && runner.os == 'Linux')) && (steps.package.outcome == 'success' || steps.reused.outcome == 'success')
         shell: python
@@ -483,7 +483,7 @@ jobs:
           import subprocess
           from pathlib import Path
           probe: Path = Path('artifacts/components') / ('msync-components.exe' if os.name == 'nt' else 'msync-components')
-          subprocess.run([str(probe), '--root', str(Path.cwd()), '--output', '.temp/platform-results/components.json', '--sizes', '128,1024', '--samples', '9', '--warmups', '2', '--stages', 'parse,compile_o1,artifact_validate,artifact_decode,bind_and_lower,vm_no_io'], check=True)
+          subprocess.run([str(probe), '--root', str(Path.cwd()), '--output', '.temp/platform-results/components.json', '--sizes', '128,1024', '--samples', '9', '--warmups', '2', '--stages', 'parse,analyze,lower_native,compile_o1,artifact_validate,artifact_decode,prepare_native,runtime_initialize_dispose,vm_no_io'], check=True)
       - name: Isolate cold synchronous versus asynchronous source reads
         if: ${{ !cancelled() && steps.components.outcome == 'success' }}
         shell: python

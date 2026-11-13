@@ -1,0 +1,351 @@
+using System.Runtime.CompilerServices;
+using Msync.Core;
+using Msync.Core.Native;
+using NativePathValue = Msync.Core.Native.NativePath;
+
+namespace Msync.Runtime.Native;
+
+public static partial class NativeBuiltins
+{
+    private static async ValueTask<NativeValue> FileSystemAsync(string operation, IReadOnlyList<NativeValue> args, NativeRuntimeContext context, CancellationToken token, NativeEffect effect)
+    {
+        if (operation == "temp_directory_path") return NativeValue.FromPath(new(Path.GetTempPath(), context.WorkingDirectory));
+        if (operation == "current_path") return NativeValue.FromPath(new(context.WorkingDirectory, context.WorkingDirectory));
+        if (operation == "status_known") return Bool(Text(args[0]) != "none");
+        NativePathValue path = context.AsPath(args[0]);
+        if (effect == NativeEffect.Pure)
+        {
+            NativeValue? lexical = LexicalOperation(operation, args, path, context);
+            if (lexical is { } value) return value;
+        }
+        if (operation is "copy" or "copy_file") return Bool(await NativeHostIO.TransferAsync(operation == "copy_file" ? NativeValue.FromPath(context.AsPath(args[0])) : args[0], context.AsPath(args[1]), context, token));
+        if (path.Connection?.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl)
+            return await RemoteFileSystemAsync(operation, args, path, context, token);
+        string local = context.LocalPath(path);
+        if (operation is "directory_iterator" or "recursive_directory_iterator")
+            return NativeValue.FromRange(new NativeRange(EnumerateDirectory(path, local, operation.StartsWith("recursive", StringComparison.Ordinal), token), TypeRef.Path));
+        return LocalFileSystem(operation, args, path, local, context);
+    }
+
+    private static NativeValue? LexicalOperation(string name, IReadOnlyList<NativeValue> args, NativePathValue path, NativeRuntimeContext context)
+    {
+        switch (name)
+        {
+            case "filename": return NativeValue.FromPath(MaterializeLexicalComponent(path, NativePathComponent.Filename, OperatingSystem.IsWindows()));
+            case "stem": return NativeValue.FromPath(MaterializeLexicalComponent(path, NativePathComponent.Stem, OperatingSystem.IsWindows()));
+            case "extension": return NativeValue.FromPath(MaterializeLexicalComponent(path, NativePathComponent.Extension, OperatingSystem.IsWindows()));
+        }
+        bool windows = LocalWindows(path);
+        bool projected = path.Connection is null && windows;
+        NativePath value = new(path.Raw, windows, projected ? '/' : null);
+        bool binaryText = name is "concat" or "append" or "replace_filename" or "replace_extension";
+        string? rawArgument = binaryText ? args[1].Kind == NativeKind.Path ? args[1].AsPath().Raw : Text(args[1]) : null;
+        string? nativeArgument = projected && binaryText ? Text(args[1]) : rawArgument;
+        string? text = LexicalText(name, value, rawArgument);
+        if (text is not null) return NativeValue.FromPath(path.WithRaw(text, projected ? LexicalText(name, new(path.NativeText, true), nativeArgument) : null));
+        if (name is "lexically_relative" or "lexically_proximate")
+        {
+            NativePathValue basis = context.AsPath(args[1]);
+            string relative = path.Connection == basis.Connection ? value.RelativeTo(new NativePath(basis.Raw, value.Windows)) : "";
+            string? nativeRelative = projected && path.Connection == basis.Connection ? new NativePath(path.NativeText, true).RelativeTo(new NativePath(basis.NativeText, true)) : null;
+            bool original = name == "lexically_proximate" && relative.Length == 0;
+            return NativeValue.FromPath(original ? path : path.WithRaw(relative, nativeRelative));
+        }
+        if (name == "components") return NativeValue.FromRange(NativeRange.Snapshot(projected
+            ? value.Components().Zip(new NativePath(path.NativeText, true).Components(), (raw, local) => NativeValue.FromPath(path.WithRaw(raw, local)))
+            : value.Components().Select(component => NativeValue.FromPath(path.WithRaw(component))), TypeRef.Path));
+        if (name is "string" or "native" or "generic_string")
+            return NativeValue.FromString(name == "generic_string" && value.Windows ? path.Raw.Replace('\\', '/') : name == "generic_string" ? path.Raw : path.NativeText);
+        bool? result = name switch
+        {
+            "has_root_name" => !value.RootNameSpan.IsEmpty,
+            "has_root_directory" => value.RootDirectory,
+            "has_root_path" => value.RootDirectory || !value.RootNameSpan.IsEmpty,
+            "has_relative_path" => !value.RelativeSpan.IsEmpty,
+            "has_parent_path" => value.Parent.Length > 0,
+            "has_filename" => !value.FilenameSpan.IsEmpty,
+            "has_stem" => !value.StemSpan.IsEmpty,
+            "has_extension" => !value.ExtensionSpan.IsEmpty,
+            "is_absolute" => value.IsAbsolute,
+            "is_relative" => !value.IsAbsolute,
+            "path_empty" => path.Raw.Length == 0,
+            _ => null
+        };
+        return result is bool answer ? Bool(answer) : (NativeValue?)null;
+    }
+
+    private static string? LexicalText(string name, NativePath value, string? argument) => name switch
+    {
+        "root_name" => value.RootName,
+        "root_directory" => value.RootDirectory ? value.Separator.ToString() : "",
+        "root_path" => value.Root,
+        "relative_path" => value.Relative,
+        "parent_path" => value.Parent,
+        "lexically_normal" => value.Normal(),
+        "remove_filename" => value.RemoveFilename,
+        "make_preferred" => value.Preferred,
+        "concat" => value.Source + argument,
+        "append" => value.Append(argument!),
+        "replace_filename" => new NativePath(value.RemoveFilename, value.Windows, value.Separator).Append(argument!),
+        "replace_extension" => ReplaceExtension(value, argument!),
+        _ => null
+    };
+
+    private static string ReplaceExtension(NativePath path, string extension)
+    {
+        var prefix = path.Source.AsSpan(0, path.Source.Length - path.ExtensionSpan.Length);
+        return extension.Length == 0 || extension[0] == '.' ? string.Concat(prefix, extension)
+            : string.Concat(prefix, ".", extension);
+    }
+
+    private static NativeValue LocalFileSystem(string name, IReadOnlyList<NativeValue> args, NativePathValue path, string local, NativeRuntimeContext context)
+    {
+        if (name == "exists") return Bool(Status(local, false) != "not_found");
+        if (name is "status" or "symlink_status") return NativeValue.FromString(Status(local, name == "symlink_status"));
+        if (name == "is_other") return Bool(Status(local, false) is not ("regular" or "directory" or "symlink" or "not_found"));
+        if (name.StartsWith("is_", StringComparison.Ordinal) && name is not ("is_empty" or "is_readonly"))
+            return Bool(Status(local, name == "is_symlink") == (name switch { "is_regular_file" => "regular", "is_block_file" => "block", "is_character_file" => "character", _ => name[3..] }));
+        if (name == "absolute") return NativeValue.FromPath(path.WithRaw(local) with { WorkingDirectory = context.WorkingDirectory });
+        if (name is "canonical" or "weakly_canonical")
+            return NativeValue.FromPath(path.WithRaw(Canonical(local, name == "canonical")) with { WorkingDirectory = context.WorkingDirectory });
+        if (name is "relative" or "proximate")
+        {
+            string first = Canonical(local, false), second = Canonical(context.LocalPath(args[1]), false);
+            return NativeValue.FromPath(path.WithRaw(Path.GetRelativePath(second, first)));
+        }
+        if (name == "read_symlink") return NativeValue.FromPath(path.WithRaw(new FileInfo(local).LinkTarget ?? new DirectoryInfo(local).LinkTarget ?? throw new IOException($"'{local}' is not a symbolic link")));
+        if (name == "is_empty")
+        {
+            string kind = Status(local, false);
+            return kind switch
+            {
+                "directory" => Bool(!Directory.EnumerateFileSystemEntries(local).Any()),
+                "regular" => Bool(new FileInfo(local).Length == 0),
+                _ => throw new IOException($"fs.is_empty requires an existing regular file or directory: '{local}' ({kind})")
+            };
+        }
+        if (name == "permissions") return NativeValue.FromRange(NativeRange.Snapshot(Permissions(local).Select(NativeValue.FromString), TypeRef.String));
+        if (name == "is_readonly") return Bool(OperatingSystem.IsWindows() ? (File.GetAttributes(local) & FileAttributes.ReadOnly) != 0 : (File.GetUnixFileMode(local) & (UnixFileMode.UserWrite | UnixFileMode.GroupWrite | UnixFileMode.OtherWrite)) == 0);
+        if (name == "set_readonly")
+        {
+            bool readOnly = Boolean(args[1]);
+            if (OperatingSystem.IsWindows())
+            {
+                FileAttributes attributes = File.GetAttributes(local);
+                File.SetAttributes(local, readOnly ? attributes | FileAttributes.ReadOnly : attributes & ~FileAttributes.ReadOnly);
+            }
+            else
+            {
+                UnixFileMode mode = File.GetUnixFileMode(local);
+                UnixFileMode writes = UnixFileMode.UserWrite | UnixFileMode.GroupWrite | UnixFileMode.OtherWrite;
+                File.SetUnixFileMode(local, readOnly ? mode & ~writes : mode | writes);
+            }
+            return NativeValue.Null;
+        }
+        if (name == "set_permissions") { SetPermissions(local, Text(args[1])); return NativeValue.Null; }
+        if (name == "touch")
+        {
+            DateTime timestamp = DateTime.UtcNow;
+            if (Directory.Exists(local))
+            {
+                Directory.SetLastAccessTimeUtc(local, timestamp);
+                Directory.SetLastWriteTimeUtc(local, timestamp);
+            }
+            else if (File.Exists(local))
+            {
+                File.SetLastAccessTimeUtc(local, timestamp);
+                File.SetLastWriteTimeUtc(local, timestamp);
+            }
+            else
+            {
+                using var file = File.OpenHandle(local, FileMode.OpenOrCreate, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+                File.SetLastAccessTimeUtc(file, timestamp);
+                File.SetLastWriteTimeUtc(file, timestamp);
+            }
+            return NativeValue.Null;
+        }
+        if (name == "equivalent") return Bool(NativeFileIdentity.Equivalent(local, context.LocalPath(args[1])));
+        if (name is "create_directory" or "create_directories")
+        {
+            bool exists = Directory.Exists(local);
+            if (name == "create_directory" && Path.GetDirectoryName(local) is string parent && !Directory.Exists(parent))
+                throw new DirectoryNotFoundException($"Parent directory '{parent}' does not exist");
+            Directory.CreateDirectory(local);
+            return Bool(!exists);
+        }
+        if (name is "remove" or "remove_all" or "delete")
+        {
+            FileAttributes? attributes = Attributes(local);
+            if (attributes is null) return name == "delete" ? NativeValue.Null : NativeValue.False;
+            bool directory = (attributes.Value & FileAttributes.Directory) != 0 && !NativeFileMetadata.IsLink(local, attributes.Value);
+            if (name == "delete" && directory) throw new IOException($"fs.delete does not recursively remove directory '{local}'; use fs.remove_all");
+            if ((attributes.Value & FileAttributes.Directory) != 0) Directory.Delete(local, name == "remove_all" && directory); else File.Delete(local);
+            return name == "delete" ? NativeValue.Null : NativeValue.True;
+        }
+        if (name == "remove_directory")
+        {
+            FileAttributes? attributes = Attributes(local);
+            if (attributes is null) return NativeValue.False;
+            if ((attributes.Value & FileAttributes.Directory) == 0 || NativeFileMetadata.IsLink(local, attributes.Value))
+                throw new IOException($"rmdir requires a directory, not a file or symbolic link: '{local}'.");
+            Directory.Delete(local);
+            return NativeValue.True;
+        }
+        string destination = args.Count > 1 ? context.LocalPath(args[1]) : "";
+        switch (name)
+        {
+            case "rename":
+                if (Directory.Exists(local) && !NativeFileMetadata.IsLink(local, File.GetAttributes(local))) Directory.Move(local, destination);
+                else File.Move(local, destination, true);
+                return NativeValue.Null;
+            case "create_hard_link": NativeFileIdentity.CreateHardLink(destination, local); return NativeValue.Null;
+            case "create_symlink": File.CreateSymbolicLink(destination, path.NativeText); return NativeValue.Null;
+            case "create_directory_symlink": Directory.CreateSymbolicLink(destination, path.NativeText); return NativeValue.Null;
+            case "copy_symlink":
+                string target = new FileInfo(local).LinkTarget ?? new DirectoryInfo(local).LinkTarget ?? throw new IOException($"'{local}' is not a symbolic link");
+                File.CreateSymbolicLink(destination, target); return NativeValue.Null;
+            default: throw new MsyncException($"Unknown filesystem native '{name}'");
+        }
+    }
+
+    private static FileAttributes? Attributes(string path)
+    {
+        try { return File.GetAttributes(path); }
+        catch (FileNotFoundException) { return null; }
+        catch (DirectoryNotFoundException) { return null; }
+    }
+
+    private static string Status(string path, bool noFollow)
+    {
+        if (!OperatingSystem.IsWindows()) return NativeFileIdentity.Kind(path, noFollow);
+        FileAttributes? attributes = Attributes(path);
+        if (attributes is null) return "not_found";
+        bool link = NativeFileMetadata.IsLink(path, attributes.Value);
+        if (noFollow && link) return "symlink";
+        if (!noFollow && link && File.ResolveLinkTarget(path, true)?.Exists == false) return "not_found";
+        if ((attributes.Value & FileAttributes.Directory) != 0) return "directory";
+        return "regular";
+    }
+
+    private static string Canonical(string local, bool required)
+    {
+        string root = Path.GetPathRoot(local)!;
+        string current = root;
+        foreach (string component in local[root.Length..].Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Combine(current, component);
+            FileAttributes? attributes = Attributes(current);
+            if (attributes is null) { if (required) throw new FileNotFoundException($"Cannot canonicalize missing path '{current}'", current); continue; }
+            if (!NativeFileMetadata.IsLink(current, attributes.Value)) continue;
+            FileSystemInfo info = (attributes.Value & FileAttributes.Directory) != 0 ? new DirectoryInfo(current) : new FileInfo(current);
+            current = info.ResolveLinkTarget(true)?.FullName ?? current;
+        }
+        return Path.GetFullPath(current);
+    }
+
+    private static IEnumerable<string> Permissions(string local)
+    {
+        if (OperatingSystem.IsWindows()) return (File.GetAttributes(local) & FileAttributes.ReadOnly) != 0 ? ["owner_read", "group_read", "others_read"] : ["owner_read", "owner_write", "group_read", "others_read"];
+        UnixFileMode mode = File.GetUnixFileMode(local);
+        return PermissionBits.Where(pair => (mode & pair.Value) != 0).Select(pair => pair.Key);
+    }
+
+    private static readonly IReadOnlyDictionary<string, UnixFileMode> PermissionBits = new Dictionary<string, UnixFileMode>(StringComparer.Ordinal)
+    {
+        ["owner_read"] = UnixFileMode.UserRead,
+        ["owner_write"] = UnixFileMode.UserWrite,
+        ["owner_exec"] = UnixFileMode.UserExecute,
+        ["group_read"] = UnixFileMode.GroupRead,
+        ["group_write"] = UnixFileMode.GroupWrite,
+        ["group_exec"] = UnixFileMode.GroupExecute,
+        ["others_read"] = UnixFileMode.OtherRead,
+        ["others_write"] = UnixFileMode.OtherWrite,
+        ["others_exec"] = UnixFileMode.OtherExecute,
+        ["set_uid"] = UnixFileMode.SetUser,
+        ["set_gid"] = UnixFileMode.SetGroup,
+        ["sticky_bit"] = UnixFileMode.StickyBit
+    };
+
+    private static void SetPermissions(string local, string flags)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            bool write = (PermissionMode(flags) & 0x92) != 0;
+            FileAttributes attributes = File.GetAttributes(local);
+            File.SetAttributes(local, write ? attributes & ~FileAttributes.ReadOnly : attributes | FileAttributes.ReadOnly);
+            return;
+        }
+        File.SetUnixFileMode(local, (UnixFileMode)PermissionMode(flags));
+    }
+
+    private static int PermissionMode(string flags)
+    {
+        string octal = flags.StartsWith("0o", StringComparison.Ordinal) ? flags[2..] : flags;
+        if (octal.Length > 0 && octal.All(character => character is >= '0' and <= '7'))
+        {
+            int parsed = Convert.ToInt32(octal, 8);
+            return parsed <= 0xfff ? parsed : throw new MsyncException($"Permission mode outside filesystem flag range: '{flags}'");
+        }
+        int mode = 0;
+        foreach (string flag in flags.Split([' ', '|', ','], StringSplitOptions.RemoveEmptyEntries))
+            mode |= flag switch
+            {
+                "none" => 0,
+                "owner_all" => 0x1c0,
+                "group_all" => 0x38,
+                "others_all" => 7,
+                "all" => 0x1ff,
+                _ => PermissionBits.TryGetValue(flag, out UnixFileMode bit) ? (int)bit : throw new MsyncException($"Unknown permission flag '{flag}'")
+            };
+        return mode;
+    }
+
+    private static async IAsyncEnumerable<NativeValue> EnumerateDirectory(NativePathValue path, string local, bool recursive,
+        [EnumeratorCancellation] CancellationToken token)
+    {
+        string[] entries = Directory.GetFileSystemEntries(local);
+        Array.Sort(entries, TextSemantics.Ordinal);
+        bool windows = LocalWindows(path);
+        bool projected = path.Connection is null && windows;
+        NativePath rawParent = new(path.Raw, windows, projected ? '/' : null);
+        NativePath localParent = projected ? new(path.NativeText, true) : default;
+        foreach (string entry in entries)
+        {
+            token.ThrowIfCancellationRequested();
+            var name = Path.GetFileName(entry.AsSpan());
+            string raw = rawParent.Append(name);
+            NativePathValue child = path.WithRaw(raw, projected ? localParent.Append(name) : null);
+            yield return NativeValue.FromPath(child);
+            FileAttributes attributes = File.GetAttributes(entry);
+            if (!recursive || (attributes & FileAttributes.Directory) == 0 || NativeFileMetadata.IsLink(entry, attributes)) continue;
+            await foreach (NativeValue value in EnumerateDirectory(child, entry, true, token)) yield return value;
+        }
+    }
+    internal static NativePathValue MaterializeLexicalComponent(NativePathValue path, NativePathComponent component, bool windowsHost)
+    {
+        bool windows = LocalWindows(path, windowsHost);
+        string raw = new NativePath(path.Raw, windows).MaterializeComponent(component);
+        string? local = null;
+        if (windows && path.Connection is null && path.LocalSpelling is { } spelling)
+        {
+            var projection = new NativePath(spelling, true).BorrowComponent(component);
+            if (!projection.SequenceEqual(raw)) local = projection.ToString();
+        }
+        return path.WithRaw(raw, local);
+    }
+
+    internal static NativePathValue MaterializeLexicalComponent(string text, NativePathComponent component, NativeRuntimeContext context, bool windowsHost) =>
+        new(new NativePath(text, windowsHost).MaterializeComponent(component), context.WorkingDirectory, HomeDirectory: context.HomeDirectory);
+
+    internal static NativePath LexicalTextProjection(NativePathValue path, bool windowsHost)
+    {
+        bool windows = LocalWindows(path, windowsHost);
+        // Path-returning lexical operations emit a second spelling only on an
+        // unqualified Windows path; their String consumers see that spelling.
+        return new(windows && path.Connection is null ? path.NativeText : path.Raw, windows);
+    }
+
+    private static bool LocalWindows(NativePathValue path) => LocalWindows(path, OperatingSystem.IsWindows());
+    private static bool LocalWindows(NativePathValue path, bool windowsHost) =>
+        windowsHost && path.Connection?.Kind is not (ConnectionKind.Ssh or ConnectionKind.Wsl);
+}

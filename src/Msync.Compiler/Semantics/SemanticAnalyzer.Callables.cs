@@ -53,17 +53,33 @@ internal sealed partial class SemanticAnalyzer
 
         SemanticValue? result = null;
         List<HirDispatchTarget> dispatch = [];
+        List<(string Name, HirNodeId Call)> nativeCalls = [];
+        HirNodeId declaration = HirNodeId.None;
+        SemanticValue selectedCallee = choices.Any(choice => choice.NativeName is not null)
+            ? SaveCallee(callee, source, context, out declaration) : callee;
+        HirEffects nativeEffects = HirEffects.None;
         ImmutableArray<SemanticDeferredWrite>.Builder deferredEffects = ImmutableArray.CreateBuilder<SemanticDeferredWrite>();
         List<SemanticContext>? alternatives = choices.Length == 1 ? null : [];
         foreach (var choice in choices)
         {
-            if (choice.Template is not { } template) throw Error(source, "A mixed native/source call domain needs a resolved dispatch signature.", "E0204");
             SemanticContext selected = alternatives is null ? context : CallAlternative(context);
-            var instance = Instantiate(template, choice.Captures, arguments, source, selected);
+            SemanticValue output;
+            if (choice.Template is { } template)
+            {
+                var instance = Instantiate(template, choice.Captures, arguments, source, selected);
+                output = instance.Result;
+                if (context.DeferredReads && alternatives is null) deferredEffects.AddRange(instance.Effects);
+                dispatch.Add(new(choice.RuntimeIdentity ?? HirCallableId.From(template), instance.Id));
+            }
+            else if (choice.NativeName is { } name)
+            {
+                output = InvokeNative(name, arguments, source, selected, selectedCallee with { Callables = [choice] });
+                nativeCalls.Add((name, output.Node));
+                nativeEffects |= NativeEffects(NativeSignatures.Get(name));
+            }
+            else throw Error(source, "The selected Function has no resolved callable identity.", "E0204");
             alternatives?.Add(selected);
-            result = result is null ? instance.Result : Join(result, instance.Result!);
-            if (context.DeferredReads && alternatives is null) deferredEffects.AddRange(instance.Effects);
-            dispatch.Add(new(choice.RuntimeIdentity ?? HirCallableId.From(template), instance.Id));
+            result = result is null ? output : Join(result, output);
         }
         if (alternatives is not null) deferredEffects.AddRange(MergeCallAlternatives(context, alternatives));
         var call = choices.Length == 1
@@ -89,12 +105,45 @@ internal sealed partial class SemanticAnalyzer
         }
         SemanticValue emitted = result! with
         {
-            Node = EmitCall(call, callee, arguments, result!.Type, source, context),
+            Node = EmitMixedCall(call, nativeCalls.Count == 0 ? callee : selectedCallee, arguments, result!.Type, source, context,
+                declaration, nativeCalls, nativeEffects),
             Location = null,
             DeferredEffects = result.DeferredEffects.IsDefaultOrEmpty ? deferredEffects.ToImmutable()
                 : result.DeferredEffects.AddRange(deferredEffects)
         };
         return closedResult is { } requiredResult ? Convert(emitted, requiredResult, source, context) : emitted;
+    }
+
+    private SemanticValue SaveCallee(SemanticValue callee, HirSourceRange source,
+        SemanticContext context, out HirNodeId declaration)
+    {
+        declaration = HirNodeId.None;
+        if (!context.Publish) return callee;
+        SemanticOutput output = context.Output!;
+        HirLocationId saved = output.ReserveLocation(new("<callee>", callee.Type, source,
+            context.Function, HirLocationKind.Temporary, Mutable: false));
+        declaration = output.Add(HirKind.Declare, hir.Type(TypeRef.Null), source, [callee.Node], saved.Value,
+            effects: HirEffects.WriteLocation);
+        return callee with { Node = output.Add(HirKind.ReadLocation, callee.Type, source,
+            data: saved.Value, effects: HirEffects.ReadLocation) };
+    }
+
+    private HirNodeId EmitMixedCall(HirCall call, SemanticValue callee,
+        IReadOnlyList<SemanticValue> arguments, HirTypeId result, HirSourceRange source,
+        SemanticContext context, HirNodeId declaration,
+        List<(string Name, HirNodeId Call)> nativeCalls, HirEffects effects)
+    {
+        HirNodeId selected = EmitCall(call, callee, arguments, result, source, context, effects);
+        if (!context.Publish || nativeCalls.Count == 0) return selected;
+        SemanticOutput output = context.Output!;
+        foreach (var native in nativeCalls.AsEnumerable().Reverse())
+        {
+            HirNodeId descriptor = output.Add(HirKind.NativeFunction, hir.Type(TypeRef.Function), source, text: native.Name);
+            HirNodeId matches = output.Add(HirKind.Binary, hir.Type(TypeRef.Bool), source,
+                [callee.Node, descriptor], (int)HirBinaryOperator.Equal);
+            selected = output.Add(HirKind.If, result, source, [matches, native.Call, selected]);
+        }
+        return output.Add(HirKind.Block, result, source, [declaration, selected]);
     }
 
     private static SemanticContext CallAlternative(SemanticContext context) => new(context.Function, context.Output, context)

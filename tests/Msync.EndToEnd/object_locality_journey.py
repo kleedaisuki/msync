@@ -21,11 +21,10 @@ fn make(index: Number) {
         tag: index as String, path: ./seed.txt,
     }
 };
-let rows = $std::storage::vector_empty(decltype(make(0)));
-for index in $std::ranges::iota(0, 64) {
-    $std::storage::vector_push(rows, make(index));
-};
-let view = $std::storage::vector_snapshot(rows);
+let rows = $std::ranges::materialize($std::ranges::transform(
+    $std::ranges::iota(0, 64), fn(index: Number) { make(index) }
+));
+let view = rows;
 let total = 0;
 for row in view {
     let alias = row;
@@ -34,11 +33,10 @@ for row in view {
 };
 (total as String) -> ./scan.txt;
 let first = $std::ranges::first(view);
-$std::storage::vector_clear(rows);
-$std::storage::vector_push(rows, make(999));
+rows = $std::ranges::materialize([make(999)]);
 first::x = first::x + 100;
 if $std::ranges::size(view) == 64
-    and $std::storage::vector_size(rows) == 1
+    and $std::ranges::size(rows) == 1
     and $std::ranges::first(view)::x == 108 {
     "snapshot-keeps-instances" -> ./snapshot.txt;
 };
@@ -67,7 +65,7 @@ let observed = observe(seed);
 if observed::direct == 23 and observed::captured == 23 {
     "active-frame-location" -> ./capture-frame.txt;
 };
-let wide_rows = $std::storage::vector_new([
+let wide_rows = $std::ranges::materialize([
     scope {
         x: seed + 1, y: seed + 2,
         a: "a", b: "b", c: "c", d: "d", e: "e", f: "f",
@@ -75,7 +73,7 @@ let wide_rows = $std::storage::vector_new([
         m: "m", n: "n", o: "o", p: "p", path: ./seed.txt,
     }
 ]);
-let wide = $std::storage::vector_get(wide_rows, 0);
+let wide = $std::ranges::at(wide_rows, 0);
 if wide::x == 8 and wide::y == 9 and wide::p == "p" {
     "numeric-prefix-reference-tail" -> ./mixed-depth.txt;
 };

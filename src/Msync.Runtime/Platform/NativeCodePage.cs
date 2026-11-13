@@ -58,47 +58,15 @@ internal sealed partial class NativeCodePage : SafeHandleZeroOrMinusOneIsInvalid
             && FlushInstructionCache(GetCurrentProcess(), handle, length);
     }
 
-    internal unsafe int Run(double* registers, int fuel, ulong* counts, int resume)
+    internal unsafe int RunTier(nint context, int resume)
     {
         bool retained = false;
         try
         {
             DangerousAddRef(ref retained);
-            return ((delegate* unmanaged[Cdecl]<double*, int, ulong*, int, int>)handle)(registers, fuel, counts, resume);
+            return ((delegate* unmanaged[Cdecl]<nint, int, int>)handle)(context, resume);
         }
-        finally
-        {
-            if (retained) DangerousRelease();
-        }
-    }
-
-    internal unsafe double RunRows(double* rows, int count, double* inputs, double accumulator)
-    {
-        bool retained = false;
-        try
-        {
-            DangerousAddRef(ref retained);
-            return ((delegate* unmanaged[Cdecl]<double*, int, double*, double, double>)handle)(
-                rows, count, inputs, accumulator);
-        }
-        finally
-        {
-            if (retained) DangerousRelease();
-        }
-    }
-
-    internal unsafe int RunWorker(byte* rows, ulong* slots, int resume, int fuel)
-    {
-        bool retained = false;
-        try
-        {
-            DangerousAddRef(ref retained);
-            return ((delegate* unmanaged[Cdecl]<byte*, ulong*, int, int, int>)handle)(rows, slots, resume, fuel);
-        }
-        finally
-        {
-            if (retained) DangerousRelease();
-        }
+        finally { if (retained) DangerousRelease(); }
     }
 
     protected override bool ReleaseHandle() => windows

@@ -99,6 +99,22 @@ internal sealed class PlanResourceIndex
         return result;
     }
 
+    internal bool AnyAncestor(PlanResource resource)
+    {
+        if (!roots.TryGetValue(resource.Endpoint, out Node? node)) return false;
+        if (node.Any(null)) return true;
+        ReadOnlySpan<char> path = resource.Path;
+        foreach (Range part in path.SplitAny(Separators(resource)))
+        {
+            ReadOnlySpan<char> segment = path[part];
+            if (segment.IsEmpty) continue;
+            if (node.Children is not { } children
+                || !children.GetAlternateLookup<ReadOnlySpan<char>>().TryGetValue(segment, out node!)) return false;
+            if (node.Any(null)) return true;
+        }
+        return false;
+    }
+
     internal bool AnyOverlap(PlanResource resource) => AnyOverlap(resource, null);
 
     internal bool AnyOverlap(PlanResource resource, Func<int, bool>? accept)

@@ -13,4 +13,7 @@
     <Project Path="tests/Msync.Runtime.Tests/Msync.Runtime.Tests.csproj" />
     <Project Path="tests/Msync.Transfer.Tests/Msync.Transfer.Tests.csproj" />
   </Folder>
+  <Folder Name="/vendor/">
+    <Project Path="vendor/PrettyPrompt/PrettyPrompt.csproj" />
+  </Folder>
 </Solution>

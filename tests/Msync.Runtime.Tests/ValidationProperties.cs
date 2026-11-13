@@ -1,110 +1,92 @@
 using Msync.Core;
+using Msync.Core.Native;
+using static RuntimeFixture;
 
 internal static class ValidationProperties
 {
-    private static readonly Value[] Constants = [new StringValue("text"), new PathValue("./file"), Value.Null, Value.True, Value.False, new NumberValue(1), new TypeValue(TypeRef.Path)];
-    private static readonly CodeType[] Types = [new(TypeKind.Bool), new(TypeKind.Any)];
-
-    internal static int Run()
+    internal static void Run()
     {
-        var random = new Random(8080);
-        int accepted = 0, rejected = 0, ambiguous = 0;
-        for (int i = 0; i < 2000; i++)
-        {
-            foreach (var code in new[] { Branch(random), Loop(random), Iterator(random) })
+        Random random = new(8080); int accepted = 0, rejected = 0;
+        for (int sample = 0; sample < 2000; sample++)
+            foreach (NativeProgram program in new[] { Branch(random), Loop(random), Iterator(random) })
             {
-                var module = new Module(Constants, [new FunctionCode("generated", 1, 8, code, TypeRef.Any, ParameterTypes: [TypeRef.Bool])
-                { CodeSignature = new([0], 1, []) }]) { CodeTypes = Types };
-                string? previousError = Error(() => InstructionValidationOracle.Validate(module));
-                string? currentError = Error(() => Artifact.Validate(module));
-                if (previousError is null && currentError is not null)
-                    throw new InvalidOperationException($"Block verifier rejected an admitted CFG program {i}: {currentError}\n{string.Join('\n', code)}");
-                if (previousError is not null && currentError is null)
-                {
-                    if (!previousError.Contains("expected Bool, found", StringComparison.Ordinal))
-                        throw new InvalidOperationException($"Block verifier lost a structural rejection: {previousError}\n{string.Join('\n', code)}");
-                    ambiguous++;
-                }
-                if (currentError is null) accepted++; else rejected++;
+                bool expected = InstructionValidationOracle.Accepts(program), actual;
+                try { NativeArtifact.Validate(program); actual = true; } catch (MsyncException) { actual = false; }
+                Check(actual == expected, "Native verifier disagrees with exhaustive path-state oracle:\n" + NativeArtifact.Disassemble(program));
+                if (actual) accepted++; else rejected++;
+            }
+        Check(accepted > 0 && rejected > 0, "Generated corpus did not cover both admission outcomes");
+        foreach (TypeKind destination in new[] { TypeKind.Number, TypeKind.Bool, TypeKind.String, TypeKind.Number | TypeKind.Bool })
+            foreach (var (constant, kind) in new (NativeConstant, TypeKind)[]
+            { (new(NativeKind.Number, Number: 7), TypeKind.Number), (new(NativeKind.Bool, Boolean: true), TypeKind.Bool),
+              (new(NativeKind.String, "typed"), TypeKind.String), (new(NativeKind.Null), TypeKind.Null) })
+            {
+                NativeProgram abi = new([constant], [new("generated-abi", [new(0)],
+                    [new(NativeOp.Constant, 0, 0), new(NativeOp.Return, A: 0)], new([], 0, []))], [new(destination)], []);
+                bool admitted;
+                try { NativeArtifact.Validate(abi); admitted = true; } catch (MsyncException) { admitted = false; }
+                Check(admitted == ((destination & kind) == kind), "Closed builtin register ABI disagrees with independent finite-set membership");
+            }
+        NativeProgram incompatiblePointer = new([new(NativeKind.Number, Number: 1)], [new("wrong-pointee", [new(0), new(2)],
+            [new(NativeOp.Constant, 0, 0), new(NativeOp.FrameAddress, 1, 0), new(NativeOp.Return, A: 0)], new([], 0, []))],
+            [new(TypeKind.Number), new(TypeKind.Bool), new(TypeKind.Never, Pointee: 1)], []);
+        Reject(incompatiblePointer, "storage contract");
+        NativeProgram valid = Branch(new(1));
+        Reject(valid with { Functions = [valid.Functions[0] with { Instructions = [new(NativeOp.Return, A: 99)] }] }, "register");
+        Reject(valid with { Functions = [valid.Functions[0] with { Instructions = [new(NativeOp.Jump, A: 999)] }] }, "target");
+        Reject(valid with { Types = [new(TypeKind.Storage), new(TypeKind.Number)] }, "unknown builtin");
+        Console.WriteLine($"PASS native typed CFG/iterator properties: {accepted} admitted, {rejected} rejected; independent exhaustive oracle");
+    }
+    internal static async Task RunRegions()
+    {
+        Random random = new(090); SourceSpan origin = new("region-property.msync", 7, 12);
+        for (int sample = 0; sample < 128; sample++)
+        {
+            int count = random.Next(17), index = random.Next(count + 2);
+            NativeProgram program = new([new(NativeKind.Number, Number: count), new(NativeKind.Number, Number: index)],
+                [new("indexed-region", [new(0), new(0), new(1), new(1)],
+                    [new(NativeOp.Constant, 0, 0), new(NativeOp.Constant, 1, 1), new(NativeOp.Allocate, 2, 0, C: 0),
+                     new(NativeOp.IndexAddress, 3, 2, 1, 0, Source: origin), new(NativeOp.Return, A: 3)], new([], 1, []))],
+                [new(TypeKind.Number), new(TypeKind.Scope, Layouts: [0])], [new([new("value", 0)])]);
+            NativeArtifact.Validate(program);
+            if (index < count)
+                Check((await RuntimeFixture.Run(Reload(program))).AsAddress().Offset.Bytes == index * sizeof(double), "Typed region index changed its coordinate geometry");
+            else
+            {
+                try { await RuntimeFixture.Run(Reload(program)); throw new InvalidOperationException("Out-of-range native region admitted"); }
+                catch (MsyncException error) { Check(error.Span == origin && error.InnerException is ArgumentOutOfRangeException, "Region bounds failure lost origin or concrete cause"); }
             }
         }
-        if (accepted == 0 || rejected == 0) throw new InvalidOperationException("Validation corpus must exercise accepted and rejected programs");
-        Console.WriteLine($"Block verifier retained all admitted CFGs and structural rejections: {accepted} accepted, {rejected} rejected; {ambiguous} invalid mixed-type probes defer their precise Bool check to execution.");
-        return accepted + rejected;
+        Console.WriteLine("PASS real native IR region geometry and bounds properties");
     }
 
-    private static string? Error(Action validate)
+    private static NativeProgram Make(List<NativeInstruction> code, bool range = false) => new([new(NativeKind.Number, Number: 1)],
+        [new("generated", [new(0, NativeSlotRole.Parameter), new(1)], code, new([0], 1, []), ParameterCount: 1, IteratorCount: range ? 1 : 0)],
+        [new(range ? TypeKind.Range : TypeKind.Bool, Element: range ? 1 : -1), new(TypeKind.Number)], []);
+    private static void MaybeStore(List<NativeInstruction> code, Random random)
     {
-        try { validate(); return null; }
-        catch (MsyncException error) { return error.Message; }
+        if (random.Next(2) == 0) code.Add(new(NativeOp.Constant, 1, 0));
+        for (int count = random.Next(3); count > 0; count--) code.Add(new(NativeOp.Nop));
     }
-
-    private static Instruction[] Branch(Random random)
+    private static NativeProgram Branch(Random random)
     {
-        List<Instruction> code = [];
-        if (random.Next(2) == 0) Store(code, 1, random);
-        Condition(code, random);
-        int choose = code.Count;
-        code.Add(new(random.Next(2) == 0 ? OpCode.JumpIfFalse : OpCode.JumpIfTrue));
-        if (random.Next(3) != 0) Store(code, 1, random);
-        int skip = code.Count;
-        code.Add(new(OpCode.Jump));
-        code[choose] = code[choose] with { A = code.Count };
-        if (random.Next(3) != 0) Store(code, 1, random);
-        code[skip] = code[skip] with { A = code.Count };
-        Probe(code, random);
-        return code.ToArray();
+        List<NativeInstruction> code = []; MaybeStore(code, random); int branch = code.Count; code.Add(new(NativeOp.Branch, A: 0));
+        int left = code.Count; MaybeStore(code, random); int jump = code.Count; code.Add(new(NativeOp.Jump));
+        int right = code.Count; MaybeStore(code, random); int join = code.Count; code.Add(new(NativeOp.Return, A: 1));
+        code[branch] = code[branch] with { B = left, C = right }; code[jump] = code[jump] with { A = join }; return Make(code);
     }
-
-    private static Instruction[] Loop(Random random)
+    private static NativeProgram Loop(Random random)
     {
-        List<Instruction> code = [];
-        if (random.Next(3) != 0) Store(code, 1, random);
-        int start = code.Count;
-        Condition(code, random);
-        int finish = code.Count;
-        code.Add(new(OpCode.JumpIfFalse));
-        if (random.Next(3) != 0) Store(code, 1, random);
-        code.Add(new(OpCode.Jump, start));
-        code[finish] = code[finish] with { A = code.Count };
-        Probe(code, random);
-        return code.ToArray();
+        List<NativeInstruction> code = []; MaybeStore(code, random); int branch = code.Count; code.Add(new(NativeOp.Branch, A: 0));
+        int body = code.Count; MaybeStore(code, random); code.Add(new(NativeOp.Jump, A: branch));
+        int end = code.Count; code.Add(new(NativeOp.Return, A: 1)); code[branch] = code[branch] with { B = body, C = end }; return Make(code);
     }
-
-    private static Instruction[] Iterator(Random random)
+    private static NativeProgram Iterator(Random random)
     {
-        List<Instruction> code = [new(OpCode.MakeRange), new(OpCode.GetIterator), new(OpCode.StoreLocal, 2), new(OpCode.IteratorNext, 2), new(OpCode.StoreLocal, 1)];
-        if (random.Next(2) == 0) Store(code, 1, random);
-        code.Add(new(OpCode.Jump, 3));
-        code[3] = code[3] with { B = code.Count };
-        if (random.Next(2) == 0) code.Add(new(OpCode.LoadLocal, 1)); else code.Add(new(OpCode.Null));
-        code.Add(new(OpCode.Return));
-        return code.ToArray();
-    }
-
-    private static void Store(List<Instruction> code, int slot, Random random)
-    {
-        code.Add(new(OpCode.Constant, random.Next(Constants.Length)));
-        code.Add(new(OpCode.StoreLocal, slot));
-        for (int i = random.Next(4); i > 0; i--) code.Add(new(OpCode.Nop));
-    }
-
-    private static void Condition(List<Instruction> code, Random random)
-    {
-        code.Add(random.Next(3) switch { 0 => new(OpCode.LoadLocal, 0), 1 => new(OpCode.True), _ => new(OpCode.False) });
-        if (random.Next(2) == 0) code.Add(new(OpCode.Not));
-    }
-
-    private static void Probe(List<Instruction> code, Random random)
-    {
-        code.Add(new(OpCode.LoadLocal, 1));
-        switch (random.Next(5))
-        {
-            case 0: code.Add(new(OpCode.Not)); break;
-            case 1: code.Add(new(OpCode.RegexMatch, Text: ".+")); break;
-            case 2: code.Add(new(OpCode.IsNull)); break;
-            case 3: code.Add(new(OpCode.Constant, 6)); code.Add(new(OpCode.IsType)); break;
-        }
-        code.Add(new(OpCode.Return));
+        List<NativeInstruction> code = []; MaybeStore(code, random);
+        code.Add(new(NativeOp.OpenIterator, A: 0, B: 0)); int next = code.Count; code.Add(new(NativeOp.NextIterator, 1, 0));
+        if (random.Next(4) == 0) code.Add(new(NativeOp.OpenIterator, A: 0, B: 0));
+        code.Add(new(NativeOp.Jump, A: next)); int end = code.Count;
+        code.Add(new(NativeOp.CloseIterator, A: 0)); code.Add(new(NativeOp.Return, A: 1)); code[next] = code[next] with { B = end }; return Make(code, true);
     }
 }

@@ -341,7 +341,7 @@ internal sealed class BoundCallableWrites
         var children = program.Children(id);
         IEnumerable<int> result = node.Kind switch
         {
-            HirKind.Scope => [node.Data],
+            HirKind.Scope or HirKind.AllocateScope => [node.Data],
             HirKind.ReadLocation or HirKind.ReadStorage => Scope(new(node.Data)).ToArray(),
             HirKind.Block => children.Length == 0 ? [] : ScopeValues(children[^1], active),
             HirKind.Return or HirKind.Coerce or HirKind.Convert => children.Length == 0 ? [] : ScopeValues(children[0], active),

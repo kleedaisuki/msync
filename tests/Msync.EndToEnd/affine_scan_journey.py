@@ -6,9 +6,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import re
 import tempfile
 from pathlib import Path
+from typing import Any, cast
 
 from object_locality_journey import ROOT, execute
 
@@ -141,7 +141,7 @@ for value in values { squares = squares + value * value; };
     "indirect-walk": (
         PREFIX
         + """
-let nodes = $std::storage::vector_new([
+let nodes = $std::ranges::materialize([
     scope { value: seed, next: 2 },
     scope { value: seed + 1, next: 0 },
     scope { value: seed + 2, next: -1 },
@@ -150,7 +150,7 @@ let index = 1;
 let total = 0;
 loop {
     if index < 0 { break; };
-    let node = $std::storage::vector_get(nodes, index);
+    let node = $std::ranges::at(nodes, index);
     total = total + node::value;
     index = node::next;
 };
@@ -171,11 +171,18 @@ def run_case(
     source.write_text(program, encoding="utf-8", newline="\n")
     portable: Path = work / "scans.mso"
     execute(binary, work, ["compile", str(source), f"-O{level}", "-o", str(portable)])
-    disassembly: dict[str, object] = json.loads(
+    disassembly: dict[str, Any] = json.loads(
         execute(binary, work, ["disassemble", str(portable), "--json"]).stdout
     )
-    text = str(disassembly["text"])
-    iterators: int = len(re.findall(r"\bIteratorNext\b", text))
+    assert disassembly["representation"] == "native-v1", disassembly
+    functions: list[dict[str, Any]] = cast(
+        list[dict[str, Any]], disassembly["functions"]
+    )
+    iterators: int = sum(
+        instruction["op"] == "NextIterator"
+        for function in functions
+        for instruction in function["instructions"]
+    )
     if require_fusion and name in {
         "independent",
         "scope-fields",
@@ -184,7 +191,7 @@ def run_case(
         assert iterators == 1, (
             "Expected a genuinely fused portable scan",
             iterators,
-            text,
+            disassembly,
         )
     if route == "source":
         execute(binary, work, ["run", str(source), f"-O{level}"])

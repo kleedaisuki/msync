@@ -1,3 +1,4 @@
+using Msync.Core.Native;
 using Msync.Compiler;
 using Msync.Core;
 
@@ -57,7 +58,7 @@ internal static class ContextChecks
     {
         const string source = "scope SomeClass { remote: ssh://forge, send: fn(file: Path) { remote @ ./";
         EditorContext context = EditorCompiler.Analyze(source, "file:///scope.msync").At(source.IndexOf("./", StringComparison.Ordinal) + 2);
-        Check(context.Bindings.Single(item => item.Name == "remote").Endpoint == new ConnectionValue(ConnectionKind.Ssh, "forge"),
+        Check(context.Bindings.Single(item => item.Name == "remote").Endpoint == new NativeConnection(ConnectionKind.Ssh, "forge"),
             "a previous Scope member is not available to its function initializer");
         Check(context.HasPhysicalOwner && context.PhysicalEndpoint?.Address == "forge", "a Scope's Connection field was treated as another Scope or Path");
         const string nested = "fn draft() { let Hosts = scope { inner: scope { remote: ssh://forge } }; Hosts::inner::remote @ ./";
@@ -89,6 +90,18 @@ internal static class ContextChecks
         const string callArgument = "let target = scope { entry: true }; fn use(value) { value }; fn draft(path: Path) { use(target::";
         Check(EditorCompiler.Analyze(callArgument, "file:///argument.msync").At(callArgument.Length).Receiver?.Members?.Single().Name == "entry",
             "a nested incomplete call argument lost its lexical receiver");
+        const string alternatives = "fn factory(flag) { if flag { scope { nested: scope { entry: true, left: true } } } else { scope { nested: scope { entry: false, right: true } } } }; fn draft() { factory(true)::nested::";
+        Check(EditorCompiler.Analyze(alternatives, "file:///return-branches.msync").At(alternatives.Length).Receiver?.Members?.Single().Name == "entry",
+            "uncalled return projection did not intersect nested branch capabilities");
+        const string early = "fn factory(flag) { if flag { return scope { nested: scope { entry: true, left: true } }; }; scope { nested: scope { entry: false, right: true } } }; fn draft() { factory(true)::nested::";
+        Check(EditorCompiler.Analyze(early, "file:///return-early.msync").At(early.Length).Receiver?.Members?.Single().Name == "entry",
+            "an early return was omitted from static return capability intersection");
+        const string mixed = "fn factory(flag) { if flag { scope { entry: true } } else { \"text\" } }; fn draft() { factory(true)::";
+        Check(EditorCompiler.Analyze(mixed, "file:///return-mixed.msync").At(mixed.Length).Receiver?.Members is null,
+            "a partial Scope return domain advertised Scope-only members");
+        const string recursive = "fn factory() { factory() }; fn draft() { factory()::";
+        Check(EditorCompiler.Analyze(recursive, "file:///return-recursive.msync").At(recursive.Length).Receiver?.Members is null,
+            "recursive return projection invented a namespace capability");
     }
 
     private static void SessionIsolation()
@@ -103,13 +116,13 @@ internal static class ContextChecks
         EditorAnalysis analysis = session.AnalyzeEditor(editing);
         Check(analysis.At(editing.Length).Receiver?.Members?.Single().Name == "child", "REPL current input lost the accepted Scope binding");
         Check(session.BindingNames.Order(StringComparer.Ordinal).SequenceEqual(names), "editor analysis changed live REPL bindings");
-        Module actual = session.Compile("identity(true)");
-        Module expected = control.Compile("identity(true)");
+        NativeProgram actual = session.Compile("identity(true)");
+        NativeProgram expected = control.Compile("identity(true)");
         Check(SameModule(actual, expected), "an editor probe changed later real bytecode/functions/constants or specialization identities");
         session.AcceptSubmission(); control.AcceptSubmission();
         _ = session.AnalyzeEditor("identity(~/probe); fn draft() { root::");
-        Module after = session.Compile("identity(\"real text\")");
-        Module baseline = control.Compile("identity(\"real text\")");
+        NativeProgram after = session.Compile("identity(\"real text\")");
+        NativeProgram baseline = control.Compile("identity(\"real text\")");
         Check(SameModule(after, baseline), "a second editor probe mutated an existing live template's specialization cache");
     }
 
@@ -132,8 +145,11 @@ internal static class ContextChecks
     private static void Builtins()
     {
         var standard = EditorCompiler.BuiltinBindings.Single(item => item.Name == "$std");
-        var boolean = standard.Members!.Single(item => item.Name == "bool");
-        Check(boolean.Members!.Any(item => item.Name == "both" && item.Type == "Function"), "cached builtin metadata omitted a source-defined standard function");
+        Check(standard.Members!.Single(item => item.Name == "bool").Type == "Scope", "builtin catalog omitted the source-backed bool namespace");
+        const string selected = "$std::bool::";
+        var boolean = EditorCompiler.Analyze(selected, "file:///builtin-bool.msync").At(selected.Length).Receiver;
+        Check(boolean?.Members?.Any(item => item.Name == "both" && item.Type == "Function") == true,
+            "standard namespace completion omitted a source-defined function");
         Check(EditorCompiler.BuiltinBindings.Single(item => item.Name == "$wsl").Endpoint?.Kind == ConnectionKind.Wsl,
             "cached builtin endpoint metadata is unavailable");
     }
@@ -143,11 +159,14 @@ internal static class ContextChecks
         if (!condition) throw new InvalidOperationException(message);
     }
 
-    private static bool SameModule(Module actual, Module expected) => actual.Stage == expected.Stage && actual.OptimizationLevel == expected.OptimizationLevel
-        && actual.Constants.SequenceEqual(expected.Constants) && actual.Functions.Count == expected.Functions.Count
-        && actual.Functions.Zip(expected.Functions).All(pair => pair.First.Name == pair.Second.Name
-            && pair.First.ParameterCount == pair.Second.ParameterCount && pair.First.LocalCount == pair.Second.LocalCount
-            && pair.First.CaptureCount == pair.Second.CaptureCount && pair.First.ReturnType == pair.Second.ReturnType
-            && (pair.First.ParameterTypes ?? []).SequenceEqual(pair.Second.ParameterTypes ?? [])
-            && pair.First.Instructions.SequenceEqual(pair.Second.Instructions));
+    private static bool SameModule(NativeProgram actual, NativeProgram expected)
+    {
+        if (NativeArtifact.ToJson(actual) != NativeArtifact.ToJson(expected)
+            || actual.PreserveLocals != expected.PreserveLocals
+            || !(actual.SessionRoots ?? []).SequenceEqual(expected.SessionRoots ?? [])) return false;
+        var left = actual.SessionDispatches ?? [];
+        var right = expected.SessionDispatches ?? [];
+        return left.Count == right.Count && left.Zip(right).All(pair => pair.First.Slot == pair.Second.Slot
+            && pair.First.Targets.OrderBy(target => target.Key).SequenceEqual(pair.Second.Targets.OrderBy(target => target.Key)));
+    }
 }

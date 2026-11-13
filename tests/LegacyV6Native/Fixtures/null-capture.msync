@@ -1,0 +1,10 @@
+let current? = null;
+fn read() { current };
+$std::io::println((read() is null) as String);
+fn holder() {
+    let value? = 3;
+    scope { read: fn() { value }, clear: fn() { global value; value = null; } }
+};
+let item = holder();
+item::clear();
+$std::io::println((item::read() is null) as String);

@@ -66,15 +66,15 @@ fn count(state: Scope) {
 (count(scope { remaining: 8 }) as String) -> ./recursive.txt;
 
 let original = scope { text: "before" };
-let objects = $std::storage::vector_new([original]);
-let alias = $std::storage::vector_get(objects, 0);
+let objects = $std::ranges::materialize([original]);
+let alias = $std::ranges::at(objects, 0);
 alias::text = "shared";
 original::text -> ./indexed-alias.txt;
-let numbers = $std::storage::vector_empty(Number);
-let before = $std::storage::vector_snapshot(numbers);
-$std::storage::vector_push(numbers, 7);
+let numbers = $std::ranges::empty_of(Number);
+let before = $std::ranges::materialize(numbers);
+numbers = $std::ranges::materialize($std::ranges::concat(numbers, [7]));
 ($std::ranges::size(before) as String) -> ./snapshot-before.txt;
-($std::storage::vector_get(numbers, 0) as String) -> ./typed-write.txt;
+($std::ranges::at(numbers, 0) as String) -> ./typed-write.txt;
 let present_null = $std::data::Option::some(null);
 if $std::data::Option::is_some(present_null) and present_null::value is null {
     "present-null" -> ./present-null.txt;
@@ -176,11 +176,11 @@ NEGATIVE: tuple[tuple[str, str, tuple[DiagnosticFragment, ...]], ...] = (
     (
         "invalidated-member-proof",
         """
-let values = $std::storage::vector_new([
+let values = $std::ranges::materialize([
     scope { child?: scope { text: "ok" } }
 ]);
-let first = $std::storage::vector_get(values, 0);
-let alias = $std::storage::vector_get(values, 0);
+let first = $std::ranges::at(values, 0);
+let alias = $std::ranges::at(values, 0);
 if first::child is not null {
     alias::child = null;
     first::child::text;

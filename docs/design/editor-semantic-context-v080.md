@@ -1,5 +1,83 @@
 # Lexical semantic contexts for editing incomplete source
 
+## Shared lexical and request ownership (v0.9)
+
+The compiler lexer now emits `EditorLexemes`: exact UTF-16 spans for tokens,
+comments and incomplete literals. REPL highlighting, literal/call hints, path
+completion shielding and LSP semantic tokens consume this stream instead of
+maintaining separate string/comment/regular-expression recognizers. Presentation
+still owns colors, semantic-role overrides and contextual path editing; the lexer
+does not guess filesystem or endpoint state. Literal completion remains explicit
+at EOF, including doubled quotes and named regex groups.
+
+Completion and artifact inspection share one pending-request table and completion
+event. The protocol thread alone removes requests and publishes replies; workers
+own their cancellation source until their terminal event (or a failed enqueue).
+Cancellation removes publication rights immediately, so a late worker cannot
+reply twice. Source completion additionally checks its original document
+generation; artifact inspection retains its own error code and cancellation
+message and never prepares or executes the artifact. There is no second feature-
+specific lifecycle cache.
+
+The first reduction batch removed 218 CLI code lines (cloc 6,060 to 5,842), before
+accounting for the compiler's small shared lexical API. This is not the project's
+30% acceptance result. The frozen CLI batch passes actual applied completion and
+REPL results, negotiated LSP responses, HIR editor metadata, edit/cancel/close/
+shutdown lifecycles, and source-free artifact inspection/recovery. Its receipt is
+`artifacts/validation/cli-code-reduction-v090/acceptance-final.json`; the compile-coherent runtime
+checkpoint used there is not a claim that the separate backend deletion is done.
+
+## One partial result transfer
+
+Editor drafts now consume the analyzer's existing `ProjectReturn` transfer through
+`ProjectBoundResult`. The editor's `BoundExpression`, `BoundReturn`, branch join,
+and separate draft Path/Connection/member interpreters are removed. The remaining
+`BoundValue` map resolves lexical declaration identities and immutable initializers;
+it does not implement another opcode evaluator. Final editor views still contain
+immutable values/type tables/binding maps, never a live analyzer or context.
+
+An observation query supplies lexical bindings but no executable-output capability.
+Its exact field declaration origins, namespace roles, literal and Path/Connection
+payloads belong to that query and bypass the type-summary cache. Ordinary return-
+shape queries retain their existing cache and checker behavior. Cache keys omit
+runtime literal contents: putting actual Path/String payloads into those entries
+would reuse one caller's value for another. Unavailable type witnesses remain the
+written symbolic type in partial observations; no artificial invocation, Any
+replacement, exception swallowing, or source function publication is involved.
+Branches use the canonical semantic join with exact declaration identities. The
+same transfer also fixes the old draft fallback's lost fields after explicit
+`return` from a factory.
+
+The first wrapper-only experiment preserved a returned Number field's completion
+but lost its definition, and was rejected. The finished transfer passes 21 bound-
+result controls (including let-lambda/aliased/scoped factories), 17 origin/role,
+8 declaration metadata, 38 revision and 46 negative-diagnostic contracts; an
+independent existing driver also passes 8,411 source/detached-artifact O0/O2
+execution checks. Real LSP completion/apply/REPL, HIR metadata and document
+edit/cancel/close/shutdown journeys pass with unchanged frozen inputs/payloads.
+The batch removes 73 code lines, including all new shared APIs, relative to the
+pre-editor-transfer compiler (the earlier compiler -97 batch is not credited
+again). Evidence and a reversible source diff are in
+`artifacts/validation/editor-partial-transfer-v090/acceptance.json`.
+
+A follow-up probe caught excessive work rather than accepting a regression:
+Freeze no longer projects private foreign-body declarations that no published
+visibility/import/reference needs. Retained definitions and builtin catalog
+members are eagerly frozen into immutable values/source maps. Scope projection
+reuses declaration flow facts; literals and reads share the canonical fact
+constructors instead of allocating a projector and its dictionaries/delegates
+per leaf. Only observation joins construct provenance payloads; cached fact
+joins retain their former type-only behavior.
+
+A managed causal probe uses identical dependency sources/options and the exact
+pre-transfer compiler, one pinned CPU, disabled tiered compilation and four
+balanced process pairs (11 post-warmup analyses per case). Median milliseconds:
+uncalled draft 0.403 → 0.451, Containers 9.165 → 8.795, Path 0.131 → 0.167.
+This eliminated the initial stable +16.8% Containers regression; the remaining
+small cases differ by 36–48 microseconds. These are diagnostic frontend timings,
+not native-AOT end-to-end acceptance, whole-backend acceptance, or the project's
+30% reduction result.
+
 ## 0.8.6 document revision ownership
 
 Each open document owns an analysis session. The protocol thread coalesces

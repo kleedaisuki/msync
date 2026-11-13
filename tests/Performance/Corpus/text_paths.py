@@ -208,6 +208,36 @@ def _local_manifest_copy(directory: Path, size: int, seed: int) -> Fixture:
     )
 
 
+_RANGE_COPY_SOURCE: str = """let io = $std::io;
+let fs = $std::fs;
+let ranges = $std::ranges;
+let paths = ranges::transform(io::read_lines(./manifest.txt), fn(row: String) {
+    ./input / row
+});
+let selected = ranges::materialize(ranges::filter(paths, fn(path: Path) {
+    fs::is_regular_file(path)
+}));
+selected -> ./out/;
+io::println(ranges::size(selected) as String);
+"""
+
+
+def _local_range_copy(directory: Path, size: int, seed: int) -> Fixture:
+    fixture: Fixture = _local_manifest_copy(directory, size, seed)
+    outputs: tuple[OutputFile, ...] = tuple(
+        OutputFile(f"out/{Path(output.path).name}", output.sha256, output.initial)
+        for output in fixture.outputs
+    )
+    assert len({output.path for output in outputs}) == len(outputs)
+    return Fixture(
+        source=_RANGE_COPY_SOURCE,
+        stdout=f"{len(outputs)}\n",
+        outputs=outputs,
+        absent=tuple(f"out/{Path(path).name}" for path in fixture.absent),
+        output_roots=("out",),
+    )
+
+
 def cases() -> tuple[Case, ...]:
     return (
         Case(
@@ -223,5 +253,12 @@ def cases() -> tuple[Case, ...]:
             description="Read a shuffled local manifest, query file type and size, and copy mixed-size binary files to new or existing outputs.",
             default_size=144,
             generate=_local_manifest_copy,
+        ),
+        Case(
+            name="local-range-copy",
+            family="filesystem",
+            description="Select a finite mixed-size Path cohort from the same manifest and transfer it as one operation into a flat destination.",
+            default_size=144,
+            generate=_local_range_copy,
         ),
     )

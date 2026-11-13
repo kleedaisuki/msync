@@ -1,5 +1,6 @@
 using Msync.Compiler.Syntax;
 using Msync.Core;
+using Msync.Core.Native;
 
 internal static class QuotedWindowsPaths
 {
@@ -19,7 +20,7 @@ internal static class QuotedWindowsPaths
             var binding = (LetStatement)parsed.Statements[0];
             Check(binding.Value is BinaryExpr { Operator: "/" }, "quoted native path is not a Path join: " + source);
             var module = Msync.Compiler.Compiler.Compile(source);
-            Check(module.Functions[0].ReturnType == TypeRef.Type, "quoted path type query failed");
+            Check(module.Types[module.Functions[module.EntryPoint].Signature.Result].Kind == TypeKind.Type, "quoted path type query failed");
             string formatted = Formatter.Format(source);
             Check(!formatted.Contains("/ \"", StringComparison.Ordinal) && !formatted.Contains("\\ \"", StringComparison.Ordinal),
                 "formatter separated a native prefix from its quoted child: " + formatted);
@@ -27,8 +28,8 @@ internal static class QuotedWindowsPaths
             _ = Msync.Compiler.Compiler.Compile(formatted);
         }
         var plain = Msync.Compiler.Compiler.Compile("let selected = D:/base/plain.txt;");
-        Check(plain.Constants.Any(value => value is PathValue { Raw: "D:/base/plain.txt" }), "ordinary native path spelling changed");
-        _ = Msync.Compiler.Compiler.Compile("$local::D:/\"Program Files (x86)\"/tool.exe(\"argument\");");
+        Check(plain.Constants.Any(value => value is { Kind: NativeKind.Path, Text: "D:/base/plain.txt" }), "ordinary native path spelling changed");
+        _ = Msync.Compiler.Compiler.Compile("($local @ D:/\"Program Files (x86)\"/tool.exe)(\"argument\");");
         Console.WriteLine("quoted Windows path items preserve Path type, ordinary tokens and compact formatting");
     }
 

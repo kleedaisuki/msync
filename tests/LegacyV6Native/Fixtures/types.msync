@@ -1,0 +1,15 @@
+let kind = decltype($std::storage::vector_new([1, 2]));
+$std::io::println($std::meta::type_name(kind));
+$std::io::println($std::meta::is_same(kind, kind) as String);
+$std::io::println((kind is kind) as String);
+$std::io::println($std::meta::type_name($std::meta::range_of(kind)));
+for alternative in $std::meta::alternatives(kind) { $std::io::println($std::meta::type_name(alternative)); };
+let owner = $std::storage::vector_new([1, 2]);
+$std::io::println((owner is decltype(owner)) as String);
+$std::io::println((owner is Scope) as String);
+$std::io::println($std::meta::member_count(owner) as String);
+for name in $std::meta::member_names(owner) { $std::io::println(name); };
+let selected = if $std::io::read_line() is null { owner } else { scope { visible: 1 } };
+$std::io::println($std::meta::member_count(selected) as String);
+$std::io::println($std::meta::is_invocable($std::storage::vector_push, owner, 3) as String);
+$std::io::println($std::meta::type_name($std::meta::invoke_result($std::storage::vector_push, owner, 3)));

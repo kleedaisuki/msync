@@ -8,7 +8,11 @@
     <Deterministic>true</Deterministic>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <NuGetLockFilePath Condition="'$(RuntimeIdentifier)' != ''">$(MSBuildProjectDirectory)/packages.$(RuntimeIdentifier).lock.json</NuGetLockFilePath>
-    <Version>0.8.6</Version>
+    <!-- A command-line PublishAot propagates compiler packages into every reference.
+         Keep that probe graph separate from the CLI's project-local AOT graph. -->
+    <NuGetLockFilePath Condition="'$(PublishAot)' == 'true'">$(MSBuildProjectDirectory)/packages.aot.lock.json</NuGetLockFilePath>
+    <NuGetLockFilePath Condition="'$(PublishAot)' == 'true' and '$(RuntimeIdentifier)' != ''">$(MSBuildProjectDirectory)/packages.aot.$(RuntimeIdentifier).lock.json</NuGetLockFilePath>
+    <Version>0.9.0</Version>
     <Product>msync</Product>
     <Copyright>msync contributors</Copyright>
     <RepositoryUrl>https://github.com/kleedaisuki/msync</RepositoryUrl>

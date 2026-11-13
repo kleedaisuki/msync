@@ -1,10 +1,11 @@
 # C# transfer journeys
 
-Run the direct local engine journeys:
+Run the direct native local journeys:
 
 ```sh
-dotnet run --project tests/Msync.Transfer.Tests/Msync.Transfer.Tests.csproj \
-  --artifacts-path .temp/build-transfer-tests -m:1 -nr:false
+dotnet build tests/Msync.Transfer.Tests -c Release \
+  --artifacts-path artifacts/transfer-tests -m:1
+dotnet artifacts/transfer-tests/bin/Msync.Transfer.Tests/release/Msync.Transfer.Tests.dll
 ```
 
 Run the same implementation through real native OpenSSH, with connection sharing
@@ -49,27 +50,36 @@ directly and through an overlap snapshot, and checks junction status, traversal
 and removal. A real provider-backed cloud directory remains separate platform
 acceptance; a synthetic tag check is not a substitute for that provider journey.
 
-## Contextual transfer batches
+## Prepared operations and finite cohorts
 
 ```sh
 python3 tests/Msync.Transfer.Tests/ssh_journeys.py --batch-only
 ```
 
-The batch route keeps one selected native session through metadata queries,
-uploads, downloads and same-endpoint copies. It verifies per-item failure and
-continuation, directory/link and unusual-name behavior, exact output bytes and
-one actual client/authentication/exec session with external sharing disabled.
-The local cases also exercise shared-buffer UTF-8 encoding and prepared-kind
-execution. Pass `--test-dll /absolute/path/to/Msync.Transfer.Tests.dll` to reuse
-an already built coherent producer. See
-[batch ownership and framing](../../docs/design/transport-batches.md).
+The prepared route executes ordinary `NativePlannedTransfer` operations through
+`NativeHostIO.ExecutePlannedAsync`. It preserves per-item failure/continuation,
+directory actions, Merge/Replace semantics, timestamps, narrow-buffer Unicode,
+unusual names and exact file bytes. `NativeTransfers` is only the test's driver
+for independent operations, not a product batch implementation.
 
-`--relay-batch-only` uses the same owned fixture's two configured aliases. It
-keeps their two metadata leases through many cross-endpoint scalar relays,
-source/target failure continuation, directory and symbolic-link payloads, and
-opposite-direction disjoint relays. The fixture requires exactly two native
-clients, authentications and exec sessions in total, not two extra clients per
-operation.
+Separate finite-cohort processes transfer 36 paths (files, a directory and a
+dangling link) in one actual `NativeRange`. Upload, download and same-endpoint
+copy each require exactly one native SSH client/authentication/exec session.
+External connection sharing is disabled; all paths, link targets and binary
+payloads are independently checked. Pass
+`--test-dll /absolute/path/to/Msync.Transfer.Tests.dll` to reuse a coherent build.
+
+`--relay-batch-only` retains the independent source/target failure, directory,
+symbolic-link and opposite-direction relay oracles. Its separate finite relay
+cohort requires exactly two clients/authentications/exec sessions: one per
+configured endpoint, not one pair per member.
+
+The retired `OpenSession`/`UseSession` tests asserted one explicit transport lease
+across unrelated metadata and transfer statements. That implementation-specific
+lease and its framing/owned-fd probes are not recreated. Channel-count acceptance
+now follows the user contract: one finite transfer owns metadata and bytes on one
+channel per endpoint. Missing-entry, alias, raw-spelling, source-kind and failure
+diagnostics remain checked through native filesystem and transfer operations.
 
 ## Compiled CLI/OpenSSH integration
 

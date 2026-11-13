@@ -133,7 +133,7 @@ internal sealed partial class SemanticAnalyzer
             HirKind.Convert or HirKind.Coerce => NonRangeType(new(node.Data)),
             HirKind.Literal or HirKind.TypeValue or HirKind.NativeFunction
                 or HirKind.Builtin or HirKind.Declare or HirKind.Assign or HirKind.MemberAssign
-                or HirKind.Discard or HirKind.For or HirKind.Break or HirKind.Return or HirKind.Scope
+                or HirKind.Discard or HirKind.For or HirKind.Break or HirKind.Return or HirKind.Scope or HirKind.AllocateScope
                 or HirKind.AdaptFunction or HirKind.Unary
                 or HirKind.Binary or HirKind.IsNull or HirKind.IsType or HirKind.RegexMatch
                 or HirKind.Qualify or HirKind.QualifyOn or HirKind.PathJoin or HirKind.Transfer => true,

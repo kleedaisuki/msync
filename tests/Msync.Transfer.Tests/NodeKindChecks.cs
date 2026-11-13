@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.Reflection;
 using Msync.Core;
 using Msync.Runtime;
+using Msync.Core.Native;
+using Msync.Runtime.Native;
 
 internal static class NodeKindChecks
 {
@@ -10,7 +12,7 @@ internal static class NodeKindChecks
         CheckTags();
         string root = Path.GetFullPath(Path.Combine(".temp", "node-kind", Guid.NewGuid().ToString("N")));
         Directory.CreateDirectory(root);
-        RuntimeContext context = new(new ExecutionOptions(WorkingDirectory: root));
+        NativeRuntimeContext context = new(new ExecutionOptions(WorkingDirectory: root));
         try
         {
             Directory.CreateDirectory(Path.Combine(root, "source", "nested"));
@@ -37,7 +39,7 @@ internal static class NodeKindChecks
 
     private static void CheckTags()
     {
-        Type owner = typeof(TransferEngine).Assembly.GetType("Msync.Runtime.NativeFileMetadata", throwOnError: true)!;
+        Type owner = typeof(NativeHostIO).Assembly.GetType("Msync.Runtime.NativeFileMetadata", throwOnError: true)!;
         var isLink = owner.GetMethod("IsNameSurrogate", BindingFlags.Static | BindingFlags.NonPublic)!
             .CreateDelegate<Func<uint, bool>>();
         Check(isLink(0xa000000c), "symbolic-link tag");
@@ -53,7 +55,7 @@ internal static class NodeKindChecks
         }
     }
 
-    private static async Task WindowsJourney(string root, RuntimeContext context)
+    private static async Task WindowsJourney(string root, NativeRuntimeContext context)
     {
         string filtered = Path.Combine(root, "source", "filtered");
         string bytes = new('x', 256 * 1024);
@@ -69,10 +71,10 @@ internal static class NodeKindChecks
         string junction = Path.Combine(root, "source", "junction");
         await Run("cmd.exe", ["/d", "/c", "mklink", "/J", junction, Path.Combine(root, "source", "nested")]);
         await CheckStatus("source/junction", "symlink", context);
-        Value range = await Call("fs.recursive_directory_iterator", "source", context);
-        await foreach (Value entry in ((RangeValue)range).Items)
-            Check(!((PathValue)entry).Raw.Replace('\\', '/').Contains("junction/", StringComparison.Ordinal), "recursive enumeration does not follow junctions");
-        Check(await Call("fs.remove_all", "source/junction", context) == Value.True, "junction removal");
+        NativeValue range = await Call("fs.recursive_directory_iterator", "source", context);
+        await foreach (NativeValue entry in range.AsRange().Items)
+            Check(!entry.AsPath().Raw.Replace('\\', '/').Contains("junction/", StringComparison.Ordinal), "recursive enumeration does not follow junctions");
+        Check(await Call("fs.remove_all", "source/junction", context) == NativeValue.True, "junction removal");
         Check(File.Exists(Path.Combine(root, "source", "nested", "file")), "junction removal preserves referent");
     }
 
@@ -87,18 +89,18 @@ internal static class NodeKindChecks
         Check(process.ExitCode == 0, $"{command}: {await output}\n{await error}");
     }
 
-    private static async Task CheckStatus(string path, string expected, RuntimeContext context)
+    private static async Task CheckStatus(string path, string expected, NativeRuntimeContext context)
     {
-        Check(await Call("fs.symlink_status", path, context) == new StringValue(expected), $"status: {path}");
+        Check(await Call("fs.symlink_status", path, context) == NativeValue.FromString(expected), $"status: {path}");
     }
 
-    private static ValueTask<Value> Call(string operation, string path, RuntimeContext context) =>
-        NativeRegistry.InvokeAsync(operation, [new PathValue(path, context.WorkingDirectory)], context,
+    private static ValueTask<NativeValue> Call(string operation, string path, NativeRuntimeContext context) =>
+        NativeBuiltins.InvokeAsync(operation, [NativeValue.FromPath(new(path, context.WorkingDirectory))], context,
             (_, _, _) => throw new InvalidOperationException("No callback in filesystem classification."));
 
-    private static async Task Copy(string source, string target, RuntimeContext context) =>
-        Check(await TransferEngine.CopyAsync(new PathValue(source, context.WorkingDirectory),
-            new PathValue(target, context.WorkingDirectory), context), $"copy: {source}");
+    private static async Task Copy(string source, string target, NativeRuntimeContext context) =>
+        Check(await NativeHostIO.TransferAsync(NativeValue.FromPath(new(source, context.WorkingDirectory)),
+            new(target, context.WorkingDirectory), context), $"copy: {source}");
 
     private static void Check(bool condition, string message)
     {

@@ -74,7 +74,7 @@ function startArtifactPage(renderer, createSearch, generation) {
             const { symbol, parent } = pending.pop();
             const group = parent?.group || groupOf(symbol);
             const line = symbol.selectionRange.start.line;
-            const identifier = /(@(?:[ftlgscn]\d+|b\d+_\d+|p\d+(?:n\d+)?))\)?$/.exec(symbol.name)?.[1];
+            const identifier = /(@(?:[ftlgscndq]\d+|b\d+_\d+|p\d+(?:[nb]\d+)?)|%f\d+_\d+)\)?$/.exec(symbol.name)?.[1];
             const item = { name: symbol.name, caption: symbol.name.replace(/\s+\(@[^)]+\)$/, ''), detail: symbol.detail, line, identifier,
                 end: symbol.range.end.line, parent, group };
             symbols.push(item);

@@ -33,6 +33,11 @@ materialization/cache authorities. New helper layers do not count as deletion.
 Correctness and reduction are joint acceptance conditions. Preserve source/HIR,
 portable/bound artifacts, REPL/editor behavior, builtin representations, alias
 identity, source diagnostics, deferred work and real I/O/resource lifetimes.
+Performance is also mandatory: do not make the hot path slower in the name of
+safety or semantic preservation. Express invariants in the model and discharge
+static obligations during compilation/linking instead of repeating defensive
+proofs at runtime. Blanket conservative fallback is not a finished performance
+solution; keep only checks whose condition actually remains dynamic.
 Validate coherent batches with real journeys and destructive properties; do not
 run a new full matrix for every line edit or substitute a test count for behavior.
 

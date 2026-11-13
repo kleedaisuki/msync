@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from native_journey import Example, quoted
+from native_journey import Example, payload, quoted
 
 ROOT: Path = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests" / "support"))
@@ -42,6 +42,7 @@ def main() -> None:
     options: argparse.Namespace = parser.parse_args()
     binary: Path = options.binary.resolve()
     child: Path = options.child.resolve()
+    original_payload: dict[str, str] = payload(binary)
     reports: list[dict[str, Any]] = []
     with Fixture(ROOT / ".temp" / "stdlib-native-ssh") as fixture:
         environment: dict[str, str] = fixture.environment()
@@ -121,6 +122,10 @@ if requested and not $std::process::success(completed) {{ "stopped" -> ./result;
                 "compile/bind authenticated a remote endpoint"
             )
             for artifact in (source, object_file, executable_file):
+                if artifact == object_file:
+                    source.unlink()
+                if artifact == executable_file:
+                    object_file.unlink()
                 for name, _ in example.outputs:
                     (directory / name).unlink(missing_ok=True)
                 start: int = len(lines(fixture.calls))
@@ -151,12 +156,26 @@ if requested and not $std::process::success(completed) {{ "stopped" -> ./result;
                         "case": example.name,
                         "stage": artifact.suffix,
                         "ssh_channels": count,
+                        "source_present": source.exists(),
+                        "portable_present": object_file.exists(),
                     }
                 )
+        assert payload(binary) == original_payload, (
+            "CLI payload changed during SSH journey"
+        )
         (fixture.root / "native-report.json").write_text(
             json.dumps(reports, indent=2), encoding="utf-8"
         )
-        print(json.dumps({"binary": str(binary), "stages": reports}, ensure_ascii=True))
+        print(
+            json.dumps(
+                {
+                    "binary": str(binary),
+                    "payload_sha256": original_payload,
+                    "stages": reports,
+                },
+                ensure_ascii=True,
+            )
+        )
 
 
 if __name__ == "__main__":

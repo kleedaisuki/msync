@@ -1,182 +1,121 @@
-using Msync.Optimization;
 using Msync.Core;
+using Msync.Core.Native;
 using Msync.Runtime;
+using Msync.Runtime.Native;
+using Msync.Optimization;
+using static RuntimeFixture;
 
-if (args.Contains("--profile", StringComparer.Ordinal))
-{
-    await RuntimeProfileChecks.RunAsync();
-    return;
-}
+if (args.Contains("--files", StringComparer.Ordinal)) { await FileJourneys(); return; }
+if (args.Contains("--validation", StringComparer.Ordinal)) { ValidationProperties.Run(); await ValidationProperties.RunRegions(); return; }
+if (args.Contains("--profile", StringComparer.Ordinal)) { await RuntimeProfileChecks.RunAsync(); return; }
+if (args.Contains("--inline-native", StringComparer.Ordinal)) { await InlineNativeChecks.RunAsync(); return; }
+if (args.Contains("--mutable-state", StringComparer.Ordinal)) { await MutableStateChecks.RunCurrentState(); return; }
 
-if (args.Contains("--inline-native", StringComparer.Ordinal))
+await Number("let empty = scope {}; $std::meta::member_count(empty)", 0);
+Check(PathSemantics.Join(new NativePath("left\\", Connection: new(ConnectionKind.Ssh, "host")), "leaf") == "left\\/leaf", "Remote path join erased a POSIX backslash");
+foreach (NativeConstant value in new NativeConstant[] { new(NativeKind.Null), new(NativeKind.Bool, Boolean: true) })
 {
-    await InlineNativeChecks.RunAsync();
-    return;
+    NativeProgram regex = new([value, new(NativeKind.String, ".+")], [new("regex-partial", [new(0), new(1), new(2)],
+        [new(NativeOp.Constant, 0, 0), new(NativeOp.Constant, 1, 1), new(NativeOp.Binary, 2, 0, 1, Immediate: (long)NativeBinary.RegexMatch), new(NativeOp.Return, A: 2)], new([], 2, []))],
+        [new(value.Kind == NativeKind.Null ? TypeKind.Null : TypeKind.Bool), new(TypeKind.String), new(TypeKind.Bool)], []);
+    Check(!(await Run(Reload(regex))).AsBool(), "Regex matched a nontext payload");
 }
-
-if (args.Contains("--mutable-state", StringComparer.Ordinal))
-{
-    await MutableStateChecks.RunCurrentState();
-    return;
-}
-
-int assertions = 0;
-const int any = 0, boolean = 1, stringType = 2, nil = 3, path = 4, pathRange = 5;
-CodeType[] types =
-[
-    new(TypeKind.Any), new(TypeKind.Bool), new(TypeKind.String), new(TypeKind.Null),
-    new(TypeKind.Path), new(TypeKind.Range, Element: path)
-];
-void Check(bool condition, string message)
-{
-    assertions++;
-    if (!condition) throw new InvalidOperationException(message);
-}
-Module Program(IReadOnlyList<Value> constants, params Instruction[] instructions) => new(constants,
-    [new FunctionCode("main", 0, 2, instructions, TypeRef.Any) { CodeSignature = new([], any, []) }])
-{ CodeTypes = types };
-async Task<Value> Run(Module module, ExecutionOptions? options = null) => await Interpreter.ExecuteAsync(module, options);
-void Reject(Module module, string expected)
-{
-    try { Artifact.Validate(module); Check(false, $"Malformed bytecode accepted: {expected}"); }
-    catch (MsyncException error) { Check(error.Message.Contains(expected, StringComparison.Ordinal), $"Malformed bytecode diagnostic lacks {expected}: {error.Message}"); }
-}
-Reject(Program([], new(OpCode.Pop), new(OpCode.Return)), "stack underflow");
-Reject(Program([], new(OpCode.LoadLocal, 0), new(OpCode.Return)), "not defined");
-Reject(Program([], new(OpCode.True), new(OpCode.GetIterator), new(OpCode.Return)), "expected Range");
-Reject(Program([], new(OpCode.Null), new(OpCode.Not), new(OpCode.Return)), "expected Bool");
-Reject(new Module([], [new FunctionCode("main", 1, 2, [new(OpCode.LoadLocal, 0), new(OpCode.JumpIfFalse, 4), new(OpCode.True), new(OpCode.Jump, 5), new(OpCode.Nop), new(OpCode.Return)], TypeRef.Any, ParameterTypes: [TypeRef.Bool])
-    { CodeSignature = new([boolean], any, []) }]) { CodeTypes = types }, "stack heights disagree");
-Check(PathSemantics.Join(new PathValue("left\\", Connection: new(ConnectionKind.Ssh, "host")), "leaf") == "left\\/leaf", "Remote path join erased a POSIX backslash");
-var emptyScope = Program([], new(OpCode.NewScope, 0), new(OpCode.Return)) with { ScopeLayouts = [new([])] };
-Check(await Run(Reload(emptyScope)) is ScopeValue { Members.Count: 0 }, "Empty lexical scope gained an empty-name member");
-Check(await Run(Program([], new(OpCode.Null), new(OpCode.RegexMatch, Text: ".+"), new(OpCode.Return))) is BoolValue { Data: false }, "Regex partial pattern matched Null");
-Check(await Run(Program([], new(OpCode.True), new(OpCode.RegexMatch, Text: ".+"), new(OpCode.Return))) is BoolValue { Data: false }, "Regex partial pattern stringified Bool");
-var dispatch = new Module([new StringValue("argument")],
-    [new FunctionCode("main", 0, 0, [new(OpCode.MakeClosure, 1), new(OpCode.Constant, 0), new(OpCode.Call, 1, Text: "1:2"), new(OpCode.Return)], TypeRef.String)
-     { CodeSignature = new([], stringType, []) },
-     new FunctionCode("template", 1, 1, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null)
-     { CodeSignature = new([any], nil, []) { IsTemplate = true } },
-     new FunctionCode("specialized", 1, 1, [new(OpCode.LoadLocal, 0), new(OpCode.Return)], TypeRef.String)
-     { CodeSignature = new([stringType], stringType, []) }]) { CodeTypes = types };
-Check(await Run(Reload(dispatch)) is StringValue { Data: "argument" }, "Compiled first-class dispatch lost selected signature or argument");
-Check(await Run(Program([new StringValue("\U00010000"), new StringValue("\uE000")], new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Greater), new(OpCode.Return))) is BoolValue { Data: true }, "String order changed from Unicode scalar order to UTF-16 code-unit order");
-Check(await Run(Program([new PathValue("\U00010000"), new PathValue("\uE000")], new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Greater), new(OpCode.Return))) is BoolValue { Data: true }, "Path lexical order differs from native string conversion order");
-var random = new Random(413);
-for (int i = 0; i < 100; i++)
+await Number("fn identity(x) { x }; if identity(\"argument\") == \"argument\" { 1 } else { 0 }", 1);
+await Number("if \"𐀀\" > \"\" { 1 } else { 0 }", 1);
+await Number("if ./𐀀 > ./ { 1 } else { 0 }", 1);
+await Number("12 * 3", 36);
+NativeProgram arithmetic = new([new(NativeKind.Number, Number: 12), new(NativeKind.Number, Number: 3)],
+    [new("folded-arithmetic", [new(0), new(0), new(0)],
+        [new(NativeOp.Constant, 0, 0), new(NativeOp.Constant, 1, 1), new(NativeOp.Binary, 2, 0, 1, Immediate: (long)NativeBinary.Multiply), new(NativeOp.Return, A: 2)], new([], 0, []))],
+    [new(TypeKind.Number)], []);
+NativeProgram folded = NativeOptimizer.Optimize(arithmetic, 3);
+Check((await Run(Reload(folded))).AsNumber() == 36, "Native constant folding changed value");
+Check(folded.Functions[0].Instructions.All(instruction => instruction.Op != NativeOp.Binary), "Folded result retained executable arithmetic");
+await Number("let flag = true; if flag { 42 } else { 0 }", 42);
+Random random = new(413);
+for (int index = 0; index < 100; index++)
 {
     string text = string.Concat(Enumerable.Range(0, random.Next(1, 40)).Select(_ => char.ConvertFromUtf32(random.Next(0x20, 0xd7ff))));
-    var module = Program([new StringValue(text)], new(OpCode.Constant, 0), new(OpCode.Return));
-    using var stream = new MemoryStream(); Artifact.Write(module, stream); stream.Position = 0;
-    var loaded = Artifact.Read(stream);
-    Check(await Run(loaded) is StringValue result && result.Data == text, "Binary constant round trip changed Unicode bytes");
-    Check(loaded.Stage == ArtifactStage.Relocatable && loaded.Context is null, "Relocatable object acquired context");
+    NativeProgram program = new([new(NativeKind.String, text)], [new("unicode", [new(0)],
+        [new(NativeOp.Constant, 0, 0), new(NativeOp.Return, A: 0)], new([], 0, []))], [new(TypeKind.String)], []);
+    NativeProgram decoded = Reload(program);
+    Check((await Run(decoded)).AsString() == text, "Binary literal changed Unicode bytes");
+    Check(decoded.Stage == ArtifactStage.Relocatable && decoded.Context is null, "Object acquired context");
 }
-var arithmetic = Program([new NumberValue(12), new NumberValue(3)], new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Multiply), new(OpCode.Return));
-var optimized = Optimizer.Optimize(arithmetic);
-Check(await Run(optimized) is NumberValue { Data: 36 }, "Constant-folded arithmetic changed value");
-Check(optimized.Functions[0].Instructions.All(instruction => instruction.Op is not (OpCode.Multiply or OpCode.Nop)), "Folded arithmetic retained computation or dead placeholders");
-Check(optimized.Functions[0].Instructions.Count == 2, "Folded scalar result retained unnecessary executable instructions");
-var branches = Program([new StringValue("yes"), new StringValue("no")], new(OpCode.True), new(OpCode.JumpIfFalse, 5), new(OpCode.Constant, 0), new(OpCode.Return), new(OpCode.Nop), new(OpCode.Constant, 1), new(OpCode.Return));
-var boundBranches = Binding.Bind(Optimizer.Optimize(branches), new(Environment.CurrentDirectory, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)));
-Check(await Run(boundBranches) is StringValue { Data: "yes" }, "Executable jump relocation changed selected branch");
-Check(boundBranches.Functions[0].Instructions.All(i => i.Op != OpCode.Nop), "Executable retained removable no-op instructions");
-var root = Path.Combine(Environment.CurrentDirectory, ".temp", "runtime-journey-" + Guid.NewGuid().ToString("N"));
-Directory.CreateDirectory(root);
-try
+await FileJourneys();
+await MutableStateChecks.RunCurrentState();
+await InlineNativeChecks.RunAsync();
+await RuntimeProfileChecks.RunAsync();
+ValidationProperties.Run();
+await ValidationProperties.RunRegions();
+Console.WriteLine($"PASS native runtime user journeys: {Assertions} assertions");
+
+static async Task FileJourneys()
 {
-    var writes = Program([new StringValue("klee\n世界"), new PathValue("a"), new PathValue("b"), new PathValue("c")],
-        new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Transfer), new(OpCode.Pop),
-        new(OpCode.Constant, 1), new(OpCode.Constant, 2), new(OpCode.Transfer), new(OpCode.Pop),
-        new(OpCode.Constant, 2), new(OpCode.Constant, 3), new(OpCode.Transfer), new(OpCode.Return));
-    var executable = Binding.Bind(writes, new(root, root));
-    Check(executable.Functions[0].Instructions.Count(i => i.Op == OpCode.LocalTransfer) == 3, "Executable failed to specialize known local transfers");
-    Check(await Run(executable, new(Jobs: 4)) is BoolValue { Data: true }, "Transfer did not return Bool success");
-    Check(await File.ReadAllTextAsync(Path.Combine(root, "c")) == "klee\n世界", "Scheduled read-after-write dependency lost bytes");
-    string other = Path.Combine(root, "other"); Directory.CreateDirectory(other);
-    using var stream = new MemoryStream(); Artifact.Write(executable, stream); stream.Position = 0;
-    await Run(Artifact.Read(stream), new(WorkingDirectory: other));
-    Check(!File.Exists(Path.Combine(other, "a")), "Executable artifact relocated frozen cwd");
-    await Run(writes, new(WorkingDirectory: other));
-    Check(File.Exists(Path.Combine(other, "c")), "Relocatable module failed to bind current cwd");
-    var lazyConstants = new Value[] { new StringValue("lazy"), new PathValue("lazy-flag"), new NumberValue(0) };
-    var thunk = new FunctionCode("lazy-item", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Transfer), new(OpCode.Pop), new(OpCode.Constant, 1), new(OpCode.Return)], TypeRef.Path)
-    { CodeSignature = new([], path, []) };
-    var lazy = new Module(lazyConstants, [new FunctionCode("main", 0, 1, [new(OpCode.MakeClosure, 1), new(OpCode.MakeLazyRange, 1, Text: "1"), new(OpCode.Constant, 2), new(OpCode.NativeCall, 2, Text: "ranges.take"), new(OpCode.NativeCall, 1, Text: "ranges.empty"), new(OpCode.Return)], TypeRef.Bool)
-        { CodeSignature = new([], boolean, []) }, thunk]) { CodeTypes = types };
-    Check(await Run(Reload(lazy), new(WorkingDirectory: root)) is BoolValue { Data: true }, "Lazy take(0) did not produce empty Range");
-    Check(!File.Exists(Path.Combine(root, "lazy-flag")), "Lazy item executed before first demand");
-    var session = new ExecutionSession(new(WorkingDirectory: root));
-    var firstSubmission = new Module(lazyConstants, [new FunctionCode("main", 0, 1, [new(OpCode.MakeClosure, 1), new(OpCode.MakeLazyRange, 1, Text: "1"), new(OpCode.StoreLocal, 0), new(OpCode.Null), new(OpCode.Return)], TypeRef.Null)
-        { CodeSignature = new([], nil, []) }, thunk]) { CodeTypes = types };
-    await session.ExecuteAsync(firstSubmission);
-    Check(!File.Exists(Path.Combine(root, "lazy-flag")), "Stored REPL range evaluated eagerly");
-    var secondSubmission = new Module(lazyConstants, [new FunctionCode("main", 0, 1, [new(OpCode.LoadLocal, 0), new(OpCode.NativeCall, 1, Text: "ranges.first"), new(OpCode.Return)], TypeRef.Path)
-        { CodeSignature = new([], path, []) }, thunk]) { CodeTypes = types };
-    Check(await session.ExecuteAsync(secondSubmission) is PathValue { Raw: "lazy-flag" }, "Escaping lazy range lost originating module/callback");
-    Check(await File.ReadAllTextAsync(Path.Combine(root, "lazy-flag")) == "lazy", "Escaping lazy range could not perform selected callback I/O");
-    var previousPath = Environment.GetEnvironmentVariable("PATH");
+    string root = Path.Combine(Root, Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);
     try
     {
-        Directory.CreateDirectory(Path.Combine(root, "tools"));
-        await File.WriteAllTextAsync(Path.Combine(root, "tools", "program.exe"), "executable lookup fixture");
-        Environment.SetEnvironmentVariable("PATH", "tools");
-        var lookup = Program([new PathValue("program.exe")], new(OpCode.LoadBuiltin, Text: "path"), new(OpCode.Constant, 0), new(OpCode.Qualify), new(OpCode.Return));
-        Check(await Run(lookup, new(WorkingDirectory: root)) is PathValue found && found.Raw == Path.Combine(root, "tools", "program.exe"), "PATH lookup lost explicit executable extension or captured cwd");
-    }
-    finally { Environment.SetEnvironmentVariable("PATH", previousPath); }
-    var errors = new StringWriter();
-    var missing = Program([new PathValue("missing"), new PathValue("b")], new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Transfer), new(OpCode.Return));
-    var interpreter = new Interpreter(missing, new(WorkingDirectory: root, Error: errors));
-    Check(await interpreter.ExecuteAsync() is BoolValue { Data: false }, "Operational transfer failure did not yield false");
-    Check(interpreter.FailedTransfers == 1 && errors.ToString().Contains("missing", StringComparison.Ordinal), "Failed transfer lost accounting or diagnostic");
-    Check(await File.ReadAllTextAsync(Path.Combine(root, "b")) == "klee\n世界", "Failed transfer damaged existing destination");
-    List<MsyncException> reports = [];
-    var origin = new SourceSpan("copy-fixture.msync", 18, 12);
-    var attributedMissing = missing with
-    {
-        Functions = [missing.Functions[0] with
+        NativeProgram writes = Compile("\"klee\n世界\" -> ./a; ./a -> ./b; ./b -> ./c");
+        NativeProgram executable = Reload(Bind(writes, root));
+        Check(executable.ExecutionPlans is { Count: > 0 }, "Known local transfers were not contextually planned");
+        await Run(executable, new(Jobs: 4));
+        Check(await File.ReadAllTextAsync(Path.Combine(root, "c")) == "klee\n世界", "Read-after-write lost bytes");
+        string other = Path.Combine(root, "other"); Directory.CreateDirectory(other);
+        await Run(executable, new(WorkingDirectory: other));
+        Check(!File.Exists(Path.Combine(other, "a")), "Executable relocated frozen cwd");
+        await Run(Reload(writes), new(WorkingDirectory: other));
+        Check(File.Exists(Path.Combine(other, "c")), "Relocatable object did not bind current cwd");
+        NativeProgram lazy = Compile("fn item() { \"lazy\" -> ./lazy-flag; ./lazy-flag }; $std::ranges::empty($std::ranges::take([item()], 0))");
+        Check((await Run(Reload(lazy), new(WorkingDirectory: root))).AsBool(), "Lazy take0 is not empty");
+        Check(!File.Exists(Path.Combine(root, "lazy-flag")), "Unselected lazy item executed");
+        if (!OperatingSystem.IsWindows())
         {
-            Instructions = missing.Functions[0].Instructions.Select(i => i.Op == OpCode.Transfer ? i with { Span = origin } : i).ToArray()
-        }]
-    };
-    using var callbackErrors = new StringWriter();
-    var reporting = new Interpreter(Reload(attributedMissing), new(WorkingDirectory: root, Error: callbackErrors) { ReportError = reports.Add });
-    Check(await reporting.ExecuteAsync() is BoolValue { Data: false }, "Reporting a transfer changed its false result");
-    Check(reporting.FailedTransfers == 1 && reports.Count == 1, "Structured transfer reporting lost failure accounting");
-    Check(reports[0].Span == origin && reports[0].InnerException is IOException, "Structured transfer reporting lost operand provenance or native cause");
-    Check(callbackErrors.ToString().Length == 0, "Structured transfer reporting also wrote the fallback error stream");
-    Check(await File.ReadAllTextAsync(Path.Combine(root, "b")) == "klee\n世界", "Structured reporting damaged an existing destination");
+            Directory.CreateDirectory(Path.Combine(root, "real")); Directory.CreateSymbolicLink(Path.Combine(root, "alias"), "real");
+            await Run(Compile("\"alias-data\" -> ./real/data; ./alias/data -> ./result"), new(WorkingDirectory: root, Jobs: 4));
+            Check(await File.ReadAllTextAsync(Path.Combine(root, "result")) == "alias-data", "Symlink resource dependency read stale source");
+            NativeProgram process = Compile("/bin/sh(\"-c\", \"printf hello\")");
+            NativeProcess result = (await Run(Reload(process), new(WorkingDirectory: root))).AsProcess();
+            result = await result.WaitAsync(); Check(result.ExitCode == 0 && result.StandardOutput == "hello", "Path process lost output");
+            try { await Run(process, new(WorkingDirectory: root, SpoolLimit: 3)); throw new InvalidOperationException("Spool limit ignored"); }
+            catch (MsyncException error) { Check(error.ToString().Contains("spool limit", StringComparison.Ordinal), error.ToString()); }
+            NativeProgram deferred = Compile("fn items() { /bin/sh(\"-c\", \"printf x >> deferred-calls\"); [./item] }; let r = items(); $std::ranges::first(r); $std::ranges::first(r)");
+            await Run(Reload(deferred), new(WorkingDirectory: root));
+            Check(await File.ReadAllTextAsync(Path.Combine(root, "deferred-calls")) == "x", "Deferred range producer executed twice");
+        }
+        List<MsyncException> reports = []; using StringWriter errors = new();
+        NativeProgram missing = Compile("./missing -> ./b");
+        NativeInterpreter interpreter = new(Reload(missing), new(WorkingDirectory: root, Error: errors) { ReportError = reports.Add });
+        await using (interpreter)
+        {
+            Check(!(await interpreter.ExecuteAsync()).AsBool(), "Failed transfer did not return false");
+            Check(interpreter.FailedTransfers == 1 && reports.Count == 1, "Transfer failure accounting or callback lost: failed=" + interpreter.FailedTransfers + ", reports=" + reports.Count + ", fallback=" + errors);
+            Check(reports[0].Span is not null && reports[0].ToString().Contains("missing", StringComparison.Ordinal), "Transfer lost source/native context");
+            Check(errors.ToString().Length == 0, "Structured reporting duplicated fallback errors");
+        }
+        Check(interpreter.FailedTransfers == 1, "Disposal counted an already observed failed transfer twice");
+        Check(await File.ReadAllTextAsync(Path.Combine(root, "b")) == "klee\n世界", "Failed transfer damaged destination");
+        using StringWriter fallbackErrors = new();
+        await using NativeInterpreter fallback = new(Reload(missing), new(WorkingDirectory: root, Error: fallbackErrors));
+        Check(!(await fallback.ExecuteAsync()).AsBool() && fallback.FailedTransfers == 1,
+            "Fallback diagnostic path changed false result or failure accounting");
+        Check(fallbackErrors.ToString().Contains("missing", StringComparison.Ordinal), "Fallback stream lost failed source context");
 
-    if (!OperatingSystem.IsWindows())
-    {
-        Directory.CreateDirectory(Path.Combine(root, "real"));
-        Directory.CreateSymbolicLink(Path.Combine(root, "alias"), "real");
-        var alias = Program([new StringValue(new string('z', 65536)), new PathValue("real/data"), new PathValue("alias/data"), new PathValue("result")],
-            new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Transfer), new(OpCode.Pop), new(OpCode.Constant, 2), new(OpCode.Constant, 3), new(OpCode.Transfer), new(OpCode.Return));
-        await Run(alias, new(WorkingDirectory: root, Jobs: 4));
-        Check((await File.ReadAllTextAsync(Path.Combine(root, "result"))).Length == 65536, "Alias-aware transfer dependency read stale source");
-        var process = Program([new PathValue("/bin/sh"), new StringValue("-c"), new StringValue("printf hello")], new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Constant, 2), new(OpCode.Call, 2), new(OpCode.Return));
-        Check(await Run(process) is ProcessValue { ExitCode: 0, StandardOutput: "hello" }, "Path process call lost output");
-        var deferred = new Module([new PathValue("/bin/sh"), new StringValue("-c"), new StringValue("printf x >> deferred-calls"), new PathValue("item")],
-            [new FunctionCode("main", 0, 1, [new(OpCode.MakeClosure, 1), new(OpCode.DeferRange), new(OpCode.StoreLocal, 0), new(OpCode.LoadLocal, 0), new(OpCode.NativeCall, 1, Text: "ranges.first"), new(OpCode.Pop), new(OpCode.LoadLocal, 0), new(OpCode.NativeCall, 1, Text: "ranges.first"), new(OpCode.Return)], TypeRef.Path)
-             { CodeSignature = new([], path, []) },
-             new FunctionCode("range-call", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Constant, 2), new(OpCode.Call, 2), new(OpCode.Pop), new(OpCode.Constant, 3), new(OpCode.MakeRange, 1), new(OpCode.Return)], new(TypeKind.Range, TypeRef.Path))
-             { CodeSignature = new([], pathRange, []) }]) { CodeTypes = types };
-        await Run(Reload(deferred), new(WorkingDirectory: root));
-        Check(await File.ReadAllTextAsync(Path.Combine(root, "deferred-calls")) == "x", "Deferred range call reevaluated arguments/body across demands");
-        try { await Run(process, new(SpoolLimit: 3)); Check(false, "Configured spool limit had no effect"); }
-        catch (MsyncException error) { Check(error.ToString().Contains("spool limit", StringComparison.Ordinal), "Spool failure lost its native cause"); }
+        string? previousPath = Environment.GetEnvironmentVariable("PATH");
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(root, "tools"));
+            await File.WriteAllTextAsync(Path.Combine(root, "tools", "program.exe"), "lookup fixture");
+            Environment.SetEnvironmentVariable("PATH", "tools");
+            NativeValue found = await Run(Compile("$path @ \"program.exe\""), new(WorkingDirectory: root));
+            Check(found.AsPath().Raw == Path.Combine(root, "tools", "program.exe"), "PATH lookup lost explicit extension or captured cwd");
+            NativeValue unresolved = await Run(Compile("$path @ \"./future.exe\""), new(WorkingDirectory: root));
+            Check(unresolved.AsPath().Raw == Path.Combine(root, "future.exe"), "Explicit path qualification prematurely required existence");
+            if (!OperatingSystem.IsWindows())
+                Check((await Run(Compile("$std::shell::which(\"program.exe\")"), new(WorkingDirectory: root))).Kind == NativeKind.Null,
+                    "shell.which admitted a nonexecutable PATH entry");
+        }
+        finally { Environment.SetEnvironmentVariable("PATH", previousPath); }
+
     }
-}
-finally { Directory.Delete(root, recursive: true); }
-Console.WriteLine($"Runtime bytecode/user journeys passed {assertions} assertions.");
-ValidationProperties.Run();
-
-static Module Reload(Module module)
-{
-    using MemoryStream bytes = new();
-    Artifact.Write(module, bytes);
-    bytes.Position = 0;
-    return Artifact.Read(bytes);
+    finally { Directory.Delete(root, true); }
 }

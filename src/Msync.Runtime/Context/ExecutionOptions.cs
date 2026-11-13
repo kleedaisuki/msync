@@ -11,4 +11,5 @@ public sealed record ExecutionOptions(string? WorkingDirectory = null, string? S
     public Action<string>? WorkingDirectoryChanged { get; init; }
     public RuntimeProfile? Profile { get; init; }
     public RuntimeTimeline? Timeline { get; init; }
+    public Msync.Runtime.Native.NativeTierOptions? Tiers { get; init; }
 }

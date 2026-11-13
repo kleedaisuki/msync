@@ -1,5 +1,155 @@
 # 0.8 native user-journey performance
 
+The latest complete pre-migration measurement is the [2026-11-12 format-6 HEAD
+snapshot](#integrated-format-6-head-snapshot-2026-11-12). The
+[native 0.9 transition audit](#native-09-transition-record-stream-dispatch-audit-2026-11-12)
+below records an incomplete regression investigation, not a replacement integrated score.
+Earlier tables retain
+their original image identities; they are not interchangeable current results.
+
+## Native 0.9 tier diagnostic (2026-11-12)
+
+### Is the old record baseline fast because of its guest JIT?
+
+No native entries were observed in the frozen 0.8.6 record fixture. The exact old
+binary (`afb8f618…`), old bound artifact and 8,192-record input used in the initial
+migration comparison were run with automatic policy and `MSYNC_JIT=off`.
+Five alternating pairs after one warm-up gave child CPU medians 55.35/59.48 ms
+(elapsed 55.01/58.71 ms). The host was not reserved; this small difference is not
+a policy speedup claim. Separate **profile-level** runs report zero native
+compilations and entries in both modes. Instruction-level profiles also report
+496,286 guest instructions and 8,197 function calls, but intentionally disable
+the historical native tier and cannot themselves answer the native-entry question.
+
+The old ~58 ms baseline therefore cannot be dismissed as a historical guest-JIT
+advantage. The initial replacement's roughly 1.1 million guest instructions and
+its higher per-instruction cost remain separate optimization targets. Explicit
+layout/address IR need not force the execution backend to materialize and decode
+every transient pointer. Full raw samples, exact binary/artifact/input hashes and
+both diagnostic scripts are retained in
+`artifacts/benchmarks/native-old-jit-attribution-v090/`. This is one workload's
+attribution, not an assertion that the old JIT never helped other programs.
+
+### Initial native-IR tier comparison
+
+A frozen 494-input source snapshot produced one Linux x64 Native AOT CLI for
+an Off/Force comparison on the same 8,192-record `.mexe`, stdin and independent
+stdout oracle. Five alternating pairs and one warm-up per mode gave child CPU
+medians of 341.67 ms Off and 464.28 ms Force. Wall medians were 502.21/558.32 ms,
+but the host was not reserved: treat this as a diagnostic, not an exclusive
+latency window. Tiny and string controls passed; their small timing differences
+are not established speedups. Raw samples, binary/artifact hashes and source
+manifest are under `artifacts/validation/native-tier-e2e/`.
+
+Separate instrumented runs show two native compilations (~0.69 ms total),
+8,162 native entries and 1,096,891 tier operations, only 135,657 (12.4%) direct.
+There were no guard misses or suspensions in this fixture. Compilation latency
+does not explain this regression: bridge-heavy execution and entry/guard/pin
+costs need investigation. Automatic promotion remains gated on profitability;
+native entry counts alone are not performance evidence. Linked managed Tier-1
+regions and native Tier-2 execution must be recorded separately. This snapshot
+predates the subsequent grouped-region work and is retained, not overwritten.
+
+### Grouped helpers and private scalar writes
+
+A later frozen 498-input image adds grouped helper regions, guarded primitive
+stores to unexposed activation-owned temporary slots, and batched native hit
+accounting. All modes execute the same bound artifact and stdin on the same
+Linux x64 Native AOT image. One warm-up and five alternating Off/Linked/Force
+triples verify the independent stdout oracle on every invocation:
+
+| Workload | Off CPU ms | Linked CPU ms | Force CPU ms |
+| --- | ---: | ---: | ---: |
+| Record stream, 8,192 inputs | 389.759 | 347.622 | 437.240 |
+| Signal hysteresis, 4,096 inputs | 329.648 | 278.109 | 394.196 |
+
+Linked is managed Tier-1 dispatch, **not** generated native code. Its observed
+CPU reductions (10.8% and 15.6%) do not establish a native JIT win. Force remains
+12.2% and 19.6% slower; automatic native promotion stays disabled. These are
+within-image comparisons, not a comparison against earlier images/windows:
+shared-runtime changes and host scheduling prevent attributing their absolute
+baseline differences to this patch. Wall samples are retained but show host
+contention and are not used for a latency claim.
+
+Separate record-stream profiling reports 8,162 entries, 1,096,891 tier operations,
+135,657 direct operations and 73,449 raw stores, with two compilations totaling
+about 1.12 ms. The remaining 87.6% helper-mode operations and per-entry state
+preparation dominate the next investigation; raw store coverage alone is not a
+profitability policy. Frozen source hashes, binary hashes, all samples and the
+separate profile live under `.temp/native-tier-raw/`; the corresponding payload
+is `artifacts/validation/native-tier-raw-cli/`. The earlier grouped-region image
+and receipt remain in `.temp/native-tier-regions/`.
+
+A separate diagnostic derivative of that frozen image times tier phases with
+`Stopwatch`, never substituting those instrumented runs for throughput samples.
+Three exact-oracle record runs each execute 961,234 helpers, 953,072 post-helper
+state refreshes, 62,208 managed scalar stores and 8,162 entry/pin preparations.
+Median inclusive timings are 197.09, 76.54, 7.88 and 34.56 ms respectively;
+guard/bookkeeping is 89.17 ms, flushing 1.86 ms and disposal 3.57 ms. These include
+probe overhead and nested calls, so they must **not be added** or converted to
+estimated end-to-end gains. The count establishes redundant per-helper refresh
+as a concrete target: rebinding alone changes slot ownership; pending insertion
+is already covered by the memory revision. Diagnostics, the precise modified
+tier source hashes, and preparation/run scripts are in
+`.temp/native-tier-attribution/`. Linux perf sampling was unavailable because
+`perf_event_paranoid=3`; no host security setting was changed.
+
+A later source-matched record comparison retains a negative result. The control
+is the frozen raw image with only redundant RefreshState ownership/pending
+recomputation removed; the candidate adds typed primitive-load descriptors and
+compact descriptor ordinals. Five alternating pairs, one warm-up and exact
+stdout checks gave control/candidate Off CPU medians 299.830/296.672 ms and Force
+347.132/369.091 ms. Thus this combination made Force **6.3% slower**, despite
+increasing direct operations by 57,127 loads in a separate profile. It does not
+justify promotion. Descriptor preparation/validation is a hypothesis to test,
+not an established additive explanation. This image predates counter batching,
+native scalar refinements and repeated-address descriptor reuse. Its immutable
+receipt is `.temp/native-tier-compact/record-comparison.json`; frozen source and
+payload identities are adjacent. The earlier refresh-only comparison under
+concurrent functional work remains separately in `.temp/native-tier-refresh/`
+and is not substituted for this window.
+
+### Joint middle/backend checkpoint: correctness is not profitability
+
+The 539-input joint snapshot (`native-mid-back-batch-provenance/source-manifest.json`
+under `artifacts/validation/`) includes private pointer materialization recipes,
+compact descriptor banks, scalar checked refinements, and bounded exact counter
+batching. Its Linux x64 Native AOT tier contract passes 1,239 checks. The same
+CLI passes the independently checked source/object/bound record and polygon
+journeys; a separate timing batch uses their fresh bound artifacts, not the old
+images above. Each mode receives one warm-up and six measured runs, with every
+permutation of Off/Linked/Force used once to balance order. Every invocation
+checks exact stdout and empty stderr. Startup, artifact read and execution are
+inside the measured process; source compilation is outside this boundary.
+
+| Fresh workload | Off CPU ms | Linked CPU ms | Force CPU ms |
+| --- | ---: | ---: | ---: |
+| Record stream, 8,192 inputs | 238.247 | 246.390 | 299.915 |
+| Polygon queries, 4,096 inputs | 1,083.664 | 1,134.275 | 1,702.143 |
+
+Force regresses by 25.9% and 57.1%; Linked also regresses by 3.4% and 4.7%.
+Neither result justifies automatic promotion. Earlier Linked gains belong to
+their own images/windows and are not generalized to this checkpoint. The CLI,
+input/artifact hashes, all samples and fully typed runner are retained in
+`.temp/native-mid-back-tier-perf/result.json` and the adjacent scripts; product
+payload is `artifacts/validation/native-mid-back-batch-cli/`.
+
+Separate instruction profiles prove identical logical opcode counts across
+all three modes. Record executes 751,558 operations and 8,197 calls; Force runs
+743,192 tier operations, of which 244,915 are direct and 155,059 are raw. Its
+main function has **zero** raw operations: escaping-location conservatism sends
+89,856 direct results through managed stores. `make_row` has 155,059 raw
+operations but pays 8,161 native entries. Polygon executes 3,700,786 operations
+and 98,310 calls; Force enters native code 97,902 times for 3,688,856 tier
+operations, only 698,058 direct and 390,240 raw. Twelve 22-operation range-item
+functions each incur 4,065 entries; main and `crossed` have no raw operations.
+Compilation totals are only 1.36/3.62 ms respectively. These counts motivate
+binding-locality proofs and entry/bridge amortization, not a claim that either
+mechanism already explains an additive share of the regression. This snapshot
+exports aggregate raw counts, not an exact virtual-pointer subtype count.
+Profiles and per-function data are in the adjacent `profiles.json` and SQLite
+files; they are never included in throughput samples.
+
 ## Question and workload
 
 The C# rewrite changes frontend, artifact format and host runtime together.
@@ -1595,3 +1745,716 @@ results are documented with
 [`StdlibLoading`](../../tests/StdlibLoading/DemandLoadingChecks.cs) and
 [`StdlibLoad`](../../tests/Performance/StdlibLoad/README.md) where applicable.
 No CI timing threshold or new runtime speculation tier was added.
+
+## Integrated format-6 HEAD snapshot (2026-11-12)
+
+This review closes the immediate evidence gap between the many staged native
+execution experiments and the integrated product. Source is clean commit
+`f3bd9d5d2045ebedf50c72e37236c2ba6f742c41`, product 0.8.6, format 6,
+default O2. The newly published Linux x64 Native AOT CLI has SHA-256
+`afb8f618f695ec8beb92b470a7c92c1c03c7913990de155a4fcc43cc2e1cf151`.
+The [durable receipt](../../artifacts/benchmarks/performance-status-20261112/summary.json)
+retains host, SDK, image/harness hashes and all input/output identities through
+the linked raw reports. Disposable sources, artifacts, SQLite and PTY logs
+remain under `.temp/performance-status-20261112`.
+
+### What is integrated, and what the numbers establish
+
+The product now combines typed HIR and portable place/capture contracts,
+one synchronous opcode dispatcher with actual-suspension continuations, raw
+numeric/word transport and borrowed call slots, Set-owned typed arenas,
+Heap-owned dense vectors, lexical text views, guarded Scope operations,
+ordered row folds and process-local guest machine-code workers. BTree/B+
+share a stable page allocator; the public mutable Buffer API is removed.
+See [execution tiers](tiered-execution-v086.md),
+[typed places](object-spatial-layout.md), and
+[indexed storage](indexed-storage-v080.md).
+
+This is a current absolute-performance snapshot, **not** an integrated
+before/after against an older release. Earlier format-5 checkpoints, the
+four-workload table in the assumption audit, and the historical v0.6 roadmap
+must not be combined into a claimed cumulative speedup. The controlled
+auto/off experiment below establishes the guest native tier's benefit in the
+current binary. It does not isolate each preceding architectural change.
+Native AOT compiles the host ahead of time; the guest JIT is msync's separate
+backend for user programs, not the CLR JIT. See the
+[deployment model](https://learn.microsoft.com/en-us/dotnet/core/deploying/native-aot/).
+
+### Measurement boundaries
+
+The host is a shared 16-vCPU KVM Linux x64 machine, Debian 13, kernel
+6.12.113, SDK 10.0.403/runtime 10.0.14, Python 3.15.2. No local builds or
+other benchmarks ran concurrently with timed windows; unrelated host work
+was not stopped. Processes are fresh, OS caches warm, with no cache eviction.
+These are not disk-cold, storage-bandwidth or WAN results.
+
+Basic CLI and interactive runners require two images, so both arms use the
+**identical** HEAD binary: 31 observations per arm, three warmups, alternating
+AB/BA. The tables consistently use the `aot` arm, not whichever arm won.
+Both raw A/A arms are retained. Those small empirical P95s are descriptive,
+not stable tail guarantees. The fresh `/usr/bin/true` launch controls, measured
+separately and never subtracted, have medians 1.29 ms unpinned / 1.17 ms on CPU10.
+
+The corpus uses one image, all 13 standard workloads, seed 17, seven measured
+observations and one warmup per route, pinned to CPU10. Each invocation checks
+an independent numerical/stdout oracle and, where relevant, exact output path
+sets and SHA-256 payloads. Every route also has one separate checked SQLite
+profile. Telemetry-on durations and managed allocation observations are **not**
+components to subtract from telemetry-off medians. In particular, scheduler
+wait sums and nested phases are not nonoverlapping wall-time budgets.
+
+### Whole CLI and persistent requests
+
+| Current operation, milliseconds | P50 | P95 |
+| --- | ---: | ---: |
+| Fresh `--version` | 17.35 | 21.02 |
+| Check one / 128 transfers | 18.52 / 18.28 | 23.79 / 22.90 |
+| Replace one 4 KiB file, source | 23.60 | 25.17 |
+| Replace one 4 KiB file, object | 23.52 | 25.78 |
+| Copy 256 × 4 KiB tree, source | 163.23 | 185.73 |
+| Copy 256 × 4 KiB tree, object | 147.72 | 158.29 |
+| Redirected persistent REPL scalar result | 3.57 | 10.12 |
+| Redirected persistent REPL literal publication | 6.15 | 13.26 |
+| Fresh stdio LSP initialization | 17.73 | 22.96 |
+| Warm LSP hover, 128 bindings | 0.29 | 0.47 |
+| Warm LSP full semantic tokens, 128 bindings | 1.02 | 1.32 |
+
+Copy timings include actual product writes; exact bytes, file counts, native
+modes and modification times are verified outside timing. Redirected REPL
+results do not imply a ready rendered prompt. Warm LSP requests do not measure
+large-document analysis, edit bursts, or VS Code rendering.
+
+### General applications, all current routes
+
+All 39 workload/route combinations passed. Times below include process start,
+loading and exit. Source includes compilation/preparation; object begins at
+`.mso`; bound begins at the prepared `.mexe`. Artifact production is outside
+object/bound timing. Each route is sampled separately: a bound median need not
+beat its object/source median on this shared host. Do not interpret their
+difference as a measured phase or average the cases into a universal score.
+
+| Standard workload, seed 17; P50 milliseconds | Source | Object | Bound |
+| --- | ---: | ---: | ---: |
+| Polygon, 16,384 points × 12 edges | 73.08 | 50.28 | 52.34 |
+| Signal hysteresis, 65,536 × 3 detectors | 436.35 | 392.88 | 414.28 |
+| Numeric record stream, 32,768 records | 106.41 | 90.16 | 90.64 |
+| Band classification, 8,192 × 8 bands | 112.37 | 80.68 | 82.87 |
+| Segment screening, 6,144 × 8 segments | 100.70 | 70.73 | 72.84 |
+| Literal segment parity, 4,096 × 19 segments | 67.50 | 29.03 | 24.38 |
+| Ordered calibration, 2,048 × 129 rows | 89.47 | 21.11 | 22.54 |
+| B+ inventory, 3,072 transactions | 743.24 | 179.02 | 200.08 |
+| Heap scheduler, 4,096 arrivals | 243.61 | 107.44 | 106.26 |
+| Bounded sensor pipeline, up to 12,000 readings | 95.10 | 67.17 | 67.88 |
+| Live policy dispatch, 28,000 records | 141.34 | 94.70 | 100.21 |
+| Unicode Path manifest, 65,000 records | 653.55 | 633.95 | 647.77 |
+| Local copy manifest, 144 records | 263.26 | 261.18 | 296.46 |
+
+Separate source profiles put B+ compilation at 558 ms and Heap compilation at
+158 ms. Their source-to-bound gap is consistent with significant frontend
+cost, but these are instrumented observations, not a phase decomposition of
+the table. Unicode bound execution allocates 76.53 MiB and makes 195,002 source
+calls, despite six Number boxes. Signal allocates 35.44 MiB, makes 262,156 calls
+and 322,157 Number boxes, with zero guest native entries. These are concrete
+remaining work mixes, not evidence that one dispatcher change will solve both.
+
+The current native paths do run in application workloads: Heap scheduler
+records 4,027 method-worker entries; live-policy dispatch has 27,563 guarded
+direct entries; ordered calibration folds 264,192 rows. The Unicode case's
+64,937 native tail entries account for only about 1.39 ms of its profiled
+execution: entry coverage alone is not evidence that the dominant work is native.
+
+### Same-image guest native tier control
+
+The public Set and Heap fixtures each use 8,192 generated keys. Set checks
+insertions and present/absent queries (score 73,728). Heap compares every pop
+with independently sorted keys (score 8,192). The new format-6 object is bound
+without its source, then object and executable routes receive only the selected
+artifact in detached directories. Seven AB/BA pairs per route run the identical
+CLI/artifact with `MSYNC_JIT=off` versus automatic admission, telemetry off.
+
+| Fresh process P50 milliseconds; off → auto | Source | Object | Bound |
+| --- | ---: | ---: | ---: |
+| Set | 528.66 → 178.10 | 410.23 → 93.81 | 423.61 → 87.62 |
+| Heap | 554.99 → 366.46 | 319.40 → 137.87 | 323.13 → 139.65 |
+
+The bound-route median ratio is 4.83× for Set and 2.31× for Heap; source ratios
+are 2.97× and 1.51×. These are the current tier's workload-specific gains, not
+speedups over an older product. Separate profiles retain identical logical
+opcode metric totals and native-call totals on all six routes. Physical fast
+native counters intentionally differ. Set has 35,584 worker entries and 30,853
+actual stores; Heap has 8,160 entries and 92,843 stores. Off records zero worker
+entries. Set physical source frames drop 52,099 → 27,616 and Number boxes
+43,901 → 11,242; Heap frames drop 81,924 → 65,604. The machine tier removes
+real work without silently changing the scored program.
+
+### Actual colored terminal and session age
+
+The PTY runner verifies each retained-state increment and waits for the next
+rendered prompt. Typing/paste repaint is timed separately, outside Enter-to-ready.
+Fixed state uses 256 submissions; growing state adds one Scope export each
+submission, with 512 submissions split into age windows. No growing-session
+pooled tail is reported.
+
+| Enter to result + next prompt; milliseconds | P50 | P95 |
+| --- | ---: | ---: |
+| Fixed state, 256 submissions | 4.51 | 12.69 |
+| Growing, submissions 1–128 | 7.84 | 16.27 |
+| Growing, 129–256 | 14.03 | 22.45 |
+| Growing, 257–384 | 21.66 | 31.68 |
+| Growing, 385–512 | 30.04 | 40.13 |
+
+The two first-prompt observations are 55.05 and 52.57 ms, not a sampled startup
+distribution. Fixed-state observed P99 is 17.81 ms, with only three samples at
+or above that rank; the 128-observation growing windows have only two. Do not
+turn these into a product P99 guarantee. Session age remains an input, not
+stationary tail noise; this is consistent with the measurement caution in
+[The Tail at Scale](https://research.google/pubs/the-tail-at-scale/) and the
+[existing tail investigation](performance-tail-v081.md).
+
+Code inspection identifies actual session-size work, **not measured attribution
+of this new slope**: `SemanticSession.AcceptSubmission` refreshes all exports
+and invalidates descriptions; `SemanticObservationBuilder.DescribeSession`
+projects all roots/type tables; `InteractivePrompt.Callbacks.RefreshBindings`
+recursively flattens all names. Binder inheritance and lowering layout also
+copy accumulated tables. `ExecutionSession.ExecuteAsync` resizes the retained
+local array to the exact slot count on growth. Existing persistent fact roots
+already apply deltas; this is not evidence of the old overlay-chain bug.
+
+### Next priorities and evidence limits
+
+1. Profile growing-session compile, feedback, description and prompt flattening
+   separately, then make publication/query work proportional to changed roots
+   without freezing mutable Scope fields or losing exported members.
+2. Reduce demonstrated collection-source frontend cost; preserve specialization,
+   capture identities and source-free artifact ownership. For Signal and Unicode,
+   target the measured call/allocation mix rather than adding more native entries
+   in already cheap tails.
+3. Keep a reproducible current image as the next comparison baseline. Older
+   format-6 capture-admission/reader investigations remain useful hypotheses,
+   but later constant/place caches mean their older CPU deltas are not HEAD
+   regression measurements.
+4. Current SSH/WAN throughput, latest physical ARM performance, native Windows
+   AOT and a full editor repaint/edit-burst journey are not measured here.
+   Historical SSH results and Wine/QEMU correctness cannot fill those gaps.
+
+No production implementation, compatibility contract, CI threshold, release
+asset or published tag was changed for this review.
+
+## Benchmark consolidation (2026-11-12)
+
+The design review following that snapshot found a selection imbalance: seven
+of thirteen cases were compute, with several geometry/layout motifs added as
+specific optimizations landed. The maintained entry point is now
+[`tests/Performance/run.py`](../../tests/Performance/run.py), documented in
+[BENCHMARK.md](../../BENCHMARK.md). It runs CLI, large-file I/O, mixed
+applications, persistent requests, realistic editor work and terminal session
+age serially, with a genuine single-image mode and an optional baseline.
+
+Eleven core applications retain three different compute behaviors and the
+existing mixed application families, adding runtime-fed Set deduplication and
+a finite Range manifest copy. Four overlapping scan/fold cases are removed
+from default selection, not from their explicitly selectable mechanism checks.
+Pure container/SHA kernels and frozen adaptive-runtime overlays stay outside
+general application claims. The explicit-loop and Range copies share source
+distributions but differ in destination layout; their medians do not isolate
+the transfer mechanism alone.
+
+Copy samples now vary source generations and seed incorrect existing targets
+outside timing. A real no-op executable is rejected even after a previous
+successful output. This retains the ordinary replacement workload while closing
+the old fixed-output oracle's blind spot. File and tree checks include exact
+paths, bytes and native metadata. Corpus images and matching runtime payloads
+are frozen, with unrelated adjacent JSON excluded. Current workloads are
+parameterized rather than a fixed program-independent speed score.
+
+The interactive group adds actual change-to-current-type requests and negotiated
+semantic-token deltas with independent token reconstruction. The editor group
+adds first standard-library queries, typed completion/resolve/navigation, reopen
+isolation and a moderate edit burst; 4,000-binding documents are explicit rather
+than the default ordinary-document proxy. Fixed/growing PTY ages remain
+separate. Legacy lower-level runner arguments remain usable.
+
+These changes validate the benchmark design; they do not constitute a new
+product optimization or a comparable replacement for the preceding timing
+window. Keep the previous image/harness identities and observations intact.
+Current research decisions are summarized separately in
+[RESEARCH.md](../../RESEARCH.md), rather than duplicated in AGENTS.md.
+
+Validation used the current Native AOT CLI: single-image coverage of all groups,
+then six-group paired smoke with both seeds and all application routes. Both
+new applications passed standard scale, seeds 17/503 and all three routes;
+selected opt-in profiling/JIT-off and explicit diagnostic selection also passed.
+Legacy paired CLI/interactive interfaces remain checked. These are functional
+harness checks, not new performance estimates. The realistic editor check exposed
+an obsolete expectation that generic Scope documentation list its members; it
+now verifies the exact reopened member set, resolved type and hover, preserving
+old-generation resolution isolation. No product behavior was changed to pass it.
+Validation receipts are under `.temp/benchmark-consolidation/`; focused no-op,
+delta reconstruction, orchestration and partial-failure contracts accompany
+the real-process checks.
+
+## Native 0.9 transition: record-stream dispatch audit (2026-11-12)
+
+The updated `numeric-record-stream` builds Scope records through a source
+callback, materializes Range membership and consumes the fields. It no longer
+calls the removed vector-owner API. Both comparison images receive the same
+generated source, stdin and independent integer oracle. At size 8,192, seed 17,
+three paired samples after one warm-up, the initial fixed v0.9 AOT image took
+616.79 ms versus v0.8.6's 58.20 ms on the bound route. Source and object routes
+also regressed. This is an unresolved regression, not evidence that the native
+representation is complete or an accepted cost of the architecture.
+
+Two implementation costs were identified and removed without changing the IR
+or specializing a selected source/library pattern:
+
+1. `StepAsync` generated two capturing display classes **before** the opcode
+   switch, including for synchronous instructions. The generated JIT listing
+   contains the two allocation-helper calls; the ready-path listing no longer
+   does. Pending-only helpers now own captures, while every builtin retains
+   its existing ready/deferred semantics. Empty work owners also skip graph
+   discovery, after iterator cleanup, without skipping frame retirement or
+   context restoration. This follows the production concern documented by the
+   [.NET delegate-cost discussion](https://devblogs.microsoft.com/dotnet/understanding-the-cost-of-csharp-delegates/):
+   capture placement matters, not merely whether a particular delegate executes.
+2. The per-instruction `NativeStep` transported a full NativeDatum through
+   `ValueTask<NativeStep>` even though only Return used the payload. Return data
+   now stays on the activation and ordinary steps contain only next-PC and
+   returned state (eight bytes). This addresses the larger value-copy and
+   async-state trade-off described in the
+   [.NET ValueTask documentation](https://learn.microsoft.com/dotnet/api/system.threading.tasks.valuetask-1),
+   rather than replacing async operations with incorrect synchronous waits.
+
+The causal Native AOT comparisons use frozen source snapshots under
+`.temp/native-e2e-perf/source-*`, with 470 frozen build inputs (467 identical and
+three recorded owned Runtime files changed in the first pair). Main-worktree source was never reverted
+to create a control. Both images execute the **same** checked `.mexe` and stdin;
+five alternating pairs follow one warm-up per image, with telemetry disabled.
+All invocations match `7021 / 105397 / 146049` exactly. Linux x86-64, .NET SDK
+10.0.403, Release, 16-core affinity; no claim about cold caches or tails.
+
+| Isolated change | Before wall/CPU median (ms) | After wall/CPU median (ms) | Interpretation |
+| --- | ---: | ---: | --- |
+| Pending-only helpers and empty-owner guard | 598.66 / 590.55 | 482.06 / 478.28 | About 19.5% lower elapsed time in this window. Execute managed allocation traffic drops 164,837,000 to 41,106,016 bytes (75.1%); Gen0 19 to 4 and Gen2 2 to 0. |
+| Eight-byte ordinary step | 483.92 / 480.41 | 399.92 / 400.91 | About 17.4% lower elapsed time relative to its separately paired ready-path control. |
+
+The roughly 400 ms result is still far slower than the old image's roughly
+58 ms. These improvements do not explain or close that remaining gap. The
+separate paired windows must not be presented as a universal cumulative speedup.
+Raw reports, exact executable/dependency hashes and source manifests are in
+`.temp/native-e2e-perf/{ready-aot-comparison,smallstep-aot-comparison}.json`.
+The earlier overlap-contaminated run remains explicitly named
+`ready-aot-comparison-overlap-invalid.json` and is not used for conclusions.
+
+A third change preserves unrelated private-memory facts across a private,
+unaddressed temporary Drop and across location rebinding. Drop still invalidates
+exposed/bound locations, calls remain memory barriers, and value snapshots keep
+their original identity. Existing all-builtin, rebind and exposed-drop controls
+cover the changed proof. Copy propagation additionally requires identical static
+type IDs: a physically identical copy can establish a wider ABI used by a later
+Narrow and must not be bypassed. Scalar-union and finite-Scope bridges are checked
+through validation, artifact roundtrip and repeated optimization.
+
+This compiler comparison intentionally uses the same fixed VM hash for two
+different `.mexe` hashes, not a timed A/A comparison. The observed 401.03 to
+388.38 ms elapsed medians are only a small/noisy window, not a large established
+gain. Static Load counts fall 36 to 29 and Store 29 to 26; Nops increase because
+PC/provenance positions are retained. A no-memory literal control emits bytewise
+identical artifacts, so it is reported as a pass non-hit without inventing an
+A/A latency improvement. Reports: `memoryfacts-aot-comparison.json` and
+`memoryfacts-controls.json` in the same directory.
+
+Residual profiling is explicit about measurement limits. `perf` hardware
+sampling is unavailable at this host's paranoid setting. EventPipe sampled
+thread time is useful for stacks but its GC-poll/monitor percentages are not CPU
+shares. A `gprofng` attempt changed its interval timer and reports unreliable
+data, so those percentages are discarded. Callgrind executes the fixed AOT
+workload with the correct oracle and counts 1,627,056,324 host instructions;
+exclusive StepAsync contexts account for 27.3%, RunFunction for 6.7%, and memory
+read/write/restore/format plumbing is a substantial remaining component.
+These are instruction shares, not wall-time percentages; inclusive tail-call
+cycles must not be summed. The next investigation targets those general costs,
+not restoration of number sidecars, collection owners or generic objects.
+
+An instruction-address Callgrind follow-up makes one remaining dispatch cost
+causal rather than attributing wall samples to it: `StepAsync` is invoked
+1,108,438 times, and its AOT prologue executes 58 iterations of three 16-byte
+zero stores before selecting an opcode. That is 3,085,891,392 bytes of stack
+clearing and 321,447,020 host instructions (19.84% of that run's 1,620,020,383
+instructions). The switch shared a 2,968-byte GC-tracked stack frame for value
+temporaries belonging to mutually exclusive opcode cases. GC-sensitive stack
+initialization is part of the runtime's
+[managed ABI](https://github.com/dotnet/runtime/blob/main/docs/design/coreclr/botr/clr-abi.md);
+skipping root initialization is not a valid fix.
+
+The bounded fix outlines 21 value-bearing synchronous handlers and prevents
+them being inlined back into dispatch. Each handler still implements the same
+operation for all builtin kinds; ready/deferred semantics, frame retirement,
+cancellation, source attribution and the latest typed memory-copy paths remain
+unchanged. A frozen one-Runtime-file prototype reduces the dispatch stack frame
+to 208 bytes. In a fresh five-pair/one-warm-up serial AOT comparison using the
+same artifact and oracle, small-step control 376.94 ms wall / 377.58 ms CPU
+becomes 298.89 / 299.66 ms (about 20.7% / 20.6% lower). The collection-validation
+worker confirmed its subprocesses were terminal and held the next launch for
+this measurement window. The prototype did not revert shared production source.
+Receipt: `.temp/native-e2e-perf/outlined-aot-comparison.json`; exact one-file
+delta: `outline-source-changes.json`; prologue/cost evidence:
+`smallstep-aot-entry-disasm.txt` and `smallstep-instr.callgrind` there.
+
+The same extraction was then applied to the current production cases, preserving
+newer range metadata and raw-copy implementations rather than overwriting them
+with the older snapshot. `NativeInterpreter.Steps.cs` owns the outlined bodies;
+the full `NativeExecution` probe passes 459 real programs/results, including
+pending ranges, copied versus independent futures, old image generations,
+resource failure/counting, cancellation and actual ordered source Set execution.
+This is still not parity with the old 58 ms image, and the separately measured
+rows are not an integrated final-image estimate.
+
+### Typed pointer storage follow-up
+
+The pointer-coherence correction preserves optional physical pointee ABI metadata
+in native storage and removes the frame's dense pointer-value cache. Strictly
+validated IR had returned a stale address after BindLocation; indirect stores and
+callee writes require the same single-source-of-truth representation. Location
+identity remains allocation plus offset.
+
+The first cache-free implementation decoded a full NativeValue/Datum on every
+Pointer access and regressed a source-matched AOT window from 315.12 to 384.67 ms.
+That implementation's receipt is retained, not accepted as a performance gain.
+Typed ready Address load/store entrypoints remove those carrier copies; sum and
+pending paths retain their normal behavior.
+
+The follow-up freezes 490 build inputs with six pointer-related source differences,
+one identical bound 8,192-record artifact, seed 17, one warm-up and five alternating
+pairs, Linux x86-64 Native AOT, guest JIT disabled. No collection-validation
+process ran during the final timing window. Control/candidate medians were
+290.24/282.73 ms wall and 290.06/282.14 ms CPU. This small window does not establish
+a general latency gain, but does not reproduce the initial large regression.
+Separate execute-profile allocation observations were 41,099,568/31,984,704 bytes
+(22.2% less), with Gen0 collections 4/3.
+
+Image hashes: control
+`88b65bfac830d945b01895456207dec446bf00a8e3e987ded02d1708c0cf3299`, candidate
+`2fcd5e9951247bae629a220bd3c5acebe581df849c7b198f3a752483bf877412`.
+Raw receipts/source manifests are in `.temp/pointer-storage/`:
+`fast-aot-comparison.json` is the accepted window, `aot-comparison.json` retains
+the initial regression, and `sources-fast-effective.json` verifies the common
+post-restore dependency graph. Fixed images are under
+`artifacts/validation/pointer-storage-{control,candidate-fast}`. These are
+mechanism receipts, not a final v0.9 end-to-end score.
+
+## Native portable middle-end policy comparison (2026-11-12)
+
+This isolates portable transforms rather than changing the VM. One source was
+analyzed/lowered once at O0 and the resulting raw native program optimized and
+prepared at each level by `tests/NativeMiddleEnd --emit`. The loop reads a runtime
+count and applies `adjust(x) = (x + 3) * (x + 3) - 5` for 8,192 inputs, reducing
+modulo 1,000,003; the independent integer oracle is exactly `169423\n`.
+
+O1 retained the proved source helper call. O2 inlined it with ordinary typed
+operations. Static whole-program code grew from 130 to 138 instructions and 142
+to 157 slots because original helper definitions remain available; static size
+alone would not demonstrate a win. Separate execute profiles show 8,196 function
+entries becoming four (8,192 helper frames removed) while both run exactly
+155,754 guest instructions. Instrumented execute allocation was 14,014,416 versus
+1,626,144 bytes, with Gen0 collections 1/0. These allocation observations include
+profiling and are not substituted for uninstrumented timing.
+
+On the same fixed Linux x64 Native AOT CLI, one warm-up and seven alternating
+O1/O2 process pairs checked the exact stdout on every invocation. Bound-artifact
+execution medians were 86.379 / 57.407 ms elapsed and 87.100 / 57.431 ms CPU
+(about 33.5% / 34.1% less). Compilation and preparation are outside this boundary;
+no claim is made about source startup or a universal O2 advantage. The CLI hash
+was `9ecde3651de8e3ddaf470bef0723d0fc7f5936d16962d7a328bf28bf51248211`.
+Raw samples, frozen payloads and input hashes are in
+`.temp/native-middleend-loop-paired/result.json`; the static code and separate
+SQLite profiles are in `.temp/native-middleend-loop/`.
+
+The record-stream non-inline control produces identical operation/slot counts
+at O1/O2/O3 (275 operations, 280 slots), versus raw O0 378/318. Decoded O1/O2
+artifacts are identical except `optimizationLevel`; only one encoded byte differs.
+Seven alternating process pairs nevertheless measured 250.747 / 284.101 ms
+elapsed and 250.619 / 268.443 ms CPU. This nonhit discrepancy (about +13.3% wall,
++7.1% CPU) is retained rather than presented as a pass effect: it exposes the
+uncertainty of the timing window, and no runtime gain from higher inline budgets
+is inferred for that control. Raw data and frozen payloads are in
+`.temp/native-middleend-records-paired-final/result.json`. An earlier attempted
+control stopped at a missing expected-output file before any invocation and is
+not a performance observation. Reproduce controlled pairs with the fully typed
+`tests/NativeMiddleEnd/measure.py`, keeping active build/functional workloads out
+of the timing window. This fixed image predates subsequent tail/tier runtime
+changes and must not be relabeled as their measurement.
+
+## Default execution-lowering batch: negative throughput result (2026-11-12)
+
+One 573-input source freezes the unified Off/Linked/Force backend, shared actual
+address proofs, removal of virtual pointer materialization and pure preparation
+semantics. CLI SHA256 is
+`cda618eebb6ad561a574e269ecf3fa5b8d0b757fd0985f1b5a13b3561f2c6183`;
+source manifest SHA256 is
+`20bcf475ad50651abe7977da9e38417a8031de975907af9f0f0fe2a61ac14311`.
+The same source passes 1,283 native-tier contracts under Native AOT; the actual
+CLI passes eleven application smoke cases on all three routes (33), larger
+record/polygon cases on all three routes (6), nine 100,000-step tail-call routes,
+26 detached changed-context preparation routes and CLI/REPL telemetry controls.
+These are functional receipts, **not performance acceptance**.
+
+Linux x64 fresh-process bound-artifact timing uses the identical existing native
+artifacts/stdin/independent stdout oracle on both images, with compilation and
+preparation excluded. Each of four conditions has one warm-up and eight checked
+samples, ordered by cyclic rotations and reversed rotations. All 72 executions
+match. Build/functional/profiling work is excluded from the timed window; the
+host is not reserved and raw affinity/load are retained.
+
+| CPU median (ms) | Previous 539-input Off | New Off | New Linked | New Force |
+| --- | ---: | ---: | ---: | ---: |
+| Record stream, 8,192 records | 252.3835 | 266.4920 | 262.5620 | 272.8425 |
+| Polygon queries, 4,096 queries | 1,131.9055 | 1,118.5245 | 1,141.8820 | 1,364.2935 |
+
+The record Off route regresses 5.59%; the polygon difference is only -1.18% in
+this window. Force is still slower than current Off by 2.38%/21.97%. Do not add
+gains from historical windows or claim profitable JIT promotion; Auto stays off.
+The batch is retained as **functional-pass/performance-not-accepted**.
+
+Separate profiles preserve equal logical work in all modes: record 751,558
+operations/8,197 calls, polygon 3,700,786/98,310. Force compiles only 1.08/2.42 ms,
+but still executes 579,887/3,185,918 tier helper operations. Record raw-operation
+count is now zero, rather than evidence of complete direct lowering; trace the
+actual lowering/proof restriction instead of blaming compilation startup.
+
+Callgrind Off checks the same record oracle and counts 1,034,993,027 dynamic host
+instructions versus 1,019,737,376 for the prior 539-input image. This is not a
+CPU-time percentage. In the new image, the two main RunActivation contexts have
+102.6 million self instructions. Unobserved `Visit` loops consume 31.6 million,
+eager diagnostic lookup 10.5 million, even with telemetry explicitly disabled.
+By contrast all execution-function construction is only 5.53 million inclusive
+(0.53% of the instruction total); querying provenance for unrelated opcodes is
+unnecessary but cannot explain most of this workload's cost.
+
+The next coherent batch therefore removes observation/diagnostic work when no
+observer/error exists, preserves original PCs/spans and explicit tier counters,
+and investigates blanket direct-write denials using the existing proof graph.
+No new cache authority or safety/performance trade-off is accepted. Current
+editor/query experiments are outside this frozen image.
+
+Raw samples, image/source hashes, scripts, profiles and functional receipts:
+`artifacts/validation/native-execution-lowering-provenance/`. Instrumented
+Callgrind files and original command receipt are in
+`.temp/native-execution-lowering-batch/`. Full-source BTree convergence, the old
+record-image gap, profitable JIT and the hard 30% net deletion gate remain open.
+
+## ValueID and unobserved-work batch: causal default-backend gain (2026-11-12)
+
+The 580-input candidate copies the preserved 573-input source and overlays only
+final Core/Runtime and their tests. Compiler, HIR, optimization and editor source
+remain identical to 573; subsequent frontend experiments are not part of this
+measurement. Source manifest SHA256 is
+`8d7e45508dcc46982bec6b14e2a37ea78f687ee75d95d0039c56e513ad455528`;
+Native AOT CLI SHA256 is
+`b05f44d9bf554ac5127bd6b51fbb5ff65ad35f5c2f3282af2bb9a44b9a80fd5e`.
+Both frozen sources and executable bytes are retained unchanged.
+
+This batch removes unobserved Visit/Edge loops and eager diagnostic lookup,
+reuses the resolved monomorphic storage representation, and does not capture
+directory context for arithmetic/comparison operations that never use it.
+PathJoin/Qualify retain their construction-time context. Core facts now belong
+to entry/instruction ValueIDs, not colored slots: CFG reaching definitions,
+binding identity and actual-use escape roots prevent an old captured pointer's
+Unknown fact from contaminating a later allocation-derived pointer in that slot.
+The shared graph is sparse by blocks/actual uses, not a dense PC-by-slot table.
+
+The same actual application, tail, preparation and telemetry journeys pass as in
+573: 33 core smoke routes, six larger record/polygon routes, nine 100,000-step
+tail-call routes, 26 detached context routes and CLI/REPL counters. Same-source
+Native AOT tier acceptance passes 1,283 contracts. These are checkpoint evidence,
+not release/platform completion or proof that the frontend work is integrated.
+
+Linux x64 timing uses the same two bound artifacts and exact stdout oracles,
+with no compilation/preparation/instrumentation in timing. Five conditions each
+have one warm-up and ten checked samples in cyclic/reversed balanced rotations
+(110 verified process runs). Project build/probe processes are held out of this
+window. The host remains unreserved; affinity/load and all samples are recorded.
+
+| CPU median (ms) | 539 Off | 573 Off | 580 Off | 580 Linked | 580 Force |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Record stream, 8,192 | 246.303 | 254.649 | 237.796 | 234.000 | 234.005 |
+| Polygon queries, 4,096 | 1,074.9795 | 1,098.160 | 992.5705 | 997.370 | 1,211.104 |
+
+Off improves **6.62%/9.62% against the causal 573 control** and
+**3.45%/7.67% against 539 in this same window**. This supports accepting the
+default-backend batch, not adding gains from earlier windows. Record Force's
+1.59% difference from Off is small and matches Linked; polygon Force still loses
+22.02%. No profitable native JIT policy is established and Auto remains disabled.
+
+Separate profiles retain exactly 751,558 operations/8,197 calls for record and
+3,700,786/98,310 for polygon across all tiers. Record Force restores 122,415 raw
+operations in `make_row`, with 212,271 direct operations out of 743,192 tier
+operations; main still has zero raw operations. Polygon has 195,120 raw and
+502,938 direct out of 3,688,856 tier operations. Compile cost is only
+0.8922/1.769 ms. Unknown iterator/callback producer origins and broad private-write
+denials remain implementation work; a declared return layout is not their proof.
+
+Callgrind on the identical record oracle falls from 1,034,993,027 to 915,031,080
+host instructions (-11.59%). The two main RunActivation contexts fall from
+102.6 million to 64.5 million self instructions, and the unobserved Visit,
+Diagnostic and Edge calls disappear. This is instruction-count attribution, not
+exclusive CPU time. NativeValue restoration remains 23.94 million self
+instructions: transient carriers and call/frame materialization remain plausible
+next seams, to be measured rather than replaced with another state/cache layer.
+
+Receipts, raw samples, profiles, scripts, Callgrind and image/source hashes:
+`artifacts/validation/native-backend-pc-provenance/acceptance.json` and adjacent
+files. This bounded batch passes default throughput acceptance. The much larger
+v0.8.6 record gap, native-tier profitability, original BTree compile deadline,
+final integration/platform acceptance and 30% net deletion remain open.
+
+## Sparse frame addresses: allocation gain, CPU acceptance held (2026-11-12)
+
+The next Runtime-only batch combines the separately measured empty-activation
+cleanup with immutable slot descriptors and compact mutable bindings. Fixed
+addresses are formed from owner/offset/type, not stored in a dense per-activation
+NativeAddress bank. Actual location captures, Bind targets and persistent cells
+retain canonical binding state. Constructor ownership is separate from the
+slot's persistence capability: public contextual preparation has no session
+dictionary even for a session-capable program, and must keep ephemeral storage.
+
+Candidate manifest SHA256 is
+`23cede78bdbb2d58f959f4dda2bfac5bef30baf34b5fe46e9b7f11d35720822b`
+(584 source inputs), CLI SHA256
+`8072ec3d5179ff21a82b081ff00ca206d933c01b5087feb1061db84640fec913`.
+Compiler/HIR/optimization and the Core graph remain the preserved 580 cohort;
+new interprocedural/compiler experiments are excluded. Actual application routes
+33+6, deep-tail routes 9, preparation CLI routes 26, static-observation routes 18
+and CLI/REPL counters pass; same-source tier Native AOT passes 1,292 contracts.
+
+Managed same-artifact allocation medians fall a further 10.33%/14.78% relative to
+the separately frozen empty-activation control (record 24,612,976→22,070,056 B;
+polygon 215,430,880→183,598,968 B). Do not add these percentages to the earlier
+5.79%/7.75%, or substitute allocation traffic for CPU time.
+
+One Native AOT publish then measures five conditions, one warm-up and ten balanced
+samples per condition (110 exact-oracle process runs). Current/control use the
+identical native bound artifacts. The independently compiled v0.8.6 format-6
+control uses identical source, stdin and expected stdout, not identical IR.
+Compilation, preparation and instrumentation are outside the measured boundary.
+
+| CPU median (ms) | v0.8.6 Off | 580 Off | Sparse Off | Sparse Linked | Sparse Force |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Record stream, 8,192 | 53.752 | 233.3885 | 239.5015 | 227.4655 | 257.079 |
+| Polygon queries, 4,096 | 32.092 | 983.6745 | 975.249 | 1,004.2695 | 1,193.024 |
+
+Sparse Off is +2.62% for record and -0.86% for polygon against 580. The allocation
+result therefore does **not** establish CPU acceptance. Callgrind independently
+counts 939,935,869 record host instructions versus 915,031,080 (+2.72%); the new
+out-of-line Location alone has 47,992,757 self instructions. Disassembly shows
+GetDatum calling Location, constructing a GC-containing 24-byte NativeAddress in
+a hidden return buffer with checked reference assignments, then copying it into
+Read. Rebuilding addresses is the intended model; making each read pay this ABI
+boundary is not an accepted correctness cost. A subsequent inlining-only patch
+is pending combined verification; the presence of an attribute is not evidence
+that the helpers disappear. No dense pointer shadow bank is restored.
+
+The old-image comparison exposes a much larger open gap, but its mechanism must
+be described accurately. Separate ordinary `profile` runs (which do not disable
+the old JIT as `instructions` profiling can) report **zero** guest JIT and native
+worker compilations/entries for both workloads. Old polygon reports 2,491,029
+logical instructions and six ordinary calls, versus current 3,700,786/98,310.
+The current count splits into 49,152 constructor thunks, 49,152 `crossed` calls
+and six other calls. However old counts also include 49,152 literal factories,
+49,152 managed guarded Scope regions and 8,738 fused crossings. Old managed code
+performs those arithmetic regions directly on doubles and skips ordinary constant
+constructor invocation. Its call count is not proof that no interpreter contexts
+exist. This is a concrete lost-lowering target, **not** a reason to reinstate the
+old generic Scope/Value VM or a geometry-specific fast path. General typed call/
+constructor/block lowering and actual producer facts must recover the useful
+work elimination while preserving freshness, effects, aliases and observations.
+
+Receipts, exact old/new source/input/output hashes, old ordinary profiles,
+disassembly and the negative CPU result are retained under
+`artifacts/validation/native-sparse-frame-provenance/`. Status is
+**functional/allocation pass, CPU hold**; Auto remains off. Original BTree compile
+convergence, general JIT profitability and the 30% net deletion requirement remain
+unfulfilled. Neither the smaller allocation result nor the prior 580 gain closes
+the old-image throughput gap.
+
+## Program provenance batch: end-to-end compile regression (2026-11-13)
+
+The 602-input full-current snapshot combines program-owned actual producer facts,
+lexical binding elimination, dead lexical-cell pruning, static Scope initializer
+addresses and the sparse-frame accessor inlining fix. Manifest SHA256 is
+`629621658624d60e376a6532226e50333116c0845ab74d3ebd15fd44cfe949c5`.
+The original attempt's only correction is the Tier producer fixture's explicit
+Store initialization mode; its original failed receipt/manifest are retained.
+All product inputs are identical across that fixture correction.
+
+CLI SHA256 `33d779f78f971fee3bdf6cd74da8a20eb1af251761a8f7541611ba2dc0578caf`;
+Native AOT Tier SHA256
+`bcf263038da3e8e60e8d209a26f2fc94ded12383156cb6e918065ba17ddc4d4f`.
+Managed Model 26,018, Tier 1,296, Execution 482, middle-end 666, pipeline 28 and
+HIR 8,663 checks pass, alongside session/preparation controls. Tier AOT passes
+1,296 checks. The independent five-case actual-VM provenance review also passes;
+see [its findings and bounded signoff](native-value-provenance-review-v090.md).
+These gates do not establish application acceptance.
+
+### Real application failure, not a VM throughput result
+
+The unchanged core application runner passes polygon, signal and record smoke
+source/object/bound routes, then times out after its existing **300 seconds**
+compiling Set dedup's source at O2. The source is 128 inserts plus 64 mixed
+contains/removes with independent checksums, not a synthetic recursion probe.
+The process uses about 58 MiB RSS and one saturated CPU. An attached symbolic
+stack sample is in Core `Invocation.Import` through repeated read/retention/
+application edges, not semantic source analysis or guest execution. The sample
+supports investigating repeated DAG traversal; a deadline alone does not prove
+an infinite graph. No input reduction, timeout extension or fixture replacement
+was made. Full application acceptance is **failed**, not 33 routes passed.
+
+Independent larger record/polygon six routes, source-free preparation 26 routes,
+deep-tail nine routes, static-observation 18 routes and actual telemetry checks
+pass on these same bytes. They remain useful positive controls without replacing
+the failed Set journey. A later candidate removes path-only re-traversal and
+accounts for late derived joins in the existing fixed point. Its managed Set
+result is not acceptance of this already frozen AOT image.
+
+### Same-artifact runtime isolation
+
+One agent-coordinated quiet window, ten balanced samples plus one warm-up per
+condition/workload, 110 exact stdout oracles. This includes launch, artifact
+read/link, execution and exit; compilation/preparation are excluded. Every
+condition uses the same earlier native bound artifact, stdin and oracle.
+No weighted score or cross-window median subtraction is used.
+
+| CPU median, ms | 580 Off | Sparse Off | 602 Off | 602 Linked | 602 Force |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| record 8,192 | 231.6545 | 232.4440 | 230.1460 | 239.1580 | 241.3310 |
+| polygon 4,096 | 976.4625 | 988.0160 | 955.1360 | 969.3385 | 1,156.1005 |
+
+Off is -0.65%/-2.18% versus 580, -0.99%/-3.33% versus sparse in this window.
+Force is +4.86%/+21.04% versus current Off: automatic promotion stays disabled.
+Disassembly confirms the sparse `NativeFrame.Location` out-of-line call and its
+managed-reference return-buffer assignments are gone. That mechanism works, but
+its small default-path gain is not whole-product completion.
+
+Separate instruction profiles preserve identical logical counts across policies.
+Record remains 751,558 operations/8,197 calls. Its main now has 89,862 raw native
+operations (previously zero), plus make_row's 122,415. Main enters native code
+352 times; this is consistent with its 256-operation raw fuel boundary, not a
+new function-call count. Polygon remains 3,700,786 operations/98,310 calls;
+main and crossed still have zero raw operations, while the twelve constructors
+supply 195,120. More raw coverage did not yet produce a profitable record JIT.
+Context/pinning/counter lifetime and largest-union value roundtrips remain
+implementation questions, not evidence against mature JIT compilation.
+
+### Evidence and unfinished requirements
+
+Raw evidence lives in `.temp/native-program-provenance-batch/`: source manifests,
+`batch-receipt.json`, `functional-remaining.json`, `profiles.json`,
+`performance-runtime.json`, generated-code inspection and Set's symbolic stack.
+The failed full corpus receipt is
+`.temp/native-program-provenance-functional-smoke/applications/result.json`.
+Same-O0 before/after artifacts separately isolate the middle end; current-source
+artifacts additionally include HIR lowering. Do not mix those boundaries.
+
+Frozen-source budget is **50,914 code / 54,975 physical lines**, net **+120 code**
+versus the fixed 50,794 baseline. No 30% deletion credit is claimed. Original BTree
+source convergence, the Set regression, profitable typed lowering/JIT, remaining
+code reduction and final platform/product acceptance are still open.

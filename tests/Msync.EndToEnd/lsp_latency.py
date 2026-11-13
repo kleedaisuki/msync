@@ -118,10 +118,20 @@ def document(rows: int, suffix: str = "") -> str:
 
 
 def measure(
-    binary: Path, rows: int, burst: int, *, resolve_documentation: bool = True
+    binary: Path,
+    rows: int,
+    burst: int,
+    *,
+    resolve_documentation: bool = True,
+    workspace: Path | None = None,
+    server_arguments: Sequence[str] = (),
 ) -> dict[str, object]:
-    client = Client(binary)
-    uri = "file:///msync-lsp-latency.msync"
+    client = Client(binary, cwd=workspace, server_arguments=server_arguments)
+    uri = (
+        (workspace / "editor.msync").as_uri()
+        if workspace is not None
+        else "file:///msync-lsp-latency.msync"
+    )
     try:
         capabilities = (
             {

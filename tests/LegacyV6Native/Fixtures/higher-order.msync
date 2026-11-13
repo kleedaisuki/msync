@@ -1,0 +1,5 @@
+fn add(seed: Number) { fn(value: Number) { seed + value } };
+let operation = add(3);
+$std::io::println(operation(4) as String);
+fn apply(operation: Function, value: Number) { operation(value) };
+$std::io::println(apply(fn(first: Number) { apply(fn(second: Number) { first + second }, 2) }, 3) as String);

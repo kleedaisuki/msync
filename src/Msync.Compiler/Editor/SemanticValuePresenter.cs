@@ -1,3 +1,4 @@
+using Msync.Core.Native;
 using System.Collections.Immutable;
 using Msync.Core;
 using Msync.Hir;
@@ -257,8 +258,8 @@ internal sealed class SemanticValuePresenter(SemanticObservationView view,
 
     private static SemanticMember Unknown(string name) => new(name, "unknown", name.Length == 0 ? "unknown" : $"{name}: unknown", UnknownDescription);
 
-    internal static ConnectionValue? Connection(SemanticConnectionView? connection) => connection is null ? null : new(connection.Kind, connection.Address);
-    private static PathValue? Path(SemanticPathView? path) => path is null ? null
+    internal static NativeConnection? Connection(SemanticConnectionView? connection) => connection is null ? null : new(connection.Kind, connection.Address);
+    private static NativePath? Path(SemanticPathView? path) => path is null ? null
         : new(path.Raw, path.WorkingDirectory, Connection(path.Connection), path.HomeDirectory, path.LocalSpelling);
 
     private const string UnknownDescription = "The type depends on an incomplete expression or an uninstantiated generic parameter.";

@@ -89,7 +89,8 @@ internal sealed partial class SemanticAnalyzer
             var type = scope.Locations.TryGetValue(requirement.Name, out var location)
                 ? StorageType(location, context) : ResolveHirType(declared.StorageType, context);
             if (declared.AdmitsNull) type = Nullable(type);
-            actual = actual with { Type = type };
+            actual = Runtime(actual) == TypeRef.Null && requirement.Nullable
+                ? actual with { StorageConstraint = type } : actual with { Type = type, StorageConstraint = type };
         }
         return actual;
     }
@@ -169,8 +170,12 @@ internal sealed partial class SemanticAnalyzer
                 if (hir.Types[candidate.Value].TypeParameter == type.TypeParameter) return null;
             var runtime = Runtime(actual);
             if (!includeNull && runtime.WithoutNull.Kind == TypeKind.Never) return (requirement, actual);
+            HirTypeId witness = actual.Type;
+            // A sample's writable carrier can be Scope-only while its logical witness has fields.
+            if (actual.Scope is { } scope && hir.Types[witness.Value].Shape < 0)
+                witness = hir.Type(hir.Types[witness.Value] with { Shape = scope.Layout });
             associated[requirement] = runtime != TypeRef.Null && (type.Nullable || type.RuntimeType.Nullable)
-                ? NonNullable(actual.Type) : actual.Type;
+                ? NonNullable(witness) : witness;
             return null;
         }
         return type.Element >= 0 && actual.Element is { } element
@@ -203,7 +208,17 @@ internal sealed partial class SemanticAnalyzer
         {
             var target = ResolveHirType(member.Type, probe);
             if (member.Nullable) target = Nullable(target);
-            try { Require(actual, target, source, context: probe); }
+            try
+            {
+                if (Runtime(actual) == TypeRef.Null && actual.StorageConstraint is { } carrier
+                    && hir.Types[carrier.Value].TypeParameter < 0)
+                {
+                    HirType storage = hir.Types[carrier.Value];
+                    if (!hir.Types[target.Value].RuntimeType.Accepts(storage.RuntimeType) || storage.Shape >= 0)
+                        Require(ValueForType(carrier), target, source, context: probe);
+                }
+                Require(actual, target, source, context: probe);
+            }
             catch (CompileException error)
             {
                 throw ConceptError(concept, source, $"'{member.Name}: {hir.Types[target.Value].RuntimeType}'", error.Diagnostic.Message);
@@ -257,16 +272,10 @@ internal sealed partial class SemanticAnalyzer
         foreach (int region in affected)
         {
             if (region == written.Region || !context.Objects.TryGetValue(region, out var candidate)) continue;
-            var fields = candidate.Fields.ToImmutableDictionary(pair => pair.Key, pair =>
-            {
-                int offset = FieldOffset(candidate.Layout, pair.Key);
-                var type = hir.ScopeLayouts[candidate.Layout].Fields[offset];
-                var value = pair.Key == field ? Join(pair.Value, assigned) : pair.Value;
-                return value with { Type = type.AdmitsNull ? Nullable(type.StorageType) : type.StorageType, Literal = null, DenotedType = null };
-            }, StringComparer.Ordinal);
-            context.Objects[region] = candidate with { Fields = fields };
-            foreach (var (name, location) in candidate.Locations)
-                context.Values[location] = fields[name];
+            if (!candidate.Fields.TryGetValue(field, out var current)) continue;
+            var value = Join(current, assigned) with { Literal = null, DenotedType = null, Observation = null };
+            context.Objects[region] = candidate with { Fields = candidate.Fields.SetItem(field, value) };
+            if (candidate.Locations.TryGetValue(field, out var location)) context.Values[location] = value;
         }
     }
 

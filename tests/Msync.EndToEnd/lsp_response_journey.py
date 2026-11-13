@@ -8,6 +8,7 @@ import hashlib
 import json
 import shutil
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -94,8 +95,14 @@ def resolve(
     return cast(dict[str, Any], result), elapsed
 
 
-def run(binary: Path, workspace: Path, *, negotiate: bool) -> dict[str, Any]:
-    client = Client(binary, cwd=workspace)
+def run(
+    binary: Path,
+    workspace: Path,
+    *,
+    negotiate: bool,
+    server_arguments: Sequence[str] = (),
+) -> dict[str, Any]:
+    client = Client(binary, cwd=workspace, server_arguments=server_arguments)
     uri = (workspace / "project.msync").as_uri()
     second_uri = (workspace / "second.msync").as_uri()
     observations: dict[str, Any] = {"documentation_negotiated": negotiate}
@@ -220,7 +227,7 @@ def run(binary: Path, workspace: Path, *, negotiate: bool) -> dict[str, Any]:
 
         client.send("textDocument/didClose", {"textDocument": {"uri": uri}})
         assert diagnostics(client, uri, None)["diagnostics"] == []
-        reopened = "let choose = scope { fresh: true };\n"
+        reopened = "let choose = scope { fresh: true };\nchoose::fresh;\n"
         notify(client, uri, 2, reopened, opening=True)
         assert diagnostics(client, uri, 2)["diagnostics"] == []
         expired, _ = resolve(client, original, supported)
@@ -231,9 +238,26 @@ def run(binary: Path, workspace: Path, *, negotiate: bool) -> dict[str, Any]:
         reopened_item, _ = resolve(
             client, selected(reopened_items, "choose"), supported
         )
-        assert "Scope" in reopened_item["detail"] and "fresh" in documentation(
-            reopened_item
+        assert (
+            reopened_item["kind"] == 6 and "choose: Scope" in reopened_item["detail"]
         ), reopened_item
+        # Scope documentation describes the type, not its current members.
+        members, _ = client.request(
+            "textDocument/completion",
+            {"textDocument": {"uri": uri}, "position": {"line": 1, "character": 8}},
+        )
+        member_items = items(members)
+        assert {item["label"] for item in member_items} == {"fresh"}, member_items
+        fresh, _ = resolve(client, selected(member_items, "fresh"), supported)
+        assert fresh["kind"] == 6 and "fresh: Bool" in fresh["detail"], fresh
+        fresh_hover, _ = client.request(
+            "textDocument/hover",
+            {
+                "textDocument": {"uri": uri},
+                "position": position(reopened, "fresh", last=True),
+            },
+        )
+        assert "fresh: Bool" in fresh_hover["contents"]["value"], fresh_hover
         assert not (workspace / "must-not-exist").exists()
         assert not any(
             message.get("method") in ("msync/sshPrompt", "window/showMessage")

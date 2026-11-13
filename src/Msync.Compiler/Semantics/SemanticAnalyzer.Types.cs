@@ -23,7 +23,7 @@ internal sealed partial class SemanticAnalyzer
                 var fields = a.Fields.Where(pair => b.Fields.ContainsKey(pair.Key)).ToImmutableDictionary(
                     pair => pair.Key, pair => Join(pair.Value, b.Fields[pair.Key]), StringComparer.Ordinal);
                 scope = new(-1, Shape(fields), fields, ImmutableDictionary<string, HirLocationId>.Empty,
-                    Dynamic: a.Dynamic || b.Dynamic, Aliases: ScopeAliases(a).Concat(ScopeAliases(b)).Distinct().ToImmutableArray(),
+                    Named: a.Named && b.Named, Dynamic: a.Dynamic || b.Dynamic, Aliases: ScopeAliases(a).Concat(ScopeAliases(b)).Distinct().ToImmutableArray(),
                     FieldDefinitions: JoinFieldDefinitions(a, b, fields.Keys));
             }
         }
@@ -31,11 +31,13 @@ internal sealed partial class SemanticAnalyzer
             ? first.Element : Join(first.Element, second.Element);
         if (element is not null && (OpaqueElements(first) || OpaqueElements(second)))
             element = WithoutLayoutFacts(element);
-        var type = hir.Type(new HirType(runtime, Shape: scope?.Layout ?? -1,
-            Element: element?.Type.Value ?? -1)
-        {
-            ScopeDomain = HirScopeDomain.Join(hir.Types[first.Type.Value], hir.Types[second.Type.Value])
-        });
+        var type = runtime.WithoutNull == TypeRef.Scope
+            ? new HirFlowTypeAlgebra(hir).Union(SchemaType(first), SchemaType(second))
+            : hir.Type(new HirType(runtime, Shape: scope?.Layout ?? -1,
+                Element: element?.Type.Value ?? -1)
+            {
+                ScopeDomain = HirScopeDomain.Join(hir.Types[first.Type.Value], hir.Types[second.Type.Value])
+            });
         var callables = Choices(first).Concat(Choices(second)).Distinct(SemanticCallableIdentity.Instance).ToImmutableArray();
         return new(type, first.Node, first.Literal == second.Literal ? first.Literal : null,
             callables, scope, element, EagerRange: first.EagerRange && second.EagerRange,
@@ -43,11 +45,33 @@ internal sealed partial class SemanticAnalyzer
             DenotedType: first.DenotedType == second.DenotedType ? first.DenotedType : null,
             DeferredEffects: CombineDeferredEffects(first.DeferredEffects, second.DeferredEffects),
             IndexedAliases: payload?.IndexedAliases ?? JoinIndexedResources(first, second),
-            OpenSessionCalls: CombineSessionCalls(first.OpenSessionCalls, second.OpenSessionCalls));
+            OpenSessionCalls: CombineSessionCalls(first.OpenSessionCalls, second.OpenSessionCalls),
+            StorageConstraint: first.StorageConstraint is { } leftStorage && second.StorageConstraint is { } rightStorage
+                ? new HirFlowTypeAlgebra(hir).Union(InferredStorageType(leftStorage), InferredStorageType(rightStorage))
+                : payload?.StorageConstraint,
+            RuntimeDependentMetadata: first.RuntimeDependentMetadata || second.RuntimeDependentMetadata,
+            CheckedType: first.CheckedType is { } checkedFirst && second.CheckedType is { } checkedSecond
+                ? new HirFlowTypeAlgebra(hir).Union(checkedFirst, checkedSecond) : payload?.CheckedType);
+    }
+
+    private HirTypeId SchemaType(SemanticValue value)
+    {
+        HirType type = hir.Types[value.Type.Value];
+        if (type.Shape >= 0 || type.RuntimeType.WithoutNull != TypeRef.Scope || value.StorageConstraint is not { } constraint)
+            return value.Type;
+        HirType storage = hir.Types[constraint.Value];
+        if (storage.Shape < 0 && storage.Alternatives.IsDefaultOrEmpty) return value.Type;
+        if (!type.Alternatives.IsDefaultOrEmpty)
+        {
+            HirFlowTypeAlgebra algebra = new(hir);
+            return type.Alternatives.Select(alternative => SchemaType(new(alternative, HirNodeId.None, StorageConstraint: constraint)))
+                .Aggregate(algebra.Union);
+        }
+        return hir.Type(storage with { RuntimeType = type.RuntimeType, Nullable = type.Nullable });
     }
 
     private bool OpaqueElements(SemanticValue value) => value.Element is null
-        && (Runtime(value).Kind & (TypeKind.Range | TypeKind.Storage)) != 0
+        && (Runtime(value).Kind & TypeKind.Range) != 0
         && Runtime(value).Element?.Kind != TypeKind.Never;
 
     private SemanticValue WithoutLayoutFacts(SemanticValue value)
@@ -131,11 +155,26 @@ internal sealed partial class SemanticAnalyzer
         return hir.InternScopeLayout(new(layout));
     }
 
-    private HirTypeId ResolveHirType(HirTypeId type, SemanticContext context)
+    private HirTypeId ResolveHirTypeShallow(HirTypeId type, SemanticContext context)
     {
+        bool nullable = hir.Types[type.Value].Nullable;
         type = Resolve(type, context);
+        if (nullable) type = Nullable(type);
         var description = hir.Types[type.Value];
         if (description.TypeParameter < 0) return type;
+        if (program.TypeWitnesses.TryGetValue(description.TypeParameter, out var witness))
+        {
+            HirLocationId location = context.Location(witness.Location);
+            SemanticValue? value = context.Values.GetValueOrDefault(location);
+            if (value?.DenotedType is not { } denoted)
+                throw Error(witness.Source, $"Type annotation '{witness.Name}' requires a statically known Type value.", "E0202");
+            HirType represented = hir.Types[ResolveHirType(denoted, context).Value];
+            return hir.Type(represented with
+            {
+                RuntimeType = description.Nullable ? represented.RuntimeType.WithNull : represented.RuntimeType,
+                Nullable = description.Nullable || represented.Nullable
+            });
+        }
         foreach (var (parameter, result) in context.Substitutions)
         {
             if (hir.Types[parameter.Value].TypeParameter != description.TypeParameter) continue;
@@ -149,6 +188,17 @@ internal sealed partial class SemanticAnalyzer
         return type;
     }
 
+    private bool TypeWitnessAvailable(HirTypeId type, SemanticContext context)
+    {
+        var description = hir.Types[type.Value];
+        return !program.TypeWitnesses.TryGetValue(description.TypeParameter, out var witness)
+            || context.Values.GetValueOrDefault(context.Location(witness.Location))?.DenotedType is not null;
+    }
+
+    private bool AdmitsNull(HirLocationId source, HirTypeId type) => hir.Locations[source.Value].AdmitsNull
+        || program.TryDeclaration(source, out var declaration) && declaration.Annotation is not null
+            && hir.Types[type.Value].RuntimeType.Nullable;
+
     private HirTypeId StorageTypeFor(HirLocationId location, SemanticValue value, SemanticContext context)
     {
         var definition = hir.Locations[location.Value];
@@ -156,6 +206,14 @@ internal sealed partial class SemanticAnalyzer
         var description = hir.Types[type.Value];
         var source = context.Definitions.GetValueOrDefault(location, location);
         bool inferredStorage = program.TryDeclaration(source, out var declaration) && declaration.Annotation is null;
+        if (inferredStorage && Runtime(value).WithoutNull.Kind == TypeKind.Never
+            && (value.StorageConstraint is not null || value.Location is not null))
+        {
+            HirTypeId carrier = value.StorageConstraint ?? StorageType(value.Location!.Value, context);
+            if (hir.Types[carrier.Value].TypeParameter < 0
+                && hir.Types[carrier.Value].RuntimeType.WithoutNull.Kind != TypeKind.Never)
+                type = carrier;
+        }
         if ((inferredStorage || description.TypeParameter >= 0)
             && Runtime(value).WithoutNull.Kind != TypeKind.Never)
         {
@@ -168,8 +226,15 @@ internal sealed partial class SemanticAnalyzer
             if (hir.Types[definition.StorageType.Value].TypeParameter >= 0)
                 context.Substitutions[definition.StorageType] = type;
         }
-        type = StructuralStorageType(type);
+        type = inferredStorage ? InferredStorageType(type) : StructuralStorageType(type);
         return definition.AdmitsNull ? Nullable(type) : type;
+    }
+
+    private HirTypeId InferredStorageType(HirTypeId type)
+    {
+        HirType description = hir.Types[StructuralStorageType(type).Value];
+        return description.RuntimeType.WithoutNull == TypeRef.Scope
+            ? hir.Type(new HirType(description.RuntimeType, Nullable: description.Nullable)) : StructuralStorageType(type);
     }
 
     // Storage admission is structural. A later legal write can replace a
@@ -197,7 +262,11 @@ internal sealed partial class SemanticAnalyzer
     private void Require(SemanticValue value, HirTypeId target, HirSourceRange source,
         bool allowImplicit = false, SemanticContext? context = null)
     {
-        if (context is not null) target = ResolveHirType(target, context);
+        if (context is not null)
+        {
+            target = ResolveHirType(target, context);
+            if (TypeWitnessAvailable(value.Type, context)) value = value with { Type = ResolveHirType(value.Type, context) };
+        }
         var expected = hir.Types[target.Value];
         if (expected.TypeParameter >= 0)
         {
@@ -222,39 +291,49 @@ internal sealed partial class SemanticAnalyzer
             RequireConcept(value, expected.Concept, source, context ?? new(new(-1)), expected.RuntimeType.Nullable);
             return;
         }
-        RequireStructure(value, target, source, allowImplicit, []);
+        RequireStructure(value, target, source, allowImplicit, [], context);
     }
 
     private static bool AcceptsRuntime(TypeRef expected, TypeRef actual, bool implicitConversion) =>
         expected.Accepts(actual) || implicitConversion && MetaTypes.IsConvertible(actual, expected);
 
     private void RequireStructure(SemanticValue value, HirTypeId target, HirSourceRange source,
-        bool allowImplicit, HashSet<(HirTypeId Expected, HirTypeId Actual)> visited)
+        bool allowImplicit, HashSet<(HirTypeId Expected, HirTypeId Actual)> visited, SemanticContext? context)
     {
         if (!visited.Add((target, value.Type))) return;
         var expected = hir.Types[target.Value];
         if (Runtime(value) == TypeRef.Null && expected.RuntimeType.Nullable) return;
+        HirType supplied = hir.Types[value.Type.Value];
+        if (!supplied.Alternatives.IsDefaultOrEmpty)
+        {
+            foreach (HirTypeId alternative in supplied.Alternatives)
+                RequireStructure(ValueForType(alternative), target, source, allowImplicit, visited, context);
+            return;
+        }
         if (expected.Shape >= 0)
         {
             var actual = value.Scope;
+            if (actual is not null && context?.Objects.TryGetValue(actual.Region, out var current) == true) actual = current;
             var actualType = hir.Types[value.Type.Value];
             foreach (var field in hir.ScopeLayouts[expected.Shape].Fields)
             {
                 SemanticValue? member = actual?.Fields.GetValueOrDefault(field.Name);
-                if (member is null && actualType.Shape >= 0)
+                if (actualType.Shape >= 0)
                 {
                     var found = hir.ScopeLayouts[actualType.Shape].Fields.FirstOrDefault(item => item.Name == field.Name);
-                    if (found is not null) member = ValueForType(found.StorageType);
+                    if (found is not null && (member is null || hir.Types[found.StorageType.Value].Shape >= 0))
+                        member = ValueForType(found.AdmitsNull ? Nullable(found.StorageType) : found.StorageType);
                 }
                 if (member is null) throw Error(source, $"Scope is missing required field '{field.Name}'.", "E0205");
-                var required = hir.Types[field.StorageType.Value];
+                HirTypeId requiredType = field.AdmitsNull ? Nullable(field.StorageType) : field.StorageType;
+                var required = hir.Types[requiredType.Value];
                 if (!AcceptsRuntime(required.RuntimeType, Runtime(member), implicitConversion: false))
                     throw Error(source, $"Field '{field.Name}' requires {required.RuntimeType}, found {Runtime(member)}.", "E0203");
-                RequireStructure(member, field.StorageType, source, false, visited);
+                RequireStructure(member, requiredType, source, false, visited, context);
             }
         }
         if (expected.Element >= 0 && value.Element is { } element)
-            RequireStructure(element, new(expected.Element), source, false, visited);
+            RequireStructure(element, new(expected.Element), source, false, visited, context);
     }
 
     private SemanticValue Convert(SemanticValue value, HirTypeId target, HirSourceRange source, SemanticContext context)
@@ -288,7 +367,7 @@ internal sealed partial class SemanticAnalyzer
     {
         if (visited.TryGetValue(type, out var known)) return known;
         var description = hir.Types[type.Value];
-        SemanticValue value = new(type, HirNodeId.None);
+        SemanticValue value = new(type, HirNodeId.None, StorageConstraint: type);
         visited[type] = value;
         if (!description.Alternatives.IsDefaultOrEmpty)
         {
@@ -299,15 +378,48 @@ internal sealed partial class SemanticAnalyzer
                 joined = joined is null ? item : Join(joined, item);
             }
             value = joined! with { Type = type };
+            if (description.RuntimeType.WithoutNull == TypeRef.Scope)
+                value = value with { Scope = AlternativeScope(type, visited) ?? value.Scope };
         }
-        if (description.Shape >= 0)
-        {
-            var fields = hir.ScopeLayouts[description.Shape].Fields.ToImmutableDictionary(
-                field => field.Name, field => ValueForType(field.StorageType, visited), StringComparer.Ordinal);
-            value = value with { Scope = new(-1, description.Shape, fields, ImmutableDictionary<string, HirLocationId>.Empty) };
-        }
+        if (description.Shape >= 0) value = value with { Scope = ScopeForLayout(description.Shape, visited) };
         if (description.Element >= 0) value = value with { Element = ValueForType(new(description.Element), visited) };
         visited[type] = value;
         return value;
+
+    }
+
+    private SemanticScope ScopeForLayout(int layout, Dictionary<HirTypeId, SemanticValue> visited)
+    {
+        var fields = hir.ScopeLayouts[layout].Fields.ToImmutableDictionary(field => field.Name,
+            field => ValueForType(field.AdmitsNull ? Nullable(field.StorageType) : field.StorageType, visited), StringComparer.Ordinal);
+        return new(-1, layout, fields, ImmutableDictionary<string, HirLocationId>.Empty);
+    }
+
+    private SemanticScope? AlternativeScope(HirTypeId type, Dictionary<HirTypeId, SemanticValue> visited)
+    {
+        List<HirScopeLayout> rows = [];
+        if (!CollectScopeRows(type, rows) || rows.Count == 0) return null;
+        HirFlowTypeAlgebra algebra = new(hir);
+        ImmutableArray<HirField>.Builder fields = ImmutableArray.CreateBuilder<HirField>();
+        foreach (HirField first in rows[0].Fields)
+        {
+            HirField?[] members = rows.Select(row => row.Fields.FirstOrDefault(field => field.Name == first.Name)).ToArray();
+            if (members.Any(member => member is null)) continue;
+            HirTypeId storage = members.Select(member => member!.AdmitsNull ? Nullable(member.StorageType) : member.StorageType)
+                .Aggregate(algebra.Union);
+            fields.Add(new(first.Name, storage, members.Any(member => member!.AdmitsNull)));
+        }
+        return ScopeForLayout(hir.InternScopeLayout(new(fields.ToImmutable())), visited);
+    }
+
+    private bool CollectScopeRows(HirTypeId type, List<HirScopeLayout> rows)
+    {
+        HirType description = hir.Types[type.Value];
+        if (description.RuntimeType == TypeRef.Null) return true;
+        if (!description.Alternatives.IsDefaultOrEmpty)
+            return description.Alternatives.All(alternative => CollectScopeRows(alternative, rows));
+        if (description.Shape < 0) return false;
+        rows.Add(hir.ScopeLayouts[description.Shape]);
+        return true;
     }
 }

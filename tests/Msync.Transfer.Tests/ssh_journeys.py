@@ -21,7 +21,7 @@ def main() -> None:
     parser.add_argument("--batch-only", action="store_true")
     parser.add_argument("--relay-batch-only", action="store_true")
     options: argparse.Namespace = parser.parse_args()
-    artifacts: Path = ROOT / ".temp" / "build-transfer-tests"
+    artifacts: Path = ROOT / "artifacts" / "transfer-tests"
     test_dll: Path = (
         options.test_dll
         or artifacts
@@ -55,35 +55,62 @@ def main() -> None:
                 "Host Perf_Fixture", "Host Perf_Fixture Second_Fixture"
             )
         )
-        before_log: int = len(lines(fixture.log))
-        result: subprocess.CompletedProcess[bytes] = subprocess.run(
-            ["dotnet", str(test_dll.resolve()), *(["--relay-batch-only"] if options.relay_batch_only else ["--batch-only"] if options.batch_only else [])],
-            cwd=ROOT,
-            env=environment,
-            capture_output=True,
-            timeout=90,
-            check=False,
+        phases: list[tuple[str, list[str], int | None]] = (
+            [
+                ("prepared-relays", ["--relay-batch-only"], None),
+                ("finite-relay", ["--cohort", "relay"], 2),
+            ]
+            if options.relay_batch_only
+            else [
+                ("prepared-operations", ["--batch-only"], None),
+                ("finite-upload", ["--cohort", "upload"], 1),
+                ("finite-download", ["--cohort", "download"], 1),
+                ("finite-same-endpoint", ["--cohort", "same"], 1),
+            ]
+            if options.batch_only
+            else [("scalar-selector-cohort", [], 28)]
         )
-        log: list[str] = lines(fixture.log)[before_log:]
-        calls: list[str] = lines(fixture.calls)
-        report: dict[str, Any] = {
-            "exit_code": result.returncode,
-            "ssh_clients": calls.count("ssh"),
-            "scp_clients": calls.count("scp"),
-            "authentications": sum("Accepted publickey for " in line for line in log),
-            "remote_sessions": sum("Starting session:" in line for line in log),
-            "stdout": result.stdout.decode(),
-            "stderr": result.stderr.decode(),
-            "fixture": str(fixture.root),
-        }
-        (fixture.root / "result.json").write_text(json.dumps(report, indent=2) + "\n")
-        print(json.dumps(report, indent=2))
-        assert result.returncode == 0, report
-        expected_clients: int = 2 if options.relay_batch_only else 1 if options.batch_only else 28
-        assert calls.count("ssh") == expected_clients, report
-        assert calls.count("scp") == 0, report
-        assert report["authentications"] == expected_clients, report
-        assert report["remote_sessions"] == expected_clients, report
+        reports: list[dict[str, Any]] = []
+        for name, arguments, expected_clients in phases:
+            phase_environment: dict[str, str] = dict(environment)
+            phase_environment["MSYNC_TRANSFER_WORK"] = str(fixture.root / "work" / name)
+            before_log: int = len(lines(fixture.log))
+            before_calls: int = len(lines(fixture.calls))
+            result: subprocess.CompletedProcess[bytes] = subprocess.run(
+                ["dotnet", str(test_dll.resolve()), *arguments],
+                cwd=ROOT,
+                env=phase_environment,
+                capture_output=True,
+                timeout=180,
+                check=False,
+            )
+            log: list[str] = lines(fixture.log)[before_log:]
+            calls: list[str] = lines(fixture.calls)[before_calls:]
+            report: dict[str, Any] = {
+                "phase": name,
+                "exit_code": result.returncode,
+                "ssh_clients": calls.count("ssh"),
+                "scp_clients": calls.count("scp"),
+                "authentications": sum(
+                    "Accepted publickey for " in line for line in log
+                ),
+                "remote_sessions": sum("Starting session:" in line for line in log),
+                "expected_clients": expected_clients,
+                "stdout": result.stdout.decode(),
+                "stderr": result.stderr.decode(),
+                "fixture": str(fixture.root),
+            }
+            reports.append(report)
+            (fixture.root / "result.json").write_text(
+                json.dumps({"phases": reports}, indent=2) + "\n"
+            )
+            print(json.dumps(report, indent=2), flush=True)
+            assert result.returncode == 0, report
+            assert calls.count("scp") == 0, report
+            if expected_clients is not None:
+                assert calls.count("ssh") == expected_clients, report
+                assert report["authentications"] == expected_clients, report
+                assert report["remote_sessions"] == expected_clients, report
 
 
 if __name__ == "__main__":

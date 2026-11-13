@@ -122,7 +122,7 @@ public static class HirSealer
                 case HirKind.TemplateClosure:
                     if (templates.Mark(node.Data)) Captures(module.TemplateClosures[node.Data].Captures);
                     break;
-                case HirKind.Scope: scopes.Mark(node.Data); break;
+                case HirKind.Scope or HirKind.AllocateScope: scopes.Mark(node.Data); break;
                 case HirKind.For: fors.Mark(node.Data); break;
                 case HirKind.Match:
                     if (matches.Mark(node.Data)) MatchDependencies(module.Matches[node.Data]);
@@ -192,7 +192,7 @@ public static class HirSealer
                 HirKind.Call => calls.Map[node.Data],
                 HirKind.Closure => closures.Map[node.Data],
                 HirKind.TemplateClosure => templates.Map[node.Data],
-                HirKind.Scope => scopes.Map[node.Data],
+                HirKind.Scope or HirKind.AllocateScope => scopes.Map[node.Data],
                 HirKind.For => fors.Map[node.Data],
                 HirKind.Match => matches.Map[node.Data],
                 HirKind.Barrier => barriers.Map[node.Data],

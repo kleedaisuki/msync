@@ -211,18 +211,6 @@ if last is not null {
     ((shrank and pages == Tree::page_count(churn)
         and last::value == 126 and Tree::validate(churn)) as String) -> ./reused.txt;
 };
-let slots = $std::slots::new(Number);
-let first = $std::slots::allocate(slots, 11);
-let second = $std::slots::allocate(slots, 22);
-$std::slots::release(slots, first);
-let recycled = $std::slots::allocate(slots, 33);
-let live = $std::slots::count(slots);
-let good = first == 0 and second == 1 and recycled == first
-    and $std::slots::get(slots, recycled) == 33
-    and $std::slots::get(slots, second) == 22 and live == 2;
-let root = $std::slots::reset(slots, 44);
-((good and root == 0 and $std::slots::count(slots) == 1
-    and $std::slots::get(slots, root) == 44) as String) -> ./slot-lifecycle.txt;
 """
     )
     entries: str = ",".join(f"{key}:{model[key]}" for key in sorted(model))
@@ -241,7 +229,6 @@ let root = $std::slots::reset(slots, 44);
         "record-policy.txt": b"true",
         "ieee-policy.txt": b"true",
         "reused.txt": b"true",
-        "slot-lifecycle.txt": b"true",
     }
     return program, outputs
 
@@ -288,14 +275,26 @@ def execute(
                 ),
                 "bind",
             )
+            artifact.unlink()
             artifact = executable
+        assert not any((directory / name).exists() for name in outputs), (
+            directory,
+            "Preparation executed output transfers",
+        )
         disassembly = invoke(binary, directory, "disassemble", str(artifact))
         accept(disassembly, "disassemble")
-        assert all(
-            operation in disassembly.stdout
-            for operation in ("slots.allocate", "slots.release", "storage.vector_insert")
-        ), (artifact, "expected page allocation and vector mutation operations")
-        assert "storage.buffer_" not in disassembly.stdout, (artifact, "obsolete Buffer operation")
+        assert (
+            "Allocate" in disassembly.stdout and "ProjectAddress" in disassembly.stdout
+        ), (artifact, "expected ordinary static-layout allocation and projection")
+        assert not any(
+            name in disassembly.stdout
+            for name in (
+                "slots.allocate",
+                "slots.release",
+                "storage.vector_",
+                "storage.buffer_",
+            )
+        ), (artifact, "retired allocator operations survived lowering")
         source.unlink()
         launch: Path = (
             directory / "different launch" if stage == "executable" else directory
@@ -335,9 +334,11 @@ def main() -> None:
     scratch: Path = ROOT / ".temp/btree-bplus-journey"
     scratch.mkdir(parents=True, exist_ok=True)
     runs: int = 0
+    source_hashes: dict[str, str] = {}
     with tempfile.TemporaryDirectory(prefix="run-", dir=scratch) as name:
         for family in arguments.families:
             program, outputs = tree_program(family, definitions)
+            source_hashes[family] = hashlib.sha256(program.encode("utf-8")).hexdigest()
             for level in arguments.levels:
                 for stage in arguments.stages:
                     execute(
@@ -364,8 +365,12 @@ def main() -> None:
             if (binary.parent / name).exists()
         },
         "runs": runs,
+        "families": arguments.families,
+        "levels": arguments.levels,
+        "stages": arguments.stages,
+        "source_sha256": source_hashes,
         "mutations_per_run": len(trace()[0]),
-        "checks": "map model, occupancy, leaf depth, global ordering, leaf chain, page reuse, snapshots, opaque storage",
+        "checks": "map model, occupancy, leaf depth, global ordering, leaf chain, page occupancy after churn, snapshots, native static layouts",
     }
     rendered: str = json.dumps(report, indent=2) + "\n"
     if arguments.output:

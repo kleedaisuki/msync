@@ -5,6 +5,7 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <AssemblyName>msync-number-probe</AssemblyName>
   </PropertyGroup>
+  <ItemGroup><Compile Include="../Components/NativeProbe.cs" Link="NativeProbe.cs" /></ItemGroup>
   <ItemGroup Condition="'$(FrozenAssemblies)' == ''">
     <ProjectReference Include="../../../src/Msync.Compiler/Msync.Compiler.csproj" />
     <ProjectReference Include="../../../src/Msync.Runtime/Msync.Runtime.csproj" />

@@ -1,4 +1,5 @@
-# Host filesystem operations preserve endpoint provenance and execute only at runtime.
+# Filesystem operations retain endpoint provenance. Binding may capture selected
+# metadata; mutations and residual reads execute at runtime.
 native fn exists(path: Path | String) -> Bool;
 native fn delete(path: Path | String) -> Null;
 native fn touch(path: Path | String) -> Null;

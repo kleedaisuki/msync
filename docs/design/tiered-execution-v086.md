@@ -1,5 +1,13 @@
 # Guest execution tiers and backend boundary
 
+The [2026-11-12 storage/lowering correction](object-spatial-layout.md#authoritative-model-2026-11-12)
+is authoritative. The tiers below record implemented experiments, not a native
+support policy: complete builtin storage and namespace lowering are required
+in the canonical representation, not only on selected profitable paths. Further
+Number/Scope-pattern workers and collection-specific schemas are not substitutes
+for that foundation. Backend profitability may choose execution strategies;
+it must not determine which types or source constructs can be lowered natively.
+
 ## Representation and ownership
 
 Portable code is an interchange format, not the execution engine's internal

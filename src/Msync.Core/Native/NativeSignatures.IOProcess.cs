@@ -33,7 +33,12 @@ public static partial class NativeSignatures
         Add("process.write_stdin", TypeRef.Null, NativeEffect.Write, TypeRef.Process, TypeRef.String);
         Add("process.close_stdin", TypeRef.Null, NativeEffect.Write, TypeRef.Process);
         foreach (string name in new[] { "io.read_lines", "io.read_bytes" })
-            result[name] = result[name] with { Behavior = NativeBehavior.Deferred };
+            result[name] = result[name] with
+            {
+                // Construction is inert; the path is read anew on each enumeration.
+                Behavior = NativeBehavior.Deferred,
+                PathAccess = [NativePathAccess.Read]
+            };
         foreach (string name in new[] { "io.write_bytes", "io.append_bytes", "process.spawn" })
             result[name] = result[name] with { Behavior = NativeBehavior.Enumerates | NativeBehavior.MayFail };
         foreach (string name in new[] { "io.read_text", "io.write_text", "io.append_text", "io.file_size",

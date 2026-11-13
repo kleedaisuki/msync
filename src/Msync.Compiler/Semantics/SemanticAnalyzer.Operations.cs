@@ -20,10 +20,12 @@ internal sealed partial class SemanticAnalyzer
                     new(HirLiteralKind.Type, Type: hir.Types[node.Data].RuntimeType), DenotedType: new(node.Data));
             case HirKind.TypeOf:
                 {
-                    var value = Analyze(children[0], context.QueryFork());
-                    var result = node with { Kind = HirKind.TypeValue, Data = value.Type.Value };
+                    SemanticContext query = context.QueryFork();
+                    var value = Analyze(children[0], query);
+                    HirTypeId type = value.Scope is not null || value.Element is not null ? FlowType(value, query) : value.Type;
+                    var result = node with { Kind = HirKind.TypeValue, Data = type.Value };
                     return new(hir.Type(TypeRef.Type), Add(result, hir.Type(TypeRef.Type), [], context),
-                        new(HirLiteralKind.Type, Type: Runtime(value)), DenotedType: value.Type);
+                        new(HirLiteralKind.Type, Type: hir.Types[type.Value].RuntimeType), DenotedType: type);
                 }
             case HirKind.Builtin:
                 return Builtin(node, context);
@@ -190,7 +192,20 @@ internal sealed partial class SemanticAnalyzer
         if (!ExplicitConversions.Possible(Runtime(value), expected))
             throw Error(node.Source, $"Cannot cast {Runtime(value)} to {expected}.", "E0220");
         if (hir.Types[target.Value].Concept >= 0) Require(value, target, node.Source, context: context);
-        if (expected.Accepts(Runtime(value))) return value;
+        HirType description = hir.Types[target.Value];
+        bool structural = expected.WithoutNull == TypeRef.Scope
+            && (description.Shape >= 0 || !description.Alternatives.IsDefaultOrEmpty);
+        if (expected.Accepts(Runtime(value)) && !structural) return value;
+        if (structural)
+        {
+            SemanticValue narrowed = RetypeFlowValue(value, target, context, []);
+            return narrowed with
+            {
+                Type = target,
+                CheckedType = target,
+                Node = Add(node with { Data = target.Value }, target, [value.Node], context)
+            };
+        }
         return new(target, Add(node with { Data = target.Value }, target, [value.Node], context),
             Element: expected.WithoutNull.Kind == TypeKind.Range && value.Element is { } item && expected.Element is { } element
                 ? item with { Type = hir.Type(element) } : null);
@@ -212,12 +227,37 @@ internal sealed partial class SemanticAnalyzer
                 Effects = node.Effects | NativeEffects(NativeSignatures.Get("process." + node.Text))
             },
                 hir.Type(processType), [receiver.Node], context));
+        if (Runtime(receiver) == TypeRef.Process)
+            throw Error(node.Source, $"Process has no member '{node.Text}'.", "E0205");
         if (Runtime(receiver) == TypeRef.Connection)
             throw Error(node.Source, "Write 'connection @ path' to qualify a path; '::' selects lexical members.", "E0206");
         if (Runtime(receiver) != TypeRef.Scope)
             throw Error(node.Source, $"Cannot select '{node.Text}' from {Runtime(receiver)}; '::' requires Scope or Process.", "E0206");
-        var scope = receiver.Scope;
+        HirTypeId receiverType = SchemaType(receiver);
+        if (receiver.CheckedType is { } checkedReceiver)
+        {
+            HirFlowTypeAlgebra algebra = new(hir);
+            receiverType = hir.Types[checkedReceiver.Value].RuntimeType.Accepts(Runtime(receiver))
+                ? algebra.Narrow(checkedReceiver, Runtime(receiver), true) : checkedReceiver;
+        }
+        receiver = receiver with { Type = receiverType };
+        var scope = receiver.Scope ?? ValueForType(receiver.Type).Scope;
         if (scope is not null && context.Objects.TryGetValue(scope.Region, out var latest)) scope = latest;
+        if (scope is null || !scope.Fields.ContainsKey(node.Text!))
+        {
+            SemanticScope? schema = ValueForType(receiver.Type).Scope;
+            if (scope is null) scope = schema;
+            else
+            {
+                HirField? declared = hir.ScopeLayouts[scope.Layout].Fields.FirstOrDefault(field => field.Name == node.Text);
+                if (declared is not null) scope = scope with
+                {
+                    Fields = scope.Fields.SetItem(node.Text!,
+                    ValueForType(declared.AdmitsNull ? Nullable(declared.StorageType) : declared.StorageType))
+                };
+                else scope = schema ?? scope;
+            }
+        }
         if (scope is null || !scope.Fields.TryGetValue(node.Text!, out var value))
             throw SemanticDiagnosticFactory.MissingMember(hir.Sources[node.Source.Source.Value],
                 new(node.Source.Start, node.Source.Length), node.Text!, scope?.Fields.Keys ?? []);
@@ -225,17 +265,47 @@ internal sealed partial class SemanticAnalyzer
         HirLocationId? location = scope.Locations.TryGetValue(node.Text!, out var member) ? member : null;
         if (location is { } fieldLocation && context.Values.TryGetValue(fieldLocation, out var actual)) value = actual;
         if (location is { } flowLocation) value = FlowRead(id, flowLocation, value, context);
-        value = RefreshIndexed(value, context);
+        if (receiver.CheckedType is { } checkedType)
+        {
+            HirFlowTypeAlgebra algebra = new(hir);
+            HirTypeId memberType = algebra.Member(checkedType, node.Text!);
+            if (hir.Types[memberType.Value].RuntimeType.Accepts(Runtime(value)))
+                memberType = algebra.Narrow(memberType, Runtime(value), true);
+            value = RetypeFlowValue(value, memberType, context, []) with { Type = memberType, CheckedType = memberType };
+        }
         if (hir.Types[receiver.Type.Value].ScopeDomain.Count == 0)
             value = WithoutLayoutFacts(value);
-        return value with { Node = Add(node with { Data = offset }, value.Type, [receiver.Node], context), Location = location };
+        var storageField = hir.ScopeLayouts[scope.Layout].Fields[offset];
+        HirTypeId constraint = location is { } stored ? StorageType(stored, context)
+            : value.StorageConstraint is { } carrier ? InferredStorageType(carrier)
+            : InferredStorageType(storageField.AdmitsNull ? Nullable(storageField.StorageType) : storageField.StorageType);
+        return value with
+        {
+            Node = Add(node with { Data = offset }, value.Type, [receiver.Node], context),
+            Location = location,
+            StorageConstraint = constraint
+        };
+
     }
 
     private SemanticValue MemberAssign(HirNode node, HirNodeId receiverExpression, SemanticValue receiver, SemanticValue value,
         SemanticContext context, HirSourceRange valueSource)
     {
-        if (Runtime(receiver).Nullable || Runtime(receiver) != TypeRef.Scope || receiver.Scope is not { } scope)
+        receiver = receiver with { Type = SchemaType(receiver) };
+        if (Runtime(receiver).Nullable || Runtime(receiver) != TypeRef.Scope)
             throw Error(node.Source, "Member assignment requires a non-null Scope.", "E0206");
+        if (receiver.CheckedType is { } checkedType)
+            receiver = receiver with { Type = new HirFlowTypeAlgebra(hir).Narrow(checkedType, Runtime(receiver), true) };
+        if (receiver.Scope is null) receiver = receiver with { Scope = ValueForType(receiver.Type).Scope };
+        if (receiver.Scope is not { } scope)
+            throw Error(node.Source, "Member assignment requires a non-null Scope.", "E0206");
+        if (scope.Region >= 0 && context.Objects.TryGetValue(scope.Region, out var latest)) scope = latest;
+        if (FieldOffset(scope.Layout, node.Text!) < 0
+            && ValueForType(receiver.Type).Scope is { } schema && schema.Fields.ContainsKey(node.Text!))
+        {
+            scope = schema with { Aliases = ScopeAliases(scope).Distinct().Order().ToImmutableArray() };
+            receiver = receiver with { Scope = scope };
+        }
         if (scope.Region < 0)
         {
             // A summary describes a possible receiver, not an object-table
@@ -245,14 +315,14 @@ internal sealed partial class SemanticAnalyzer
                 SetSubject(receiverExpression, current with { Scope = view }, context);
             scope = view;
         }
-        else if (context.Objects.TryGetValue(scope.Region, out var latest)) scope = latest;
         int offset = FieldOffset(scope.Layout, node.Text!);
         if (offset < 0) throw SemanticDiagnosticFactory.MissingMember(hir.Sources[node.Source.Source.Value],
             new(node.Source.Start, node.Source.Length), node.Text!, scope.Fields.Keys);
         var field = hir.ScopeLayouts[scope.Layout].Fields[offset];
         HirLocationId? storageLocation = scope.Locations.TryGetValue(node.Text!, out var actualField) ? actualField : null;
         HirTypeId target = storageLocation is { } stored ? StorageType(stored, context)
-            : field.AdmitsNull ? Nullable(field.StorageType) : field.StorageType;
+            : scope.Fields.GetValueOrDefault(node.Text!)?.StorageConstraint is { } carrier ? InferredStorageType(carrier)
+            : InferredStorageType(field.AdmitsNull ? Nullable(field.StorageType) : field.StorageType);
         try { Require(value, target, valueSource, allowImplicit: true, context: context); }
         catch (CompileException error) when (scope.Locations.TryGetValue(node.Text!, out var fieldLocation))
         {
@@ -269,6 +339,7 @@ internal sealed partial class SemanticAnalyzer
             target = resolved;
         }
         value = Convert(value, target, valueSource, context);
+        value = value with { StorageConstraint = target };
         CheckMemberContracts(scope, node.Text!, value, valueSource, context);
         CheckSessionMemberAssignment(scope, node.Text!, value, valueSource, context);
         CheckClosedMemberAssignment(scope, node.Text!, value, valueSource, context);

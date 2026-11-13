@@ -1,8 +1,9 @@
-using Msync.Optimization;
 using System.Diagnostics;
 using System.Text.Json;
+using Msync.Compiler;
 using Msync.Core;
-using Module = Msync.Core.Module;
+using Msync.Core.Native;
+using Msync.Runtime.Native;
 
 internal static class PerformanceCases
 {
@@ -11,54 +12,30 @@ internal static class PerformanceCases
         string root = Environment.CurrentDirectory;
         BindingContext context = new(root, root, Path.Combine(root, "script.msync"));
         Dictionary<string, object> results = [];
-        foreach ((string name, Module module) in new[] { ("literal", Literal()), ("copy-1", Copies(1)), ("copy-128", Copies(128)), ("branch-128", Branches(128)) })
+        foreach ((string name, string source) in new[] { ("literal", "true"), ("copy-1", Copies(1)), ("copy-128", Copies(128)), ("branch-128", Branches(128)) })
         {
-            Artifact.Validate(module);
-            Module optimized = Optimizer.Optimize(module);
-            for (int i = 0; i < 10; i++) _ = Binding.Bind(optimized, context);
-            int samples = name == "branch-128" ? 40 : 300;
-            double[] elapsed = new double[samples];
-            long[] allocations = new long[samples];
-            for (int i = 0; i < samples; i++)
+            NativeProgram program = Compiler.Compile(source, "preparation-cost.msync");
+            NativeArtifact.Validate(program);
+            for (int index = 0; index < 10; index++) _ = NativePreparation.Prepare(program, context);
+            int count = name == "branch-128" ? 40 : 300;
+            double[] elapsed = new double[count];
+            long[] allocations = new long[count];
+            for (int index = 0; index < count; index++)
             {
                 long allocated = GC.GetAllocatedBytesForCurrentThread();
                 long start = Stopwatch.GetTimestamp();
-                Module bound = Binding.Bind(optimized, context);
-                elapsed[i] = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
-                allocations[i] = GC.GetAllocatedBytesForCurrentThread() - allocated;
-                if (bound.Stage != ArtifactStage.Executable) throw new Exception("not bound");
+                NativeProgram bound = NativePreparation.Prepare(program, context);
+                elapsed[index] = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+                allocations[index] = GC.GetAllocatedBytesForCurrentThread() - allocated;
+                if (bound.Stage != ArtifactStage.Executable) throw new InvalidOperationException("Not bound");
             }
             Array.Sort(elapsed); Array.Sort(allocations);
-            results[name] = new { medianMs = elapsed[samples / 2], p95Ms = elapsed[(int)(samples * .95)], bytes = allocations[samples / 2], instructions = optimized.Functions.Sum(f => f.Instructions.Count) };
+            results[name] = new { stage = "native_preparation", medianMs = elapsed[count / 2], p95Ms = elapsed[(int)(count * .95)], bytes = allocations[count / 2], instructions = program.Functions.Sum(function => function.Instructions.Count) };
         }
         Console.WriteLine(JsonSerializer.Serialize(results));
     }
 
-    private static Module Literal() => new([], [new("main", 0, 0, [new(OpCode.True), new(OpCode.Return)], TypeRef.Bool)]);
-    private static Module Copies(int count)
-    {
-        List<Value> constants = []; List<Instruction> code = [];
-        for (int i = 0; i < count; i++)
-        {
-            constants.Add(new PathValue($"./input{i}")); constants.Add(new PathValue($"./output{i}"));
-            code.Add(new(OpCode.Constant, i * 2)); code.Add(new(OpCode.Constant, i * 2 + 1)); code.Add(new(OpCode.Transfer)); code.Add(new(OpCode.Pop));
-        }
-        code.Add(new(OpCode.Null)); code.Add(new(OpCode.Return));
-        return new(constants, [new("main", 0, 0, code, TypeRef.Null)]);
-    }
-    private static Module Branches(int count)
-    {
-        List<Value> constants = [new PathValue("./selected")]; List<Instruction> code = [];
-        for (int i = 0; i < count; i++)
-        {
-            constants.Add(new PathValue($"./input{i}")); constants.Add(new PathValue($"./output{i}"));
-            code.Add(new(OpCode.Constant, 0)); code.Add(new(OpCode.NativeCall, 1, Text: "fs.exists"));
-            int jump = code.Count; code.Add(new(OpCode.Nop));
-            code.Add(new(OpCode.LoadBuiltin, Text: "local")); code.Add(new(OpCode.Constant, i * 2 + 1)); code.Add(new(OpCode.Qualify));
-            code.Add(new(OpCode.Constant, i * 2 + 2)); code.Add(new(OpCode.Transfer)); code.Add(new(OpCode.Pop));
-            code[jump] = new(OpCode.JumpIfFalse, code.Count);
-        }
-        code.Add(new(OpCode.Null)); code.Add(new(OpCode.Return));
-        return new(constants, [new("main", 0, 0, code, TypeRef.Null)]);
-    }
+    private static string Copies(int count) => string.Join('\n', Enumerable.Range(0, count).Select(index => $"\"payload-{index}\" -> ./output{index};"));
+    private static string Branches(int count) => string.Join('\n', Enumerable.Range(0, count).Select(index =>
+        $"if $std::fs::exists(./selected) {{ ($local @ ./input{index}) -> ./output{index}; }};"));
 }

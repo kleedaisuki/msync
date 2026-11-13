@@ -1,3 +1,4 @@
+using Msync.Core.Native;
 using Msync.Compiler;
 using Msync.Core;
 using Frontend = Msync.Compiler.Compiler;
@@ -36,7 +37,7 @@ internal static class PresentationChecks
 
         var named = Occurrence(analysis, source, "SomeClass");
         var members = named.Members!.ToDictionary(member => member.Name, StringComparer.Ordinal);
-        Check(members["remote"].Type == "Connection" && members["remote"].Endpoint == new ConnectionValue(ConnectionKind.Ssh, "forge"),
+        Check(members["remote"].Type == "Connection" && members["remote"].Endpoint == new NativeConnection(ConnectionKind.Ssh, "forge"),
             "Scope field lost its inferred Connection value");
         Check(members["remote"].SemanticRole == "variable", "a Connection field was presented as a Scope type");
         Check(members["count"].Type == "Number" && members["label"].Type == "String" && members["ready"].Type == "Bool",

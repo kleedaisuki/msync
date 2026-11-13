@@ -99,6 +99,20 @@ Color("Named::field", "Named", AnsiColor.Magenta, bindings);
 Color("instance::field", "instance", null, bindings);
 Color(".codex -> item", ".codex", null, bindings);
 Color("Named::\"get-path\"()", "\"get-path\"", AnsiColor.Yellow, bindings);
+Color("/help", "/help", AnsiColor.Cyan);
+Color("let text = \"unterminated", "\"unterminated", AnsiColor.Green);
+Color("let file = match ./x { <(?<name>a)> => true };", "<(?<name>a)>", AnsiColor.Magenta);
+foreach ((string source, bool inside) in new (string, bool)[]
+{
+    ("\"open", true), ("\"closed\"", false), ("# comment", true), ("# comment\n", false),
+    ("match ./x { <(?<named>a)", true), ("match ./x { <(?<named>a)>", false),
+    ("\"doubled \"\"quote\"\"\"", false), ("ssh://user@[2001:db8::1]/", false)
+})
+{
+    assertions++;
+    if (PromptSyntax.InsideLiteral(source, source.Length) != inside)
+        throw new InvalidOperationException("Literal context diverged from the compiler lexer: " + source);
+}
 Console.WriteLine($"{assertions} terminal palette character and span assertions passed.");
 
 if (args.Contains("--measure", StringComparer.Ordinal))

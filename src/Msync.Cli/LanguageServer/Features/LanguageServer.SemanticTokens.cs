@@ -67,61 +67,34 @@ internal sealed partial class LanguageServer
                 inferred[role.Span.Start] = role;
         List<int> data = [];
         int previousLine = 0, previousColumn = 0;
-        var patterns = document.Analysis?.RegexSpans ?? [];
-        int patternIndex = 0, patternEnd = -1;
-        var numberSpans = document.Analysis?.NumberSpans ?? Msync.Compiler.Syntax.Parser.NumberSpans(text);
-        int numberIndex = 0;
-        foreach (ValueMatch match in LexicalTokens().EnumerateMatches(text))
+        foreach (EditorLexeme lexeme in EditorLexemes.Scan(text))
         {
-            while (numberIndex < numberSpans.Count && numberSpans[numberIndex].End <= match.Index)
+            int start = lexeme.Span.Start, length = lexeme.Span.Length;
+            if (lexeme.Kind == EditorLexemeKind.Delimiter) continue;
+            if (lexeme.Kind == EditorLexemeKind.Regex) AddToken(start, length, 11);
+            else if (lexeme.Kind == EditorLexemeKind.Number) AddToken(start, length, 12);
+            else if (lexeme.Kind == EditorLexemeKind.String) AddToken(start, length, 4);
+            else if (lexeme.Kind == EditorLexemeKind.Comment) AddToken(start, length, 5);
+            else if (text.AsSpan(start, length).IndexOf("://", StringComparison.Ordinal) is >= 0 and var separator)
             {
-                var number = numberSpans[numberIndex++];
-                AddLexical(number.Start, number.Length, true);
+                AddToken(start, separator, 6);
+                AddToken(start + separator, 3, 8);
+                AddToken(start + separator + 3, length - separator - 3, 7);
             }
-            if (numberIndex == numberSpans.Count || numberSpans[numberIndex].Start >= match.Index + match.Length)
-                AddLexical(match.Index, match.Length, false);
-        }
-        while (numberIndex < numberSpans.Count)
-        {
-            var number = numberSpans[numberIndex++];
-            AddLexical(number.Start, number.Length, true);
-        }
-        while (patternIndex < patterns.Count)
-        {
-            var pattern = patterns[patternIndex++];
-            AddToken(pattern.Start, pattern.Length, 11);
+            else
+                foreach (ValueMatch match in TokenParts().EnumerateMatches(text.AsSpan(start, length)))
+                    AddLexical(start + match.Index, match.Length);
         }
         return data.ToArray();
 
-        void AddLexical(int index, int length, bool number)
+        void AddLexical(int index, int length)
         {
-            while (patternIndex < patterns.Count && patterns[patternIndex].Start <= index)
-            {
-                var pattern = patterns[patternIndex++];
-                AddToken(pattern.Start, pattern.Length, 11);
-                patternEnd = pattern.End;
-            }
-            if (index < patternEnd) return;
             ReadOnlySpan<char> token = text.AsSpan(index, length);
-            bool comment = token[0] == '#' || token.StartsWith("//", StringComparison.Ordinal);
-            bool quoted = token[0] == '"';
-            bool keyword = !comment && !quoted && IsKeyword(token);
-            int separator = !comment && !quoted ? token.IndexOf("://", StringComparison.Ordinal) : -1;
-            if (separator >= 0)
-            {
-                AddToken(index, separator, 6);
-                AddToken(index + separator, 3, 8);
-                AddToken(index + separator + 3, length - separator - 3, 7);
-                return;
-            }
-            int type = comment ? 5 : quoted ? 4 : "?:-=!/$|@+*%<>".AsSpan().Contains(token[0]) ? 8 :
-                keyword ? char.IsUpper(token[0]) ? 3 : 0 :
-                index > 0 && text[index - 1] == '$' ? 9 : 2;
-            if (!comment && !quoted)
-            {
-                if (token.SequenceEqual("?") || ControlFlow(token)) type = 10;
-                else if (number) type = 12;
-            }
+            bool keyword = IsKeyword(token);
+            int type = token.SequenceEqual("?") || ControlFlow(token) ? 10
+                : "?:-=!/$|@+*%<>".AsSpan().Contains(token[0]) ? 8
+                : keyword ? char.IsUpper(token[0]) ? 3 : 0
+                : index > 0 && text[index - 1] == '$' ? 9 : 2;
             if (!keyword)
             {
                 if ((inferred.TryGetValue(index, out var semantic)
@@ -166,6 +139,6 @@ internal sealed partial class LanguageServer
         return false;
     }
 
-    [GeneratedRegex("""(?<comment>(?<!\S)(?:\#|//)[^\r\n]*)|(?<string>"(?:[^"]|"")*")|(?<uri>[A-Za-z][A-Za-z0-9+.-]*://[^\s;{}(),"]*)|(?<word>[\p{L}_][\p{L}\p{N}_]*)|(?<operator>::|->|=>|==|!=|\*\*|[?=/$|@+*%<>-])""", RegexOptions.CultureInvariant)]
-    private static partial Regex LexicalTokens();
+    [GeneratedRegex(@"[\p{L}_][\p{L}\p{N}_]*|::|->|=>|==|!=|\*\*|[?=/$|@+*%<>-]", RegexOptions.CultureInvariant)]
+    private static partial Regex TokenParts();
 }

@@ -1,6 +1,6 @@
 # Relocatable and executable artifacts
 
-`.msync` is source, `.mso` is typed relocatable bytecode, and `.mexe` is
+`.msync` is source, `.mso` is typed relocatable native IR, and `.mexe` is
 contextual executable IR. Both binary stages can be submitted without the
 original source. Binding prepares concrete I/O graphs from the selected context;
 it never serializes live credentials.
@@ -31,16 +31,24 @@ Select optimization according to compilation latency and expected reuse:
 
 | Level | Policy |
 | --- | --- |
-| `-O0` | Keep unoptimized typed bytecode; useful for comparing behavior. |
-| `-O1` | Low-latency dataflow cleanup, local redundancy and inlining. |
-| `-O2` | Default: global redundancy, finite pure evaluation, call specialization. |
-| `-O3` | Allow larger profitable inline and finite-range expansion budgets. |
+| `-O0` | Keep unoptimized typed native IR; useful for comparing behavior. |
+| `-O1` | Local dataflow/dead-memory cleanup, last-use moves, proved allocation placement, CFG compaction and typed temporary-slot allocation. |
+| `-O2` | Default: also propagate must-facts across blocks and inline proved transparent static calls; callee budget 48 operations, cumulative growth budget 384 operations per caller. |
+| `-O3` | Same proof obligations, with callee budget 144 and cumulative caller growth budget 1536 operations. |
 
-Machine-independent transformations run on `.mso`. Binding adds context-dependent
-lowering, runs the selected optimization level and prepares I/O execution graphs.
+These budgets choose implementation cost, not accepted language features or
+weaker semantics. Calls with opaque work ownership, iterator cleanup or unsafe
+capture/frame-location proofs remain ordinary typed calls. Temporary-slot
+allocation shares nonoverlapping storage of exactly the same static type; it is
+not hardware register allocation and preserves canonical/session location IDs.
+Higher budgets are not an unmeasured universal speedup claim.
+
+Machine-independent transformations run before `.mso` emission. Binding adds
+context-dependent computation and prepares I/O execution graphs without replaying
+source or invoking the compiler's optimizer from the VM.
 Native AOT
 compiles the host executable; the language runtime executes typed binary
-instructions and scheduled blocks, never embedded debug source.
+instructions and scheduled effects, never embedded debug source.
 
 ## Inspect without executing
 
@@ -66,5 +74,7 @@ before printing the graph, without executing transfer writes. Planning may read
 the selected filesystem. `msync plan FILE.mexe` prints its already prepared
 operations without refreshing them. Use `disassemble` for passive inspection.
 
-Current commands accept the 0.8 language and format-5 bytecode. Earlier source
-and object formats are historical releases, not inputs to this implementation.
+Current commands use native IR format 1 and accept historical bytecode format 6
+through a closed importer into the same native pipeline. Earlier binary formats
+require recompilation. Typed HIR has its independent format 3; language semantics
+and embedded stdlib URIs remain versioned at 0.8.0.

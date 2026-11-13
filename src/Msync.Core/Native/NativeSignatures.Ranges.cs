@@ -5,9 +5,14 @@ public static partial class NativeSignatures
     private static void RegisterRanges(IDictionary<string, NativeSignature> result)
     {
         TypeRef range = new(TypeKind.Range);
-        void Add(string name, NativeResultRule rule, params TypeRef[] parameters) =>
+        void Add(string name, NativeResultRule rule, params TypeRef[] parameters)
+        {
+            int callback = Array.IndexOf(parameters, TypeRef.Function);
             result.Add("ranges." + name, new("ranges." + name, parameters, range, ResultRule: rule,
-                Behavior: NativeBehavior.Deferred | (name is "enumerate_from" or "chunk" or "slide" or "repeat" ? NativeBehavior.MayFail : NativeBehavior.None)));
+                Behavior: NativeBehavior.Deferred | (callback >= 0 ? NativeBehavior.Invokes : NativeBehavior.None)
+                    | (name is "enumerate_from" or "chunk" or "slide" or "repeat" ? NativeBehavior.MayFail : NativeBehavior.None))
+            { ElementCallback = callback < 0 ? null : new(callback, 0) { Arity = 2 } });
+        }
         Add("concat", NativeResultRule.RangeConcat, range, range);
         Add("flatten", NativeResultRule.RangeFlatten, range);
         Add("zip", NativeResultRule.RangeZip, range, range);

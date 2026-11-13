@@ -1,10 +1,11 @@
-using Msync.Optimization;
 using Msync.Compiler;
 using Msync.Compiler.Syntax;
 using Msync.Core;
+using Msync.Core.Native;
+using Msync.Runtime.Native;
 using Msync.Runtime;
 using Compiler = Msync.Compiler.Compiler;
-using Module = Msync.Core.Module;
+
 
 internal static class DemandLoadingChecks
 {
@@ -68,16 +69,15 @@ internal static class DemandLoadingChecks
         ];
         int checks = 0;
         foreach (var (name, source, expected) in cases.Where(item => caseName is null || item.Name == caseName))
-        foreach (int level in source.Contains("let root = $std;", StringComparison.Ordinal)
-            || source.Contains("let module = $std::containers;", StringComparison.Ordinal) ? new[] { 0 } : new[] { 0, 2, 3 })
+        foreach (int level in new[] { 0, 2, 3 })
         {
             Console.WriteLine($"Demand loading: {name} O{level}");
-            Module portable = Compiler.Compile(source, name, level);
-            foreach (Module program in Routes(portable))
+            NativeProgram portable = Compiler.Compile(source, name, level);
+            foreach (NativeProgram program in Routes(portable))
             {
                 if (requireSelection && name == "selected-list" && level == 0)
                     CheckSelectedFamilies(program);
-                Value result = await Interpreter.ExecuteAsync(program);
+                NativeValue result = await StdlibFixture.Execute(program);
                 if (result.ToString() != expected)
                     throw new InvalidOperationException($"{name} O{level} {program.Stage}: expected {expected}, got {result}");
                 checks++;
@@ -86,7 +86,7 @@ internal static class DemandLoadingChecks
         Console.WriteLine($"PASS {checks} demand-loaded family, dependency, mutable alias and source/mso/mexe journeys");
     }
 
-    private static void CheckSelectedFamilies(Module module)
+    private static void CheckSelectedFamilies(NativeProgram module)
     {
         var assembly = typeof(Compiler).Assembly;
         string resource = assembly.GetManifestResourceNames().Single(name => name.EndsWith(".containers.msync", StringComparison.Ordinal));
@@ -96,8 +96,8 @@ internal static class DemandLoadingChecks
         var declarations = Parser.Parse(source, "msync-stdlib:///0.8.0/containers.msync").Statements.OfType<ScopeDeclaration>().ToArray();
         var instructions = module.Functions.SelectMany(function => function.Instructions).ToArray();
         var operations = instructions
-            .Where(instruction => instruction.Op is OpCode.MakeClosure or OpCode.NewScope or OpCode.PublishStatic)
-            .Select(instruction => instruction.Span).OfType<Msync.Core.SourceSpan>()
+            .Where(instruction => instruction.Op is NativeOp.MakeFunction or NativeOp.Allocate or NativeOp.PublishStatic)
+            .Select(instruction => instruction.Source).OfType<Msync.Core.SourceSpan>()
             .Where(span => span.Source == "msync-stdlib:///0.8.0/containers.msync").ToArray();
         foreach (var declaration in declarations)
         {
@@ -105,25 +105,25 @@ internal static class DemandLoadingChecks
             bool selected = declaration.Name is "List" or "SnapshotStorage";
             if (initialized != selected)
                 throw new InvalidOperationException($"List-only selection {(selected ? "lost" : "eagerly initialized")} family {declaration.Name}");
-            if (selected && !instructions.Any(instruction => instruction is { Op: OpCode.PublishStatic, Span: { } span }
+            if (selected && !instructions.Any(instruction => instruction is { Op: NativeOp.PublishStatic, Source: { } span }
                 && span.Source == "msync-stdlib:///0.8.0/containers.msync"
                 && span.Start == declaration.Span.Start && span.Length > 0))
                 throw new InvalidOperationException($"Selected family {declaration.Name} lost the source span of its typed static publication");
         }
     }
 
-    private static IEnumerable<Module> Routes(Module portable)
+    private static IEnumerable<NativeProgram> Routes(NativeProgram portable)
     {
         yield return portable;
         yield return Codec(portable);
-        yield return Codec(Binding.Bind(portable, new(Environment.CurrentDirectory, Environment.CurrentDirectory)));
+        yield return Codec(NativePreparation.Prepare(portable, new BindingContext(Environment.CurrentDirectory, Environment.CurrentDirectory)));
     }
 
-    private static Module Codec(Module program)
+    private static NativeProgram Codec(NativeProgram program)
     {
         using MemoryStream stream = new();
-        Artifact.Write(program, stream);
+        NativeArtifact.Write(program, stream);
         stream.Position = 0;
-        return Artifact.Read(stream);
+        return NativeArtifact.Read(stream);
     }
 }

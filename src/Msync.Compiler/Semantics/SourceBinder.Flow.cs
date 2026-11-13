@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text.RegularExpressions;
 using Msync.Compiler.Syntax;
 using Msync.Core;
 using Msync.Hir;
@@ -96,10 +97,17 @@ internal sealed partial class SourceBinder
             DeclarationKind.Pattern, input, hir.Types[input.Value].RuntimeType.Nullable)),
         NullPattern => new(HirPatternKind.Null),
         TypePattern type => new(HirPatternKind.Type, Type(type.Type).Value),
-        RegexPattern regex => new(HirPatternKind.Regex, Text: regex.Pattern),
+        RegexPattern regex => RegexPattern(regex),
         LiteralPattern literal => new(HirPatternKind.Literal, LiteralPattern(literal.Value)),
         _ => throw Error("A tuple is a binding pattern, not a match alternative.", pattern.Span)
     };
+
+    private HirPattern RegexPattern(RegexPattern pattern)
+    {
+        try { _ = new Regex(pattern.Pattern); }
+        catch (ArgumentException error) { throw Error($"Invalid regular expression: {error.Message}", pattern.Span, "E0207"); }
+        return new(HirPatternKind.Regex, Text: pattern.Pattern);
+    }
 
     private int LiteralPattern(Expr expression)
     {

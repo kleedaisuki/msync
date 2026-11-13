@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT: Path = Path(__file__).resolve().parents[3]
 
 
 def invoke(binary: Path, mode: str) -> bytes:
@@ -25,6 +25,16 @@ def invoke(binary: Path, mode: str) -> bytes:
     return result.stdout
 
 
+def payload(binary: Path) -> dict[str, str]:
+    paths: list[Path] = [binary]
+    for pattern in ("*.dll", "*.so", "*.dylib", "*.deps.json", "*.runtimeconfig.json"):
+        paths.extend(binary.parent.glob(pattern))
+    return {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(set(paths))
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
@@ -33,27 +43,29 @@ def main() -> None:
         type=Path,
         default=ROOT / ".temp/performance-v080/current/components/snapshots.json",
     )
-    options = parser.parse_args()
+    options: argparse.Namespace = parser.parse_args()
     binary: Path = options.binary.resolve()
     before: str = hashlib.sha256(binary.read_bytes()).hexdigest()
+    dependencies: dict[str, str] = payload(binary)
     interner: bytes = invoke(binary, "--check-interner")
     snapshots: bytes = invoke(binary, "--check-snapshots")
     first: bytes = invoke(binary, "--emit-capture")
     second: bytes = invoke(binary, "--emit-capture")
-    if first != second or not first.startswith(b"MSYNCBC\0"):
+    if first != second or not first.startswith(b"MSYNCIR\0"):
         raise AssertionError(
             "Fresh native processes emitted different capture artifacts"
         )
-    if hashlib.sha256(binary.read_bytes()).hexdigest() != before:
+    if payload(binary) != dependencies:
         raise AssertionError("The tested native image changed during execution")
     output: Path = options.output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     fixture: Path = Path(tempfile.mkdtemp(prefix="capture-", dir=output.parent))
     (fixture / "first.mso").write_bytes(first)
     (fixture / "second.mso").write_bytes(second)
-    report: dict[str, str | int | bool] = {
+    report: dict[str, str | int | bool | dict[str, str]] = {
         "binary": str(binary),
         "sha256": before,
+        "payload_sha256": dependencies,
         "passed": True,
         "interner": interner.decode("utf-8"),
         "snapshots": snapshots.decode("utf-8"),

@@ -172,7 +172,7 @@ public static class HirPrinter
                 HirKind.Closure => "@u" + node.Data,
                 HirKind.TemplateClosure => "@v" + node.Data,
                 HirKind.AdaptFunction => "@a" + node.Data,
-                HirKind.Scope => "@o" + node.Data,
+                HirKind.Scope or HirKind.AllocateScope => "@o" + node.Data,
                 HirKind.For => "@j" + node.Data,
                 HirKind.Match => "@m" + node.Data,
                 HirKind.Barrier => "@z" + node.Data,

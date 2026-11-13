@@ -1,6 +1,8 @@
-using Msync.Optimization;
 using Msync.Compiler;
 using Msync.Core;
+using Msync.Core.Native;
+using Msync.Hir;
+using Msync.Runtime.Native;
 using Msync.Runtime;
 
 internal static class CapturedModuleChecks
@@ -78,11 +80,11 @@ internal static class CapturedModuleChecks
             {
                 if (selected is not null && selected != name) continue;
                 Console.WriteLine($"Captured modules: {name} O{level} compile");
-                Module portable = Compiler.Compile(source, name, level);
-                foreach (Module image in Images(portable))
+                NativeProgram portable = Compiler.Compile(source, name, level);
+                foreach (NativeProgram image in Images(portable))
                 {
                     Console.WriteLine($"Captured modules: {name} O{level} {image.Stage}");
-                    Value value = await Interpreter.ExecuteAsync(image);
+                    NativeValue value = await StdlibFixture.Execute(image);
                     Check(value, expected, $"{name} O{level} {image.Stage}");
                     checks++;
                 }
@@ -91,19 +93,62 @@ internal static class CapturedModuleChecks
             {
                 Console.WriteLine($"Captured modules: session O{level}");
                 await Session(level);
-                checks += 3;
+                await RootPublication(level);
+                checks += 7;
             }
         }
         Console.WriteLine($"PASS {checks} captured standard-module identity, replacement, alias and staged/session contracts");
     }
 
+    public static async Task RunQueries()
+    {
+        const string prefix = """
+            let Shape = decltype({
+                let root = $std;
+                root::bool = scope { identity: fn(value: Bool) { not value } };
+                scope { value: root::bool::identity(false) }
+            });
+            """;
+        const string valid = prefix + "let value: Shape = scope { value: true }; if value::value and not $std::bool::identity(false) { 7 } else { 0 }";
+        const string invalid = prefix + "let value: Shape = scope { other: true }; value";
+        const string publisher = "let root = $std; root::bool = scope { identity: fn(value: Bool) { not value } }; if root::bool::identity(false) { 7 } else { 0 }";
+        int routes = 0;
+        foreach (int level in new[] { 0, 2 })
+        {
+            CompilerSession editor = new(optimization: level);
+            if (editor.AnalyzeEditor(valid).Diagnostic is not null)
+                throw new InvalidOperationException("A query imposed its current module schema as a storage ABI");
+            var rejected = editor.AnalyzeEditor(invalid).Diagnostic;
+            if (rejected is not { Code: "E0205" } || !rejected.Message.Contains("'value'", StringComparison.Ordinal))
+                throw new InvalidOperationException("A query lost the returned Scope's actual required field");
+            if (editor.BindingNames.Count != 0)
+                throw new InvalidOperationException("A module query published candidate bindings into the accepted editor session");
+            HirModule hir = Compiler.Analyze(valid, "query-module-storage.msync");
+            using MemoryStream high = new();
+            HirArtifact.Write(hir with { Sources = [.. hir.Sources.Select(source => source with { Text = null })] }, high);
+            high.Position = 0;
+            NativeProgram[] inputs =
+            [
+                Compiler.LowerInstructions(hir, level),
+                Compiler.LowerInstructions(HirArtifact.Read(high), level),
+                Compiler.Compile(publisher, "published-module-storage.msync", level)
+            ];
+            foreach (NativeProgram image in inputs.SelectMany(Images))
+            {
+                Check(await StdlibFixture.Execute(image), 7, $"query/publisher module storage O{level} {image.Stage}");
+                routes++;
+            }
+        }
+        Console.WriteLine($"PASS {routes} query/decltype module replacement native routes and editor schema controls");
+    }
+
     private static async Task Session(int level)
     {
         CompilerSession compiler = new(optimization: level);
-        ExecutionSession runtime = new();
-        async Task<Value> Submit(string source)
+        NativeExecutionSession runtime = new();
+        async Task<NativeValue> Submit(string source)
         {
-            Value value = await runtime.ExecuteAsync(compiler.Compile(source));
+            NativeValue value = await runtime.ExecuteAsync(compiler.Compile(source));
             compiler.AcceptSubmission(runtime.GetLocalValue);
             return value;
         }
@@ -114,24 +159,47 @@ internal static class CapturedModuleChecks
         Check(await Submit("family::size(list)"), 2, $"session retained alias O{level}");
     }
 
-    private static void Check(Value value, double expected, string context)
+    private static async Task RootPublication(int level)
     {
-        if (value is not NumberValue number || number.Data != expected)
+        CompilerSession compiler = new(optimization: level);
+        await using NativeExecutionSession runtime = new();
+        async Task<NativeValue> Submit(string source)
+        {
+            NativeValue value = await runtime.ExecuteAsync(compiler.Compile(source));
+            compiler.AcceptSubmission(runtime.GetLocalValue);
+            return value;
+        }
+        Check(await Submit("let boolean = $std::bool; fn read() { $std::bool::identity(false) }; if read() { 1 } else { 0 }"),
+            0, $"module capture before root publication O{level}");
+        NativeValue root = await Submit("let root = $std; root");
+        if (root.AsAddress().Allocation.Layout.Fields.Any(field => field.Name.StartsWith('_')))
+            throw new InvalidOperationException("Public root exposed a private helper module");
+        Check(await Submit("if root::bool::identity(false) or read() { 1 } else { 0 }"),
+            0, $"root publication retained canonical initialized cells O{level}");
+        Check(await Submit("root::bool::identity = fn(value: Bool) { not value }; (if read() { 10 } else { 0 }) + (if boolean::identity(false) { 1 } else { 0 })"),
+            11, $"root member mutation retained shared namespace identity O{level}");
+        Check(await Submit("root::bool = scope { identity: fn(value: Bool) { false } }; (if read() { 10 } else { 0 }) + (if boolean::identity(false) { 1 } else { 0 })"),
+            1, $"module replacement updated the canonical cell without moving retained aliases O{level}");
+    }
+
+    private static void Check(NativeValue value, double expected, string context)
+    {
+        if (value.Kind != NativeKind.Number || value.AsNumber() != expected)
             throw new InvalidOperationException($"{context}: expected {expected}, got {value}");
     }
 
-    private static IEnumerable<Module> Images(Module module)
+    private static IEnumerable<NativeProgram> Images(NativeProgram module)
     {
         yield return module;
         yield return Codec(module);
-        yield return Codec(Binding.Bind(module, new(Environment.CurrentDirectory, Environment.CurrentDirectory)));
+        yield return Codec(NativePreparation.Prepare(module, new BindingContext(Environment.CurrentDirectory, Environment.CurrentDirectory)));
     }
 
-    private static Module Codec(Module module)
+    private static NativeProgram Codec(NativeProgram module)
     {
         using MemoryStream bytes = new();
-        Artifact.Write(module, bytes);
+        NativeArtifact.Write(module, bytes);
         bytes.Position = 0;
-        return Artifact.Read(bytes);
+        return NativeArtifact.Read(bytes);
     }
 }

@@ -22,23 +22,21 @@ PROGRAM: str = """fn next_number() -> Number {
     if line is null { 0 } else { line as Number }
 };
 fn traverse(count: Number, rotation: Number, select_word: Bool) -> String {
-    let owner = $std::arena::new(Number);
-    let head = $std::arena::allocate(owner, 0, 0);
-    $std::arena::set_root(owner, head);
-    let tail = $std::arena::root(owner);
+    let head = scope { key: 0, ordinal: 1, next?: null };
+    let tail = head;
     for ordinal in $std::ranges::iota(1, count + 1) {
-        let added = $std::arena::allocate(owner, ordinal * 3, tail);
-        $std::arena::set_child(owner, tail, false, added);
+        let added = scope { key: ordinal * 3, ordinal: ordinal + 1, next?: null };
+        tail::next = added;
         tail = added;
     };
-    let cursor = $std::arena::root(owner);
+    let cursor? = head;
     let sum = 0;
     let word = $std::bits::bit_not(0);
     loop {
-        if cursor == 0 { break; };
-        sum = sum + $std::arena::key(owner, cursor);
-        word = $std::bits::bit_xor($std::bits::rotate_left(word, rotation), cursor);
-        cursor = $std::arena::child(owner, cursor, false);
+        if cursor is null { break; };
+        sum = sum + cursor::key;
+        word = $std::bits::bit_xor($std::bits::rotate_left(word, rotation), cursor::ordinal);
+        cursor = cursor::next;
     };
     let joined = -0;
     if select_word { joined = word; };
@@ -99,12 +97,21 @@ def score(count: int, rotation: int, select_word: bool) -> bytes:
 
 def telemetry(db: Path) -> dict[str, int]:
     with closing(sqlite3.connect(db)) as connection:
-        return dict(
+        counters: dict[str, int] = dict(
             connection.execute(
-                "select m.key, sum(m.value_int) from metrics m join records r on r.id=m.record_id "
-                "where r.name='vm.function' and (m.key like 'managed_word_%' or m.key='native_worker_entries') group by m.key"
+                "SELECT m.key,SUM(m.value_int) FROM metrics AS m "
+                "JOIN records AS r ON r.id=m.record_id "
+                "WHERE r.name='execute' AND m.key GLOB 'tier.*' GROUP BY m.key"
             )
         )
+        counters["bits_calls"] = connection.execute(
+            "SELECT COALESCE(SUM(m.value_int),0) FROM metrics AS m "
+            "JOIN records AS r ON r.id=m.record_id "
+            "JOIN attributes AS a ON a.record_id=r.id "
+            "WHERE r.name='vm.native' AND m.key='calls' "
+            "AND a.key='native.name' AND a.value GLOB 'bits.*'"
+        ).fetchone()[0]
+        return counters
 
 
 def positive(cli: Path, work: Path, level: int) -> list[dict[str, object]]:
@@ -138,14 +145,10 @@ def positive(cli: Path, work: Path, level: int) -> list[dict[str, object]]:
             expected: bytes = score(ORDINALS, rotation, select_word)
             assert actual == expected, (route, level, rotation, actual, expected)
             counters: dict[str, int] = telemetry(db)
-            assert counters.get("native_worker_entries", 0) == 0
-            for key in (
-                "managed_word_edges",
-                "managed_word_local_reads",
-                "managed_word_local_writes",
-                "managed_word_index_operands",
-            ):
-                assert counters.get(key, 0) > 0, (route, level, rotation, counters)
+            assert (
+                counters["tier.entries"] == 0 and counters["tier.compilations"] == 0
+            ), counters
+            assert counters["bits_calls"] > 0, counters
             observations.append(
                 {
                     "route": route,
@@ -238,16 +241,16 @@ $std::io::println(selected as String);
         )
         db: Path = work / f"{route}.sqlite"
         assert checked(invoke(cli, work, *arguments, db=db)) == b"4294967288\n"
-        assert telemetry(db).get("managed_word_edges", 0) > 0
+        assert telemetry(db)["bits_calls"] > 0
         paths.append(route)
     return paths
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser: argparse.ArgumentParser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--report", type=Path)
-    args = parser.parse_args()
+    args: argparse.Namespace = parser.parse_args()
     cli: Path = args.binary.resolve(strict=True)
     scratch: Path = ROOT / ".temp"
     scratch.mkdir(exist_ok=True)
@@ -264,7 +267,7 @@ def main() -> None:
     if args.report is not None:
         args.report.write_text(json.dumps(output, indent=2) + "\n", encoding="utf-8")
     print(
-        f"PASS: {len(observations)} exact word/arena results, three selected failures and three deferred Process routes"
+        f"PASS: {len(observations)} exact word/native-linked-Scope results, three selected failures and three deferred Process routes"
     )
 
 

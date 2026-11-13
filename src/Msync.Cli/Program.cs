@@ -3,6 +3,7 @@ using System.Globalization;
 using Msync.Compiler;
 using Msync.Compiler.Syntax;
 using Msync.Core;
+using Msync.Core.Native;
 using Msync.Hir;
 using Msync.Runtime;
 using static Msync.Cli.ArtifactCommands;
@@ -42,6 +43,14 @@ internal static class Program
                 string artifact = options.File ?? throw new ArgumentException("An artifact filename is required; use 'msync disassemble --help'.");
                 byte[] bytes = artifact == "-" ? await ReadArtifactInput() : await File.ReadAllBytesAsync(artifact);
                 string identity = artifact == "-" ? "<stdin>" : new Uri(Path.GetFullPath(artifact)).AbsoluteUri;
+                if (NativeArtifact.HasMagic(bytes) || LegacyV6Reader.HasMagic(bytes))
+                {
+                    using MemoryStream stream = new(bytes, writable: false);
+                    NativeProgram native = NativeCommandPipeline.Read(stream);
+                    if (options.Json) Console.WriteLine(NativeArtifact.ToJson(native));
+                    else NativeCommandPipeline.Print(native, color);
+                    return 0;
+                }
                 ArtifactDisassemblyResult document = ArtifactDisassembly.Read(bytes, identity);
                 if (options.Json) Console.WriteLine(document.ToJson().ToJsonString());
                 else Console.Write(TerminalPresentation.Syntax(document.Text, TerminalPresentation.Colors(color)));
@@ -96,58 +105,11 @@ internal static class Program
                 else HirCommands.Print(semantic, color);
                 return Complete(0, telemetry);
             }
-            if (options.Command == "check")
-            {
-                if (semanticInput is null)
-                {
-                    if (binary) _ = ReadBytecode(file, telemetry);
-                    else _ = Analyze(source!, file, telemetry);
-                }
-                Console.WriteLine($"{file}: valid");
-                return Complete(0, telemetry);
-            }
-            Module module = semanticInput is not null || !binary
-                ? Compile(source, file, semanticInput, options.Optimization, telemetry)
-                : ReadBytecode(file, telemetry);
-            telemetry?.SetAttribute("optimization.level", module.OptimizationLevel.ToString(CultureInfo.InvariantCulture));
-            if (options.Command is "compile" or "emit-ir")
-            {
-                if (options.Output is null) PrintPlan(module, color);
-                else WriteBytecode(module, options.Output, telemetry);
-                return Complete(0, telemetry);
-            }
-            using CancellationTokenSource cancellation = new();
-            ConsoleCancelEventHandler cancel = (_, e) => { e.Cancel = true; cancellation.Cancel(); };
-            Console.CancelKeyPress += cancel;
-            try
-            {
-                if (options.Command == "bind-ir")
-                {
-                    string? sourceFile = options.SourceFile is null ? null : Path.GetFullPath(options.SourceFile);
-                    Module prepared = Prepare(module, sourceFile, RuntimeOptions(options, sourceFile,
-                        telemetry is null ? null : telemetry.Observe, color, snapshot),
-                        telemetry, cancellation.Token);
-                    WriteBytecode(prepared, options.Output ?? Path.ChangeExtension(file, ".mexe"), telemetry);
-                    return Complete(0, telemetry);
-                }
-                if (options.Command is "plan" or "plan-ir")
-                {
-                    if (module.Stage == ArtifactStage.Relocatable)
-                    {
-                        string? sourceFile = options.SourceFile is { } explicitSource ? Path.GetFullPath(explicitSource)
-                            : binary || file == "-" ? null : Path.GetFullPath(file);
-                        module = Prepare(module, sourceFile, RuntimeOptions(options, sourceFile,
-                            telemetry is null ? null : telemetry.Observe, color, snapshot), telemetry, cancellation.Token);
-                    }
-                    PrintPlan(module, color);
-                    return Complete(0, telemetry);
-                }
-                string? runSource = options.SourceFile is { } requestedSource ? Path.GetFullPath(requestedSource)
-                    : binary || file == "-" ? null : Path.GetFullPath(file);
-                int result = await Execute(module, options, runSource, telemetry, color, snapshot, input, cancellation.Token);
-                return Complete(result, telemetry);
-            }
-            finally { Console.CancelKeyPress -= cancel; }
+            NativeProgram program = !binary || semanticInput is not null
+                ? NativeCommandPipeline.Compile(source, file, semanticInput, options.Optimization, telemetry)
+                : NativeCommandPipeline.Read(file, telemetry);
+            return Complete(await NativeCommandPipeline.Run(program, options, file, binary,
+                telemetry, color, snapshot, input), telemetry);
         }
         catch (OperationCanceledException error) { telemetry?.Finish("cancelled", error); TerminalPresentation.Cancelled(color); return 130; }
         catch (Exception error) when (error is CompileException or SyntaxException or MsyncException or IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or FormatException or OverflowException)
@@ -167,7 +129,8 @@ internal static class Program
 
     private static Task<int> Repl(CommandOptions options, TelemetrySession? telemetry, Configuration configuration, TextReader? input) =>
         new ReplSession(RuntimeOptions(options, null, telemetry is null ? null : telemetry.Observe, configuration.Color, input: input)
-        with { Profile = telemetry?.CreateProfile(), Timeline = telemetry?.Timeline }, options.Optimization, configuration.Color, telemetry).RunAsync();
+        with
+        { Profile = telemetry?.CreateProfile(), Timeline = telemetry?.Timeline }, options.Optimization, configuration.Color, telemetry).RunAsync();
 
     private static int Doctor()
     {

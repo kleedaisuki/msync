@@ -1,5 +1,14 @@
 # Typed, source-backed standard library in 0.8
 
+## Native 0.9 source allocator retirement
+
+`storage`, `arena` and `slots` are no longer standard source modules or public
+native groups. `Storage` is not a source builtin, including native declarations.
+Collections allocate ordinary statically described namespaces and typed builtin
+fields; storage policies still describe Range snapshot behavior, not allocator
+capabilities. Historical format-6 allocator recipes are imported privately into
+native IR and do not reintroduce these source APIs.
+
 ## Typed construction and traversal (0.8.6)
 
 `Set::new(Number)`, `Heap::new(Number)`, `List::new(Number)`,
@@ -13,7 +22,7 @@ variants select an equality or ordering policy. They do not change the old
 two-exemplar tree constructors. Optional carriers are explicit, for example
 `Map::of_types(String, $std::meta::add_null(Number))`.
 
-`Buffer::of_type(Number)` directly allocates typed empty mutable storage.
+The historical `Buffer::of_type(Number)` native-owner design is retired.
 Tree child/free indexes and structural descent steps now use exact witnesses
 instead of nullable exemplar-derived storage. Typed constructors reuse the
 normal tree, heap and collection layouts and insertion paths; they do not
@@ -168,7 +177,7 @@ maintaining another authoritative signature table.
 | `$std::fs` | Filesystem inspection and mutation primitives | Selected native effects; no source-level class wrapper is required |
 | `$std::process` | Completed values and live process operations | Runtime-owned process lifetime/control, never a fabricated portable PID |
 | `$std::bool` | Boolean expression tools | Existing source composition remains valid |
-| `$std::containers` | Named collection families and explicit equality/storage policies | Typed data records; shared associated functions, Range snapshots and native indexed storage where required |
+| `$std::containers` | Named collection families and explicit equality/storage policies | Typed data records; shared associated functions, Range snapshots and ordinary statically described namespace fields |
 | `$std::data` | Option, Result, Either and Pair composition | Closed runtime kinds; native null sum, Scope products and explicit eliminators |
 | `$std::concepts` | Reusable structural and policy contracts | Compile-time declarations; no runtime concept values or implicit instance registry |
 | `$std::meta` | Closed-type and callable metaprogramming | Unevaluated compiler queries and finite Type operations, not a user-extensible runtime type hierarchy |
@@ -331,13 +340,31 @@ operation's Path parameter to introduce the implicit conversion.
 Adapters retain their source and callback; callback execution occurs on demand.
 A terminal may finish early. Materializing operations document the finite-input
 requirement and own their buffers; no arbitrary item-count quota is introduced.
-Returned Scope elements preserve instance identity and shared captured Cells.
+Returned Scope elements preserve instance identity and shared captured locations.
 
 Each API must state whether another enumeration re-evaluates its source or
 reuses an owned materialization. Filesystem-backed Ranges are observations,
 not eternal snapshots. Count/index arguments use Number but require the exact
 integral values implied by that operation; this does not create an integer type
 or permit floating-point reassociation.
+
+`io.read_lines` and `io.read_bytes` construct inert, repeatable producers, even
+when their path does not exist yet. Their pure construction signature carries a
+deferred path-read contract. The VM checks current writer dependencies on every
+enumeration, using the producer's captured path origin, not a dependency snapshot
+from construction time. `take(0)` performs no read or resource wait. Repeated
+enumeration after ordered writes observes the new bytes without adding an
+explicit acquire or freezing file contents during artifact preparation.
+
+The design analogy is the separation of construction from demand in
+[Rust's iterator/future model](https://doc.rust-lang.org/book/ch17-01-futures-and-syntax.html),
+not a Rust runtime dependency. The relevant research connection is
+[Koka's explicit effect types](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/koka-effects-2013.pdf):
+describing a result does not describe every effect of using it. Here existing
+`Deferred` and `PathAccess` metadata express the required latent read; no new
+source Future kind or general effect-row subsystem is needed. In particular,
+pure producer construction does not authorize moving its consumption across a
+write or treating its contents as a planner constant.
 
 `ranges.materialize` is an explicit eager boundary: the selected call consumes
 its input once before returning an owned, replayable Range. The EagerRange

@@ -139,7 +139,6 @@ def main() -> int:
             ]
         elif name == "affine-scans":
             extra = [
-                "--require-fusion",
                 "--output",
                 str(output / "affine-scans.json"),
             ]

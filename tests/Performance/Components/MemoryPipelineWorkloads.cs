@@ -1,5 +1,8 @@
 using System.Text;
 using Msync.Core;
+using Msync.Core.Native;
+using Msync.Runtime.Native;
+using Msync.Probes;
 using Msync.Runtime;
 
 namespace Msync.Components;
@@ -55,36 +58,49 @@ internal static class MemoryPipelineWorkloads
         return source.Append(']').ToString();
     }
 
-    internal static object Execute(Msync.Core.Module module, ExecutionOptions runtime, int size, string name)
+    internal static object Execute(NativeProgram module, ExecutionOptions runtime, int size, string name)
     {
-        Value result = Interpreter.ExecuteAsync(module, runtime).GetAwaiter().GetResult();
-        return name == "layout_factory" ? Consume(result).GetAwaiter().GetResult() : result;
+        return ExecuteAsync(module, runtime, name).GetAwaiter().GetResult();
     }
 
-    private sealed record ObservedScopes(int Count, Value Last);
-
-    private static async Task<ObservedScopes> Consume(Value value)
+    private static async Task<object> ExecuteAsync(NativeProgram module, ExecutionOptions runtime, string name)
     {
-        RangeValue range = (RangeValue)value;
+        await using NativeInterpreter interpreter = new(NativePreparation.Prepare(module, runtime), runtime);
+        NativeValue result = await interpreter.ExecuteAsync();
+        return name == "layout_factory" ? await Consume(result) : result;
+    }
+
+    private sealed record ObservedScopes(int Count, NativeValue Last);
+
+    private static async Task<ObservedScopes> Consume(NativeValue value)
+    {
+        NativeRange range = value.AsRange();
         while (range.Resolve is { } resolve) range = await resolve(CancellationToken.None);
         int count = 0;
-        Value last = Value.Null;
-        await foreach (Value item in range.Items)
+        NativeValue last = NativeValue.Null;
+        NativeLayout? previous = null;
+        int field = -1;
+        await foreach (NativeValue item in range.Items)
         {
-            ScopeValue scope = (ScopeValue)item;
-            last = scope.Members["file"];
+            NativeAddress address = item.AsAddress();
+            if (!ReferenceEquals(address.Allocation.Layout, previous))
+            {
+                previous = address.Allocation.Layout;
+                field = Enumerable.Range(0, previous.Count).Single(index => previous[index].Name == "file");
+            }
+            last = address.Field(field).Load();
             count++;
         }
         return new(count, last);
     }
 
-    internal static void Verify(Msync.Core.Module module, ExecutionOptions runtime, int size, string name)
+    internal static void Verify(NativeProgram module, ExecutionOptions runtime, int size, string name)
     {
         object observed = Execute(module, runtime, size, name);
-        Value result = observed is ObservedScopes scopes && scopes.Count == size ? scopes.Last
-            : observed is Value value ? value
+        NativeValue result = observed is ObservedScopes scopes && scopes.Count == size ? scopes.Last
+            : observed is NativeValue value ? value
             : throw new InvalidOperationException($"{name}: expected {size} fresh Scope instances, got {observed}");
-        if (result is not PathValue path || !path.Raw.EndsWith($"input_{size - 1}", StringComparison.Ordinal))
+        if (result.Kind != NativeKind.Path || !result.AsPath().Raw.EndsWith($"input_{size - 1}", StringComparison.Ordinal))
             throw new InvalidOperationException($"{name}: expected input_{size - 1}, got {result}");
     }
 }

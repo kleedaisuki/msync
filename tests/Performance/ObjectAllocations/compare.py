@@ -1,4 +1,5 @@
 """Alternate source-matched allocation probes and retain their raw observations."""
+
 from __future__ import annotations
 
 import argparse
@@ -16,8 +17,16 @@ def command(image: Path) -> list[str]:
 
 
 def identity(image: Path) -> dict[str, str]:
-    result: dict[str, str] = {"image": str(image), "sha256": hashlib.sha256(image.read_bytes()).hexdigest()}
-    for name in ("Msync.Core.dll", "Msync.Optimization.dll", "Msync.Compiler.dll", "Msync.Runtime.dll"):
+    result: dict[str, str] = {
+        "image": str(image),
+        "sha256": hashlib.sha256(image.read_bytes()).hexdigest(),
+    }
+    for name in (
+        "Msync.Core.dll",
+        "Msync.Optimization.dll",
+        "Msync.Compiler.dll",
+        "Msync.Runtime.dll",
+    ):
         dependency: Path = image.parent / name
         if dependency.exists():
             result[name] = hashlib.sha256(dependency.read_bytes()).hexdigest()
@@ -45,37 +54,77 @@ def main() -> None:
     args: argparse.Namespace = parser.parse_args()
     output: Path = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
-    images: dict[str, Path] = {"control": args.control.resolve(), "candidate": args.candidate.resolve()}
-    cases: list[str] = args.cases or ["direct", "swap", "captures", "objects", "paths", "literal"]
+    images: dict[str, Path] = {
+        "control": args.control.resolve(),
+        "candidate": args.candidate.resolve(),
+    }
+    cases: list[str] = args.cases or [
+        "direct",
+        "swap",
+        "captures",
+        "objects",
+        "paths",
+        "literal",
+    ]
     summary: dict[str, Any] = {
         "images": {label: identity(image) for label, image in images.items()},
-        "environment": {name: os.environ.get(name) for name in ("DOTNET_TieredCompilation", "DOTNET_ReadyToRun")},
-        "pairs": args.pairs, "samples": args.samples, "iterations": args.iterations, "size": args.size,
+        "environment": {
+            name: os.environ.get(name)
+            for name in ("DOTNET_TieredCompilation", "DOTNET_ReadyToRun", "MSYNC_JIT")
+        },
+        "pairs": args.pairs,
+        "samples": args.samples,
+        "iterations": args.iterations,
+        "size": args.size,
         "cases": {},
     }
     for case in cases:
         results: dict[str, list[dict[str, Any]]] = {"control": [], "candidate": []}
         for pair in range(args.pairs):
-            order: tuple[str, str] = ("control", "candidate") if pair % 2 == 0 else ("candidate", "control")
+            order: tuple[str, str] = (
+                ("control", "candidate") if pair % 2 == 0 else ("candidate", "control")
+            )
             for label in order:
                 destination: Path = output / f"{case}-{pair}-{label}.json"
                 invocation: list[str] = command(images[label]) + [
-                    "--case", case, "--size", str(args.size), "--samples", str(args.samples),
-                    "--iterations", str(args.iterations), "--output", str(destination),
-                    "--root", str(output / "work"),
+                    "--case",
+                    case,
+                    "--size",
+                    str(args.size),
+                    "--samples",
+                    str(args.samples),
+                    "--iterations",
+                    str(args.iterations),
+                    "--output",
+                    str(destination),
+                    "--root",
+                    str(output / "work"),
                 ]
                 subprocess.run(invocation, check=True)
                 results[label].append(json.loads(destination.read_text()))
         row: dict[str, Any] = {}
         for label in images:
-            times: list[float] = [time for result in results[label] for time in result["Milliseconds"]]
+            times: list[float] = [
+                time for result in results[label] for time in result["Milliseconds"]
+            ]
             row[label] = {
-                "p50_ms": quantile(times, 0.5), "p95_ms": quantile(times, 0.95),
-                "allocated_bytes": statistics.median(result["AllocatedBytesPerOperation"] for result in results[label]),
-                "artifact_sha256": sorted({result["ArtifactSha256"] for result in results[label]}),
+                "p50_ms": quantile(times, 0.5),
+                "p95_ms": quantile(times, 0.95),
+                "allocated_bytes": statistics.median(
+                    result["AllocatedBytesPerOperation"] for result in results[label]
+                ),
+                "artifact_sha256": sorted(
+                    {result["ArtifactSha256"] for result in results[label]}
+                ),
+                "source_sha256": sorted(
+                    {result["SourceSha256"] for result in results[label]}
+                ),
             }
-        if row["control"]["artifact_sha256"] != row["candidate"]["artifact_sha256"]:
-            raise RuntimeError(f"{case}: compared different executable bytecode")
+        if row["control"]["source_sha256"] != row["candidate"]["source_sha256"]:
+            raise RuntimeError(f"{case}: compared different source fixtures")
+        row["same_artifact_bytes"] = (
+            row["control"]["artifact_sha256"] == row["candidate"]["artifact_sha256"]
+        )
         summary["cases"][case] = row
         print(case, row, flush=True)
         (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")

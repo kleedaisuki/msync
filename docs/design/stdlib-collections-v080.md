@@ -87,11 +87,11 @@ Canonical `Set` is a red-black tree using `StrictOrder`, not the linear
 equality-based family. BTree, BPlusTree and Heap are distinct ordered structures,
 not aliases for sorting a Range. `NaturalOrder` gives Null and NaN an explicit
 container order without changing language-level IEEE comparisons. Their source
-algorithms and indexed-storage boundary are recorded with the ordered-structure
+algorithms and statically described namespace boundary are recorded with the ordered-structure
 implementation; `EqualitySet` remains available for arbitrary equivalence
 relations that are not orderings.
 See [the ordered-container contract](ordered-containers-v080.md) for node
-ownership, indexed storage, complexity and algorithm-specific observations.
+ownership, typed namespace fields, complexity and algorithm-specific observations.
 
 ```msync
 let ordered = $std::containers::Set::new([3, 1, 2]);
@@ -104,6 +104,27 @@ The unpublished callable factory module has been deleted. There is one current
 Scope-family API, without a second compatibility vocabulary.
 
 ## Focused observations
+
+### Rejected source-only deduplication during v0.9 deletion work
+
+The first `_Chain` splice/unlink and shared typed-item helper experiment saved
+only 18 physical lines while adding generic calls. A fixed Native AOT host with
+the modified source inlined into the original Set journey produced the expected
+mutation prefix, then failed a checked namespace narrowing at `previous::next`:
+the new helper's constructor layout depended on its argument views. This is not
+a reason to add more runtime checks, change collection schemas, weaken the IR
+reader or trim the oracle. The complete source experiment was rejected and
+reverted; the existing source algorithms and public families remain unchanged.
+The failed source, log and exact before/after hashes remain under
+`.temp/stdlib-code-reduction-v090/`.
+
+A separate publication-helper proposal was also rejected before implementation.
+The original nested call evaluates both `ranges.materialize` and the storage
+policy's `snapshot` callable before an effectful Range producer. A helper that
+looks up either callable later changes observable method-replacement behavior.
+Passing both frozen callables preserves the contract but does not remove enough
+implementation to justify another abstraction. Direct aliases for public
+forwarding wrappers are likewise not equivalent to late-bound calls.
 
 The snapshot-based family owner accepted nine actual source/object/executable
 routes at O0/O2/O3 with fixed-schema, alias, policy and mutation checks. The

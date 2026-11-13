@@ -42,6 +42,7 @@ internal sealed partial class SourceBinder
     private StandardBindingDemand? standardDemand;
     private readonly Stack<HirLoopId> loops = [];
     private readonly Queue<string> pendingModules = new();
+    private readonly HashSet<string> scheduledModules = new(StringComparer.Ordinal);
 
     public SourceBinder(HirBuilder? builder = null, bool observations = false, bool editorMode = false,
         bool isSession = false, CancellationToken cancellationToken = default)
@@ -105,7 +106,7 @@ internal sealed partial class SourceBinder
         var previous = (source, sourceName, sourceText, nativeModule, scope, annotationScope);
         source = new(hir.Sources.Count);
         sourceText = library.Source;
-        sourceName = $"msync-stdlib:///{Artifact.LanguageVersion}/{name}.msync";
+        sourceName = $"msync-stdlib:///{LanguageContract.Version}/{name}.msync";
         nativeModule = name;
         hir.Sources.Add(new(sourceName, sourceText));
         scope = new(null, Range(library.Document.Span), null);
@@ -151,6 +152,20 @@ internal sealed partial class SourceBinder
 
     private HirLocationId ReserveStandardLocation(string module, HirSourceRange sourceRange)
     {
+        if (!module.StartsWith('_') && !program.StandardLocations.ContainsKey(""))
+        {
+            ReserveStandardCell("", sourceRange);
+            foreach (string name in StandardLibraries.Value.Keys.Where(name => !name.StartsWith('_')).Order(StringComparer.Ordinal))
+                ReserveStandardCell(name, sourceRange);
+        }
+        HirLocationId location = ReserveStandardCell(module, sourceRange);
+        if (scheduledModules.Add(module) && (module.Length == 0 || !program.StandardModules.ContainsKey(module)))
+            pendingModules.Enqueue(module);
+        return location;
+    }
+
+    private HirLocationId ReserveStandardCell(string module, HirSourceRange sourceRange)
+    {
         if (program.StandardLocations.TryGetValue(module, out var existing)) return existing;
         HirLocationId location = new(hir.Locations.Count);
         string name = module.Length == 0 ? "$std" : "$std::" + module;
@@ -158,7 +173,6 @@ internal sealed partial class SourceBinder
         program.Declare(new(location, module, module.Length == 0
             ? DeclarationKind.StandardRoot : DeclarationKind.StandardModule, sourceRange));
         program.StandardLocations.Add(module, location);
-        pendingModules.Enqueue(module);
         return location;
     }
 

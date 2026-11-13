@@ -1,6 +1,9 @@
 using Msync.Optimization;
 using System.Security.Cryptography;
 using Msync.Core;
+using Msync.Core.Native;
+using Msync.Runtime.Native;
+using Msync.Probes;
 using Msync.Runtime;
 using SourceCompiler = Msync.Compiler.Compiler;
 
@@ -32,23 +35,23 @@ internal static class SnapshotChecks
         Console.WriteLine($"Lexical snapshots passed: captures, shadowing, returned closures, recursive slots, scopes, lazy ranges and null refinement through source-free stages; capture artifact {Convert.ToHexStringLower(SHA256.HashData(artifact.ToArray()))}.");
     }
 
-    public static void WriteCapture(Stream output) => Artifact.Write(SourceCompiler.Compile(CaptureSource, "snapshot-capture.msync"), output);
+    public static void WriteCapture(Stream output) => NativeArtifact.Write(SourceCompiler.Compile(CaptureSource, "snapshot-capture.msync"), output);
 
     private static void Check(string source, string expected)
     {
         var module = SourceCompiler.Compile(source, "snapshot.msync");
         using MemoryStream encoded = new();
-        Artifact.Write(module, encoded);
+        NativeArtifact.Write(module, encoded);
         encoded.Position = 0;
-        var imported = Artifact.Read(encoded);
+        var imported = NativeArtifact.Read(encoded);
         var context = new BindingContext(Environment.CurrentDirectory, Environment.CurrentDirectory);
-        foreach (var variant in new[] { imported, Binding.Bind(imported, context) })
+        foreach (var variant in new[] { imported, NativeProbe.Prepare(imported, context) })
         {
             using MemoryStream reencoded = new();
-            Artifact.Write(variant, reencoded);
+            NativeArtifact.Write(variant, reencoded);
             reencoded.Position = 0;
-            var value = Interpreter.ExecuteAsync(Artifact.Read(reencoded), new(Output: TextWriter.Null, Error: TextWriter.Null)).GetAwaiter().GetResult();
-            if (value is not StringValue text || text.Data != expected) throw new Exception($"Lexical snapshot changed: expected '{expected}', found '{value}'");
+            var value = NativeProbe.RunAsync(NativeArtifact.Read(reencoded), new(Output: TextWriter.Null, Error: TextWriter.Null)).GetAwaiter().GetResult();
+            if (value.Kind != NativeKind.String || value.AsString() != expected) throw new Exception($"Lexical snapshot changed: expected '{expected}', found '{value}'");
         }
     }
 }

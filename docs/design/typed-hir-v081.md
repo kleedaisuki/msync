@@ -1,5 +1,32 @@
 # Typed HIR and compiler phase ownership (0.8.1)
 
+## Lowering target correction (2026-11-12)
+
+HIR is the language-specific boundary. Its successor must lower all builtins
+and namespace layouts into relocatable storage, allocation/reference binding,
+address arithmetic, typed access, control flow and calls, with compiler-directed
+copy/move/delete. See the [authoritative storage model](object-spatial-layout.md#authoritative-model-2026-11-12).
+Scope construction directly expresses logical-heap allocation and reference
+binding. Physical placement is compiler/VM policy, not a separate source or
+standard-library allocator design.
+The existing HIR analysis/phase separation is a reusable foundation; the current
+object-shaped bytecode is not the completed lowering target. In particular,
+losing a captured layout domain and recovering it through generic Scope objects
+is a gap to fix, not a reason to narrow valid source programs. Sections below
+record the earlier implementation and its evidence unless explicitly updated.
+
+## Layout-only namespace allocation (0.9.0)
+
+`AllocateScope` reuses `HirScopeConstruction` to allocate its static layout and
+bind the listed locations, without initializing their builtin storage. It has
+exactly zero children; a subsequent ordinary declaration/assignment can fill a
+bound cell. `Scope` retains its initialized-construction arity checks. Both lower
+to the same native allocation/address/binding operations; this adds neither a
+source type nor an allocator API or VM protocol. The new HIR kind is appended,
+preserving every historical node number and construction-record shape, including
+frozen format-3 payloads. Readers reject malformed arities rather than inventing
+initializers or special-casing the standard library.
+
 ## Required boundary
 
 The 0.8.1 migration separates semantic analysis from bytecode production. A

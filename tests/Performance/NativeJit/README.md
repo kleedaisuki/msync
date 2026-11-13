@@ -1,4 +1,11 @@
-# Native guest JIT acceptance
+# Historical numeric guest JIT acceptance (v0.8)
+
+This probe targets the retired format-6 stack/numeric backend and its telemetry
+contracts. It is not a current v0.9 acceptance command. Retain the receipts and
+run it only with the matching historical sources/assemblies. Current complete
+native-IR tiers are tested by [NativeTiering](../../NativeTiering/README.md) and
+`tests/Telemetry/tiering.py`; application measurements use the unified
+[benchmark runner](../../../BENCHMARK.md) with an explicit guest tier policy.
 
 Run the real Native AOT CLI, not an interpreter library or the historical
 standalone LLVM probe:

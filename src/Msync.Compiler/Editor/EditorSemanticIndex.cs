@@ -1,3 +1,4 @@
+using Msync.Core.Native;
 using Msync.Core;
 using Msync.Hir;
 using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
@@ -92,9 +93,9 @@ internal sealed class EditorSemanticIndex(SemanticObservationView view,
         var owner = SemanticValuePresenter.Connection(endpoint);
         if (paths.Length != 0 && receivers.Length != 0 && receivers[0].Kind == EditorReceiverKind.PathJoin)
         {
-            var path = receiver!.KnownPath ?? (receiver.KnownText is { } text ? new PathValue(text) : null);
-            receiver = receiver with { KnownPath = owner is null || path is null
-                || owner.Kind is ConnectionKind.Environment or ConnectionKind.SearchPath ? null : PathSemantics.Qualify(path, owner),
+            var path = receiver!.KnownPath ?? (receiver.KnownText is { } text ? new NativePath(text) : null);
+            receiver = receiver with { KnownPath = owner is not { } connection || path is not { } known
+                || connection.Kind is ConnectionKind.Environment or ConnectionKind.SearchPath ? null : PathSemantics.Qualify(known, connection),
                 KnownText = null };
         }
         return new(DescribeBindings(contexts.Select(item => item.Bindings), presenter), receiver,

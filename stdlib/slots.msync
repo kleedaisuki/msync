@@ -1,8 +1,0 @@
-# Owner-relative slots for collection pages; releasing a page recycles its index.
-native fn new(element: Type) -> Storage;
-native fn allocate(owner: Storage, value?) -> Number;
-native fn get(owner: Storage, index: Number) -> Bool | String | Path
-    | Range | Function | Scope | Process | Connection | Type | Number | Null;
-native fn release(owner: Storage, index: Number) -> Null;
-native fn count(owner: Storage) -> Number;
-native fn reset(owner: Storage, first?) -> Number;
