@@ -69,3 +69,26 @@ for the framed editor transport.
 Use the [CLI guide and SQLite queries](telemetry.md) for normal operation,
 and the [matched profile runner](../../tests/Performance/README.md#explain-a-beforeafter-with-product-telemetry)
 for compiler and runtime comparisons.
+
+## Blocking LSP input scheduling
+
+The framed stdin reader runs on one named background thread (`msync-lsp-input`),
+not on a ThreadPool worker. A permanent blocking read must not occupy the initial
+worker needed to dispatch received messages on a single-vCPU host. The analysis
+worker and event loop keep their asynchronous channel ownership. No global
+MinThreads or processor-count override is required.
+
+The session records `lsp.input.reader=dedicated-thread`; existing `lsp.queue_ns`,
+`lsp.dispatch_to_reply_ns` and `lsp.receive_to_reply_ns` retain their original
+boundaries. Recording-disabled execution starts no observer.
+
+The focused real-process journey is
+`python3 tests/Telemetry/lsp_startup.py PATH_TO_MSYNC --cpu CPU`.
+It opens three fresh framed sessions, initializes, opens a document, obtains a
+semantic hover and shuts down. It reports queue intervals without a timing gate.
+A Linux x64 Native AOT overlay of only the two LSP files on `04465c4` passed this
+journey and the existing framed observer journey on 2026-11-13. Single-vCPU
+initialize queue intervals were 0.0390, 0.0351 and 0.2027 ms, versus approximately
+1,000 ms in the earlier baseline diagnosis. The native overlay deliberately
+excludes concurrent call/bridge work; its receipt and SQLite recordings are in
+`artifacts/validation/lsp-reader-04465c4/acceptance/`.

@@ -25,7 +25,9 @@ internal sealed partial class LanguageServer
 
     public async Task<int> RunAsync()
     {
-        _ = Task.Run(ReadMessages);
+        // Blocking stdin must not occupy the worker that dispatches received messages.
+        new Thread(ReadMessages) { IsBackground = true, Name = "msync-lsp-input" }.Start();
+        observation?.InputReaderStarted();
         Task analysisWorker = Task.Run(AnalyzeAsync);
         try
         {

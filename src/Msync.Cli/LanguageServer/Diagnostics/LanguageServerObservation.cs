@@ -9,6 +9,8 @@ namespace Msync.Cli;
 // immutable parent ID; the shared exporter handles concurrent observations.
 internal sealed class LanguageServerObservation(TelemetrySession session)
 {
+    internal void InputReaderStarted() => session.SetAttribute("lsp.input.reader", "dedicated-thread");
+
     private sealed record Pending(TelemetrySpan Span, long Received, long Dispatched);
     private readonly Dictionary<string, Pending> requests = new(StringComparer.Ordinal);
 
