@@ -10,6 +10,11 @@ internal static class LocalCfgProperties
         Switches();
         EmptyBlocks();
         CriticalEdges();
+        LifetimeDestination([LlvmIntrinsicKind.LifetimeStart], ignoreUnreachable: true);
+        LifetimeDestination([LlvmIntrinsicKind.LifetimeEnd], ignoreUnreachable: true);
+        LifetimeDestination([LlvmIntrinsicKind.LifetimeStart, LlvmIntrinsicKind.LifetimeEnd], ignoreUnreachable: true);
+        LifetimeDestination([LlvmIntrinsicKind.LifetimeStart], ignoreUnreachable: true, storeBeforeUnreachable: true);
+        LifetimeDestination([LlvmIntrinsicKind.LifetimeStart], ignoreUnreachable: false);
         BlockSplits();
         return checks;
 
@@ -192,6 +197,42 @@ internal static class LocalCfgProperties
                 output.GetIncomingValue(index) is LlvmPhiInstruction incoming && ReferenceEquals(incoming.Parent, output.GetIncomingBlock(index))),
                 "Other loop exits were not resplit and closed in LCSSA form.");
             CompareTrees(loopFunction, dominators);
+        }
+
+        void LifetimeDestination(IReadOnlyList<LlvmIntrinsicKind> markers, bool ignoreUnreachable,
+            bool storeBeforeUnreachable = false)
+        {
+            var context = new LlvmContext();
+            var module = new LlvmModule("critical-edge-lifetime", context);
+            var i8 = LlvmType.GetInt8Ty(context);
+            var function = LlvmFunction.Create(LlvmFunctionType.Get(LlvmType.GetVoidTy(context), [LlvmType.GetInt1Ty(context)]),
+                LlvmLinkage.InternalLinkage, "subject", module);
+            var entry = new LlvmBasicBlock(context, "entry", function);
+            var other = new LlvmBasicBlock(context, "other", function);
+            var destination = new LlvmBasicBlock(context, "destination", function);
+            var alloca = new LlvmAllocaInstruction(i8, LlvmConstantInt.Get(LlvmType.GetInt64Ty(context), 1));
+            entry.Append(alloca);
+            entry.Append(new LlvmCondBrInstruction(function.Arguments[0], destination, other));
+            other.Append(new LlvmUncondBrInstruction(destination));
+            var phi = new LlvmPhiInstruction(alloca.Type, 2);
+            phi.AddIncoming(alloca, entry); phi.AddIncoming(alloca, other);
+            destination.Append(phi);
+            foreach (var marker in markers)
+                destination.Append(LlvmIntrinsic.CreateMemoryIntrinsic(marker, [phi], module));
+            if (storeBeforeUnreachable)
+                destination.Append(new LlvmStoreInstruction(LlvmConstantInt.Get(i8, 7), phi));
+            destination.Append(new LlvmUnreachableInstruction(context));
+            var metrics = new Dictionary<string, ulong>();
+            var options = new LlvmCriticalEdgeSplittingOptions { IgnoreUnreachableDests = ignoreUnreachable };
+            var split = LlvmBasicBlockUtils.SplitCriticalEdge(entry.GetTerminator(), 0, options, metrics: metrics);
+            bool ignored = ignoreUnreachable && !storeBeforeUnreachable;
+            Require((split is null) == ignored && function.BasicBlocks.Count == (ignored ? 3 : 4),
+                "Critical-edge unreachable filtering must skip lifetime markers, not ordinary memory operations or the disabled option.");
+            Require(ReferenceEquals(entry.GetTerminator().GetSuccessor(0), ignored ? destination : split) &&
+                phi.GetBasicBlockIndex(ignored ? entry : split!) >= 0,
+                "Lifetime-aware critical-edge filtering changed the wrong edge or PHI predecessor.");
+            Require(metrics.GetValueOrDefault("critical_edge.unreachable_destination") == (ignored ? 1UL : 0UL),
+                "Lifetime-aware critical-edge filtering lost its actual decision counter.");
         }
 
         void BlockSplits()

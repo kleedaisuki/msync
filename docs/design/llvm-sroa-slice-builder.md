@@ -82,3 +82,33 @@ pointer index width on a 64-bit pointer layout. The coordinator builds this
 cohort and exercises the complete SROA pass through source/Native journeys;
 component properties alone do not establish that integration or completion of
 the full LLVM migration.
+
+## Presplit scratch groups
+
+`LlvmSroa.Presplit.cs` and `LlvmSroa.Splitter.cs` retain the pinned
+`InstructionSliceMap` and `findOverlappingCopySlice` operation sequence, but keep
+one slice reference directly in each dictionary value. A nullable overflow set
+contains only additional distinct slice references. Repeating the first slice
+is a no-op; overflow retains reference-set deduplication. Lookup examines the
+first slice and then the overflow's existing insertion traversal, preserving
+the prior managed grouping order and the source overlap predicates. Load/store
+candidate and split-point order are unchanged.
+
+This is a private two-field value local to this source family, not a general
+container framework or a new optimization. The partition map is still built and
+visited for the same partitions, including unsplittable ones. There is no new
+eligibility condition, work threshold or early-return gate. Ordinary load/store
+instructions have only one pointer-use slice per group, so that path no longer
+constructs a child HashSet or its first-insertion backing storage. Genuinely
+multi-slice instructions still allocate overflow storage when needed. The
+outer dictionary value becomes one reference wider; no elapsed-time benefit is
+claimed from that structural allocation reduction alone.
+
+The existing caller-owned metric map records `presplit.slice_groups` and
+`presplit.slice_group_overflows`: groups created and actual overflow-set
+constructions, respectively. Disabled recording does not construct keys or a
+separate map. `SroaPartitionChecks` retains both-endian overlapping load/store
+copy results and checks that their groups use no overflow. A real overlapping
+memmove with two slices also exercises overflow while retaining the operation,
+its common allocation and its source-to-destination byte displacement. Root
+owns the grouped build and actual source-journey execution for this change.

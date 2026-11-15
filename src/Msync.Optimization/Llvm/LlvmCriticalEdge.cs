@@ -72,7 +72,7 @@ public static partial class LlvmBasicBlockUtils
         var block = terminator.Parent!;
         var destination = terminator.GetSuccessor(successorIndex);
         if (FirstNonPhiForCriticalEdge(destination).IsEHPad || terminator.Opcode == LlvmOpcode.IndirectBr) return null;
-        if (options.IgnoreUnreachableDests && FirstNonPhiForCriticalEdge(destination) is LlvmUnreachableInstruction)
+        if (options.IgnoreUnreachableDests && FirstNonPhiForCriticalEdge(destination, skipLifetime: true) is LlvmUnreachableInstruction)
         { CriticalCount(metrics, "critical_edge.unreachable_destination"); return null; }
         var loops = options.LoopInfo;
         List<LlvmBasicBlock> loopPredecessors = [];
@@ -202,10 +202,11 @@ public static partial class LlvmBasicBlockUtils
         return broken;
     }
 
-    private static LlvmInstruction FirstNonPhiForCriticalEdge(LlvmBasicBlock block)
+    private static LlvmInstruction FirstNonPhiForCriticalEdge(LlvmBasicBlock block, bool skipLifetime = false)
     {
         var instruction = block.FirstInstruction!;
-        while (instruction is LlvmPhiInstruction) instruction = instruction.Next!;
+        while (instruction is LlvmPhiInstruction || skipLifetime && instruction.IsLifetimeStartOrEnd)
+            instruction = instruction.Next!;
         return instruction;
     }
 

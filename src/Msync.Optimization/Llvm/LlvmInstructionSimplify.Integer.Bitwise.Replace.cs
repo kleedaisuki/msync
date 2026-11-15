@@ -52,7 +52,7 @@ public static partial class LlvmInstructionSimplify
 
     private static LlvmValue? BitwiseSimplifyWithOpsReplaced(LlvmValue value,
         IReadOnlyList<(LlvmValue Operand, LlvmValue Replacement)> replacements, BinaryQuery q,
-        bool allowRefinement, uint depth)
+        bool allowRefinement, uint depth, ICollection<LlvmInstruction>? dropFlags = null)
     {
         Count(q.Metrics, "simplify.replace.visited");
         foreach (var (operand, replacement) in replacements)
@@ -68,7 +68,7 @@ public static partial class LlvmInstructionSimplify
         for (int index = 0; index < newOperands.Length; ++index)
         {
             LlvmValue original = instruction.GetOperand(index)!;
-            if (BitwiseSimplifyWithOpsReplaced(original, replacements, q, allowRefinement, depth) is { } substituted)
+            if (BitwiseSimplifyWithOpsReplaced(original, replacements, q, allowRefinement, depth, dropFlags) is { } substituted)
             {
                 newOperands[index] = substituted;
                 // Assignment, not OR, follows the pinned source's AnyReplaced update.
@@ -83,13 +83,13 @@ public static partial class LlvmInstructionSimplify
             LlvmValue? simplified = SimplifyBitwiseReplacedInstruction(instruction, newOperands, q, depth);
             return simplified == value ? null : simplified;
         }
-        if (SimplifyNonRefiningReplacement(instruction, newOperands, replacements, q) is { } exact) return exact;
-        return FoldBitwiseReplacedOperands(instruction, newOperands, q, false, true);
+        if (SimplifyNonRefiningReplacement(instruction, newOperands, replacements, q, dropFlags) is { } exact) return exact;
+        return FoldBitwiseReplacedOperands(instruction, newOperands, q, false, true, dropFlags);
     }
 
     private static LlvmValue? SimplifyNonRefiningReplacement(LlvmInstruction instruction,
         IReadOnlyList<LlvmValue> operands, IReadOnlyList<(LlvmValue Operand, LlvmValue Replacement)> replacements,
-        BinaryQuery q)
+        BinaryQuery q, ICollection<LlvmInstruction>? dropFlags)
     {
         if (instruction is LlvmBinaryOperator binary)
         {
@@ -100,12 +100,43 @@ public static partial class LlvmInstructionSimplify
                 if (operands[1] == LlvmConstantFolding.BinOpIdentity(opcode, binary.Type, true)) return operands[0];
             }
             if (opcode is LlvmOpcode.And or LlvmOpcode.Or && operands[0] == operands[1])
-                return opcode == LlvmOpcode.Or && binary.IsDisjoint ? null : operands[0];
+            {
+                if (opcode == LlvmOpcode.Or && binary.IsDisjoint)
+                {
+                    if (dropFlags is null) return null;
+                    dropFlags.Add(binary);
+                }
+                return operands[0];
+            }
             if (opcode is LlvmOpcode.Sub or LlvmOpcode.Xor && operands[0] == operands[1] &&
                 replacements.Any(pair => operands[0] == pair.Replacement)) return IntegerZero(binary);
             var absorber = LlvmConstantFolding.BinOpAbsorber(opcode, binary.Type, false);
             if ((operands[0] == absorber || operands[1] == absorber) &&
                 replacements.Any(pair => LlvmValueTracking.ImpliesPoison(binary, pair.Operand, q.Metrics))) return absorber;
+        }
+        if (instruction is LlvmCallInstruction { CalledFunction.IntrinsicDescriptor: { } descriptor } intrinsic)
+        {
+            LlvmValue? result = null;
+            if ((descriptor.Kind == LlvmIntrinsicKind.SCmp || descriptor.Kind == LlvmIntrinsicKind.UCmp) && operands[0] == operands[1])
+                result = LlvmConstant.GetNullValue(intrinsic.Type);
+            if (LlvmIntrinsic.IsMinMax(descriptor.Kind))
+            {
+                uint width = intrinsic.Type.GetIntegerBitWidth();
+                LlvmAPInt identity = descriptor.Kind == LlvmIntrinsicKind.SMin ? LlvmAPInt.GetSignedMaxValue(width) :
+                    descriptor.Kind == LlvmIntrinsicKind.SMax ? LlvmAPInt.GetSignedMinValue(width) :
+                    descriptor.Kind == LlvmIntrinsicKind.UMin ? LlvmAPInt.GetAllOnes(width) : LlvmAPInt.GetZero(width);
+                if (operands[0] is LlvmConstantInt left && left.Value == identity) result = operands[1];
+                else if (operands[1] is LlvmConstantInt right && right.Value == identity) result = operands[0];
+            }
+            if (result is not null)
+            {
+                if (intrinsic.HasPoisonGeneratingAnnotations())
+                {
+                    if (dropFlags is null) return null;
+                    dropFlags.Add(intrinsic);
+                }
+                return result;
+            }
         }
         if (instruction is LlvmGetElementPtrInstruction && operands.Count == 2 && IsIntegerZero(operands[1])) return operands[0];
         return null;
@@ -136,7 +167,7 @@ public static partial class LlvmInstructionSimplify
 
     private static LlvmValue? FoldBitwiseReplacedOperands(LlvmInstruction instruction,
         IReadOnlyList<LlvmValue> operands, BinaryQuery q, bool allowNonDeterministic = true,
-        bool rejectPoisonCreation = false)
+        bool rejectPoisonCreation = false, ICollection<LlvmInstruction>? dropFlags = null)
     {
         var constants = new LlvmConstant[operands.Count];
         for (int index = 0; index < constants.Length; ++index)
@@ -144,7 +175,15 @@ public static partial class LlvmInstructionSimplify
             if (operands[index] is not LlvmConstant constant) return null;
             constants[index] = constant;
         }
-        if (rejectPoisonCreation && LlvmValueTracking.CanCreatePoison(instruction)) return null;
-        return LlvmConstantFolding.ConstantFoldInstOperands(instruction, constants, q.Layout, allowNonDeterministic, q.Metrics);
+        if (rejectPoisonCreation)
+        {
+            if (LlvmValueTracking.CanCreatePoison(instruction, considerFlagsAndMetadata: dropFlags is null)) return null;
+            if (dropFlags is not null && instruction is LlvmCallInstruction { CalledFunction.IntrinsicDescriptor.Kind: var kind } &&
+                kind == LlvmIntrinsicKind.CTTZ) constants[1] = LlvmConstantInt.GetFalse(instruction.Context);
+        }
+        LlvmConstant? result = LlvmConstantFolding.ConstantFoldInstOperands(instruction, constants, q.Layout, allowNonDeterministic, q.Metrics);
+        if (rejectPoisonCreation && dropFlags is not null && result is not null && instruction.HasPoisonGeneratingAnnotations())
+            dropFlags.Add(instruction);
+        return result;
     }
 }

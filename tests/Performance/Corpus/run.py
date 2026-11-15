@@ -485,6 +485,7 @@ def run(
             "shared_artifact": args.same_artifact,
             "scales": scales,
             "seeds": seeds,
+            "msync_jit": os.environ.get("MSYNC_JIT", "auto"),
         },
     }
     rows: list[dict[str, object]] = []

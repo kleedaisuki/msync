@@ -29,12 +29,15 @@ implementation rather than replacing direct-DT updates with a reconstruction.
 
 ## Representation and ownership
 
-The current IR represents ordinary branches, switches, returns and unreachable,
-not IndirectBr/BlockAddress, EH-pad terminators, debug records or lifetime
-intrinsics. The corresponding source-only transformations are not invented from
-other operations. Existing source restrictions for IndirectBr opcodes and EH-pad
-flags remain in the generic edge helpers. The unrepresented loop metadata
-preservation and branch weight transfer paths need their actual IR metadata
+The current IR represents ordinary branches, switches, returns, unreachable and
+standard lifetime intrinsics, not IndirectBr/BlockAddress, EH-pad terminators or
+debug records. Critical-edge splitting with `IgnoreUnreachableDests` skips PHIs
+and actual lifetime start/end instructions before testing for `unreachable`,
+following `BasicBlock::getFirstNonPHIOrLifetime`. A different instruction before
+`unreachable` is not skipped. The corresponding source-only transformations are
+not invented from other operations. Existing source restrictions for IndirectBr
+opcodes and EH-pad flags remain in the generic edge helpers. The unrepresented
+loop metadata preservation and branch weight transfer paths need actual IR metadata
 representation before they can be translated; `SourceSpan` provenance is retained.
 
 PHI incoming blocks are stored outside ordinary `Use` objects in the managed IR.

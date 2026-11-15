@@ -11,7 +11,7 @@ public sealed partial class LlvmTransformBuilder
     public LlvmValue CreateIntrinsic(LlvmIntrinsicKind kind, IReadOnlyList<LlvmValue> arguments, string name = "") =>
         LlvmIntrinsic.IsMemoryFamilyIntrinsic(kind) ? Insert(LlvmIntrinsic.CreateMemoryIntrinsic(kind, arguments, InsertBlock!.Module!, Metrics), name) :
         CreateIntrinsic(kind, arguments, kind == LlvmIntrinsicKind.Assume ? LlvmType.GetVoidTy(arguments[0].Context)
-            : kind == LlvmIntrinsicKind.IsFPClass ? arguments[0].Type.GetWithNewType(LlvmType.GetInt1Ty(arguments[0].Context)) : arguments[0].Type, name);
+            : LlvmIntrinsic.IsFloatingIntrinsic(kind) ? LlvmIntrinsic.GetFloatingIntrinsicReturnType(kind, arguments[0].Type) : arguments[0].Type, name);
     public LlvmValue CreateIntrinsic(LlvmIntrinsicKind kind, IReadOnlyList<LlvmValue> arguments,
         LlvmIntegerType resultType, string name = "") => CreateIntrinsic(kind, arguments, (LlvmType)resultType, name);
     public LlvmValue CreateIntrinsic(LlvmIntrinsicKind kind, IReadOnlyList<LlvmValue> arguments,

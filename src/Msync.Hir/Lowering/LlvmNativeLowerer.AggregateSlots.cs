@@ -10,7 +10,7 @@ public static partial class LlvmNativeLowerer
     {
         private sealed record AggregateLeaf(LlvmType Type, int NativeType, uint[] Path, int FunctionComponent = -1);
         private sealed record AggregateShape(LlvmStructType Type, AggregateLeaf[] Leaves, bool Function);
-        private sealed record AggregateSlots(AggregateShape Shape, int[] Slots);
+        private sealed record AggregateSlots(AggregateShape Shape, int[] Slots, int BoundarySlot = -1);
         private readonly Dictionary<LlvmType, AggregateShape> aggregateShapes = [];
         private readonly Dictionary<LlvmValue, AggregateSlots> aggregateSlots = [];
         private readonly Dictionary<(NativeConstant Value, int Type), int> constantValueSlots = [];
@@ -113,6 +113,7 @@ public static partial class LlvmNativeLowerer
                 return true;
             }
             if (values.TryGetValue(value, out slot)) return true;
+            if (leaves.BoundarySlot >= 0) { slot = leaves.BoundarySlot; return true; }
             int type = expectedType >= 0 ? expectedType : value.LogicalType >= 0 ? value.LogicalType : owner.Primitive(TypeKind.Function);
             slot = Register(type);
             RecordFunctionContext(leaves, inPrelude: false);
@@ -125,7 +126,7 @@ public static partial class LlvmNativeLowerer
         {
             if (!IsFunctionAggregate(value.Type) || aggregateSlots.ContainsKey(value)) return;
             bool[] needed = FunctionFieldsUsed(value);
-            if (!needed.Any(static field => field)) return;
+            if (!needed.Any(static field => field) && !value.Uses.Any(static use => use.User is LlvmExtractValueInstruction)) return;
             var shape = AggregateShapeFor(value.Type);
             int whole = values[value];
             int[] fields = [-1, -1, -1];
@@ -136,9 +137,9 @@ public static partial class LlvmNativeLowerer
                 var instruction = new NativeInstruction(NativeOp.FunctionComponent, fields[index], whole,
                     Immediate: index, Source: instructionSource);
                 if (toPrelude) prelude.Add(instruction); else Add(instruction);
-                ++functionProjections;
+                RecordFunctionProjection(shape.Leaves[index].NativeType, index);
             }
-            aggregateSlots.Add(value, new(shape, fields));
+            aggregateSlots.Add(value, new(shape, fields, whole));
         }
 
         private static bool[] FunctionFieldsUsed(LlvmValue value)
@@ -146,8 +147,7 @@ public static partial class LlvmNativeLowerer
             bool[] fields = new bool[3];
             foreach (var use in value.Uses)
             {
-                if (use.User is LlvmExtractValueInstruction extract) fields[extract.Indices[0]] = true;
-                else if (use.User is LlvmInsertValueInstruction or LlvmSelectInstruction or LlvmPhiInstruction)
+                if (use.User is LlvmInsertValueInstruction or LlvmSelectInstruction or LlvmPhiInstruction)
                     return [true, true, true];
             }
             return fields;

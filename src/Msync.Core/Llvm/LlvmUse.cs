@@ -17,9 +17,13 @@ public sealed class LlvmUse
     // Project target-ABI expectation for this operand, not an upstream LLVM Use field.
     // Constants remain context-uniqued independently of their native representation.
     public int LogicalType { get; set; } = -1;
+    // Declared physical storage retained when a zero GEP folds to its base.
+    public LlvmStructType? TargetStorageType { get; set; }
 
     public void Set(LlvmValue? replacement)
     {
+        if (value is LlvmGetElementPtrInstruction gep && ReferenceEquals(replacement, gep.PointerOperand))
+            TargetStorageType ??= gep.TargetStorageType;
         RemoveFromList();
         value = replacement;
         if (replacement is { HasUseList: true }) AddToList(replacement);
@@ -47,6 +51,7 @@ public sealed class LlvmUse
     public void Swap(LlvmUse other)
     {
         (LogicalType, other.LogicalType) = (other.LogicalType, LogicalType);
+        (TargetStorageType, other.TargetStorageType) = (other.TargetStorageType, TargetStorageType);
         if (ReferenceEquals(value, other.value)) return;
         (value, other.value) = (other.value, value);
         (Next, other.Next) = (other.Next, Next);

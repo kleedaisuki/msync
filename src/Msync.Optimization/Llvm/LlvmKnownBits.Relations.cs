@@ -33,7 +33,7 @@ public static partial class LlvmKnownBitsAnalysis
         return result;
     }
     private static bool MatchesDecrement(LlvmValue x, LlvmValue expression) => expression is LlvmBinaryOperator { Opcode: LlvmOpcode.Add } add
-        && ReferenceEquals(add.Left, x) && add.Right is LlvmConstantInt { Value.IsAllOnes: true };
+        && ReferenceEquals(add.Left, x) && GetIntegerSplat(add.Right) is { Value.IsAllOnes: true };
     private static LlvmValue? MatchRelated(LlvmValue x, LlvmValue expression)
     {
         if (expression is not LlvmBinaryOperator binary) return null;
@@ -46,6 +46,7 @@ public static partial class LlvmKnownBitsAnalysis
         BitsQuery query, uint depth, LlvmInstruction? context,
         LlvmDominatorTree? tree, Dictionary<string, ulong>? metrics, bool lerp = true)
     {
+        if (left.Type is LlvmVectorType) return result;
         if (lerp) result = RefineLerp(left, right, result, query);
         if (!MatchRemainder(left, right, out LlvmValue? divisor) && !MatchRemainder(right, left, out divisor)) return result;
         LlvmValue rem = left is LlvmBinaryOperator { Opcode: LlvmOpcode.SRem } ? left : right;

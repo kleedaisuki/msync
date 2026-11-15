@@ -39,9 +39,10 @@ public static partial class LlvmHirLowerer
         {
             int logicalLayout = owner.structLayouts[layout];
             int pointee = owner.metadata.Layouts[logicalLayout].Fields[ordinal].Type;
+            owner.trace?.Detail?.Metric("fields.target_storage_declarations", 1);
             return Add(new LlvmGetElementPtrInstruction(layout, pointer,
                 [owner.Int(0), LlvmConstantInt.Get(LlvmIntegerType.Get(owner.context, 32), (ulong)ordinal)])
-                { LogicalType = owner.metadata.Pointer(pointee) });
+                { LogicalType = owner.metadata.Pointer(pointee), TargetStorageType = layout });
         }
 
         private LlvmValue NativeFunction(HirNode node)

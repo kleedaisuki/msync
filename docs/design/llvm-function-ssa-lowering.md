@@ -43,11 +43,14 @@ is not a claim about those surfaces.
 `FunctionComponent = 55` projects a whole Function datum into one leaf.
 `ComposeFunction = 56` constructs the existing Function value from three leaves.
 Both preserve Native opcodes 0–46 and the separately assigned machine opcodes.
-Whole Function parameters, calls and loads are projected at their definition,
-not at the first use in an arbitrary branch. Backend selection emits only fields
-required by actual aggregate operations. Repeated uses of a whole ABI argument
-continue using its original register. A Function assembled from SSA leaves is
-packed at a call/store/return boundary; no cross-branch first-use cache is used.
+Whole Function parameters, calls and loads retain their original whole-value
+ABI register. A direct `extractvalue` projection is emitted at that LLVM
+definition, preserving its existing producer/use ABI carrier. Actual aggregate
+PHI/select/insert consumers receive canonical leaf projections at the whole
+value's definition. Backend selection emits only fields required by those
+aggregate operations. Repeated whole-value ABI uses retain their original
+register. A Function assembled from SSA leaves is packed at a call/store/return
+boundary; no cross-branch first-use cache is used.
 Context-unique constants keep their existing per-use ABI policy and constant
 materialization cache.
 
@@ -381,3 +384,56 @@ connects entry-prelude code/name lifetimes to3x Unicode liveness-set traffic in 
 zero-consumer register analysis, and identifies lost exact environment carriers
 and widened ordinary initialization bookkeeping as separate executed costs.
 It also records exclusions, evidence limits and prioritized follow-up work.
+
+## Preserve the existing environment-extraction ABI
+
+The review of the final projection profile found a remaining representation
+loss, separate from the repaired tier dispatch. `LlvmHirLowerer.SourceCall`
+already assigns the concrete environment storage's `LogicalType` to the
+Function environment `extractvalue`. Source operand ABI annotations also survive
+on `LlvmUse` across replacement. The target instead projected every whole
+Function environment into the canonical `Scope | Null` leaf at the whole
+Function definition, then aliased the extract to that nullable slot. This erased
+the existing exact-address representation even at a known source-call boundary.
+
+The target now distinguishes an existing whole-value ABI register from a
+Function assembled only from SSA leaves through `AggregateSlots.BoundarySlot`.
+A direct extract from a whole ABI value emits its projection at the extract's
+own LLVM definition, using its existing environment ABI hint. It does not
+speculate a branch-local projection at the earlier whole-value definition or
+cache its first emitted use across branches. Canonical eager leaf projections
+remain for actual aggregate PHI/select/insert consumers. A leaf-only extraction
+aliases an already matching physical carrier; when a preserved exact ABI differs
+from its nullable source slot, ordinary existing carrier-copy encoding removes
+the union representation at that extraction boundary.
+
+`FunctionProjectionType` consumes the value's explicit ABI annotation first,
+then an explicitly retained operand-use annotation, retaining canonical nullable
+storage when neither provides an environment carrier. It recognizes the existing
+Scope/Null environment family, not a machine code token or a stale whole-Function
+hint. `FunctionComponentLoad` and pointer-carrier selection consume the same
+helper. No new nonnull, escape, heap, alias or path solver is introduced, and
+no nonnull conclusion is inferred just because a pointer is later dereferenced.
+The source graph, public Function value ABI and Native artifact records remain
+unchanged. The exact literal materialization cache and its inherited placement
+are unchanged by this repair.
+
+The ready runtime projection uses the existing `Frame.SetPointer` path when its
+actual selected destination has the exact Address storage representation.
+Genuinely nullable destinations still receive the tagged value write; the code
+does not raw-store an address into union bytes. The following `Frame.Pointer`
+therefore also regains its existing exact-address read. Pending projections keep
+the original `MapMachine` dependency and selected physical result descriptor;
+they are not forced by this change. Interpreter and tier retain the same shared
+projection helper.
+
+Compiler per-function/source telemetry records actual exact versus nullable
+projection instructions, explicit value/use/canonical ABI-hint query outcomes,
+and carrier-copy emissions. Runtime telemetry retains total ready/pending
+counts and adds `function_components_ready_address` for actual ready pointer
+writes. Recording-disabled counters keep their existing immediate return. Root
+owns the focused Function/Range/Unicode journeys and post-change timing. The
+expected concrete Unicode criterion is three monomorphic environment result
+slots, 195,000 ready exact-address projections for the retained standard fixture,
+and identical output; this section does not claim those new executions have
+already occurred.

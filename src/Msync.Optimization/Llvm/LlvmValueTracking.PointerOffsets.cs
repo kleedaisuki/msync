@@ -97,7 +97,7 @@ public static partial class LlvmValueTracking
         if (gep.SourceElementType.IsIntegerTy(8) && gep.IndexCount != 0 && externalAnalysis is null)
         {
             Count(metrics, "value_tracking.gep_offset.byte_fast_path");
-            if (gep.GetIndex(0) is not LlvmConstantInt integer) return false;
+            if (gep.GetIndex(0) is not LlvmConstantInt integer || !integer.Type.IsIntegerTy()) return false;
             offset += integer.Value.SExtOrTrunc(offset.BitWidth);
             return true;
         }
@@ -111,7 +111,7 @@ public static partial class LlvmValueTracking
             bool vectorElement = n != 0 && indexed is LlvmVectorType;
             LlvmType element = n == 0 ? indexed : LlvmGetElementPtrInstruction.GetTypeAtIndex(indexed, index)!;
             bool scalable = element.IsScalableTy();
-            if (index is LlvmConstantInt constant)
+            if (index is LlvmConstantInt constant && constant.Type.IsIntegerTy())
             {
                 if (!constant.IsZero)
                 {

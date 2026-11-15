@@ -49,6 +49,11 @@ let generated = R::generate(2, fn(index: Number) { generated_calls = generated_c
 let generated_first? = R::first(generated);
 if generated_first is not null { (generated_first as String) -> ./generated.txt; };
 (generated_calls as String) -> ./generate-after.txt;
+let indices = "";
+for index in R::generate(4, fn(index: Number) { index }) {
+    indices = $std::string::concat(indices, index as String);
+};
+indices -> ./generated-indices.txt;
 let action = fn { 1 };
 fn install(flag: Bool) { if flag { action = fn { 9 }; }; };
 install(false);
@@ -109,7 +114,7 @@ EXPECTED: dict[str, bytes] = {
     'argument.txt': b'2', 'identity.txt': b'99', 'map-before.txt': b'0', 'zero.txt': b'0',
     'map-zero.txt': b'0', 'mapped.txt': b'11', 'map-after.txt': b'1',
     'generate-before.txt': b'0', 'generate-zero.txt': b'0', 'generate-after-zero.txt': b'0',
-    'generated.txt': b'10', 'generate-after.txt': b'1', 'nested.txt': b'11',
+    'generated.txt': b'10', 'generate-after.txt': b'1', 'generated-indices.txt': b'0123', 'nested.txt': b'11',
     'unchanged-first.txt': b'1', 'unchanged-second.txt': b'2', 'installed.txt': b'9',
     'early-return.txt': b'7', 'fallthrough.txt': b'8',
     'first-break.txt': b'5', 'second-break.txt': b'6',

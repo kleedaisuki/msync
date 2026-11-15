@@ -19,7 +19,7 @@ public static partial class LlvmKnownBitsAnalysis
     }
     private static LlvmKnownBits FromCondition(LlvmValue value, LlvmValue condition, bool invert, uint depth, bool useInstructionInfo, LlvmAssumptionCache? assumptions, bool allowEphemerals, LlvmDomConditionCache? conditions = null, LlvmCondContext? condContext = null, LlvmDataLayout? layout = null)
     {
-        uint width = value.Type.IsPointerTy() ? (layout ?? GetQueryLayout(value, null)).GetPointerTypeSizeInBits(value.Type) : value.Type.GetIntegerBitWidth();
+        uint width = GetKnownBitWidth(value.Type, layout ?? GetQueryLayout(value, null));
         if (depth < MaxDepth && MatchLogicalCondition(condition, out LlvmValue? logicalLeft, out LlvmValue? logicalRight, out bool isAnd))
         {
             LlvmKnownBits a = FromCondition(value, logicalLeft!, invert, depth + 1, useInstructionInfo, assumptions, allowEphemerals, conditions, condContext, layout), b = FromCondition(value, logicalRight!, invert, depth + 1, useInstructionInfo, assumptions, allowEphemerals, conditions, condContext, layout);
@@ -40,30 +40,31 @@ public static partial class LlvmKnownBitsAnalysis
             LlvmKnownBits bits = LlvmKnownBits.MakeConstant(new(1, invert ? 0UL : 1UL));
             return cast.HasNoUnsignedWrap ? bits.ZExt(width) : bits.AnyExt(width);
         }
-        if (depth < MaxDepth && condition is LlvmBinaryOperator { Opcode: LlvmOpcode.Xor, Right: LlvmConstantInt { Value.IsAllOnes: true } } not)
-            return FromCondition(value, not.Left, !invert, depth + 1, useInstructionInfo, assumptions, allowEphemerals, conditions, condContext, layout);
+        if (depth < MaxDepth && condition is LlvmBinaryOperator { Opcode: LlvmOpcode.Xor } not &&
+            (GetIntegerSplat(not.Right) is { Value.IsAllOnes: true } || GetIntegerSplat(not.Left) is { Value.IsAllOnes: true }))
+            return FromCondition(value, GetIntegerSplat(not.Right) is { Value.IsAllOnes: true } ? not.Left : not.Right, !invert, depth + 1, useInstructionInfo, assumptions, allowEphemerals, conditions, condContext, layout);
         return new(width);
     }
     private static bool MatchLogicalCondition(LlvmValue condition, out LlvmValue? left, out LlvmValue? right, out bool isAnd)
     {
         left = right = null; isAnd = false;
-        if (!condition.Type.IsIntegerTy(1)) return false;
+        if (!condition.Type.GetScalarType().IsIntegerTy(1)) return false;
         if (condition is LlvmBinaryOperator { Opcode: LlvmOpcode.And or LlvmOpcode.Or } binary)
         { left = binary.Left; right = binary.Right; isAnd = binary.Opcode == LlvmOpcode.And; return true; }
         if (condition is LlvmSelectInstruction select)
         {
-            if (select.FalseValue is LlvmConstantInt { IsZero: true })
+            if (GetIntegerSplat(select.FalseValue) is { IsZero: true })
             { left = select.Condition; right = select.TrueValue; isAnd = true; return true; }
-            if (select.TrueValue is LlvmConstantInt { IsOne: true })
+            if (GetIntegerSplat(select.TrueValue) is { IsOne: true })
             { left = select.Condition; right = select.FalseValue; return true; }
         }
         return false;
     }
     private static LlvmKnownBits FromComparison(LlvmValue value, LlvmCmpPredicate pred, LlvmValue lhs, LlvmValue rhs, bool useInstructionInfo, LlvmAssumptionCache? assumptions, bool allowEphemerals, LlvmDomConditionCache? conditions = null, LlvmCondContext? condContext = null, LlvmDataLayout? layout = null)
     {
-        uint width = value.Type.IsPointerTy() ? (layout ?? GetQueryLayout(value, null)).GetPointerTypeSizeInBits(value.Type) : value.Type.GetIntegerBitWidth();
+        uint width = GetKnownBitWidth(value.Type, layout ?? GetQueryLayout(value, null));
         LlvmKnownBits known = new(width);
-        bool IsValue(LlvmValue operand) => ReferenceEquals(value, operand) || operand is LlvmCastInstruction { Opcode: LlvmOpcode.PtrToInt } ptr && ReferenceEquals(ptr.Operand, value) && ptr.Type.GetIntegerBitWidth() == width;
+        bool IsValue(LlvmValue operand) => ReferenceEquals(value, operand) || operand is LlvmCastInstruction { Opcode: LlvmOpcode.PtrToInt } ptr && ReferenceEquals(ptr.Operand, value) && ptr.Type.GetScalarType().GetIntegerBitWidth() == width;
         if (rhs.Type.IsPointerTy())
         {
             if (!ReferenceEquals(lhs, value) || rhs is not LlvmConstantPointerNull) return known;
@@ -75,7 +76,7 @@ public static partial class LlvmKnownBitsAnalysis
                 _ => known
             };
         }
-        if (rhs is not LlvmConstantInt constant) return known;
+        if (GetIntegerSplat(rhs) is not { } constant) return known;
         LlvmAPInt c = constant.Value;
         LlvmBinaryOperator? binary = lhs as LlvmBinaryOperator;
         LlvmValue? other = binary is null ? null : IsValue(binary.Left) ? binary.Right : IsValue(binary.Right) ? binary.Left : null;
@@ -84,10 +85,10 @@ public static partial class LlvmKnownBitsAnalysis
             if (IsValue(lhs)) return LlvmKnownBits.MakeConstant(c);
             if (binary is null) return known;
             if (binary.Opcode == LlvmOpcode.And && other is not null)
-                return new(other is LlvmConstantInt mask ? ~c & mask.Value : known.Zero, c);
+                return new(GetIntegerSplat(other) is { } mask ? ~c & mask.Value : known.Zero, c);
             if (binary.Opcode == LlvmOpcode.Or && other is not null)
-                return new(~c, other is LlvmConstantInt mask ? c & ~mask.Value : known.One);
-            if (IsValue(binary.Left) && binary.Right is LlvmConstantInt shift && shift.Value.Ult(new(shift.Value.BitWidth, width)))
+                return new(~c, GetIntegerSplat(other) is { } mask ? c & ~mask.Value : known.One);
+            if (IsValue(binary.Left) && GetIntegerSplat(binary.Right) is { } shift && shift.Value.Ult(new(shift.Value.BitWidth, width)))
             {
                 uint amount = (uint)shift.Value.GetZExtValue();
                 if (binary.Opcode == LlvmOpcode.Shl) return new((~c).LShr(amount), c.LShr(amount));
@@ -96,10 +97,10 @@ public static partial class LlvmKnownBitsAnalysis
             return known;
         }
         if (pred == LlvmCmpPredicate.ICmpNe)
-            return c.IsZero && binary is { Opcode: LlvmOpcode.And, Right: LlvmConstantInt mask } && IsValue(binary.Left) && mask.Value.IsPowerOf2 ? new(known.Zero, mask.Value) : known;
+            return c.IsZero && binary is { Opcode: LlvmOpcode.And } && IsValue(binary.Left) && GetIntegerSplat(binary.Right) is { Value.IsPowerOf2: true } mask ? new(known.Zero, mask.Value) : known;
         LlvmAPInt? offset = null;
-        if (binary is { Opcode: LlvmOpcode.Add, Right: LlvmConstantInt addend } && IsValue(binary.Left)) offset = addend.Value;
-        if (binary is { Opcode: LlvmOpcode.Or, IsDisjoint: true, Right: LlvmConstantInt disjoint } && IsValue(binary.Left)) offset = disjoint.Value;
+        if (binary is { Opcode: LlvmOpcode.Add } && IsValue(binary.Left) && GetIntegerSplat(binary.Right) is { } addend) offset = addend.Value;
+        if (binary is { Opcode: LlvmOpcode.Or, IsDisjoint: true } && IsValue(binary.Left) && GetIntegerSplat(binary.Right) is { } disjoint) offset = disjoint.Value;
         if (IsValue(lhs) || offset.HasValue)
         {
             LlvmConstantRange range = LlvmConstantRange.MakeExactICmpRegion(pred, c);

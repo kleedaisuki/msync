@@ -54,12 +54,14 @@ public sealed partial class NativeInterpreter
                 NativeBinary.Less => a < b, NativeBinary.LessEqual => a <= b,
                 NativeBinary.Greater => a > b, _ => a >= b
             });
-        else NativeStorage.StoreNumber(target, op switch
+        else NativeStorage.StoreNumberCompiled(target, op switch
         {
             NativeBinary.Add => a + b, NativeBinary.Subtract => a - b,
             NativeBinary.Multiply => a * b, NativeBinary.Remainder => a % b,
             _ => throw new InvalidOperationException($"Unsupported unsigned operation {op}")
         });
+        if (owner.profile is not null) owner.memory.RecordScalarWrite(target,
+            op >= NativeBinary.Equal ? NativeKind.Bool : NativeKind.Number);
         return new NativeStep(pc + instruction.Span);
     }
 

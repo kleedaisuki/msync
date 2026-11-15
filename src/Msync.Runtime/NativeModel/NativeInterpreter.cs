@@ -18,7 +18,7 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
     private readonly Action<NativeProcess>? processCreatedObserver;
     private readonly AsyncLocal<NativeRuntimeContext?> deferredContext = new();
     private NativeRuntimeContext context => deferredContext.Value ?? sessionContext;
-    private readonly NativeMemory memory = new();
+    private readonly NativeMemory memory;
     private readonly AsyncLocal<NativeWorkScope?> currentWork = new();
     private readonly NativeWorkScope executionWork = new(null);
     private StaticState[] statics;
@@ -36,6 +36,7 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(program);
         sessionContext = context ?? new(options, program.Context);
         profile = options?.Profile;
+        memory = new(profile?.StorageCounters);
         tierOptions = options?.Tiers ?? NativeTierOptions.FromEnvironment();
         tierOptions.Validate();
         NativeHostIO.Attach(this.context);

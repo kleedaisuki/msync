@@ -5,7 +5,7 @@ using System.Diagnostics;
 
 namespace Msync.Core.Llvm;
 
-public readonly struct LlvmGepOperator
+public readonly partial struct LlvmGepOperator
 {
     private readonly LlvmUser? user;
     private LlvmGepOperator(LlvmUser user) => this.user = user;

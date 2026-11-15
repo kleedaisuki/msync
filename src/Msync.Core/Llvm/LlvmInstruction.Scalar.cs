@@ -65,7 +65,7 @@ public enum LlvmCmpPredicate : byte
 {
     FCmpFalse = 0, FCmpOeq = 1, FCmpOgt = 2, FCmpOge = 3, FCmpOlt = 4, FCmpOle = 5,
     FCmpOne = 6, FCmpOrd = 7, FCmpUno = 8, FCmpUeq = 9, FCmpUgt = 10, FCmpUge = 11,
-    FCmpUlt = 12, FCmpUle = 13, FCmpUne = 14, FCmpTrue = 15,
+    FCmpUlt = 12, FCmpUle = 13, FCmpUne = 14, FCmpTrue = 15, BadFCmpPredicate = 16,
     ICmpEq = 32, ICmpNe = 33, ICmpUgt = 34, ICmpUge = 35, ICmpUlt = 36, ICmpUle = 37,
     ICmpSgt = 38, ICmpSge = 39, ICmpSlt = 40, ICmpSle = 41
 }

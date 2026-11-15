@@ -45,7 +45,10 @@ public abstract partial class LlvmInstruction : LlvmUser
         clone.LogicalType = LogicalType;
         clone.SubclassOptionalData = SubclassOptionalData;
         for (int i = 0; i < OperandCount; ++i)
+        {
             clone.GetOperandUse(i).LogicalType = GetOperandUse(i).LogicalType;
+            clone.GetOperandUse(i).TargetStorageType = GetOperandUse(i).TargetStorageType;
+        }
         return clone;
     }
 

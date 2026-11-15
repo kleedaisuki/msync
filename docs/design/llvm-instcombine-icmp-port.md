@@ -74,3 +74,35 @@ indexed graph work and alloca comparison replacement. Recording-disabled Work
 paths keep the nullable sink lean. Builds and end-to-end source execution are
 owned by the parent integration coordinator; staged files are not evidence of
 an executable or performance result.
+
+## Integration closure: compare constants and vector shapes (2026-11-15)
+
+`ICmp.SelectConstant.cs` translates source lines 3408–3508: the three-way
+integer compare matcher and its constant-select comparison rewrite, including
+operand/predicate normalization and SameSign-aware strictness changes.
+`ICmp.BitCast.cs` translates represented paths in lines 3509–3677: integer-to-FP
+zero/sign checks, floating-width sign tests, exact signed infinity/zero fpclass
+tests, extended-vector zero reduction and shuffled-bitpattern extraction. The
+source get_active_lane_mask intrinsic branch requires a registry identity not
+yet represented; it is not matched using a callee-name guess.
+
+The shared strictness utility now returns a `LlvmConstant`, as the source does,
+not an artificially scalar `LlvmConstantInt`. Fixed-vector lanes are checked
+individually, undefined lanes are replaced by the first admissible scalar
+constant, scalable splats use the actual splat query, and the increment/decrement
+uses typed constant-expression folding. Both signedness boundaries are retained
+for SameSign. ICmp zero, ones and detached-not factories likewise preserve the
+input lane shape. Integer predicate matchers distinguish APInt splats from
+per-lane predicates: matching a predicate through poison lanes does not imply
+that an arbitrary vector is a splat.
+
+`ICmp.Vector.cs` contains source foldVectorCmp reverse/shuffle rules and the
+fixed-vector comparison reduction idiom. Reverse uses the actual Core intrinsic
+registry; shuffle rewrites retain one-use requirements and source mask handling,
+including removal of poison lanes in the splat rewrite. The scalar reduction
+idiom uses DataLayout's actual legal-integer widths. These routines do not
+constitute completion of the vector visitor: scalar guards in the constant
+families and recursive KnownBits/NonZero/ConstantRange queries must be closed as
+one integration cohort before admitting all vector compares. Compare-query
+changes and a focused lane-shape/strictness fixture are staged under
+`.temp/llvm-icmp-vector`; no test or performance result is asserted for staging.

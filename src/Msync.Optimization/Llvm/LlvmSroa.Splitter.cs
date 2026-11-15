@@ -10,6 +10,13 @@ public static partial class LlvmSroa
 {
     private readonly record struct SplitPart(int Index, ulong Offset, ulong Size);
 
+    // Upstream SmallPtrSet keeps ordinary one-slice instructions inline.
+    private readonly struct SliceGroup(Slice first, HashSet<Slice>? overflow = null)
+    {
+        internal Slice First { get; } = first;
+        internal HashSet<Slice>? Overflow { get; } = overflow;
+    }
+
     private sealed class SliceSplitter(LlvmTransformBuilder builder, LlvmDataLayout layout,
         IReadOnlyList<ulong> splits, uint size)
     {
@@ -51,7 +58,7 @@ public static partial class LlvmSroa
     }
 
     private static Slice? FindOverlappingCopySlice(Slice slice,
-        IReadOnlyDictionary<LlvmInstruction, HashSet<Slice>> sliceMap)
+        IReadOnlyDictionary<LlvmInstruction, SliceGroup> sliceMap)
     {
         if (slice.EndOffset - slice.BeginOffset == 1) return null;
         LlvmInstruction instruction = (LlvmInstruction)slice.Use!.User;
@@ -68,13 +75,14 @@ public static partial class LlvmSroa
         }
         else return null;
         if (!sliceMap.TryGetValue(paired, out var pairedSlices)) return null;
-        foreach (Slice candidate in pairedSlices)
-        {
-            if (slice.BeginOffset > candidate.BeginOffset && slice.BeginOffset < candidate.EndOffset)
-                return candidate;
-            if (candidate.BeginOffset > slice.BeginOffset && candidate.BeginOffset < slice.EndOffset)
-                return candidate;
-        }
+        if (PartiallyOverlaps(slice, pairedSlices.First)) return pairedSlices.First;
+        if (pairedSlices.Overflow is not { } overflow) return null;
+        foreach (Slice candidate in overflow)
+            if (PartiallyOverlaps(slice, candidate)) return candidate;
         return null;
     }
+
+    private static bool PartiallyOverlaps(Slice slice, Slice candidate) =>
+        slice.BeginOffset > candidate.BeginOffset && slice.BeginOffset < candidate.EndOffset ||
+        candidate.BeginOffset > slice.BeginOffset && candidate.BeginOffset < slice.EndOffset;
 }

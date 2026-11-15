@@ -4207,3 +4207,32 @@ is not an overall win: residual application elapsed-time increases and the
 midend fixture's +4.738 ms median paired compilation delta remain open work.
 The result is an integrated, measurable cohort, not completion of the broader
 LLVM pass/target port.
+
+## InstCombine bitwise missing-family integration closure
+
+Pinned `InstCombineAndOrXor.cpp` source `a55e64432a516fd6507d3ecfba7407cfe425f940`:
+
+- `LlvmInstCombine.AndOrXor.Funnel.cs`: `convertOrOfShiftsToFunnelShift` / `matchFunnelShift` (3028–3236), including complementary constant shifts, bounded subtraction, masked/extended rotations, and dominating swapped concatenations. Only the source concat path drops poison-generating flags. Constant-vector shift matching preserves the distinct default `m_APInt` (poison forbidden), explicit `m_APIntAllowPoison`, and per-lane predicate semantics. `FunnelMergeUndefs` translates `Constants.cpp:875` without instruction creation.
+- `LlvmInstCombine.AndOrXor.Disjoint.cs`: `matchZExtedSubInteger`, `foldIntegerRepackThroughZExt`, `matchBitmaskMul`, `foldBitmaskMul`, `foldDisjointOr`, `reassociateDisjointOr` (3880–4082). Select forms use the shared source bit-test decomposition. Mask disjointness, factor equality, one-use requirements and intersection of wrap flags follow upstream; no generic proof engine is introduced.
+- `LlvmInstCombine.AndOrXor.Not.cs`: `foldNotXor`, `sinkNotIntoLogicalOp`, `foldNot` (5054–5093, 5147–5200, 5257–5453), preserving source transform order, compare/user inversion, constant/sign predicates, min/max inversion, fpclass mask inversion and select arms. Logical inversion reuses the shared source `CanFreelyInvert` / `FreelyInvert` and Negator user adaptation instead of duplicating policy. Profile-metadata swaps have no payload in the currently unprofiled IR.
+
+Counters `instcombine.logic.funnel_shift`, `instcombine.logic.disjoint_or.*`, and `instcombine.logic.not.*` report actual successful source rewrite decisions through the existing optional sink. New methods integrate into the already published visitors and demanded-bits rotate preservation. No independent build was run; root owns the coherent InstCombine build and real-language journey.
+
+### Bounded vector-journey sign-bit query closure
+
+The existing `InstCombineVectorProperties` journey reaches sign-bit analysis
+through vector integer addition and overflow queries. `LlvmIntegerSignBits.cs`
+now uses the shared DataLayout-aware scalar-element width policy rather than
+calling scalar-only `GetIntegerBitWidth` on vector types. Its original public
+entry retains compatibility and supplies all demanded lanes; a demanded-element
+overload carries the source mask through arithmetic, casts, selects and PHIs.
+The source fixed-vector constant helper computes the minimum replicated sign-bit
+count across demanded integer lanes, including mixed positive/negative constants
+whose relation cannot be recovered from intersected KnownBits alone.
+`LlvmIntegerSignBits.Vector.cs` retains the source shuffle demanded-lane walk and
+fallback points. ExtractElement uses the upstream all-element query, integer
+bitcast sign splats retain the source fast path, and ordinary vector/reverse
+values retain the real shared KnownBits fallback. No new vector pipeline or FP
+family is introduced by this query closure. Actual execution and builds remain
+coordinator-owned; the live query changes are frozen with the bounded journey
+cohort.

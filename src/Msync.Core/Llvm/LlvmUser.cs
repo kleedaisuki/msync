@@ -74,6 +74,7 @@ public abstract class LlvmUser : LlvmValue
         {
             replacement[i].Set(operands[i].Value);
             replacement[i].LogicalType = operands[i].LogicalType;
+            replacement[i].TargetStorageType = operands[i].TargetStorageType;
         }
         LlvmUse.Zap(operands, OperandCount);
         operands = replacement;

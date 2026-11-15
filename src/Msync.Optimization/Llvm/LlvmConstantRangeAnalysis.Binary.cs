@@ -9,11 +9,11 @@ public static partial class LlvmConstantRangeAnalysis
 {
     private static LlvmConstantRange BinOpLimits(LlvmBinaryOperator operation, bool forSigned, bool useInfo)
     {
-        uint width = operation.Type.GetIntegerBitWidth();
+        uint width = operation.Type.GetScalarSizeInBits();
         var lower = LlvmAPInt.GetZero(width);
         var upper = lower;
-        LlvmAPInt? lhs = (operation.Left as LlvmConstantInt)?.Value;
-        LlvmAPInt? rhs = (operation.Right as LlvmConstantInt)?.Value;
+        LlvmAPInt? lhs = MatchRangeInteger(operation.Left);
+        LlvmAPInt? rhs = MatchRangeInteger(operation.Right);
         bool nsw = useInfo && operation.HasNoSignedWrap;
         bool nuw = useInfo && operation.HasNoUnsignedWrap;
         bool exact = useInfo && operation.IsExact;

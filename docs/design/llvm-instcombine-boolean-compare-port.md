@@ -1,9 +1,11 @@
 # LLVM InstCombine boolean comparison families
 
 Source pin: `a55e64432a516fd6507d3ecfba7407cfe425f940`.
-New pass-family files are staged under `.temp/llvm-instcombine/` for the shared
-InstCombine coordinator. They do not constitute a second pass, an independent
-worklist, or an execution prerequisite.
+The source families are now published under `src/Msync.Optimization/Llvm/`
+for the shared InstCombine integration; staging copies remain under
+`.temp/llvm-instcombine/`. Publication and caller wiring do not themselves prove
+successful compilation, execution or performance. These families do not
+constitute a second pass, an independent worklist, or an execution prerequisite.
 
 ## Source mapping
 
@@ -87,3 +89,47 @@ including signed zero, both NaN classes, infinities, normal/subnormal boundaries
 fabs inputs and the non-IEEE denormal-input refusal. It is supplementary to the
 coordinator's real source/Native artifact journeys. No build, execution count or
 performance result is claimed until the coordinator runs the integrated cohort.
+
+
+## Shared logical dependencies exposed by integrated compilation
+
+The integrated compiler build exposed missing shared helper implementations.
+They are now represented by four `LlvmInstCombine.SharedLogical.*.cs` partials,
+not false/null placeholders or substitute peepholes:
+
+| Shared file | Exact pinned source |
+| --- | --- |
+| `SharedLogical.Select.cs` | `InstructionCombining.cpp::foldBinopOfSextBoolToSelect`; `InstCombineAndOrXor.cpp::FoldOrOfLogicalAnds` |
+| `SharedLogical.Inversion.cs` | `canFreelyInvert`, `freelyInvert`, `sinkNotIntoOtherHandOfLogicalOp`; relevant scalar/vector logical PatternMatch rules |
+| `SharedLogical.AndOrSelect.cs` | `areInverseVectorBitmasks`, `getSelectCondition`, `matchSelectFromAndOr`; `InstCombiner.h::peekThroughBitcast` |
+| `SharedLogical.Overflow.cs` | `foldOrUnsignedUMulOverflowICmp`, `FoldOrOfSelectSmaxToAbs`, and the existing analysis-call bridge |
+| `LlvmOverflowInstAnalysis.cs` | `llvm/lib/Analysis/OverflowInstAnalysis.cpp::isCheckForZeroAndMulWithOverflow`, both overloads |
+
+The NOT-sinking helpers reuse the existing real Negator eligibility and user
+inversion routines. They preserve source insertion points, exclude the new NOT
+from its own use replacement, reject the source operand-dependence case, and
+immediately invert the users of the rewritten logical result to avoid the source
+combine loop. They do not replace this work with a generic inversion guess.
+
+Select reconstruction preserves source sign-bit and one-use conditions,
+complementary constant masks, scalar/vector bitcasts and explicit conditional
+freezes. Logical OR uses a strict constant-one match, whereas the source
+`m_Not`/`m_Zero` patterns accept their specified poison-containing vector splats.
+These are intentionally different matchers. The old represented profile-metadata
+boundary remains: no profile graph is fabricated when the source copies/swaps
+select weights.
+
+The overflow utility returns the actual other multiply argument Use, including
+commuted source multiply arguments and signed/unsigned overflow intrinsic
+identities. Its Select consumer can therefore insert the source-required freeze
+at that exact argument instead of creating an unrelated copied value. The
+unsigned product-bound fold keeps the shared aggregate identity and nonzero
+constant multiplier requirement before APInt division.
+
+`tests/LlvmIr/SharedLogicalProperties.cs` supplies focused property scenarios
+through the public analysis/pass APIs: exact overflow argument-Use selection,
+negative match cases, all boolean input combinations for bitwise/logical
+AND/OR-to-select, and sext-boolean constant results. Its small integer evaluator
+is a property oracle, not a product fallback or a Native execution claim.
+Root remains the sole build and end-to-end coordinator; this dependency tranche
+did not independently launch a build or wall-clock run.

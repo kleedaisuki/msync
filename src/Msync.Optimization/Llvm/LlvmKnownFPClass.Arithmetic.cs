@@ -145,7 +145,7 @@ public static LlvmKnownFPClass Multiply(LlvmKnownFPClass KnownLHS_,
 public static LlvmKnownFPClass Multiply(LlvmKnownFPClass KnownLHS,
                                 LlvmAPFloat CRHS, LlvmDenormalMode Mode) {
 
-  const int Precision = 53;
+  int Precision = (int)LlvmAPFloat.SemanticsPrecision(CRHS.Semantics);
   int MantissaBits = Precision - 1;
 
   int MinKnownExponent = CRHS.ILogB();
@@ -158,7 +158,7 @@ public static LlvmKnownFPClass Multiply(LlvmKnownFPClass KnownLHS,
   if (KnownLHS.IsKnownNever(C.Infinity)) {
     if (MinKnownExponent < 0)
       Known.KnownNot(C.Infinity);
-    else if (MinKnownExponent == 0 && (CRHS.BitcastToAPInt().GetZExtValue() & 0x7fffffffffffffffUL) == 0x3ff0000000000000UL)
+    else if (MinKnownExponent == 0 && CRHS.CompareAbsoluteValue(LlvmAPFloat.GetOne(CRHS.Semantics)) == LlvmFloatCompare.Equal)
       Known.KnownNot(C.Infinity);
   }
 

@@ -5,19 +5,19 @@ namespace Msync.Optimization.Llvm;
 
 public static partial class LlvmKnownBitsAnalysis
 {
-    private static LlvmKnownBits ComputeGep(LlvmGetElementPtrInstruction gep, uint depth, LlvmInstruction? context,
-        LlvmDominatorTree? tree, Dictionary<string, ulong>? metrics, bool useInstructionInfo, LlvmAssumptionCache? assumptions, bool allowEphemerals, LlvmDomConditionCache? conditions = null, LlvmCondContext? condContext = null, LlvmDataLayout? layout = null)
+    private static LlvmKnownBits ComputeGep(LlvmUser gep, LlvmType sourceElementType, uint depth, LlvmInstruction? context,
+        LlvmDominatorTree? tree, Dictionary<string, ulong>? metrics, bool useInstructionInfo, LlvmAssumptionCache? assumptions, bool allowEphemerals, LlvmDomConditionCache? conditions = null, LlvmCondContext? condContext = null, LlvmDataLayout? layout = null, LlvmAPInt? demandedElements = null)
     {
         layout ??= GetQueryLayout(gep, context);
-        uint width = layout.GetPointerTypeSizeInBits(gep.Type);
-        uint indexWidth = layout.GetIndexTypeSizeInBits(gep.Type);
-        LlvmKnownBits known = Compute(gep.PointerOperand, depth + 1, context, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, condContext, layout);
+        uint width = layout.GetPointerTypeSizeInBits(gep.Type.GetScalarType());
+        uint indexWidth = layout.GetIndexTypeSizeInBits(gep.Type.GetScalarType());
+        LlvmKnownBits known = Compute(gep.GetOperand(0)!, gep.GetOperand(0)!.Type is LlvmVectorType ? demandedElements ?? GetAllDemandedElements(gep.GetOperand(0)!.Type) : new LlvmAPInt(1, 1), depth + 1, context, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, condContext, layout);
         LlvmAPInt constant = LlvmAPInt.GetZero(indexWidth);
-        LlvmType indexed = gep.SourceElementType;
-        for (int index = 0; index < gep.IndexCount && !known.IsUnknown; ++index)
+        LlvmType indexed = sourceElementType;
+        for (int index = 0; index < (gep.OperandCount - 1) && !known.IsUnknown; ++index)
         {
             Count(metrics, "known_bits.gep.indices");
-            LlvmValue value = gep.GetIndex(index);
+            LlvmValue value = gep.GetOperand(index + 1)!;
             if (index != 0 && indexed is LlvmStructType structure)
             {
                 uint member = (uint)((LlvmConstantInt)value).Value.GetZExtValue();
@@ -40,7 +40,7 @@ public static partial class LlvmKnownBitsAnalysis
                 constant += integer.Value.SExtOrTrunc(indexWidth) * new LlvmAPInt(indexWidth, stride.GetKnownMinValue());
                 continue;
             }
-            LlvmKnownBits amount = Compute(value, depth + 1, context, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, condContext, layout).SExtOrTrunc(indexWidth);
+            LlvmKnownBits amount = Compute(value, value.Type is LlvmVectorType ? demandedElements ?? GetAllDemandedElements(value.Type) : new LlvmAPInt(1, 1), depth + 1, context, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, condContext, layout).SExtOrTrunc(indexWidth);
             LlvmKnownBits scaling = stride.IsScalable
                 ? new(LlvmAPInt.GetLowBitsSet(indexWidth, (uint)System.Numerics.BitOperations.TrailingZeroCount(stride.GetKnownMinValue())), LlvmAPInt.GetZero(indexWidth))
                 : LlvmKnownBits.MakeConstant(new(indexWidth, stride.GetKnownMinValue()));

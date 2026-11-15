@@ -87,6 +87,19 @@ public sealed partial class NativeStorage
         internal readonly void Write(NativeType type, NativeOffset offset, NativeValue value)
         {
             if (type.Machine is { } machine) { WriteMachine(machine, offset, value); return; }
+            int extent = WriteSource(type, offset, value);
+            MarkInitialized(offset.Bytes, Math.Max(1, extent));
+        }
+        // Compiled source locations expose readiness at their declared start;
+        // public raw-view writes and machine carriers retain byte-extent flags.
+        internal readonly void WriteCompiled(NativeType type, NativeOffset offset, NativeValue value)
+        {
+            if (type.Machine is { } machine) { WriteMachine(machine, offset, value); return; }
+            WriteSource(type, offset, value);
+            initialized[offset.Bytes] = true;
+        }
+        private readonly int WriteSource(NativeType type, NativeOffset offset, NativeValue value)
+        {
             NativeRepresentation format = NativeRepresentation.Of(type);
             NativeRepresentation actual = NativeRepresentation.Of(value.Kind);
             int start = checked(offset.Bytes + format.PayloadOffset);
@@ -102,7 +115,13 @@ public sealed partial class NativeStorage
             if (format.References > actual.References)
                 roots.Slice(offset.References + actual.References, format.References - actual.References).Clear();
             if (type.IsUnion) bytes[offset.Bytes] = (byte)value.Kind;
-            MarkInitialized(offset.Bytes, Math.Max(1, format.Bytes));
+            return format.Bytes;
+        }
+        internal readonly void EraseCompiled(NativeType type, NativeOffset offset)
+        {
+            roots.Slice(offset.References, type.Representation.References).Clear();
+            if (type.Machine is { } machine) initialized.Slice(offset.Bytes, machine.ByteSize).Clear();
+            else initialized[offset.Bytes] = false;
         }
         internal readonly void Erase(NativeType type, NativeOffset offset)
         {

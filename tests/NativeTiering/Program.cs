@@ -4,6 +4,24 @@ using Msync.Core.Native;
 using Msync.Runtime;
 using Msync.Runtime.Native;
 
+if (args.Contains("--floating-predicates"))
+{
+    Console.WriteLine($"PASS {await FloatingPredicateChecks.RunAsync()} binary64 predicate Native2 and pending properties");
+    return;
+}
+
+if (args.Contains("--ordinary-initialization"))
+{
+    Console.WriteLine($"PASS {OrdinaryInitializationChecks.Run()} ordinary initialization properties; {await OrdinaryInitializationChecks.RunSourceAsync()} source artifact journeys");
+    return;
+}
+
+if (args.Contains("--register-demand"))
+{
+    Console.WriteLine($"PASS {await RegisterDemandChecks.RunAsync()} register planning demand properties");
+    return;
+}
+
 if (args.Contains("--machine-scalars"))
 {
     Console.WriteLine($"PASS {await MachineScalarReadinessChecks.RunAsync()} machine scalar readiness; {await MachinePendingChecks.RunAsync()} machine operation pending properties");

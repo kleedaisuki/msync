@@ -61,11 +61,13 @@ public static partial class LlvmInstructionSimplify
         return null;
     }
 
-    private static LlvmValue? SimplifyScalarCall(LlvmCallInstruction call, IReadOnlyList<LlvmValue> operands, BinaryQuery q)
+    private static LlvmValue? SimplifyScalarCall(LlvmCallInstruction call, IReadOnlyList<LlvmValue> operands, BinaryQuery q) =>
+        SimplifyCallCore(call, operands[^1], operands, q);
+
+    private static LlvmValue? SimplifyCallCore(LlvmCallInstruction call, LlvmValue callee, IReadOnlyList<LlvmValue> operands, BinaryQuery q)
     {
         Count(q.Metrics, "simplify.call.queries");
         if (call.TailCallKind == LlvmTailCallKind.MustTail) return null;
-        LlvmValue callee = operands[^1];
         if (callee is LlvmUndefValue or LlvmConstantPointerNull) return LlvmPoisonValue.Get(call.Type);
         if (callee is LlvmFunction { IntrinsicDescriptor: { } descriptor })
             return SimplifyScalarIntrinsic(descriptor.Kind, call.Type, operands.Take(call.ArgumentCount).ToArray(), q);

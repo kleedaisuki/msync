@@ -9,6 +9,8 @@ namespace Msync.Core.Llvm;
 public readonly partial record struct LlvmIntrinsicKind
 {
     public static LlvmIntrinsicKind FAbs { get; } = new("llvm.fabs");
+    public static LlvmIntrinsicKind Frexp { get; } = new("llvm.frexp");
+    public static LlvmIntrinsicKind SinCos { get; } = new("llvm.sincos");
     public static LlvmIntrinsicKind Sqrt { get; } = new("llvm.sqrt");
     public static LlvmIntrinsicKind Floor { get; } = new("llvm.floor");
     public static LlvmIntrinsicKind Ceil { get; } = new("llvm.ceil");
@@ -54,6 +56,7 @@ public static partial class LlvmIntrinsic
 {
     private static readonly LlvmIntrinsicDescriptor[] FloatingDescriptors =
     [
+        new(LlvmIntrinsicKind.Frexp), new(LlvmIntrinsicKind.SinCos) { CreatesUndefOrPoison = true },
         new(LlvmIntrinsicKind.FAbs), new(LlvmIntrinsicKind.Sqrt), new(LlvmIntrinsicKind.Floor),
         new(LlvmIntrinsicKind.Ceil), new(LlvmIntrinsicKind.Trunc), new(LlvmIntrinsicKind.Rint),
         new(LlvmIntrinsicKind.NearbyInt), new(LlvmIntrinsicKind.Round), new(LlvmIntrinsicKind.RoundEven),
@@ -93,8 +96,10 @@ public static partial class LlvmIntrinsic
         foreach (var descriptor in FloatingDescriptors)
         {
             var kind = descriptor.Kind;
-            LlvmType? exponent = IsFloatingExponent(kind) && function.ArgumentCount > 1
-                ? function.FunctionType.GetParamType(1) : null;
+            LlvmType? exponent = kind == LlvmIntrinsicKind.Frexp && function.ReturnType is LlvmStructType aggregate
+                ? aggregate.Elements[1] : IsFloatingExponent(kind) && function.ArgumentCount > 1
+                    ? function.FunctionType.GetParamType(1) : null;
+            if (kind == LlvmIntrinsicKind.Frexp && exponent is null) continue;
             if (IsFloatingExponent(kind) && (exponent is null ||
                 !(kind == LlvmIntrinsicKind.PowI ? exponent.IsIntegerTy() : exponent.IsIntOrIntVectorTy()))) continue;
             if (function.Name == FloatingName(kind, argument, exponent)) return descriptor;
@@ -103,12 +108,21 @@ public static partial class LlvmIntrinsic
     }
     private static bool IsFloatingExponent(LlvmIntrinsicKind kind) => kind == LlvmIntrinsicKind.Ldexp || kind == LlvmIntrinsicKind.PowI;
 
+    public static LlvmType GetFloatingIntrinsicReturnType(LlvmIntrinsicKind kind, LlvmType floatingType, LlvmType? exponentType = null)
+    {
+        if (kind == LlvmIntrinsicKind.IsFPClass) return floatingType.GetWithNewType(LlvmType.GetInt1Ty(floatingType.Context));
+        if (kind == LlvmIntrinsicKind.Frexp) return LlvmStructType.Get(floatingType.Context,
+            [floatingType, exponentType ?? floatingType.GetWithNewType(LlvmType.GetInt32Ty(floatingType.Context))]);
+        return kind == LlvmIntrinsicKind.SinCos ? LlvmStructType.Get(floatingType.Context, [floatingType, floatingType]) : floatingType;
+    }
+
     public static LlvmFunction GetDeclaration(LlvmModule module, LlvmIntrinsicKind kind, LlvmType floatingType,
         Dictionary<string, ulong>? metrics = null, LlvmType? exponentType = null)
     {
         Debug.Assert(floatingType.IsFPOrFPVectorTy() && ReferenceEquals(floatingType.Context, module.Context));
         Debug.Assert(GetFloatingDescriptor(kind) is not null);
-        LlvmType result = kind == LlvmIntrinsicKind.IsFPClass ? floatingType.GetWithNewType(LlvmType.GetInt1Ty(module.Context)) : floatingType;
+        if (kind == LlvmIntrinsicKind.Frexp) exponentType ??= floatingType.GetWithNewType(LlvmType.GetInt32Ty(module.Context));
+        LlvmType result = GetFloatingIntrinsicReturnType(kind, floatingType, exponentType);
         LlvmType[] parameters;
         if (IsFloatingExponent(kind))
         {
@@ -139,7 +153,16 @@ public static partial class LlvmIntrinsic
     public static LlvmCallInstruction CreateIntrinsic(LlvmIntrinsicKind kind, IReadOnlyList<LlvmValue> arguments,
         LlvmType resultType, LlvmModule module, Dictionary<string, ulong>? metrics = null)
     {
+        if (kind == LlvmIntrinsicKind.Frexp && resultType is LlvmStructType pair)
+        {
+            var declaration = GetDeclaration(module, kind, arguments[0].Type, metrics, pair.Elements[1]);
+            Count(metrics, "floating_call_created");
+            return new(declaration.FunctionType, declaration, arguments);
+        }
         if (IsSubvectorIntrinsic(kind)) return CreateSubvectorIntrinsic(kind, resultType, arguments, module, metrics);
+        if (IsVectorFamilyIntrinsic(kind)) return CreateVectorIntrinsic(kind, arguments, resultType, module, metrics);
+        if (arguments.Count != 0 && arguments[0].Type is LlvmVectorType && GetIntegerVectorDescriptor(kind) is not null)
+            return CreateIntegerVectorIntrinsic(kind, arguments, resultType, module, metrics);
         var call = IsFloatingIntrinsic(kind) ? CreateFloatingIntrinsic(kind, arguments, module, metrics)
             : resultType is LlvmIntegerType integer ? CreateIntrinsic(kind, arguments, integer, module, metrics)
             : CreateIntrinsic(kind, arguments, module, metrics);
@@ -148,7 +171,7 @@ public static partial class LlvmIntrinsic
     }
     private static string FloatingName(LlvmIntrinsicKind kind, LlvmType type, LlvmType? exponent) =>
         kind.Name + "." + FloatingTypeName(type) +
-        (IsFloatingExponent(kind) ? "." + FloatingTypeName(exponent!) : "");
+        (IsFloatingExponent(kind) || kind == LlvmIntrinsicKind.Frexp ? "." + FloatingTypeName(exponent!) : "");
     private static string FloatingTypeName(LlvmType type) => type switch
     {
         LlvmVectorType vector => (vector.ElementCount.IsScalable ? "nxv" : "v") +

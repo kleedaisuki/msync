@@ -8,15 +8,29 @@ namespace Msync.Optimization.Llvm;
 public static partial class LlvmKnownBitsAnalysis
 {
     private const uint MaxDepth = 6;
-    private readonly record struct BitsQuery(uint Depth, LlvmInstruction? Context, LlvmDominatorTree? Tree, Dictionary<string, ulong>? Metrics, bool UseInstructionInfo, LlvmAssumptionCache? Assumptions, bool AllowEphemerals, LlvmDomConditionCache? Conditions, LlvmCondContext? CondContext, LlvmDataLayout? Layout)
+    private readonly record struct BitsQuery(uint Depth, LlvmInstruction? Context, LlvmDominatorTree? Tree, Dictionary<string, ulong>? Metrics, bool UseInstructionInfo, LlvmAssumptionCache? Assumptions, bool AllowEphemerals, LlvmDomConditionCache? Conditions, LlvmCondContext? CondContext, LlvmDataLayout? Layout, LlvmAPInt? DemandedElements = null)
     {
-        internal LlvmKnownBits Recurse(LlvmValue value) => Compute(value, Depth + 1, Context, Tree, Metrics, UseInstructionInfo, Assumptions, AllowEphemerals, Conditions, CondContext, Layout);
+        internal LlvmKnownBits Recurse(LlvmValue value) => Recurse(value, DemandedElements);
+        internal LlvmKnownBits Recurse(LlvmValue value, LlvmAPInt? demanded) => Compute(value,
+            value.Type is LlvmVectorType ? demanded ?? GetAllDemandedElements(value.Type) : new LlvmAPInt(1, 1),
+            Depth + 1, Context, Tree, Metrics, UseInstructionInfo, Assumptions, AllowEphemerals, Conditions, CondContext, Layout);
     }
     public static LlvmKnownBits Compute(LlvmValue value, uint depth = 0, LlvmInstruction? context = null,
         LlvmDominatorTree? tree = null, Dictionary<string, ulong>? metrics = null, bool useInstructionInfo = true, LlvmAssumptionCache? assumptions = null, bool allowEphemerals = false, LlvmDomConditionCache? conditions = null, LlvmCondContext? condContext = null, LlvmDataLayout? layout = null)
+        => Compute(value, GetAllDemandedElements(value.Type), depth, context, tree, metrics, useInstructionInfo,
+            assumptions, allowEphemerals, conditions, condContext, layout);
+
+    public static LlvmKnownBits Compute(LlvmValue value, LlvmAPInt demandedElements, uint depth = 0,
+        LlvmInstruction? context = null, LlvmDominatorTree? tree = null,
+        Dictionary<string, ulong>? metrics = null, bool useInstructionInfo = true,
+        LlvmAssumptionCache? assumptions = null, bool allowEphemerals = false,
+        LlvmDomConditionCache? conditions = null, LlvmCondContext? condContext = null, LlvmDataLayout? layout = null)
     {
         layout ??= GetQueryLayout(value, context);
-        var known = ComputeOperatorFacts(value, depth, context, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, condContext, layout);
+        if (value.Type is LlvmVectorType) Count(metrics, "known_bits.vector.queries");
+        if (demandedElements.IsZero)
+        { Count(metrics, "known_bits.vector.empty_demand"); return new(GetKnownBitWidth(value.Type, layout)); }
+        var known = ComputeOperatorFacts(value, depth, context, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, condContext, layout, demandedElements);
         if (value.Type.IsPointerTy() && value is not (LlvmConstantPointerNull or LlvmConstantAggregateZero or LlvmUndefValue)
             && depth < MaxDepth)
         {
@@ -24,28 +38,37 @@ public static partial class LlvmKnownBitsAnalysis
             known = new(known.Zero | LlvmAPInt.GetLowBitsSet(known.BitWidth, zeros), known.One);
             Count(metrics, "known_bits.pointer_alignment");
         }
-        if (condContext is null && (assumptions is null && conditions is null || context is null) || value is LlvmConstantInt or LlvmConstantPointerNull or LlvmConstantAggregateZero or LlvmUndefValue || depth >= MaxDepth) return known;
+        if (condContext is null && (assumptions is null && conditions is null || context is null) || value is LlvmConstantInt or LlvmConstantPointerNull or LlvmConstantAggregateZero or LlvmConstantVector or LlvmConstantDataVector or LlvmUndefValue || depth >= MaxDepth) return known;
         return ComputeFromContext(value, known, depth, context, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, condContext, layout);
     }
 
     private static LlvmKnownBits ComputeOperatorFacts(LlvmValue value, uint depth, LlvmInstruction? context,
-        LlvmDominatorTree? tree, Dictionary<string, ulong>? metrics, bool useInstructionInfo, LlvmAssumptionCache? assumptions, bool allowEphemerals, LlvmDomConditionCache? conditions = null, LlvmCondContext? condContext = null, LlvmDataLayout? layout = null)
+        LlvmDominatorTree? tree, Dictionary<string, ulong>? metrics, bool useInstructionInfo, LlvmAssumptionCache? assumptions, bool allowEphemerals, LlvmDomConditionCache? conditions = null, LlvmCondContext? condContext = null, LlvmDataLayout? layout = null, LlvmAPInt? demandedElements = null)
     {
         Count(metrics, "known_bits.visits");
-        if (value.Type is LlvmVectorType) throw new NotSupportedException("KnownBits vector demanded-elements analysis is not represented by this scalar entry.");
-        uint width = value.Type.IsPointerTy() ? layout!.GetPointerTypeSizeInBits(value.Type) : value.Type.GetIntegerBitWidth();
+        uint width = GetKnownBitWidth(value.Type, layout!);
+        LlvmAPInt demand = demandedElements ?? GetAllDemandedElements(value.Type);
+        if (TryComputeVectorConstant(value, demand, width, metrics, out var constantBits)) return constantBits;
         if (value is LlvmConstantInt integer) return LlvmKnownBits.MakeConstant(integer.Value);
         if (value is LlvmConstantPointerNull or LlvmConstantAggregateZero) return LlvmKnownBits.MakeConstant(LlvmAPInt.GetZero(width));
         if (value is LlvmUndefValue) return new(width);
         if (value is LlvmArgument argument && argument.Parent?.GetParamAttributes((int)argument.ArgNo).Range is { } range)
             return range.ToConstantRange().ToKnownBits();
         if (depth >= MaxDepth) { Count(metrics, "known_bits.depth_limit"); return new(width); }
-        BitsQuery query = new(depth, context, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, condContext, layout);
+        BitsQuery query = new(depth, context, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, condContext, layout, demand);
         switch (value)
         {
             case LlvmBinaryOperator binary:
                 Count(metrics, "known_bits.binary");
                 return ComputeBinary(binary, query, depth, context, tree, metrics);
+            case LlvmExtractElementInstruction extract:
+                return ComputeExtractElement(extract.VectorOperand, extract.IndexOperand, query, width);
+            case LlvmInsertElementInstruction insert:
+                return ComputeInsertElement(insert.VectorOperand, insert.InsertedElementOperand, insert.IndexOperand, demand, query, width);
+            case LlvmShuffleVectorInstruction shuffle:
+                return ComputeShuffle(shuffle, demand, query, width);
+            case LlvmConstantExpr expression:
+                return ComputeVectorConstantExpression(expression, demand, query, width);
             case LlvmCastInstruction cast:
                 Count(metrics, "known_bits.cast");
                 if (cast.Opcode is LlvmOpcode.ZExt or LlvmOpcode.Trunc or LlvmOpcode.PtrToInt or LlvmOpcode.PtrToAddr or LlvmOpcode.IntToPtr)
@@ -55,23 +78,28 @@ public static partial class LlvmKnownBitsAnalysis
                     return bits.ZExtOrTrunc(width);
                 }
                 if (cast.Opcode == LlvmOpcode.SExt) return query.Recurse(cast.Operand).SExt(width);
+                if (cast.Opcode == LlvmOpcode.BitCast && cast.Operand.Type is LlvmFixedVectorType)
+                    return ComputeVectorBitCast(cast.Operand, cast.Type, demand, query, width);
                 if (cast.Opcode == LlvmOpcode.BitCast && (cast.Operand.Type.IsIntegerTy() || cast.Operand.Type.IsPointerTy())) return query.Recurse(cast.Operand);
                 if (cast.Opcode == LlvmOpcode.BitCast && cast.Operand.Type.IsFloatingPointTy())
-                    return LlvmKnownFPClasses.Compute(cast.Operand, contextInstruction: context, tree: tree, metrics: metrics, depth: (int)depth + 1, assumptions: assumptions, allowEphemerals: allowEphemerals, conditions: conditions, condContext: condContext).ToKnownBits();
+                    return LlvmKnownFPClasses.Compute(cast.Operand, contextInstruction: context, tree: tree, metrics: metrics, depth: (int)depth + 1, assumptions: assumptions, allowEphemerals: allowEphemerals, conditions: conditions, condContext: condContext).ToKnownBits(cast.Operand.Type.GetScalarType().GetFltSemantics());
                 if (cast.Opcode == LlvmOpcode.FPToSI && LlvmKnownFPClasses.Compute(cast.Operand, LlvmFPClassTest.NegNormal, context, tree, metrics, (int)depth + 1, assumptions, allowEphemerals, conditions, condContext).IsKnownNever(LlvmFPClassTest.NegNormal))
                     return new LlvmKnownBits(width).WithNonNegative();
                 return new(width);
             case LlvmGetElementPtrInstruction gep:
-                return ComputeGep(gep, depth, context, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, condContext, layout);
+                return ComputeGep(gep, gep.SourceElementType, depth, context, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, condContext, layout, demand);
             case LlvmSelectInstruction select:
                 Count(metrics, "known_bits.select");
                 return AdjustSelectArm(query.Recurse(select.TrueValue), select.Condition, select.TrueValue, false, depth, context, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, condContext, layout)
                     .IntersectWith(AdjustSelectArm(query.Recurse(select.FalseValue), select.Condition, select.FalseValue, true, depth, context, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, condContext, layout));
             case LlvmPhiInstruction phi:
                 Count(metrics, "known_bits.phi");
-                return ComputePhi(phi, depth, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, condContext, layout);
+                return ComputePhi(phi, depth, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, condContext, layout, demand);
             case LlvmFreezeInstruction freeze:
                 return LlvmValueTracking.IsGuaranteedNotToBePoison(freeze.Operand, tree, context, depth + 1, metrics, assumptions, allowEphemerals, conditions) ? query.Recurse(freeze.Operand) : new(width);
+            case LlvmCallInstruction { CalledFunction.IntrinsicDescriptor: { } reverse } reverseCall when reverse.Kind == LlvmIntrinsicKind.VectorReverse:
+                Count(metrics, "known_bits.vector.reverse");
+                return query.Recurse(reverseCall.GetArgument(0), demand.ReverseBits());
             case LlvmCallInstruction { CalledFunction.IntrinsicDescriptor: { } intrinsic } call when IsMinMaxIntrinsicKind(intrinsic.Kind):
                 return ComputeMinMaxIntrinsic(call, intrinsic.Kind, query);
             case LlvmHeapAllocInst heap:

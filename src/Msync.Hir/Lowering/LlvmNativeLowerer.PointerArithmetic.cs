@@ -43,8 +43,28 @@ public static partial class LlvmNativeLowerer
                 }
             }
             PointerFieldInfo result;
-            if (preferredType >= 0 && fields.ByNativeType.TryGetValue((offset, preferredType), out result)
-                || llvmType is not null && fields.ByLlvmType.TryGetValue((offset, llvmType), out result)
+            if (preferredType >= 0)
+            {
+                if (fields.ByNativeType.TryGetValue((offset, preferredType), out result))
+                    return (result.Field, result.Type, result.LlvmType);
+                // Zero-sized LLVM members share offsets with their successor.
+                // Native type-table IDs need not be equal for the same carrier.
+                PointerFieldInfo? compatible = null;
+                foreach (var candidate in fields.ByNativeType)
+                {
+                    if (candidate.Key.Offset != offset ||
+                        !NativeTypeRelations.SameStorageRepresentation(Types, candidate.Value.Type, preferredType)) continue;
+                    compatible = candidate.Value;
+                    break;
+                }
+                if (compatible is { } selected)
+                {
+                    fields.ByNativeType.Add((offset, preferredType), selected);
+                    trace?.Detail?.Metric("addresses.representation_field_aliases", 1);
+                    return (selected.Field, selected.Type, selected.LlvmType);
+                }
+            }
+            if (llvmType is not null && fields.ByLlvmType.TryGetValue((offset, llvmType), out result)
                 || fields.First.TryGetValue(offset, out result)) return (result.Field, result.Type, result.LlvmType);
             return null;
         }
@@ -83,7 +103,11 @@ public static partial class LlvmNativeLowerer
             var delta = ConstantGepOffset(address, width);
             PointerPosition origin;
             if (LlvmGepOperator.TryGet(address.PointerOperand, out _)) origin = PointerPositionOf(address.PointerOperand);
-            else origin = PointerRoot(address.PointerOperand, width, address.SourceElementType);
+            else origin = PointerRoot(address.PointerOperand, width,
+                value is LlvmGetElementPtrInstruction { TargetStorageType: { } storage } ? storage :
+                    address.User.GetOperandUse(0).TargetStorageType ?? (LlvmType)address.SourceElementType);
+            if (value is LlvmGetElementPtrInstruction { TargetStorageType: not null })
+                trace?.Metric("addresses.declared_storage_geps", 1);
             var result = origin with { Offset = origin.Offset + delta };
             pointerRelocations.Add(value, result);
             return result;
@@ -134,10 +158,24 @@ public static partial class LlvmNativeLowerer
             int preferredType = -1, LlvmType? llvmType = null)
         {
             if (position.Structure is null || position.Layout < 0)
-                throw Unsupported(address, "constant GEP without a declared producer storage layout");
+            {
+                int emittedType = values.TryGetValue(position.Root, out int rootSlot) ? slots[rootSlot].Type : -1;
+                int selectedType = selectedCarriers.GetValueOrDefault(position.Root, -1);
+                string inputs = position.Root is LlvmUser user ? string.Join(", ", user.OperandUses.Select(use =>
+                    $"{use.OperandNo}:{use.Value?.GetType().Name} '{use.Value?.Name}' logical#{use.Value?.LogicalType}/use#{use.LogicalType}")) : "";
+                throw Unsupported(address, $"constant GEP without a declared producer storage layout in '{function.Name}', " +
+                    $"offset {position.Offset.GetSExtValue()}, root '{position.Root.Name}' ({position.Root.GetType().Name}, " +
+                    $"logical #{position.Root.LogicalType}, emitted #{emittedType}, selected #{selectedType}), inputs [{inputs}]");
+            }
             if (position.Offset.BitWidth > 64) throw Unsupported(address, "GEP index width above the native pointer carrier");
             if (owner.StorageField(position.Structure, position.Layout, position.Offset.GetZExtValue(), preferredType, llvmType) is { } field) return field;
-            throw Unsupported(address, "constant GEP byte offset " + position.Offset + " inside an unrepresented native field or object array");
+            var structureLayout = owner.Input.Module.DataLayout.GetStructLayout(position.Structure);
+            string fields = string.Join(", ", position.Structure.Elements.Select((type, index) =>
+                $"{index}@{structureLayout.GetElementOffset((uint)index).GetFixedValue()}:native#{owner.Layouts[position.Layout].Fields[index].Type}/{type.Id}"));
+            throw Unsupported(address, $"constant GEP byte offset {position.Offset.GetSExtValue()} in '{function.Name}', " +
+                $"root '{position.Root.Name}' ({position.Root.GetType().Name}, logical #{position.Root.LogicalType}), " +
+                $"structure '{position.Structure.Name}', native layout #{position.Layout}, fields [{fields}], " +
+                $"requested native #{preferredType}/LLVM {llvmType?.Id}: inside an unrepresented native field or object array");
         }
 
         private int MaterializePointerRelocation(LlvmValue address, int expectedType = -1)
@@ -199,8 +237,20 @@ public static partial class LlvmNativeLowerer
         private int MemoryAddressSlot(LlvmUser user, int index, int storage)
         {
             var use = user.GetOperandUse(index);
+            if (use.TargetStorageType is { } declared) return DeclaredStorageFieldView(use.Value!, declared, storage);
             if (use.LogicalType >= 0 && owner.Types[use.LogicalType].Pointee >= 0) return Slot(use);
             return SlotForView(use.Value!, owner.Pointer(storage));
+        }
+
+        private int DeclaredStorageFieldView(LlvmValue root, LlvmStructType structure, int storage)
+        {
+            int layout = owner.Input.StructLayouts[structure];
+            var field = owner.StorageField(structure, layout, 0, storage, null)!.Value;
+            int result = Register(owner.Pointer(field.Type));
+            Add(new(NativeOp.AddressOffset, result, Slot(root), layout, field.Field, Source: instructionSource));
+            ++constantGepMaterializations;
+            trace?.Metric("addresses.declared_zero_storage_views", 1);
+            return result;
         }
 
         private int SetSelectedValueType(LlvmValue value, int type)

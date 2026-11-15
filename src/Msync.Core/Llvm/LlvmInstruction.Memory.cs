@@ -127,6 +127,17 @@ public sealed class LlvmGetElementPtrInstruction : LlvmInstruction
         NoWrapFlags = noWrapFlags;
     }
     public LlvmType SourceElementType { get; }
+    // Source-owned target geometry; LLVM arithmetic still uses SourceElementType.
+    public LlvmStructType? TargetStorageType { get; set; }
+    internal LlvmStructType? GetTargetStorageType()
+    {
+        for (var gep = this; ;)
+        {
+            if ((gep.TargetStorageType ?? gep.GetOperandUse(0).TargetStorageType) is { } storage) return storage;
+            if (gep.PointerOperand is not LlvmGetElementPtrInstruction parent) return null;
+            gep = parent;
+        }
+    }
     public LlvmType ResultElementType { get; }
     public LlvmValue PointerOperand { get => GetOperand(0)!; set => SetOperand(0, value); }
     public int IndexCount => OperandCount - 1;
@@ -135,7 +146,8 @@ public sealed class LlvmGetElementPtrInstruction : LlvmInstruction
     public LlvmGepNoWrapFlags NoWrapFlags { get; set; }
     public bool HasAllZeroIndices => Indices.All(index => index is LlvmConstantInt { IsZero: true });
     public bool HasAllConstantIndices => Indices.All(index => index is LlvmConstantInt);
-    protected override LlvmInstruction CloneImpl() => new LlvmGetElementPtrInstruction(SourceElementType, PointerOperand, Indices.ToArray(), NoWrapFlags);
+    protected override LlvmInstruction CloneImpl() => new LlvmGetElementPtrInstruction(SourceElementType, PointerOperand, Indices.ToArray(), NoWrapFlags)
+    { TargetStorageType = TargetStorageType };
 
     public static LlvmType GetReturnType(LlvmValue pointer, IReadOnlyList<LlvmValue> indices)
     {

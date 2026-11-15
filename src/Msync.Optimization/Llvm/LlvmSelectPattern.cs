@@ -15,6 +15,8 @@ public enum LlvmSelectPatternFlavor : byte
 
 public readonly record struct LlvmSelectPatternResult(LlvmSelectPatternFlavor Flavor, LlvmValue? LHS, LlvmValue? RHS, LlvmOpcode? CastOpcode = null)
 {
+    public LlvmSelectPatternNaNBehavior NaNBehavior { get; init; }
+    public bool Ordered { get; init; }
     public bool IsMinOrMax => Flavor is not (LlvmSelectPatternFlavor.Unknown or LlvmSelectPatternFlavor.Abs or LlvmSelectPatternFlavor.NAbs);
 }
 
@@ -23,11 +25,11 @@ public static partial class LlvmSelectPattern
     public static LlvmSelectPatternResult Match(LlvmValue value, Dictionary<string, ulong>? metrics = null)
     {
         Count(metrics, "select_pattern.queries");
-        if (value is not LlvmSelectInstruction select || select.Condition is not LlvmICmpInstruction compare)
+        if (value is not LlvmSelectInstruction select || select.Condition is not LlvmCmpInstruction compare)
         { Count(metrics, "select_pattern.not_integer_cmp_select"); return default; }
-        if (!select.Type.IsIntegerTy() || !compare.Left.Type.IsIntegerTy())
+        if (select.Type.IsVectorTy() || compare.Left.Type.IsVectorTy())
         { Count(metrics, "select_pattern.unported_vector_or_fp"); return default; }
-        if (compare.Predicate is LlvmCmpPredicate.ICmpEq or LlvmCmpPredicate.ICmpNe)
+        if (IsSelectPatternEquality(compare.Predicate))
         { Count(metrics, "select_pattern.equality"); return default; }
         LlvmSelectPatternResult result = MatchDecomposed(compare, select.TrueValue, select.FalseValue,
             select.FastMathFlags, metrics: metrics);
@@ -123,6 +125,8 @@ public static partial class LlvmSelectPattern
     }
     public static LlvmSelectPatternFlavor GetSelectPattern(LlvmCmpPredicate predicate) => predicate switch
     {
+        LlvmCmpPredicate.FCmpOgt or LlvmCmpPredicate.FCmpOge or LlvmCmpPredicate.FCmpUgt or LlvmCmpPredicate.FCmpUge => LlvmSelectPatternFlavor.FMaxNum,
+        LlvmCmpPredicate.FCmpOlt or LlvmCmpPredicate.FCmpOle or LlvmCmpPredicate.FCmpUlt or LlvmCmpPredicate.FCmpUle => LlvmSelectPatternFlavor.FMinNum,
         LlvmCmpPredicate.ICmpUgt or LlvmCmpPredicate.ICmpUge => LlvmSelectPatternFlavor.UMax,
         LlvmCmpPredicate.ICmpSgt or LlvmCmpPredicate.ICmpSge => LlvmSelectPatternFlavor.SMax,
         LlvmCmpPredicate.ICmpUlt or LlvmCmpPredicate.ICmpUle => LlvmSelectPatternFlavor.UMin,

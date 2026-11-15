@@ -10,6 +10,7 @@ public static partial class LlvmNativeLowerer
     {
         private bool TryAggregateInsert(LlvmInsertValueInstruction instruction)
         {
+            if (TryFunctionMemoryReassembly(instruction)) return true;
             if (!IsLeafAggregate(instruction.Type)) return false;
             var original = AggregateLeaves(instruction.AggregateOperand);
             int[] leaves = original.Slots.ToArray();
@@ -34,7 +35,28 @@ public static partial class LlvmNativeLowerer
                 var shape = AggregateShapeFor(instruction.Type);
                 aggregateSlots.Add(instruction, new(shape, source.Slots.AsSpan(first, shape.Leaves.Length).ToArray()));
             }
-            else values.Add(instruction, source.Slots[first]);
+            else if (source.Shape.Function && source.BoundarySlot >= 0)
+            {
+                var leaf = source.Shape.Leaves[first];
+                int type = FunctionProjectionType(instruction, leaf);
+                int result = Slot(instruction, type);
+                Add(new(NativeOp.FunctionComponent, result, source.BoundarySlot,
+                    Immediate: leaf.FunctionComponent, Source: instruction.Source));
+                RecordFunctionProjection(type, leaf.FunctionComponent);
+            }
+            else
+            {
+                int selected = FunctionProjectionType(instruction, source.Shape.Leaves[first]);
+                int leaf = source.Slots[first];
+                if (owner.Types[selected].PhysicalType.Equals(owner.Types[slots[leaf].Type].PhysicalType))
+                    values.Add(instruction, leaf);
+                else
+                {
+                    int result = Slot(instruction, selected);
+                    Add(new(NativeOp.Copy, result, leaf, Source: instruction.Source));
+                    ++functionProjectionCarrierCopies;
+                }
+            }
             return true;
         }
 

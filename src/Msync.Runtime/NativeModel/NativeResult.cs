@@ -85,8 +85,9 @@ internal sealed class NativeFuture(Task<NativeValue> completion,
     }
 }
 
-internal sealed class NativeMemory
+internal sealed class NativeMemory(RuntimeProfile.NativeStorageCounters? storageCounters = null)
 {
+    internal void RecordScalarWrite(NativeAddress address, NativeKind kind) => storageCounters?.Scalar(address.Type, kind);
     private ConditionalWeakTable<NativeAllocation, ConcurrentDictionary<NativeOffset, NativeFuture>>? pending;
     private long pendingRevision;
     private int activePending;
@@ -146,7 +147,8 @@ internal sealed class NativeMemory
             value = new(completed.Completion.Result);
         if (value.Future is { } future)
         {
-            NativeStorage.ClearTrusted(address.Type, address);
+            NativeStorage.ClearCompiled(address.Type, address);
+            storageCounters?.Clear(address.Type);
             ConcurrentDictionary<NativeOffset, NativeFuture> values = Pending().GetValue(address.Allocation, static _ => new());
             // Increment before publishing so readers/removers never observe HasAnyPending == false for a live entry.
             Interlocked.Increment(ref address.Allocation.PendingValues);
@@ -165,19 +167,34 @@ internal sealed class NativeMemory
             return;
         }
         RemovePending(address);
-        NativeStorage.StoreTrusted(address.Type, address, value.Value);
+        NativeStorage.StoreCompiled(address.Type, address, value.Value);
+        storageCounters?.Write(address.Type);
     }
 
     internal void Clear(NativeAddress address)
     {
         RemovePending(address);
-        NativeStorage.ClearTrusted(address.Type, address);
+        NativeStorage.ClearCompiled(address.Type, address);
+        storageCounters?.Clear(address.Type);
     }
 
     internal void WriteAddress(NativeAddress destination, NativeAddress value)
     {
         RemovePending(destination);
-        NativeStorage.StoreAddress(destination, value);
+        NativeStorage.StoreAddressCompiled(destination, value);
+        storageCounters?.Address(destination.Type);
+    }
+
+    private void CopyValue(NativeType type, NativeAddress source, NativeAddress destination)
+    {
+        NativeStorage.CopyCompiled(type, source, destination);
+        storageCounters?.Copy(type);
+    }
+
+    private void CopyKindValue(NativeKind kind, NativeAddress source, NativeAddress destination)
+    {
+        NativeStorage.CopyKindCompiled(kind, source, destination);
+        storageCounters?.CopyKind(source.Type, destination.Type, kind);
     }
 
     internal bool TryCopyReady(NativeAddress source, NativeAddress destination)
@@ -189,20 +206,20 @@ internal sealed class NativeMemory
         if (source.Type.Equals(destination.Type))
         {
             RemovePending(destination);
-            NativeStorage.CopyTrusted(source.Type, source, destination);
+            CopyValue(source.Type, source, destination);
             return true;
         }
         if (source.Type.IsMachine || destination.Type.IsMachine)
         {
             if (source.Type.Machine?.HasSameValueType(destination.Type.Machine) != true) return false;
             RemovePending(destination);
-            NativeStorage.CopyKindTrusted(source.Type.Kind, source, destination);
+            CopyKindValue(source.Type.Kind, source, destination);
             return true;
         }
         NativeKind kind = source.Type.IsUnion ? source.Allocation.Storage.ReadKind(source.Offset) : source.Type.Kind;
         if (!destination.Type.Accepts(kind)) return false;
         RemovePending(destination);
-        NativeStorage.CopyKindTrusted(kind, source, destination);
+        CopyKindValue(kind, source, destination);
         return true;
     }
 
@@ -220,8 +237,8 @@ internal sealed class NativeMemory
                 || !image.AdmitsLayout(type, allocation, offset)))
             return false;
         RemovePending(destination);
-        if (sourceType.Equals(destination.Type)) NativeStorage.CopyTrusted(sourceType, source, destination);
-        else NativeStorage.CopyKindTrusted(kind, source, destination);
+        if (sourceType.Equals(destination.Type)) CopyValue(sourceType, source, destination);
+        else CopyKindValue(kind, source, destination);
         return true;
     }
 
@@ -242,8 +259,8 @@ internal sealed class NativeMemory
                 || !image.AdmitsLayout(targetType, allocation, offset)))
             return false;
         RemovePending(destination);
-        if (sourceType.Equals(destination.Type)) NativeStorage.CopyTrusted(sourceType, source, destination);
-        else NativeStorage.CopyKindTrusted(kind, source, destination);
+        if (sourceType.Equals(destination.Type)) CopyValue(sourceType, source, destination);
+        else CopyKindValue(kind, source, destination);
         return true;
     }
 
@@ -252,11 +269,11 @@ internal sealed class NativeMemory
         if (TryPending(source, out NativeFuture? future)) { Write(destination, new(future!)); return; }
         RemovePending(destination);
         // Initialization and kind admission are compiled facts; carrier adaptation is still needed.
-        if (source.Type.Equals(destination.Type)) NativeStorage.CopyTrusted(source.Type, source, destination);
+        if (source.Type.Equals(destination.Type)) CopyValue(source.Type, source, destination);
         else
         {
             NativeKind kind = source.Type.IsUnion ? source.Allocation.Storage.ReadKind(source.Offset) : source.Type.Kind;
-            NativeStorage.CopyKindTrusted(kind, source, destination);
+            CopyKindValue(kind, source, destination);
         }
     }
 
@@ -269,14 +286,14 @@ internal sealed class NativeMemory
     {
         if (TryPending(source, out NativeFuture? future)) { Write(destination, new(future!)); return; }
         RemovePending(destination);
-        NativeStorage.CopyTrusted(type, source, destination);
+        CopyValue(type, source, destination);
     }
 
     internal void Copy(NativeType type, NativeAddress source, NativeAddress destination)
     {
         if (!source.IsInitialized) { Write(destination, Read(source)); return; }
         RemovePending(destination);
-        NativeStorage.CopyTrusted(type, source, destination);
+        CopyValue(type, source, destination);
     }
 
     internal void CopyRegionTrusted(NativeAddress source, NativeAddress destination, NativeLayout layout, int count)

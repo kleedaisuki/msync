@@ -66,6 +66,9 @@ public static partial class LlvmIntrinsic
         string name = function.Name;
         if (name == LlvmIntrinsicKind.Assume.Name) return GetDescriptor(LlvmIntrinsicKind.Assume);
         if (LookupSubvectorDescriptor(function) is { } subvectorDescriptor) return subvectorDescriptor;
+        if (LookupReductionDescriptor(function) is { } reductionDescriptor) return reductionDescriptor;
+        if (LookupVectorFamilyDescriptor(function) is { } vectorDescriptor) return vectorDescriptor;
+        if (LookupIntegerVectorDescriptor(function) is { } integerVectorDescriptor) return integerVectorDescriptor;
         if (LookupFloatingDescriptor(function) is { } floatingDescriptor) return floatingDescriptor;
         if (LookupMemoryDescriptor(function) is { } memoryDescriptor) return memoryDescriptor;
         if (LookupIntegerDescriptor(function) is { } integerDescriptor) return integerDescriptor;
@@ -82,7 +85,7 @@ public static partial class LlvmIntrinsic
 
     public static LlvmIntrinsicDescriptor GetDescriptor(LlvmIntrinsicKind kind) =>
         descriptors.FirstOrDefault(descriptor => descriptor.Kind == kind) ?? GetIntegerDescriptor(kind) ??
-        GetFloatingDescriptor(kind) ?? GetMemoryDescriptor(kind) ?? GetSubvectorDescriptor(kind) ??
+        GetFloatingDescriptor(kind) ?? GetMemoryDescriptor(kind) ?? GetSubvectorDescriptor(kind) ?? GetReductionDescriptor(kind) ?? GetVectorFamilyDescriptor(kind) ??
         throw new ArgumentOutOfRangeException(nameof(kind));
 
     // Intrinsics.td int_assume has no overloaded type parameters and returns void.
@@ -144,8 +147,13 @@ public static partial class LlvmIntrinsic
     public static LlvmCallInstruction CreateIntrinsic(LlvmIntrinsicKind kind, IReadOnlyList<LlvmValue> arguments,
         LlvmModule module, Dictionary<string, ulong>? metrics = null)
     {
+        if (kind == LlvmIntrinsicKind.VectorReduceAdd) return CreateReductionIntrinsic(kind, arguments, module, metrics);
+        if (IsVectorFamilyIntrinsic(kind)) return CreateVectorIntrinsic(kind, arguments,
+            kind == LlvmIntrinsicKind.MaskedLoad || kind == LlvmIntrinsicKind.MaskedGather ? arguments[2].Type : arguments[0].Type, module, metrics);
         if (IsFloatingIntrinsic(kind)) return CreateFloatingIntrinsic(kind, arguments, module, metrics);
         if (IsMemoryFamilyIntrinsic(kind)) return CreateMemoryIntrinsic(kind, arguments, module, metrics);
+        if (arguments.Count != 0 && arguments[0].Type is LlvmVectorType && GetIntegerVectorDescriptor(kind) is not null)
+            return CreateIntegerVectorIntrinsic(kind, arguments, null, module, metrics);
         if (kind == LlvmIntrinsicKind.PtrMask)
         {
             var declaration = GetDeclaration(module, kind, (LlvmPointerType)arguments[0].Type, (LlvmIntegerType)arguments[1].Type, metrics);
@@ -158,7 +166,15 @@ public static partial class LlvmIntrinsic
     public static LlvmCallInstruction CreateIntrinsic(LlvmIntrinsicKind kind, IReadOnlyList<LlvmValue> arguments,
         LlvmIntegerType resultType, LlvmModule module, Dictionary<string, ulong>? metrics = null)
     {
+        if (kind == LlvmIntrinsicKind.VectorReduceAdd)
+        {
+            var reduction = CreateReductionIntrinsic(kind, arguments, module, metrics);
+            Debug.Assert(resultType == reduction.Type);
+            return reduction;
+        }
         if (IsFloatingIntrinsic(kind)) return CreateFloatingIntrinsic(kind, arguments, module, metrics);
+        if (arguments.Count != 0 && arguments[0].Type is LlvmVectorType && GetIntegerVectorDescriptor(kind) is not null)
+            return CreateIntegerVectorIntrinsic(kind, arguments, resultType, module, metrics);
         var declaration = GetDeclaration(module, kind, resultType, arguments.Count == 0 ? resultType : (LlvmIntegerType)arguments[0].Type, metrics);
         Count(metrics, "call_created");
         return new(declaration.FunctionType, declaration, arguments);

@@ -77,3 +77,23 @@ Some cost is startup/type/range-metadata work rather than a per-opcode tax. The 
 ## Recommended next step
 
 Use finding 1 as the first isolated runtime experiment, preserving explicit raw-view behavior and using the current bound artifact/input pairs. It has a concrete changed operation, ordinary high-frequency callers and consumers that explain why the extra work is not needed on the measured path. Retain current telemetry; only after that experiment should generic machine discrimination be specialized. None of these findings removes the separately observed source-compilation SROA expense or establishes a complete attribution of the paired deltas.
+
+## Remediation handoff: separate compiled readiness entrypoints
+
+The reviewed full-byte initialization work now has a bounded implementation:
+internal compiled ordinary-source writes/copies/clears maintain only the declared
+start flag, while public raw-view APIs and machine extents retain their existing
+behavior. Payload/root routines are shared. Exact-address writes and the three
+ready Number writer sites use the internal policy; scalar returns likewise mark
+only their declared start. No consumer scan or global analysis selects this path.
+See the ordinary/public readiness contract in
+[the machine scalar ABI note](../../design/llvm-machine-scalar-abi.md).
+
+Root's serialized execution passed 57 ordinary initialization properties and
+four public Compiler O0/O2 direct/Native2 source journeys, including the raw-view
+compatibility and pending cases. The result is retained in
+`artifacts/diagnostics/llvm-instcombine/ordinary-init.log`. Actual-operation
+telemetry is published with the implementation. These focused results do not
+claim a measured speedup: the existing paired application comparison remains
+separate, and the supplied regression results above are not superseded by
+correctness properties.

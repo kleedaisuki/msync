@@ -28,6 +28,10 @@ public sealed partial class NativeInterpreter
         }
         memory.RemovePending(destination);
         NativeStorage.StoreScalarTrusted(destination, kind, bits);
-        if (profile is not null) activation.Work.Counters.DirectReturn(scalar: true);
+        if (profile is not null)
+        {
+            activation.Work.Counters.DirectReturn(scalar: true);
+            memory.RecordScalarWrite(destination, kind);
+        }
     }
 }

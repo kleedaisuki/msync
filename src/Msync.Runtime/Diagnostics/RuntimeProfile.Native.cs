@@ -30,6 +30,7 @@ public sealed partial class RuntimeProfile
                 samples.Add(new("vm.native", new(image.Attributes()) { ["native.name"] = name },
                     new() { ["calls"] = (ulong)counter.Calls }));
         }
+        CollectNativeStorage(samples);
         nativeImages.Clear();
     }
 
@@ -66,6 +67,7 @@ public sealed partial class RuntimeProfile
             ["work_forwarded_futures"] = (ulong)counters.WorkForwardedFutures,
             ["work_forwarded_processes"] = (ulong)counters.WorkForwardedProcesses,
             ["function_components_ready"] = (ulong)counters.FunctionComponentsReady,
+            ["function_components_ready_address"] = (ulong)counters.FunctionComponentsReadyAddress,
             ["function_components_pending"] = (ulong)counters.FunctionComponentsPending,
             ["function_compositions_ready"] = (ulong)counters.FunctionCompositionsReady,
             ["function_compositions_pending"] = (ulong)counters.FunctionCompositionsPending,
@@ -132,12 +134,25 @@ public sealed partial class RuntimeProfile
             ["linked_entries"] = (ulong)counters.LinkedEntries,
             ["linked_operations"] = (ulong)counters.LinkedOperations,
             ["jit_raw_operations"] = (ulong)counters.TierRawOperations,
+            ["jit_register_plan_eligibility_instructions"] = (ulong)counters.TierRegisterPlanEligibilityInstructions,
+            ["jit_register_plan_eligibility_ns"] = (ulong)counters.TierRegisterPlanEligibilityNanoseconds,
+            ["jit_register_plan_skipped_no_eligible"] = (ulong)counters.TierRegisterPlanSkippedNoEligible,
+            ["jit_register_plan_cfg_builds"] = (ulong)counters.TierRegisterPlanControlFlowBuilds,
+            ["jit_register_plan_cfg_ns"] = (ulong)counters.TierRegisterPlanControlFlowNanoseconds,
+            ["jit_register_plan_liveness_visits"] = (ulong)counters.TierRegisterPlanLivenessVisits,
+            ["jit_register_plan_liveness_requeues"] = (ulong)counters.TierRegisterPlanLivenessRequeues,
+            ["jit_register_plan_liveness_ns"] = (ulong)counters.TierRegisterPlanLivenessNanoseconds,
+            ["jit_register_plan_pending_iterations"] = (ulong)counters.TierRegisterPlanPendingIterations,
+            ["jit_register_plan_pending_visits"] = (ulong)counters.TierRegisterPlanPendingVisits,
+            ["jit_register_plan_pending_ns"] = (ulong)counters.TierRegisterPlanPendingNanoseconds,
+            ["jit_register_plan_regions_ns"] = (ulong)counters.TierRegisterPlanRegionNanoseconds,
             ["jit_register_regions"] = (ulong)counters.TierRegisterRegions,
             ["jit_register_values"] = (ulong)counters.TierRegisterValues,
             ["jit_u64_values"] = (ulong)counters.TierUnsignedValues,
             ["jit_initialization_checks_elided"] = (ulong)counters.TierInitializationChecksElided,
             ["jit_initialization_writes_elided"] = (ulong)counters.TierInitializationWritesElided,
             ["jit_u64_operations"] = (ulong)counters.TierUnsignedOperations,
+            ["jit_double_compare_sites"] = (ulong)counters.TierDoubleComparisonSites,
             ["jit_register_spills"] = (ulong)counters.TierRegisterSpills,
             ["jit_eliminated_frame_stores"] = (ulong)counters.TierEliminatedStores,
             ["jit_selection_ns"] = (ulong)counters.TierSelectionNs,
@@ -249,6 +264,7 @@ public sealed partial class RuntimeProfile
         internal long WorkForwardedFutures, WorkForwardedProcesses;
         internal long SelectReadyConditions, SelectPendingConditions, SelectRetainedCandidates;
         internal long FunctionComponentsReady, FunctionComponentsPending, FunctionCompositionsReady, FunctionCompositionsPending;
+        internal long FunctionComponentsReadyAddress;
         internal long MachineReady, MachinePending, MachineBinary, MachineCompare, MachineCast;
         internal long MachineIntrinsic, MachineUnary, MachineWide, MachineDependencies;
         internal long GuestStackLimitedCalls, GuestLoopHandoffs;
@@ -267,6 +283,7 @@ public sealed partial class RuntimeProfile
         internal long Moves;
         internal long Drops;
         internal long TierUnsignedValues, TierUnsignedOperations, TierInitializationChecksElided;
+        internal long TierDoubleComparisonSites;
         internal long TierInitializationWritesElided;
         internal long TierCompilations, TierCompileNs, TierCodeBytes, TierEntries, TierOperations;
         internal long TierReadinessExits, GuestDirectCalls, GuestLeafCalls, GuestCallPushes, GuestCallResumes, GuestMaxCallDepth;
@@ -275,16 +292,29 @@ public sealed partial class RuntimeProfile
         internal long TierRawOperations;
         internal long TierRegisterRegions, TierRegisterValues, TierRegisterSpills, TierEliminatedStores;
         internal long TierSelectionNs, TierAllocationNs, TierEmissionNs, TierPublicationNs;
+        internal long TierRegisterPlanEligibilityInstructions;
+        internal long TierRegisterPlanEligibilityNanoseconds;
+        internal long TierRegisterPlanSkippedNoEligible;
+        internal long TierRegisterPlanControlFlowBuilds;
+        internal long TierRegisterPlanControlFlowNanoseconds;
+        internal long TierRegisterPlanLivenessVisits;
+        internal long TierRegisterPlanLivenessRequeues;
+        internal long TierRegisterPlanLivenessNanoseconds;
+        internal long TierRegisterPlanPendingIterations;
+        internal long TierRegisterPlanPendingVisits;
+        internal long TierRegisterPlanPendingNanoseconds;
+        internal long TierRegisterPlanRegionNanoseconds;
     }
 
     internal readonly struct NativeFrameCounters(NativeProfileImage? image, int function, NativeFunctionCounters? counters)
     {
         internal bool Observed => counters is not null;
-        internal void FunctionComponent(bool ready)
+        internal void FunctionComponent(bool ready, bool exactAddress = false)
         {
             if (counters is null) return;
             if (ready) Interlocked.Increment(ref counters.FunctionComponentsReady);
             else Interlocked.Increment(ref counters.FunctionComponentsPending);
+            if (exactAddress) Interlocked.Increment(ref counters.FunctionComponentsReadyAddress);
         }
         internal void FunctionCompose(bool ready)
         {
@@ -338,10 +368,26 @@ public sealed partial class RuntimeProfile
         internal void TierCodegen(NativeCodegenStatistics statistics)
         {
             if (counters is null) return;
+            if (statistics.RegisterPlanning is { } planning)
+            {
+                Interlocked.Add(ref counters.TierRegisterPlanEligibilityInstructions, planning.EligibilityInstructions);
+                Interlocked.Add(ref counters.TierRegisterPlanEligibilityNanoseconds, planning.EligibilityNanoseconds);
+                Interlocked.Add(ref counters.TierRegisterPlanSkippedNoEligible, planning.SkippedNoEligible);
+                Interlocked.Add(ref counters.TierRegisterPlanControlFlowBuilds, planning.ControlFlowBuilds);
+                Interlocked.Add(ref counters.TierRegisterPlanControlFlowNanoseconds, planning.ControlFlowNanoseconds);
+                Interlocked.Add(ref counters.TierRegisterPlanLivenessVisits, planning.LivenessVisits);
+                Interlocked.Add(ref counters.TierRegisterPlanLivenessRequeues, planning.LivenessRequeues);
+                Interlocked.Add(ref counters.TierRegisterPlanLivenessNanoseconds, planning.LivenessNanoseconds);
+                Interlocked.Add(ref counters.TierRegisterPlanPendingIterations, planning.PendingIterations);
+                Interlocked.Add(ref counters.TierRegisterPlanPendingVisits, planning.PendingVisits);
+                Interlocked.Add(ref counters.TierRegisterPlanPendingNanoseconds, planning.PendingNanoseconds);
+                Interlocked.Add(ref counters.TierRegisterPlanRegionNanoseconds, planning.RegionNanoseconds);
+            }
             Interlocked.Add(ref counters.TierRegisterRegions, statistics.Regions);
             Interlocked.Add(ref counters.TierRegisterValues, statistics.Values);
             Interlocked.Add(ref counters.TierUnsignedValues, statistics.UnsignedValues);
             Interlocked.Add(ref counters.TierUnsignedOperations, statistics.UnsignedOperations);
+            Interlocked.Add(ref counters.TierDoubleComparisonSites, statistics.DoubleComparisonSites);
             Interlocked.Add(ref counters.TierInitializationChecksElided, statistics.InitializationChecksElided);
             Interlocked.Add(ref counters.TierInitializationWritesElided, statistics.InitializationWritesElided);
             Interlocked.Add(ref counters.TierRegisterSpills, statistics.Spills);

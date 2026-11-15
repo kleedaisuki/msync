@@ -37,9 +37,10 @@ internal sealed class NativeTierLayout(int[] scalars, int[] nativePcs, NativeReg
         return false;
     }
 
-    internal static NativeTierLayout Create(NativeExecutionFunction function, NativeFastOperation[] operations, NativeImage? image = null)
+    internal static NativeTierLayout Create(NativeExecutionFunction function, NativeFastOperation[] operations, NativeImage? image = null,
+        NativeRegisterPlanMetrics? registerMetrics = null)
     {
-        NativeRegisterRegion[] regions = NativeRegisterPlan.Create(function, operations);
+        NativeRegisterRegion[] regions = NativeRegisterPlan.Create(function, operations, registerMetrics);
         Dictionary<int, NativeRegisterRegion> starts = regions.ToDictionary(region => region.Start);
         HashSet<int> slots = [];
         List<int> pcs = [];
@@ -70,7 +71,7 @@ internal sealed class NativeTierLayout(int[] scalars, int[] nativePcs, NativeReg
             }
             slots.Add(instruction.Result);
             if (operations[pc] is not (NativeFastOperation.NumberConstant or NativeFastOperation.BoolConstant)) slots.Add(instruction.A);
-            if (instruction.Op == NativeOp.Binary) slots.Add(instruction.B);
+            if (operations[pc].TakesSecondOperand()) slots.Add(instruction.B);
         }
         int[] map = Enumerable.Repeat(-1, function.Definition.Slots.Count).ToArray();
         int index = 0;

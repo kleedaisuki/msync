@@ -19,7 +19,7 @@ public static partial class Compiler
             {
                 ["ir.kind"] = "llvm",
                 ["optimization.level"] = optimization.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                ["passes.available"] = "sroa,mem2reg,early-cse,loop-simplify,lcssa,licm,loop-rotate,sccp,dce,instsimplify,adce,dse,simplifycfg"
+                ["passes.available"] = "sroa,mem2reg,early-cse,loop-simplify,lcssa,licm,loop-rotate,sccp,dce,instcombine,adce,dse,simplifycfg"
             });
     }
 
@@ -45,7 +45,6 @@ public static partial class Compiler
         using var assumptions = new LlvmAssumptionCache(function, trace);
         LlvmSroaResult scalarized = LlvmSroa.Run(function, tree, assumptions,
             new() { PreserveCFG = false }, trace);
-        if (scalarized.CFGChanged) tree = new(function, trace);
         bool commoned = LlvmEarlyCse.Run(function, true, trace, tree);
         var loops = new LlvmLoopInfo(function, tree, trace);
         bool canonicalized = LlvmLoopSimplify.Run(function, tree, loops, trace: trace);
@@ -53,10 +52,11 @@ public static partial class Compiler
         LlvmLoopChanges loopChanges = OptimizeLlvmLoops(function, tree, loops, trace);
         bool propagated = LlvmSccp.Run(function, trace);
         bool eliminated = LlvmDeadCodeElimination.Run(function, trace);
-        bool simplified = LlvmInstSimplifyPass.Run(function, trace);
+        var cleanupTree = new LlvmDominatorTree(function, trace);
+        bool combined = OptimizeLlvmCombine(function, cleanupTree, trace);
         var postDominators = new LlvmDominatorTree(function, trace, isPostDominator: true);
-        LlvmAdceChanged aggressivelyEliminated = LlvmAdce.Run(function, postDominators, trace: trace);
-        bool storesEliminated = OptimizeLlvmStores(function, postDominators, trace);
+        LlvmAdceChanged aggressivelyEliminated = LlvmAdce.Run(function, postDominators, cleanupTree, trace: trace);
+        bool storesEliminated = OptimizeLlvmStores(function, cleanupTree, postDominators, trace);
         bool cfgSimplified = LlvmSimplifyCfgPass.Run(function, new(function.Parent!.DataLayout),
             options: new() { ConvertSwitchRangeToICmp = true, ConvertSwitchToArithmetic = true,
                 HoistCommonInsts = true, SinkCommonInsts = true }, trace: trace);
@@ -70,7 +70,9 @@ public static partial class Compiler
         trace?.Metric("loop-rotate.changed", loopChanges.Rotation ? 1 : 0);
         trace?.Metric("sccp.changed", propagated ? 1 : 0);
         trace?.Metric("dce.changed", eliminated ? 1 : 0);
-        trace?.Metric("instsimplify.changed", simplified ? 1 : 0);
+        trace?.Metric("instcombine.changed", combined ? 1 : 0);
+        trace?.Metric("analysis.dominator.reused_after_sroa", 1);
+        trace?.Metric("analysis.dominator.reused_for_memory_cleanup", 1);
         trace?.Metric("adce.changed", aggressivelyEliminated.ChangedAnything ? 1 : 0);
         trace?.Metric("adce.control-flow.changed", aggressivelyEliminated.ChangedControlFlow ? 1 : 0);
         trace?.Metric("dse.changed", storesEliminated ? 1 : 0);
@@ -111,20 +113,39 @@ public static partial class Compiler
         return new(moved, rotated);
     }
 
-    private static bool OptimizeLlvmStores(LlvmFunction function, LlvmDominatorTree postDominators,
+    private static bool OptimizeLlvmCombine(LlvmFunction function, LlvmDominatorTree tree,
         CompilationTrace? trace)
     {
-        if (trace?.Detail is not { } detail) return OptimizeLlvmStoresCore(function, postDominators, null, null);
+        if (trace?.Detail is not { } detail) return OptimizeLlvmCombineCore(function, tree, null, null);
         var metrics = new Dictionary<string, ulong>();
-        return detail.MeasureDetailed("optimizer.llvm.memory-cleanup", (function, postDominators, detail, metrics),
-            static state => OptimizeLlvmStoresCore(state.function, state.postDominators, state.detail, state.metrics),
+        return detail.MeasureDetailed("optimizer.llvm.scalar-combine", (function, tree, detail, metrics),
+            static state => OptimizeLlvmCombineCore(state.function, state.tree, state.detail, state.metrics),
             attributes: FunctionAttributes(function), metrics: _ => metrics);
     }
 
-    private static bool OptimizeLlvmStoresCore(LlvmFunction function, LlvmDominatorTree postDominators,
+    private static bool OptimizeLlvmCombineCore(LlvmFunction function, LlvmDominatorTree tree,
         CompilationTrace? trace, Dictionary<string, ulong>? metrics)
     {
-        var tree = new LlvmDominatorTree(function, trace);
+        var alias = new LlvmAAResults(function, tree: tree, metrics: metrics);
+        using var assumptions = new LlvmAssumptionCache(function, trace);
+        var library = new LlvmTargetLibraryInfo(function.Parent!);
+        var target = new LlvmTargetTransformInfo(function.Parent!.DataLayout, metrics);
+        return LlvmInstCombine.Run(function, alias, assumptions, library, target, tree, trace: trace);
+    }
+
+    private static bool OptimizeLlvmStores(LlvmFunction function, LlvmDominatorTree tree,
+        LlvmDominatorTree postDominators, CompilationTrace? trace)
+    {
+        if (trace?.Detail is not { } detail) return OptimizeLlvmStoresCore(function, tree, postDominators, null, null);
+        var metrics = new Dictionary<string, ulong>();
+        return detail.MeasureDetailed("optimizer.llvm.memory-cleanup", (function, tree, postDominators, detail, metrics),
+            static state => OptimizeLlvmStoresCore(state.function, state.tree, state.postDominators, state.detail, state.metrics),
+            attributes: FunctionAttributes(function), metrics: _ => metrics);
+    }
+
+    private static bool OptimizeLlvmStoresCore(LlvmFunction function, LlvmDominatorTree tree,
+        LlvmDominatorTree postDominators, CompilationTrace? trace, Dictionary<string, ulong>? metrics)
+    {
         var cycles = new LlvmCycleInfo(function, trace, metrics);
         var alias = new LlvmAAResults(function, tree: tree, metrics: metrics);
         var memory = new LlvmMemorySsa(function, alias, tree, trace, metrics);

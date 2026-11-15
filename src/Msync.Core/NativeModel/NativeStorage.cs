@@ -189,7 +189,26 @@ public sealed partial class NativeStorage
     internal static void ClearTrusted(NativeType type, NativeAddress address) =>
         address.Allocation.Storage.Erase(type, address.Offset);
 
+    internal static void StoreCompiled(NativeType type, NativeAddress address, NativeValue value) =>
+        address.Allocation.Storage.WriteCompiled(type, address.Offset, value);
+    internal static void ClearCompiled(NativeType type, NativeAddress address) =>
+        address.Allocation.Storage.EraseCompiled(type, address.Offset);
+
     internal static void CopyTrusted(NativeType type, NativeAddress source, NativeAddress destination)
+    {
+        CopyPayload(type, source, destination);
+        destination.Allocation.Storage.MarkInitialized(destination.Offset.Bytes, Math.Max(1, type.Representation.Bytes));
+    }
+
+    internal static void CopyCompiled(NativeType type, NativeAddress source, NativeAddress destination)
+    {
+        CopyPayload(type, source, destination);
+        ref Data output = ref destination.Allocation.Storage;
+        if (type.Machine is { } machine) output.MarkInitialized(destination.Offset.Bytes, machine.ByteSize);
+        else output.initialized[destination.Offset.Bytes] = true;
+    }
+
+    private static void CopyPayload(NativeType type, NativeAddress source, NativeAddress destination)
     {
         ref Data input = ref source.Allocation.Storage;
         ref Data output = ref destination.Allocation.Storage;
@@ -199,10 +218,25 @@ public sealed partial class NativeStorage
                 .CopyTo(output.bytes.Slice(destination.Offset.Bytes, format.Bytes));
         if (format.References > 0)
             CopyRoots(ref input, source.Offset.References, ref output, destination.Offset.References, format.References);
-        output.MarkInitialized(destination.Offset.Bytes, Math.Max(1, format.Bytes));
     }
 
     internal static void CopyKindTrusted(NativeKind actualKind, NativeAddress source, NativeAddress destination)
+    {
+        int extent = CopyKindPayload(actualKind, source, destination);
+        ref Data output = ref destination.Allocation.Storage;
+        output.MarkInitialized(destination.Offset.Bytes + destination.Type.Representation.PayloadOffset, Math.Max(1, extent));
+        if (destination.Type.IsUnion) output.initialized[destination.Offset.Bytes] = true;
+    }
+
+    internal static void CopyKindCompiled(NativeKind actualKind, NativeAddress source, NativeAddress destination)
+    {
+        CopyKindPayload(actualKind, source, destination);
+        ref Data output = ref destination.Allocation.Storage;
+        if (destination.Type.Machine is { } machine) output.MarkInitialized(destination.Offset.Bytes, machine.ByteSize);
+        else output.initialized[destination.Offset.Bytes] = true;
+    }
+
+    private static int CopyKindPayload(NativeKind actualKind, NativeAddress source, NativeAddress destination)
     {
         ref Data input = ref source.Allocation.Storage;
         ref Data output = ref destination.Allocation.Storage;
@@ -219,8 +253,7 @@ public sealed partial class NativeStorage
             output.roots.Slice(destination.Offset.References + actualFormat.References,
                 dstFormat.References - actualFormat.References).Clear();
         if (destination.Type.IsUnion) output.bytes[destination.Offset.Bytes] = (byte)actualKind;
-        output.MarkInitialized(dstStart, Math.Max(1, actualFormat.Bytes));
-        if (destination.Type.IsUnion) output.initialized[destination.Offset.Bytes] = true;
+        return actualFormat.Bytes;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -337,8 +370,14 @@ public sealed partial class NativeStorage
         if (kind == NativeKind.Number) BinaryPrimitives.WriteUInt64LittleEndian(storage.bytes.Slice(payload, 8), bits);
         else storage.bytes[payload] = (byte)bits;
         if (format.References != 0) storage.roots.Slice(address.Offset.References, format.References).Clear();
-        storage.MarkInitialized(payload, kind == NativeKind.Number ? 8 : 1);
-        if (format.PayloadOffset != 0) storage.initialized[offset] = true;
+        storage.initialized[offset] = true;
+    }
+
+    internal static void StoreNumberCompiled(NativeAddress address, double value)
+    {
+        ref Data storage = ref address.Allocation.Storage;
+        BinaryPrimitives.WriteUInt64LittleEndian(storage.bytes.Slice(address.Offset.Bytes, 8), BitConverter.DoubleToUInt64Bits(value));
+        storage.initialized[address.Offset.Bytes] = true;
     }
 
     public static void StoreNumber(NativeAddress address, double value)
@@ -413,10 +452,21 @@ public sealed partial class NativeStorage
     public static void StoreAddress(NativeAddress address, NativeAddress value)
     {
         if (value.IsNull) throw new ArgumentException("Null pointers are not namespace values.", nameof(value));
+        StoreAddressPayload(address, value);
+        address.Allocation.Storage.MarkInitialized(address.Offset.Bytes, 8);
+    }
+
+    internal static void StoreAddressCompiled(NativeAddress address, NativeAddress value)
+    {
+        StoreAddressPayload(address, value);
+        address.Allocation.Storage.initialized[address.Offset.Bytes] = true;
+    }
+
+    private static void StoreAddressPayload(NativeAddress address, NativeAddress value)
+    {
         ref Data storage = ref address.Allocation.Storage;
         BinaryPrimitives.WriteUInt64LittleEndian(storage.bytes.Slice(address.Offset.Bytes, 8), NativeValue.Pack(value.Offset));
         storage.roots[address.Offset.References] = new() { Allocation = value.Allocation };
         storage.roots[address.Offset.References + 1] = new() { StorageType = value.StorageType };
-        storage.MarkInitialized(address.Offset.Bytes, 8);
     }
 }

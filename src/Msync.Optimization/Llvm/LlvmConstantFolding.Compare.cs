@@ -13,11 +13,14 @@ public static partial class LlvmConstantFolding
         Dictionary<string, ulong>? metrics = null)
     {
         Count(metrics, "constant_fold.compare.queries");
-        // Analysis/ConstantFolding.cpp FlushFPConstant has Dynamic mode without
-        // function context; represented functions have no DenormalFPEnv attribute
-        // and therefore use Function::getDenormalMode's default IEEE mode.
-        if ((byte)predicate <= 15 && contextFunction is null && (IsDenormal(left) || IsDenormal(right)))
-        { Count(metrics, "constant_fold.compare.dynamic_denormal"); return null; }
+        if ((byte)predicate <= 15)
+        {
+            LlvmConstant? flushedLeft = FlushFPConstant(left, contextFunction, false, metrics);
+            LlvmConstant? flushedRight = FlushFPConstant(right, contextFunction, false, metrics);
+            if (flushedLeft is null || flushedRight is null)
+            { Count(metrics, "constant_fold.compare.dynamic_denormal"); return null; }
+            left = flushedLeft; right = flushedRight;
+        }
         LlvmConstant? result = FoldExpressionCompare(predicate, left, right, layout, contextFunction, metrics);
         result ??= ConstantFoldCompareInstruction(predicate, left, right);
         RecordResult(metrics, "constant_fold.compare", result);

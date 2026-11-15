@@ -14,24 +14,31 @@ public static partial class LlvmSelectPattern
         bool lookThroughCasts = false, Dictionary<string, ulong>? metrics = null)
     {
         Count(metrics, "select_pattern.decomposed.queries");
-        if (comparison is not LlvmICmpInstruction || !comparison.Left.Type.IsIntegerTy())
-        { Count(metrics, "select_pattern.decomposed.unported_fp_or_vector"); return default; }
+        if (comparison.Left.Type.IsVectorTy())
+        { Count(metrics, "select_pattern.decomposed.unported_vector"); return default; }
+        if (comparison is LlvmFCmpInstruction floating && (floating.FastMathFlags & LlvmFastMathFlags.NoNaNs) != 0) flags |= LlvmFastMathFlags.NoNaNs;
         LlvmCmpPredicate predicate = comparison.Predicate;
-        if (predicate is LlvmCmpPredicate.ICmpEq or LlvmCmpPredicate.ICmpNe) return default;
+        if (IsSelectPatternEquality(predicate)) return default;
         LlvmValue cmpLeft = comparison.Left, cmpRight = comparison.Right;
         LlvmOpcode? castOpcode = null;
         if (lookThroughCasts && !ReferenceEquals(cmpLeft.Type, whenTrue.Type))
         {
             LlvmValue? casted = LookThroughCast(comparison, whenTrue, whenFalse, ref castOpcode, metrics);
             if (casted is not null)
-                return MatchInteger(predicate, cmpLeft, cmpRight, ((LlvmCastInstruction)whenTrue).Operand, casted, metrics)
+            {
+                if (castOpcode is LlvmOpcode.FPToSI or LlvmOpcode.FPToUI) flags |= LlvmFastMathFlags.NoSignedZeros;
+                return MatchCore(predicate, flags, cmpLeft, cmpRight, ((LlvmCastInstruction)whenTrue).Operand, casted, metrics)
                     with { CastOpcode = castOpcode };
+            }
             casted = LookThroughCast(comparison, whenFalse, whenTrue, ref castOpcode, metrics);
             if (casted is not null)
-                return MatchInteger(predicate, cmpLeft, cmpRight, casted, ((LlvmCastInstruction)whenFalse).Operand, metrics)
+            {
+                if (castOpcode is LlvmOpcode.FPToSI or LlvmOpcode.FPToUI) flags |= LlvmFastMathFlags.NoSignedZeros;
+                return MatchCore(predicate, flags, cmpLeft, cmpRight, casted, ((LlvmCastInstruction)whenFalse).Operand, metrics)
                     with { CastOpcode = castOpcode };
+            }
         }
-        return MatchInteger(predicate, cmpLeft, cmpRight, whenTrue, whenFalse, metrics) with { CastOpcode = castOpcode };
+        return MatchCore(predicate, flags, cmpLeft, cmpRight, whenTrue, whenFalse, metrics) with { CastOpcode = castOpcode };
     }
     private static LlvmValue? LookThroughCast(LlvmCmpInstruction comparison, LlvmValue first, LlvmValue second,
         ref LlvmOpcode? opcode, Dictionary<string, ulong>? metrics)

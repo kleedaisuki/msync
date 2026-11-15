@@ -1,4 +1,5 @@
 using Msync.Core.Native;
+using Msync.Core.Llvm;
 
 namespace Msync.Runtime.Native;
 
@@ -27,11 +28,35 @@ internal enum NativeFastOperation : byte
     NumberCopy, BoolCopy, NumberMove, BoolMove, IsNull, NumberNegate, BoolNot,
     BoolEqual, BoolNotEqual,
     NumberAdd, NumberSubtract, NumberMultiply, NumberDivide, NumberRemainder,
-    NumberEqual, NumberNotEqual, NumberLess, NumberLessEqual, NumberGreater, NumberGreaterEqual
+    NumberEqual, NumberNotEqual, NumberLess, NumberLessEqual, NumberGreater, NumberGreaterEqual,
+    NumberOrderedNotEqual, NumberOrdered, NumberUnordered, NumberUnorderedEqual,
+    NumberUnorderedLess, NumberUnorderedLessEqual, NumberUnorderedGreater, NumberUnorderedGreaterEqual,
+    NumberAlwaysFalse, NumberAlwaysTrue
 }
 
 internal static class NativeFastOperations
 {
+    internal static NativeFastOperation FloatingCompare(LlvmCmpPredicate predicate) => predicate switch
+    {
+        LlvmCmpPredicate.FCmpFalse => NativeFastOperation.NumberAlwaysFalse,
+        LlvmCmpPredicate.FCmpOeq => NativeFastOperation.NumberEqual,
+        LlvmCmpPredicate.FCmpOgt => NativeFastOperation.NumberGreater,
+        LlvmCmpPredicate.FCmpOge => NativeFastOperation.NumberGreaterEqual,
+        LlvmCmpPredicate.FCmpOlt => NativeFastOperation.NumberLess,
+        LlvmCmpPredicate.FCmpOle => NativeFastOperation.NumberLessEqual,
+        LlvmCmpPredicate.FCmpOne => NativeFastOperation.NumberOrderedNotEqual,
+        LlvmCmpPredicate.FCmpOrd => NativeFastOperation.NumberOrdered,
+        LlvmCmpPredicate.FCmpUno => NativeFastOperation.NumberUnordered,
+        LlvmCmpPredicate.FCmpUeq => NativeFastOperation.NumberUnorderedEqual,
+        LlvmCmpPredicate.FCmpUgt => NativeFastOperation.NumberUnorderedGreater,
+        LlvmCmpPredicate.FCmpUge => NativeFastOperation.NumberUnorderedGreaterEqual,
+        LlvmCmpPredicate.FCmpUlt => NativeFastOperation.NumberUnorderedLess,
+        LlvmCmpPredicate.FCmpUle => NativeFastOperation.NumberUnorderedLessEqual,
+        LlvmCmpPredicate.FCmpUne => NativeFastOperation.NumberNotEqual,
+        LlvmCmpPredicate.FCmpTrue => NativeFastOperation.NumberAlwaysTrue,
+        _ => NativeFastOperation.Bridge
+    };
+
     internal static bool IsBoolResult(this NativeFastOperation op) =>
         op is NativeFastOperation.BoolConstant or NativeFastOperation.BoolCopy or NativeFastOperation.BoolMove
             or NativeFastOperation.IsNull or NativeFastOperation.BoolNot

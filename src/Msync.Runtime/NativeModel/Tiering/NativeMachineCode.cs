@@ -393,20 +393,25 @@ internal static partial class NativeMachineCode
 
         private void Compare(NativeFastOperation operation)
         {
+            if (operation == NativeFastOperation.NumberAlwaysFalse) { Bytes(0x31, 0xc0); return; }
+            if (operation == NativeFastOperation.NumberAlwaysTrue) { Bytes(0xb8); Int(1); return; }
             Bytes(0x66, 0x0f, 0x2e, 0xc1);
             byte condition = operation switch
             {
-                NativeFastOperation.NumberEqual => 0x94,
-                NativeFastOperation.NumberNotEqual => 0x95,
-                NativeFastOperation.NumberLess => 0x92,
-                NativeFastOperation.NumberLessEqual => 0x96,
-                NativeFastOperation.NumberGreater => 0x97,
+                NativeFastOperation.NumberEqual or NativeFastOperation.NumberUnorderedEqual => 0x94,
+                NativeFastOperation.NumberNotEqual or NativeFastOperation.NumberOrderedNotEqual => 0x95,
+                NativeFastOperation.NumberLess or NativeFastOperation.NumberUnorderedLess => 0x92,
+                NativeFastOperation.NumberLessEqual or NativeFastOperation.NumberUnorderedLessEqual => 0x96,
+                NativeFastOperation.NumberGreater or NativeFastOperation.NumberUnorderedGreater => 0x97,
+                NativeFastOperation.NumberOrdered => 0x9b,
+                NativeFastOperation.NumberUnordered => 0x9a,
                 _ => 0x93
             };
             Bytes(0x0f, condition, 0xc0);
             if (operation is NativeFastOperation.NumberEqual or NativeFastOperation.NumberLess or NativeFastOperation.NumberLessEqual)
                 Bytes(0x0f, 0x9b, 0xc2, 0x20, 0xd0);
-            else if (operation == NativeFastOperation.NumberNotEqual) Bytes(0x0f, 0x9a, 0xc2, 0x08, 0xd0);
+            else if (operation is NativeFastOperation.NumberNotEqual or NativeFastOperation.NumberUnorderedGreater
+                or NativeFastOperation.NumberUnorderedGreaterEqual) Bytes(0x0f, 0x9a, 0xc2, 0x08, 0xd0);
             Bytes(0x0f, 0xb6, 0xc0);
         }
 
@@ -673,17 +678,42 @@ internal static partial class NativeMachineCode
                     else
                     {
                         Word(0x1e612000);
-                        Word(operation switch
-                        {
-                            NativeFastOperation.NumberEqual => 0x1a9f17e2u,
-                            NativeFastOperation.NumberNotEqual => 0x1a9f07e2u,
-                            NativeFastOperation.NumberLess => 0x1a9f57e2u,
-                            NativeFastOperation.NumberLessEqual => 0x1a9f87e2u,
-                            NativeFastOperation.NumberGreater => 0x1a9fd7e2u,
-                            _ => 0x1a9fb7e2u
-                        });
+                        Compare(operation);
                     }
                 }
+            }
+        }
+
+        private void Compare(NativeFastOperation operation)
+        {
+            if (operation == NativeFastOperation.NumberAlwaysFalse) { Load(2, 0); return; }
+            if (operation == NativeFastOperation.NumberAlwaysTrue) { Load(2, 1); return; }
+            int condition = operation switch
+            {
+                NativeFastOperation.NumberEqual or NativeFastOperation.NumberUnorderedEqual => 0,
+                NativeFastOperation.NumberNotEqual or NativeFastOperation.NumberOrderedNotEqual => 1,
+                NativeFastOperation.NumberLess => 4,
+                NativeFastOperation.NumberLessEqual => 9,
+                NativeFastOperation.NumberGreater => 12,
+                NativeFastOperation.NumberGreaterEqual => 10,
+                NativeFastOperation.NumberOrdered => 7,
+                NativeFastOperation.NumberUnordered => 6,
+                NativeFastOperation.NumberUnorderedLess => 11,
+                NativeFastOperation.NumberUnorderedLessEqual => 13,
+                NativeFastOperation.NumberUnorderedGreater => 8,
+                NativeFastOperation.NumberUnorderedGreaterEqual => 5,
+                _ => throw new InvalidOperationException("Unknown floating comparison operation.")
+            };
+            Word(0x1a9f07e2u | (uint)(condition ^ 1) << 12);
+            if (operation == NativeFastOperation.NumberOrderedNotEqual)
+            {
+                Word(0x1a9f67e3u);
+                Word(0x0a030042u);
+            }
+            else if (operation == NativeFastOperation.NumberUnorderedEqual)
+            {
+                Word(0x1a9f77e3u);
+                Word(0x2a030042u);
             }
         }
 

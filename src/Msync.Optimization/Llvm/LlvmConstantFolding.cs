@@ -86,15 +86,19 @@ public static partial class LlvmConstantFolding
         Dictionary<string, ulong>? metrics = null)
     {
         Count(metrics, "constant_fold.fp.queries");
-        if (context?.Parent?.Parent is null && (IsDenormal(left) || IsDenormal(right)))
+        LlvmFunction? contextFunction = context?.Parent?.Parent;
+        LlvmConstant? flushedLeft = FlushFPConstant(left, contextFunction, false, metrics);
+        LlvmConstant? flushedRight = FlushFPConstant(right, contextFunction, false, metrics);
+        if (flushedLeft is null || flushedRight is null)
         { Count(metrics, "constant_fold.fp.dynamic_denormal_input"); return null; }
         if (!allowNonDeterministic && context is ILlvmFastMathInstruction fp &&
             (fp.FastMathFlags & (LlvmFastMathFlags.NoSignedZeros | LlvmFastMathFlags.AllowReassoc |
                 LlvmFastMathFlags.AllowContract | LlvmFastMathFlags.AllowReciprocal)) != 0)
         { Count(metrics, "constant_fold.fp.nondeterministic_flags"); return null; }
-        LlvmConstant? result = ConstantFoldBinaryOpOperands(opcode, left, right, layout, metrics);
+        LlvmConstant? result = ConstantFoldBinaryOpOperands(opcode, flushedLeft, flushedRight, layout, metrics);
         if (result is null) return null;
-        if (context?.Parent?.Parent is null && IsDenormal(result))
+        result = FlushFPConstant(result, contextFunction, true, metrics);
+        if (result is null)
         { Count(metrics, "constant_fold.fp.dynamic_denormal_output"); return null; }
         if (!allowNonDeterministic && result is LlvmConstantFP { Value.IsNaN: true })
         { Count(metrics, "constant_fold.fp.nondeterministic_nan"); return null; }

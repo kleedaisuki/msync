@@ -83,3 +83,35 @@ The frozen bound artifacts exclude this contextual preparation route. Both route
 ## Bottom line
 
 No material new frame ownership, callback shape, call-argument snapshot, capture lifetime or GC-retention defect was found in the observed workloads. One substantial allocation-heavy runtime analysis is demonstrably unnecessary for the current backend; fix or isolate it first. Generic ready projection movement is a distinct plausible steady-state CPU cost, while composition-wrapper allocation is far too sparse to explain the MB-scale managed-allocation deltas.
+
+## Implementation follow-up: demand register dataflow
+
+`NativeRegisterPlan.Create` now scans actual executable instruction starts with
+the **existing** `Eligible` predicate before constructing `NativeControlFlow`,
+`LiveAfter` state or `PendingSlots` state. If no instruction can enter a register
+region it returns the empty region array. With any eligible instruction, the
+existing CFG/liveness/pending/region algorithm remains in place. Scalar tier
+slot layout and native emission are not skipped. No raw-writability assertion
+or new optimizer analysis is introduced.
+
+When runtime function profiling is active, the existing sink-neutral
+`vm.function` sample gains `jit_register_plan_*` metrics: eligibility instruction
+visits, no-eligible skips, CFG builds, liveness visits/requeues, pending
+iterations/visits, and elapsed nanoseconds for eligibility, CFG, liveness,
+pending and region construction. These are function-owned actual-work counts.
+A skipped plan has zero CFG builds, liveness visits and pending visits. With
+profiling disabled, the diagnostic state is null: no diagnostic object or phase
+timestamp is created. Existing aggregate tier compilation timing is retained.
+
+`tests/NativeTiering --register-demand` exercises actual O0/O2 source compilation,
+Force-tier execution and function-profile publication; it also passes an explicit
+eligible arithmetic fixture through the preserved planner path. No timing ratio
+is asserted. The implementation author performed no independent build or timing
+run; execution results remain for the root's consolidated validation.
+
+Root execution receipt: `artifacts/diagnostics/llvm-instcombine/register-demand-next.log`
+reports **PASS 6** for the O0/O2 demand properties, including actual function
+telemetry with skipped CFG/liveness/pending work and the preserved eligible
+planner branch. The root's managed midend and Range route receipts also passed:
+`midend-managed-next.json` and `range-managed-next.json` in the same directory.
+These are correctness/work-elimination receipts, not a new latency comparison.

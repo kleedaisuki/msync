@@ -242,7 +242,7 @@ public static partial class LlvmSroa
         private void Abort(LlvmInstruction instruction, string reason)
         {
             PointerInfo.SetAborted(instruction);
-            Count("sroa.slice.abort." + reason);
+            if (Metrics is not null) Count("sroa.slice.abort." + reason);
         }
 
         private static bool UnsignedAtLeast(LlvmAPInt value, ulong other) => value.GetActiveBits() > 64 || value.GetZExtValue() >= other;

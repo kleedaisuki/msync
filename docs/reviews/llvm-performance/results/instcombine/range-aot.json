@@ -1,0 +1,30 @@
+{
+  "status": "passed",
+  "routes": [
+    {
+      "route": "source",
+      "level": 0
+    },
+    {
+      "route": "hir-to-object",
+      "level": 0
+    },
+    {
+      "route": "executable",
+      "level": 0
+    },
+    {
+      "route": "source",
+      "level": 2
+    },
+    {
+      "route": "hir-to-object",
+      "level": 2
+    },
+    {
+      "route": "executable",
+      "level": 2
+    }
+  ],
+  "files_per_route": 33
+}

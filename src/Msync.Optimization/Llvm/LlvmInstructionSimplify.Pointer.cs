@@ -25,11 +25,14 @@ public static partial class LlvmInstructionSimplify
     }
 
     private static LlvmValue? SimplifyScalarGep(LlvmGetElementPtrInstruction gep, LlvmValue pointer,
-        IReadOnlyList<LlvmValue> indices, BinaryQuery q)
+        IReadOnlyList<LlvmValue> indices, BinaryQuery q) =>
+        SimplifyGepInst(gep.SourceElementType, pointer, indices, gep.NoWrapFlags, q);
+
+    internal static LlvmValue? SimplifyGepInst(LlvmType sourceType, LlvmValue pointer,
+        IReadOnlyList<LlvmValue> indices, LlvmGepNoWrapFlags flags, BinaryQuery q)
     {
         Count(q.Metrics, "simplify.gep.queries");
         if (indices.Count == 0) return pointer;
-        LlvmType sourceType = gep.SourceElementType;
         LlvmType lastType = LlvmGetElementPtrInstruction.GetIndexedType(sourceType, indices)!;
         LlvmType resultType = LlvmGetElementPtrInstruction.GetReturnType(pointer, indices);
         if (pointer.Type == resultType && indices.All(IsIntegerZero)) return pointer;
@@ -57,14 +60,16 @@ public static partial class LlvmInstructionSimplify
                 if (pointerOperand == stripped && !offset.IsZero)
                 {
                     var integer = LlvmConstantInt.Get(pointer.Context, offset);
-                    var folded = LlvmConstantFolding.ConstantFoldCastOperand(LlvmOpcode.IntToPtr, integer, resultType, q.Layout, q.Metrics);
-                    if (folded is null) Count(q.Metrics, "simplify.gep.unrepresented_inttoptr_constantexpr");
-                    return folded;
+                    return LlvmConstantExpr.GetCast(LlvmOpcode.IntToPtr, integer, resultType);
                 }
             }
         }
         if (pointer is not LlvmConstant constantPointer || indices.Any(index => index is not LlvmConstant)) return null;
-        return LlvmConstantFolding.ConstantFoldGetElementPtr(sourceType, constantPointer, indices.Cast<LlvmConstant>().ToArray(), q.Metrics);
+        var constants = indices.Cast<LlvmConstant>().ToArray();
+        LlvmConstant? expression = LlvmConstantExpr.GetGetElementPtr(q.Layout, sourceType, constantPointer, constants, flags);
+        return expression is null
+            ? LlvmConstantFolding.ConstantFoldGetElementPtr(sourceType, constantPointer, constants, q.Metrics)
+            : LlvmConstantFolding.ConstantFoldConstant(expression, q.Layout, q.Metrics);
     }
 
     private static LlvmValue? SimplifyPointerDifferenceIndex(LlvmValue index, LlvmValue pointer, ulong elementSize,

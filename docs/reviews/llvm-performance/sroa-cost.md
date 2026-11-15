@@ -163,3 +163,16 @@ this actual path rather than treating the entire alloca elapsed time as
 recurring slice complexity. The narrow first product change remains the
 upstream `set_subtract` translation; assess it against the authoritative
 telemetry-off nine-pair compile result, not this one profiled launch.
+
+## Implementation follow-up: removed-key subtraction
+
+The central worklist implementation now translates pinned
+`SetVector::set_subtract` directly: enumerate the removed-key collection and
+call `OrderedSet.Remove` for each key. `Remove` membership-tests its hash set
+before searching the ordered vector. Surviving worklist order is unchanged;
+an absent deleted original alloca no longer triggers a scan of its surviving
+partition allocas. No SROA eligibility/type/rewrite choice changes.
+
+This follow-up is a source-cost correction, not a measured attribution of the
+compile regression. It has not been independently built or timed by its author;
+the root owns the focused source/presplit journey and consolidated build.

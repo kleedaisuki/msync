@@ -74,6 +74,8 @@ public abstract partial class LlvmValue
         // Context-unique constants keep their ABI expectations on individual Uses.
         if (LogicalType >= 0 && replacement is LlvmInstruction { LogicalType: < 0 } instruction)
             instruction.LogicalType = LogicalType;
+        if (this is LlvmGetElementPtrInstruction previous && replacement is LlvmGetElementPtrInstruction gep)
+            gep.TargetStorageType ??= previous.GetTargetStorageType();
         if (FirstValueHandle is not null) LlvmValueHandle.ValueIsReplaced(this, replacement);
         while (FirstUse is { } use)
         {

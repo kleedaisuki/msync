@@ -8,8 +8,8 @@ the original HIR body and never `NativeHirLowerer`. It emits the existing
 `NativeProgram`/`NativeBackendCode` consumed by artifact serialization and the
 existing runtime. It introduces neither an LLVM backend dependency nor a
 second interpreter. It is now the default target adapter used by public Compiler
-and CompilerSession callers after LLVM-derived graph lowering and the available
-mem2reg → SCCP → DCE → late InstSimplifyPass sequence. It does not call the old
+and CompilerSession callers after graph lowering and the shared LLVM-derived
+optimization entry, including the integrated SROA and InstCombine passes. It does not call the old
 optimizer/lowerer. Complete IR/optimization coverage remains separate work.
 
 `HeapAlloc`, `FileIn` and `FileOut` remain explicit through the optimization
@@ -412,3 +412,227 @@ turned a static-field GEP into a ConstantExpr. It is target representation work,
 not another optimization rule, Range classification or heap proof. Raw scalar
 reinterpretation, dynamic indices and broader machine-value lowering remain
 the separate target work described in `llvm-machine-scalar-abi.md`.
+
+## InstCombine scalar Function stores and producer storage layouts
+
+The real combined `first-function-field` journey exposed a target-boundary gap:
+LLVM `msync.function` occupies three pointer fields (24 bytes in the supplied
+DataLayout), whereas the established Native Function carrier is an i32 callable
+identity plus environment/name roots. The actual scope storage had its Function
+at LLVM offset 0 and Number at offset 24. InstCombine emitted stores at offsets
+0/8/16; resolving offset 8 as another ordinary Native field was incorrect.
+The receipt is
+`artifacts/diagnostics/llvm-instcombine/gep/instcombine-gep/first-function-field/combined/after.ll`.
+Pinned `InstCombineLoadStoreAlloca.cpp::unpackStoreToAggregate` (1392 onward)
+creates these field GEP/extract/store sequences from one simple aggregate store.
+
+`LlvmNativeLowerer.FunctionMemory.Store.cs` selects the actual Function storage
+location from the producer's struct-layout map, then interprets the relative
+LLVM component offsets using the Function LLVM DataLayout. The same selector
+serves component loads inside scope fields and direct Function locations. It
+does not apply the LLVM offset as a byte offset into the compact Native carrier.
+
+For a complete same-location three-component assignment in one block, the target
+packs the actual SSA components into the existing ComposeFunction followed by
+one typed Store. It only groups across GEP/cast/extract instructions, which do
+not observe memory; an intervening different store, memory operation, call or
+control transfer ends the group. There is no whole-Function load before its
+first initialization. This also avoids inventing a partially initialized Native
+Function value or a new Native2 component-store encoding. The existing compose
+path retains pending NativeDatum semantics and the actual environment addresses;
+no capture cells are duplicated. General isolated component mutation is not
+silently treated as whole assignment.
+
+Target function telemetry records component memory loads/stores and packed
+assignments. Pointer-field failures now print the signed numeric LLVM offset,
+root/structure/native-layout identity, declared field offsets and requested
+view, rather than the APInt CLR type name. These changes are target codegen,
+not a bypass or eligibility restriction on InstCombine's GEP/store algorithms.
+The source-author did not independently build or time this patch; the root owns
+the focused GEP and actual Range/midend execution receipts.
+
+## Ordinary Freeze selection
+
+A real InstCombine integration fixture introduced LLVM Freeze and reached a
+missing target dispatch case. Scalar values and whole Function descriptors now
+lower to an ordinary Native Copy at the definition point. Existing concrete
+zero/null choices for LLVM undef/poison constants are copied once; no new runtime
+check or Native/LLVM opcode is introduced. Copying a pending datum preserves its
+future identity rather than demanding or remapping it.
+
+A split Function/aggregate copies its existing leaves with their actual selected
+carriers, retaining native-name provenance. It does not widen an exact address
+leaf or force every whole Function through projections and recomposition. Whole
+Function operands retain their ordinary representation, and the existing
+aggregate boundary logic only projects fields needed by subsequent uses.
+Pointer-carrier selection follows Freeze's operand identity and preserves any
+existing per-use expectation. No source graph metadata is rewritten.
+
+Detailed lowering records scalar copies, aggregate instructions/leaf copies and
+explicit undefined-constant choices under `freeze.*`. The source-derived whole/split Function and repeated-use scalar-undef
+journey is published as `tests/LlvmIr/FreezeLoweringChecks.cs`. Root ran
+`--freeze-lowering`: all six direct/Native2 executions passed, recorded in
+`artifacts/diagnostics/llvm-instcombine/freeze-focused.log`.
+
+Root validation after the bridge: the managed InstCombine GEP source journey
+passed all 16 executions, including raw/combined graph execution and Native2
+roundtrips for the Function field case. This establishes the reported store/load
+mapping repair on that journey; it is not a performance measurement or a claim
+that arbitrary isolated Function component stores are represented.
+
+The root subsequently reran the real managed default pipeline: both
+`artifacts/diagnostics/llvm-instcombine/midend-managed-next.json` and
+`range-managed-next.json` report passed. The Range receipt covers O0/O2 source,
+HIR-to-object and executable routes (six routes, 32 files per route). These are
+execution/artifact-boundary receipts for the integrated InstCombine/store bridge,
+not isolated speedup claims.
+
+## Physical storage facts across pointer canonicalization
+
+### ScopeDomain is physical; Shape is a structural contract
+
+`HirType.Shape` describes a structural row contract, not necessarily the actual
+field order of an allocated or native-factory object. `LlvmNativeMetadata.Type`
+therefore admits only the layouts in **ScopeDomain**; an empty domain remains
+opaque even when Shape is present. `LlvmHirLowerer.Type` eagerly declares LLVM
+storage structures only for those physical domain members. It caches the LLVM
+value representation first so recursive source types follow ordinary cached
+flow. ConstructedScope supplies an Exact domain explicitly.
+
+This distinction matters for builtin records. Enumerate/zip physical storage is
+defined by `NativeBuiltinLayouts`, while semantic row field order can vary.
+The actual Range failure used an abstract `[value: Null, index: Number]` contract
+for a canonical `[index: Number, value: Null]` enumerate object. Claiming that
+contract was its physical layout caused either a compile error or a wrong read.
+The root's four-item generate probe observed `0123`, `0000`, `0123` in fresh
+processes, establishing a real miscompile rather than just missing diagnostics.
+The producer no longer publishes that false physical claim. Semantic shape IDs
+and ordering need not be made canonical to execute the correct object ABI.
+
+### Retain the original declared storage type
+
+Root tests then demonstrated why Domain-only correction was insufficient:
+polygon members and ordinary zip/enumerate String fields use nonzero byte GEPs
+from opaque formal pointers. Their original HIR GEPs selected a concrete physical
+storage struct, but InstCombine correctly canonicalized the pointer arithmetic
+to i8 offsets. Root semantic types could not recover the erased declaration.
+
+Each producer field GEP now carries `TargetStorageType`, a reference to its
+**existing** physical `LlvmStructType`. Target emission maps that exact type
+through the existing StructLayouts table. LLVM arithmetic still uses the real
+SourceElementType and offsets; no LLVM optimization reads the target hint.
+
+* GEP-to-GEP RAUW preserves the declared storage type through byte-GEP rewrites.
+* A zero GEP replaced by its own base transfers the type reference to the
+  affected operand Use. Target code projects the offset-zero field relative to
+  that base, rather than interpreting an abstract formal row as physical.
+* Ordinary clone, operand growth and Use swap retain the reference alongside
+  LogicalType. No SSA side table or per-projection object is allocated: the
+  annotation is one nullable reference to an already owned type instance.
+* Function unpacking can create a child GEP with no own hint. Flattening it into
+  a replacement GEP inherits the first declared hint on its explicit base-GEP
+  chain or pointer operand Use, stopping at a non-GEP value. It does not traverse
+  PHIs, heap graphs or calls. A zero-to-base Use transfer still takes the GEP's
+  own declaration, not a blind ancestor view that could project a field twice.
+
+This preserves source-owned codegen geometry, not alias/effect constraints.
+There is no target-wide structural search, field-name heuristic, runtime layout
+identity guard, new Native2 field/opcode, or fallback optimizer/backend. Captures
+and pending values retain the same actual storage and existing runtime paths.
+
+### Zero-sized LLVM members and compact Native fields
+
+LLVM's empty Null value remains `{}`. Native fields still reserve their existing
+initialization storage, including a byte for Null. Consequently a Null member
+and its Number successor can share LLVM offset zero while their compact Native
+field offsets differ. Target field selection retains exact native type-index
+lookup first, then matches an existing candidate at that **same known LLVM
+offset** using `NativeTypeRelations.SameStorageRepresentation`. Distinct table
+indices for the same Number carrier do not justify selecting the first Null
+field, adding a narrowing check, or changing the physical carrier. The selected
+type-index alias is cached for subsequent lookups.
+
+The declared storage hint supplies the actual source layout for this selection;
+the formal contract's field order is never substituted. Null value/storage ABI
+and NativeLayout packing are unchanged. Detailed source/target telemetry counts
+storage declarations, declared storage GEPs, zero storage views and actual
+representation-field alias cache additions.
+
+### Root validation receipts
+
+All execution/builds below were performed by the root, not independently by the
+implementation author:
+
+| Focused actual path | Result | Receipt under `artifacts/diagnostics/llvm-instcombine/` |
+| --- | --- | --- |
+| Four-item generate, preserving folded index view and producing `0123`, direct + Native2 | PASS 3 properties | `hint-zero-sized-scope-fields.log` |
+| Actual zip/enumerate Number members plus enumerated Function values returning `23`, direct + Native2 | PASS 6 executions | `parent-hint-builtin.log` |
+| Distinct formal physical scope-domain declaration | PASS 3 properties | `hint-scope-layout-aliases.log` |
+| Existing structured-range-elements String records, source-free object/bound workflow | PASS 3 routes | `hint-structured-ranges.log` |
+| Full Range initialization/lifetime source, HIR-to-object and executable routes at O0/O2 | PASS 6 routes, 33 files per route | `range-hint-managed.json` |
+
+The final parent-GEP-hint coherent build completed with zero warnings/errors
+(`parent-hint-build.log`). These are correctness and representation-boundary
+receipts, not an isolated speedup claim or acceptance of an intermediate AOT
+benchmark image.
+
+## Reuse whole Function loads across unpack/reassembly codegen
+
+The pre-coalescer integrated profiles established a hot target-selection cost,
+not new arithmetic work. Signal recorded Function compositions
+65,552 → 262,164 and components 196,612 → 589,836, with unchanged 1,112,420 direct
+operations. Unicode recorded compositions 180 → 195,180 and components
+195,000 → 585,000. The work-count receipts are
+`artifacts/diagnostics/llvm-instcombine/{signal-hysteresis,unicode-path-manifest}-work-counts.json`.
+InstCombine had unpacked original Function loads into three scalar loads and
+insertvalue reassembly. The target independently loaded the same compact Native
+Function for each component, projected all three and recomposed it for the call.
+
+`LlvmNativeLowerer.FunctionMemory.LoadGroups.cs` recognizes the actual same-block
+load/insert chain: three simple component loads from the same declared Function
+location, a poison/undef seed and insert indices 0/1/2. Only pure GEP/cast steps
+may intervene; a different memory operation, call or control transfer prevents
+matching. Intermediate insert results must have only their chain use. This is
+local emission selection, not a new LLVM pass or a runtime value cache.
+
+The first load emits one existing Native whole-Function Load. Components used
+outside the reconstruction chain are still projected at their original emission
+points. Existing FunctionFieldsUsed handling also supplies leaves when the final
+aggregate feeds an insert/select/PHI consumer. The final AggregateSlots records
+the already loaded BoundarySlot, so ordinary scalar ABI consumers reuse it
+rather than emit ComposeFunction. Captured addresses, the original environment
+object and pending NativeDatum remain the same; no snapshot, new runtime opcode,
+wire field or alias analysis is introduced.
+
+Target function metrics record matching candidates/groups, omitted components
+and reused reconstructions; diagnostic rejection flags identify unmatched
+member/reassembly/chain shapes. Group dictionaries are allocated only after a
+successful match. This patch does not remove the real cost of running the new
+LLVM-derived optimization passes: the root's pre-coalescer nine-pair observation
+still reported +4.20 ms paired numeric compile cost and +33.70 ms midend compile
+cost (105.19 → 138.87 ms p50). That work must not be attributed to this runtime
+selection defect or claimed recovered without a subsequent comparison.
+
+Root-managed executions passed independent output oracles for both affected
+applications. Their actual post-group work counts are:
+
+| Work | Signal | Unicode |
+| --- | ---: | ---: |
+| Native instructions | 12,737,434 (baseline 12,737,430) | 6,050,499 (baseline 6,420,873) |
+| Function compositions | 65,552, exactly baseline | 180, exactly baseline |
+| Function components | 196,612, exactly baseline | 195,000, exactly baseline |
+| Ready exact-address projections retained | 196,612 | 195,000 |
+| Static groups / omitted components / reused reconstructions | 7 / 14 / 7 | 3 / 6 / 3 |
+
+The grouped managed observations are retained in
+`artifacts/diagnostics/llvm-instcombine/{signal-hysteresis,unicode-path-manifest}-grouped-managed.sqlite`
+and adjacent output/error files. The Function SSA checks passed their
+7/16/16/4 groups and the builtin record fixture passed all 6 executions
+(`load-groups-function-ssa.log`, `load-groups-builtin.log`); the coherent product
+and CLI builds completed with zero warnings/errors. The instruction-count
+reduction beyond restoration of Function overhead belongs to the integrated
+optimized program, not an isolated attribution to this matcher.
+
+These are output and actual-work receipts. Final AOT paired timing remains the
+root's next step. The implementation author performed no independent build,
+execution or timing run.

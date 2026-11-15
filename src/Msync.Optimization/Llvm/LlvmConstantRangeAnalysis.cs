@@ -12,15 +12,15 @@ public static partial class LlvmConstantRangeAnalysis
         LlvmInstruction? context = null, LlvmDominatorTree? tree = null,
         Dictionary<string, ulong>? metrics = null, bool useInstructionInfo = true, LlvmAssumptionCache? assumptions = null, bool allowEphemerals = false, LlvmDomConditionCache? conditions = null, LlvmCondContext? condContext = null)
     {
-        Debug.Assert(value.Type.IsIntegerTy());
+        Debug.Assert(value.Type.IsIntOrIntVectorTy());
         Count(metrics, "constant_range.visits");
-        uint width = value.Type.GetIntegerBitWidth();
+        uint width = value.Type.GetScalarSizeInBits();
         if (depth == MaxDepth) { Count(metrics, "constant_range.depth_limit"); return LlvmConstantRange.Full(width); }
         if (value is LlvmConstant constant)
         {
             Count(metrics, "constant_range.constant");
-            // Constants.cpp Constant::toConstantRange scalar branch.
-            return constant is LlvmConstantInt integer ? new(integer.Value) : LlvmConstantRange.Full(width);
+            if (constant.Type is LlvmVectorType) Count(metrics, "constant_range.constant.vector");
+            return constant.ToConstantRange();
         }
         var range = LlvmConstantRange.Full(width);
         switch (value)
@@ -76,7 +76,7 @@ public static partial class LlvmConstantRangeAnalysis
     }
     private static LlvmConstantRange RangeForIntrinsic(LlvmCallBase call, LlvmIntrinsicDescriptor descriptor, bool useInstructionInfo)
     {
-        uint width = call.Type.GetIntegerBitWidth();
+        uint width = call.Type.GetScalarSizeInBits();
         if (descriptor.Kind == LlvmIntrinsicKind.CTPop)
             return LlvmConstantRange.GetNonEmpty(LlvmAPInt.GetZero(width), LlvmConstantRange.Inc(new LlvmAPInt(width, width)));
         if (descriptor.Kind == LlvmIntrinsicKind.CTTZ)
@@ -96,6 +96,12 @@ public static partial class LlvmConstantRangeAnalysis
         if (kind == LlvmIntrinsicKind.SMin) return LlvmConstantRange.GetNonEmpty(LlvmAPInt.GetSignedMinValue(width), LlvmConstantRange.Inc(constant.Value));
         if (kind == LlvmIntrinsicKind.SMax) return LlvmConstantRange.GetNonEmpty(constant.Value, LlvmConstantRange.Inc(LlvmAPInt.GetSignedMaxValue(width)));
         return LlvmConstantRange.Full(width);
+    }
+    private static LlvmAPInt? MatchRangeInteger(LlvmValue? value, bool allowPoison = false)
+    {
+        if (value is LlvmConstantInt integer) return integer.Value;
+        return value is LlvmConstant constant && value.Type is LlvmVectorType &&
+            constant.GetSplatValue(allowPoison) is LlvmConstantInt splat ? splat.Value : null;
     }
     private static void Count(Dictionary<string, ulong>? metrics, string name)
     {

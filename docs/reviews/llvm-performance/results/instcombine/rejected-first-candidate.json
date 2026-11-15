@@ -1,0 +1,223 @@
+{
+  "schema": 2,
+  "status": "failed",
+  "platform": "Linux-6.12.113+deb13-amd64-x86_64-with-glibc2.41",
+  "python": "3.15.2",
+  "affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15
+  ],
+  "variants": [
+    {
+      "name": "baseline",
+      "path": "/home/moesegfault/msync/.temp/benchmarks/llvm-instcombine-reviewed-01/images/baseline/msync",
+      "original_path": "/home/moesegfault/msync/artifacts/native/llvm-sroa/msync",
+      "sha256": "3c821875c8c954db6f2e1c70c7eb47bc69228e32ad0c572c1453b58f8dceb410",
+      "payload_sha256": {
+        "libe_sqlite3.so": "b0f5c48026fedcf9f05cf31c6fadf9e1e001ca59cd85aa68b8b6814e52c18a07",
+        "msync": "3c821875c8c954db6f2e1c70c7eb47bc69228e32ad0c572c1453b58f8dceb410"
+      },
+      "version": "msync 0.9.0"
+    },
+    {
+      "name": "candidate",
+      "path": "/home/moesegfault/msync/.temp/benchmarks/llvm-instcombine-reviewed-01/images/candidate/msync",
+      "original_path": "/home/moesegfault/msync/artifacts/native/llvm-instcombine/msync",
+      "sha256": "6573eea823e3c747bcdbe7a2de38648f554ba9da8d272c0755198413fc690889",
+      "payload_sha256": {
+        "libe_sqlite3.so": "b0f5c48026fedcf9f05cf31c6fadf9e1e001ca59cd85aa68b8b6814e52c18a07",
+        "msync": "6573eea823e3c747bcdbe7a2de38648f554ba9da8d272c0755198413fc690889"
+      },
+      "version": "msync 0.9.0"
+    }
+  ],
+  "configuration": {
+    "route": "all",
+    "pairs": 5,
+    "warmups": 2,
+    "profile": "off",
+    "shared_artifact": false,
+    "scales": [
+      "standard"
+    ],
+    "seeds": [
+      29
+    ],
+    "msync_jit": "auto"
+  },
+  "cases": [
+    {
+      "case": "polygon-queries",
+      "family": "compute",
+      "role": "core",
+      "scale": "standard",
+      "size": 16384,
+      "seed": 29,
+      "manifest": {
+        "source_sha256": "3f8e6deef317596df3d5bc5dc1c0d6bbefc9ea7c2888b36aa98e7bb8b0237813",
+        "stdin_bytes": 9,
+        "stdin_sha256": "b09333ff5ca7a55627bf95da7f1ff56fb14f9fb7b22a447ca704c280d53768ce",
+        "stdout_sha256": "34682c0f33eeef1afe1e9e72d5c4ed01de87b3621736f80fd0efa8c7adc968e8",
+        "input_files": {
+          "expected.utf8": "34682c0f33eeef1afe1e9e72d5c4ed01de87b3621736f80fd0efa8c7adc968e8",
+          "stdin.utf8": "b09333ff5ca7a55627bf95da7f1ff56fb14f9fb7b22a447ca704c280d53768ce",
+          "workload.msync": "3f8e6deef317596df3d5bc5dc1c0d6bbefc9ea7c2888b36aa98e7bb8b0237813"
+        },
+        "expected_outputs": {},
+        "expected_absent": []
+      },
+      "routes": {
+        "bound": {
+          "status": "complete",
+          "timings": {
+            "baseline": {
+              "samples_ms": [
+                787.934684,
+                791.90185,
+                782.44278,
+                794.250522,
+                833.480828
+              ],
+              "p50_ms": 791.90185,
+              "p95_ms": 825.6347668
+            },
+            "candidate": {
+              "samples_ms": [
+                899.232244,
+                879.278924,
+                874.392262,
+                909.776683,
+                991.679081
+              ],
+              "p50_ms": 899.232244,
+              "p95_ms": 975.2986014
+            }
+          },
+          "paired_percent_change": [
+            14.125226653939272,
+            11.03382622480298,
+            11.751591854422895,
+            14.545305013976439,
+            18.980430945197458
+          ],
+          "paired_median_percent_change": 14.125226653939272
+        },
+        "object": {
+          "status": "complete",
+          "timings": {
+            "baseline": {
+              "samples_ms": [
+                748.453158,
+                775.088981,
+                755.266595,
+                794.517277,
+                759.266364
+              ],
+              "p50_ms": 759.266364,
+              "p95_ms": 790.6316178000001
+            },
+            "candidate": {
+              "samples_ms": [
+                874.273096,
+                946.319279,
+                907.835037,
+                972.782507,
+                885.374749
+              ],
+              "p50_ms": 907.835037,
+              "p95_ms": 967.4898614
+            }
+          },
+          "paired_percent_change": [
+            16.810662986072945,
+            22.091695559790203,
+            20.200607707269235,
+            22.436923042518053,
+            16.6092416284096
+          ],
+          "paired_median_percent_change": 20.200607707269235
+        },
+        "source": {
+          "status": "failed",
+          "timings": {
+            "baseline": {
+              "samples_ms": []
+            },
+            "candidate": {
+              "samples_ms": []
+            }
+          },
+          "active": {
+            "phase": "warmup",
+            "pair": -2,
+            "variant": "candidate",
+            "artifact": "workload.msync",
+            "cwd": "/home/moesegfault/msync/.temp/benchmarks/llvm-instcombine-reviewed-01/polygon-queries/standard/29"
+          },
+          "error": "['/home/moesegfault/msync/.temp/benchmarks/llvm-instcombine-reviewed-01/images/candidate/msync', '--no-config', '--no-telemetry', 'run', 'workload.msync'] in /home/moesegfault/msync/.temp/benchmarks/llvm-instcombine-reviewed-01/polygon-queries/standard/29 exited -6: stdout=b''; stderr=b'Unhandled exception. System.NotSupportedException: LLVM target emission does not implement constant GEP without a declared producer storage layout at SourceSpan { Source = workload.msync, Start = 963, Length = 8 }.\\n   at Msync.Hir.LlvmNativeLowerer.Body.PointerField(LlvmValue, LlvmNativeLowerer.Body.PointerPosition, Int32, LlvmType) + 0xf2\\n   at Msync.Hir.LlvmNativeLowerer.Body.MaterializePointerRelocation(LlvmValue, Int32) + 0x149\\n   at Msync.Hir.LlvmNativeLowerer.Body.Slot(LlvmValue, Int32) + 0x2b6\\n   at Msync.Hir.LlvmNativeLowerer.Body.SlotForView(LlvmValue, Int32) + 0x2c\\n   at Msync.Hir.LlvmNativeLowerer.Body.Load(LlvmLoadInstruction) + 0xf2\\n   at Msync.Hir.LlvmNativeLowerer.Body.Emit(LlvmInstruction, LlvmBasicBlock) + 0x1d3\\n   at Msync.Hir.LlvmNativeLowerer.Body.Run() + 0xef\\n   at Msync.Hir.LlvmNativeLowerer.Lowering.Run() + 0x26f\\n   at Msync.Compiler.Compiler.LowerInstructions(HirModule, Int32, CompilationTrace) + 0x12c\\n   at Msync.Cli.NativeCommandPipeline.Compile(String, String, HirModule, Int32, TelemetrySession) + 0xcc\\n   at Msync.Cli.Program.<Main>d__0.MoveNext() + 0xe6d\\n--- End of stack trace from previous location ---\\n   at Msync.Cli.Program.<Main>(String[] args) + 0x2b\\n'",
+          "invocation_failure": {
+            "command": [
+              "/home/moesegfault/msync/.temp/benchmarks/llvm-instcombine-reviewed-01/images/candidate/msync",
+              "--no-config",
+              "--no-telemetry",
+              "run",
+              "workload.msync"
+            ],
+            "cwd": "/home/moesegfault/msync/.temp/benchmarks/llvm-instcombine-reviewed-01/polygon-queries/standard/29",
+            "exit_code": -6,
+            "stdout": "",
+            "stderr": "Unhandled exception. System.NotSupportedException: LLVM target emission does not implement constant GEP without a declared producer storage layout at SourceSpan { Source = workload.msync, Start = 963, Length = 8 }.\n   at Msync.Hir.LlvmNativeLowerer.Body.PointerField(LlvmValue, LlvmNativeLowerer.Body.PointerPosition, Int32, LlvmType) + 0xf2\n   at Msync.Hir.LlvmNativeLowerer.Body.MaterializePointerRelocation(LlvmValue, Int32) + 0x149\n   at Msync.Hir.LlvmNativeLowerer.Body.Slot(LlvmValue, Int32) + 0x2b6\n   at Msync.Hir.LlvmNativeLowerer.Body.SlotForView(LlvmValue, Int32) + 0x2c\n   at Msync.Hir.LlvmNativeLowerer.Body.Load(LlvmLoadInstruction) + 0xf2\n   at Msync.Hir.LlvmNativeLowerer.Body.Emit(LlvmInstruction, LlvmBasicBlock) + 0x1d3\n   at Msync.Hir.LlvmNativeLowerer.Body.Run() + 0xef\n   at Msync.Hir.LlvmNativeLowerer.Lowering.Run() + 0x26f\n   at Msync.Compiler.Compiler.LowerInstructions(HirModule, Int32, CompilationTrace) + 0x12c\n   at Msync.Cli.NativeCommandPipeline.Compile(String, String, HirModule, Int32, TelemetrySession) + 0xcc\n   at Msync.Cli.Program.<Main>d__0.MoveNext() + 0xe6d\n--- End of stack trace from previous location ---\n   at Msync.Cli.Program.<Main>(String[] args) + 0x2b\n",
+            "elapsed_ms": 64.208838
+          }
+        }
+      },
+      "preparation": [
+        {
+          "producer": "baseline",
+          "compile_ms": 43.104964,
+          "mso_sha256": "5523ea9ef00806862477629c4d10993b097e004606f9b897ee1cc5a5b34598eb",
+          "bind_ms": 18.687207,
+          "mexe_sha256": "549c8b1e822db56027dc3f7e87a3a3ee4046a16fd0039046366347d986446493"
+        },
+        {
+          "producer": "candidate",
+          "compile_ms": 52.906052,
+          "mso_sha256": "c0ff4cb144a7ac1d121ff689d26c16b577015f62a88e42d38eb6930501b18ee3",
+          "bind_ms": 24.75495,
+          "mexe_sha256": "1c5735e09d88bd86da34ded0ef077d3df49a49a10db6d78da3a1d4eeed454c52"
+        }
+      ]
+    }
+  ],
+  "failure_case": "polygon-queries/standard/29",
+  "error": "['/home/moesegfault/msync/.temp/benchmarks/llvm-instcombine-reviewed-01/images/candidate/msync', '--no-config', '--no-telemetry', 'run', 'workload.msync'] in /home/moesegfault/msync/.temp/benchmarks/llvm-instcombine-reviewed-01/polygon-queries/standard/29 exited -6: stdout=b''; stderr=b'Unhandled exception. System.NotSupportedException: LLVM target emission does not implement constant GEP without a declared producer storage layout at SourceSpan { Source = workload.msync, Start = 963, Length = 8 }.\\n   at Msync.Hir.LlvmNativeLowerer.Body.PointerField(LlvmValue, LlvmNativeLowerer.Body.PointerPosition, Int32, LlvmType) + 0xf2\\n   at Msync.Hir.LlvmNativeLowerer.Body.MaterializePointerRelocation(LlvmValue, Int32) + 0x149\\n   at Msync.Hir.LlvmNativeLowerer.Body.Slot(LlvmValue, Int32) + 0x2b6\\n   at Msync.Hir.LlvmNativeLowerer.Body.SlotForView(LlvmValue, Int32) + 0x2c\\n   at Msync.Hir.LlvmNativeLowerer.Body.Load(LlvmLoadInstruction) + 0xf2\\n   at Msync.Hir.LlvmNativeLowerer.Body.Emit(LlvmInstruction, LlvmBasicBlock) + 0x1d3\\n   at Msync.Hir.LlvmNativeLowerer.Body.Run() + 0xef\\n   at Msync.Hir.LlvmNativeLowerer.Lowering.Run() + 0x26f\\n   at Msync.Compiler.Compiler.LowerInstructions(HirModule, Int32, CompilationTrace) + 0x12c\\n   at Msync.Cli.NativeCommandPipeline.Compile(String, String, HirModule, Int32, TelemetrySession) + 0xcc\\n   at Msync.Cli.Program.<Main>d__0.MoveNext() + 0xe6d\\n--- End of stack trace from previous location ---\\n   at Msync.Cli.Program.<Main>(String[] args) + 0x2b\\n'",
+  "invocation_failure": {
+    "command": [
+      "/home/moesegfault/msync/.temp/benchmarks/llvm-instcombine-reviewed-01/images/candidate/msync",
+      "--no-config",
+      "--no-telemetry",
+      "run",
+      "workload.msync"
+    ],
+    "cwd": "/home/moesegfault/msync/.temp/benchmarks/llvm-instcombine-reviewed-01/polygon-queries/standard/29",
+    "exit_code": -6,
+    "stdout": "",
+    "stderr": "Unhandled exception. System.NotSupportedException: LLVM target emission does not implement constant GEP without a declared producer storage layout at SourceSpan { Source = workload.msync, Start = 963, Length = 8 }.\n   at Msync.Hir.LlvmNativeLowerer.Body.PointerField(LlvmValue, LlvmNativeLowerer.Body.PointerPosition, Int32, LlvmType) + 0xf2\n   at Msync.Hir.LlvmNativeLowerer.Body.MaterializePointerRelocation(LlvmValue, Int32) + 0x149\n   at Msync.Hir.LlvmNativeLowerer.Body.Slot(LlvmValue, Int32) + 0x2b6\n   at Msync.Hir.LlvmNativeLowerer.Body.SlotForView(LlvmValue, Int32) + 0x2c\n   at Msync.Hir.LlvmNativeLowerer.Body.Load(LlvmLoadInstruction) + 0xf2\n   at Msync.Hir.LlvmNativeLowerer.Body.Emit(LlvmInstruction, LlvmBasicBlock) + 0x1d3\n   at Msync.Hir.LlvmNativeLowerer.Body.Run() + 0xef\n   at Msync.Hir.LlvmNativeLowerer.Lowering.Run() + 0x26f\n   at Msync.Compiler.Compiler.LowerInstructions(HirModule, Int32, CompilationTrace) + 0x12c\n   at Msync.Cli.NativeCommandPipeline.Compile(String, String, HirModule, Int32, TelemetrySession) + 0xcc\n   at Msync.Cli.Program.<Main>d__0.MoveNext() + 0xe6d\n--- End of stack trace from previous location ---\n   at Msync.Cli.Program.<Main>(String[] args) + 0x2b\n",
+    "elapsed_ms": 64.208838
+  },
+  "frozen_payloads_unchanged": true
+}

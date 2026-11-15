@@ -241,7 +241,9 @@ public sealed partial class NativeInterpreter
             NativeAddress target = frame.Location(instruction.Result);
             owner.memory.RemovePending(target);
             if (operation >= NativeBinary.Equal) NativeStorage.StoreBool(target, NumberSemantics.Compare(operation, NumberSemantics.Compare(left, right)));
-            else NativeStorage.StoreNumber(target, NumberSemantics.Arithmetic(operation, left, right));
+            else NativeStorage.StoreNumberCompiled(target, NumberSemantics.Arithmetic(operation, left, right));
+            if (owner.profile is not null) owner.memory.RecordScalarWrite(target,
+                operation >= NativeBinary.Equal ? NativeKind.Bool : NativeKind.Number);
         }
         return new NativeStep(pc + instruction.Span);
     }

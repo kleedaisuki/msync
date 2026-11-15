@@ -12,6 +12,8 @@ public static partial class LlvmConstantFolding
         Count(metrics, "constant_fold.intrinsic.queries");
         if (call?.IsNoBuiltin == true || !CanConstantFoldIntrinsic(kind, call?.IsStrictFP ?? contextFunction?.StrictFP ?? true))
         { Count(metrics, "constant_fold.intrinsic.source_gate"); return null; }
+        if (type is LlvmStructType aggregate && (kind == LlvmIntrinsicKind.Frexp || kind == LlvmIntrinsicKind.SinCos))
+            return FoldFloatingAggregate(kind, operands, aggregate, metrics, call);
         if (type is LlvmFixedVectorType vector) return FoldFixedVectorIntrinsic(kind, operands, vector, metrics, call);
         return FoldScalarIntrinsic(kind, operands, type, metrics, call);
     }

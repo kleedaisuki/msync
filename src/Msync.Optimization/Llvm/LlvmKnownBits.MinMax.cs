@@ -25,9 +25,9 @@ public static partial class LlvmKnownBitsAnalysis
     }
 
     private static LlvmKnownBits ComputeMinMaxPhiRecurrence(LlvmPhiInstruction phi, uint depth,
-        LlvmDominatorTree? tree, Dictionary<string, ulong>? metrics, bool useInstructionInfo, LlvmAssumptionCache? assumptions, bool allowEphemerals, LlvmDomConditionCache? conditions = null, LlvmCondContext? condContext = null, LlvmDataLayout? layout = null)
+        LlvmDominatorTree? tree, Dictionary<string, ulong>? metrics, bool useInstructionInfo, LlvmAssumptionCache? assumptions, bool allowEphemerals, LlvmDomConditionCache? conditions = null, LlvmCondContext? condContext = null, LlvmDataLayout? layout = null, LlvmAPInt? demandedElements = null)
     {
-        uint width = phi.Type.GetIntegerBitWidth();
+        uint width = phi.Type.GetScalarType().GetIntegerBitWidth();
         for (int n = 0; n < phi.IncomingCount; n++)
             if (phi.GetIncomingValue(n) is LlvmBinaryOperator binary &&
                 (ReferenceEquals(binary.Left, phi) || ReferenceEquals(binary.Right, phi))) return new(width);
@@ -42,8 +42,8 @@ public static partial class LlvmKnownBitsAnalysis
             var start = phi.GetIncomingValue(1 - n);
             var step = call.GetArgument(leftPhi ? 1 : 0);
             int startIndex = ReferenceEquals(phi.GetIncomingValue(0), start) ? 0 : 1;
-            var initial = Compute(start, depth + 1, phi.GetIncomingBlock(startIndex).GetTerminator(), tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, null, layout);
-            var increment = Compute(step, depth + 1, phi.GetIncomingBlock(1 - startIndex).GetTerminator(), tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, null, layout);
+            var initial = Compute(start, demandedElements ?? GetAllDemandedElements(start.Type), depth + 1, phi.GetIncomingBlock(startIndex).GetTerminator(), tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, null, layout);
+            var increment = Compute(step, demandedElements ?? GetAllDemandedElements(step.Type), depth + 1, phi.GetIncomingBlock(1 - startIndex).GetTerminator(), tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, null, layout);
             Count(metrics, "known_bits.phi.minmax_recurrence");
             return kind == LlvmIntrinsicKind.UMin ?
                 new(LlvmAPInt.GetHighBitsSet(width, initial.CountMinLeadingZeros()),

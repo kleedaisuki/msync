@@ -31,6 +31,9 @@ public static partial class LlvmNativeLowerer
 
         private int Slot(LlvmUse use, int expectedType = -1)
         {
+            int pointerType = use.LogicalType >= 0 ? use.LogicalType : expectedType;
+            if (use.TargetStorageType is { } storage && pointerType >= 0 && owner.Types[pointerType].Pointee >= 0)
+                return DeclaredStorageFieldView(use.Value!, storage, owner.Types[pointerType].Pointee);
             if (use.Value is LlvmConstant and not LlvmGlobalValue and not LlvmConstantExpr { Opcode: LlvmOpcode.GetElementPtr })
             {
                 if (use.LogicalType >= 0 || expectedType >= 0) ++contextualConstantUses;

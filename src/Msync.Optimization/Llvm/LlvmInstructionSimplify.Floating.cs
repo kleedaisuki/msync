@@ -63,18 +63,14 @@ public static partial class LlvmInstructionSimplify
 
     private static LlvmConstant? SimplifyFPOperand(LlvmValue value, LlvmFastMathFlags flags, BinaryQuery query)
     {
-        bool nan = value is LlvmConstantFP { Value.IsNaN: true };
-        bool infinity = value is LlvmConstantFP { Value.IsInfinity: true };
+        bool nan = MatchFPClassConstant(value, true);
+        bool infinity = MatchFPClassConstant(value, false);
         bool undef = query.IsUndef(value);
         if (Has(flags, LlvmFastMathFlags.NoNaNs) && (nan || undef) ||
             Has(flags, LlvmFastMathFlags.NoInfs) && (infinity || undef))
             return LlvmPoisonValue.Get(value.Type);
-        if (undef) return LlvmConstantFP.Get(value.Type, LlvmAPFloat.FromBits(0x7ff8000000000000UL));
-        if (value is LlvmConstantFP constant && nan)
-        {
-            ulong bits = constant.Value.BitcastToAPInt().GetZExtValue();
-            return LlvmConstantFP.Get(value.Type, LlvmAPFloat.FromBits(bits | 0x0008000000000000UL));
-        }
+        if (undef) return CanonicalNaN(value.Type);
+        if (nan) return PropagateNaN((LlvmConstant)value);
         return null;
     }
 
@@ -196,5 +192,5 @@ public static partial class LlvmInstructionSimplify
     private static bool IsFPZero(LlvmValue value) => value is LlvmConstantFP { IsZero: true };
     private static bool IsFPNegativeZero(LlvmValue value) => value is LlvmConstantFP { IsZero: true, IsNegative: true };
     private static bool IsFPPositiveZero(LlvmValue value) => value is LlvmConstantFP { IsZero: true, IsNegative: false };
-    private static bool IsFPOne(LlvmValue value) => value is LlvmConstantFP constant && constant.IsExactlyValue(new LlvmAPFloat(1.0));
+    private static bool IsFPOne(LlvmValue value) => FMAConstant(value, out var number) && number.BitwiseIsEqual(LlvmAPFloat.GetOne(number.Semantics));
 }

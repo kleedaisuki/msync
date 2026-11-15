@@ -137,3 +137,124 @@ input hashes, peak members and unchanged loop-backedge inventories. The next
 implementation tranche should address the top findings, with the existing
 end-to-end artifacts/oracles and one matched timing comparison, not new safety
 machinery or timing gates. This review itself has made no performance fix.
+
+## Implementation follow-up
+
+The follow-up implements the reviewed hot-path findings rather than adding a
+new alias, lifetime, or heap solver:
+
+- Register planning tests the existing eligibility predicate before constructing
+  CFG/liveness/pending data. Actual no-consumer functions now report zero work
+  for those phases; eligible functions keep their existing allocation path.
+- Function environment extraction uses the producer/per-use carrier at its
+  definition. Exact Scope results use the existing direct pointer write;
+  nullable results and pending data keep their ordinary representations.
+- Compiled source locations update readiness at the declared start, while the
+  public raw-view and machine-carrier APIs preserve their existing byte-extent
+  behavior. Payload/root writes are shared, not duplicated.
+- SROA removes deleted keys membership-first, stores the first presplit slice
+  inline, and avoids constructing disabled-recording abort strings. Critical
+  edge handling skips lifetime markers at the upstream-prescribed point.
+- The compiler reuses the maintained forward dominator tree after SROA and
+  through ADCE/DSE cleanup. Real InstCombine replaces the standalone
+  InstSimplify slot, using its worklist, visitors, and actual analysis context.
+
+InstCombine exposed two target-selection omissions on real source programs:
+scalarized Function stores needed packing to the existing compact Native ABI,
+and byte/zero-GEP rewrites needed the actual producer storage declaration,
+not an abstract Scope row contract, preserved for compact Native selection. Neither change adds runtime checks,
+new Native opcodes, capture semantics, or a backend dependency on LLVM.
+
+The first Native AOT candidate (`6573eea8…`) was not accepted as a performance
+result. Its polygon bound route regressed by a paired median 14.13%, while fresh
+source processes intermittently failed on an undeclared formal Scope layout.
+The diagnostic retained practically identical dynamic instruction counts
+(6,486,814 versus 6,486,823), but 196,608 floating comparisons left the direct
+native path for generic MachineCompare execution. This is an instruction
+selection gap for canonicalized IEEE predicates, not extra Function projection
+traffic: compositions were 32,776 versus 32,777. The follow-up implements all
+16 binary64 predicates directly, preserving unordered/NaN behavior and the
+existing MachineCompare encoding. See `llvm-machine-execution.md`.
+
+Focused source, Native2, and AOT receipts are recorded under
+`artifacts/diagnostics/llvm-instcombine/`; matched timing must refer to the final
+payload, not substitute these functional runs or the rejected candidate's
+partial timings. The final comparison and portable receipts follow below.
+
+The complete pre-coalescing matrix (`4f00d116…`) retained a second instruction
+selection regression: Signal bound +8.40%, Unicode bound +15.07%. Matched
+recording runs established the mechanism, not merely an inference from time:
+
+| Dynamic work | Signal baseline / candidate | Unicode baseline / candidate |
+| --- | ---: | ---: |
+| Function compositions | 65,552 / 262,164 | 180 / 195,180 |
+| Function projections | 196,612 / 589,836 | 195,000 / 585,000 |
+| Instructions | 12,737,430 / 14,113,718 | 6,420,873 / 7,415,499 |
+
+InstCombine's source aggregate-load expansion is appropriate LLVM IR. The
+compact Native target was loading the same whole descriptor independently for
+each scalar field and then recomposing it. Signal gained exactly 196,612
+compositions and twice that many projections; Unicode gained 195,000 and
+390,000 respectively. Both recording runs produced the independent expected
+output. They are work-count diagnostics, not telemetry-off timing samples.
+The existing exact-address projection path was actually selected 195,000 times
+in Unicode, and no-consumer register CFG/liveness work was zero; those fixes
+did not explain or cancel the new target reassembly cost. The target load-group
+selection follow-up is scoped to this concrete regression.
+
+## Final integrated result
+
+Final linux-x64 Native AOT payload: `ba275ad35b0c65b2ed9c6d22bf7f15608b77abca759908228d5377760c4b0324`.
+Control: `3c821875c8c954db6f2e1c70c7eb47bc69228e32ad0c572c1453b58f8dceb410`.
+The source/target code is frozen for these measurements. `MSYNC_JIT=auto`,
+telemetry off, standard scale, seed 29, alternating order, three retained pairs
+after one warmup per image/route. Each producer supplies its own O2 object and
+bound artifact. Every execution checks independent expected output/files.
+
+Final paired median percentage changes (negative is faster):
+
+| Application | Bound run | Object run | Source run |
+| --- | ---: | ---: | ---: |
+| polygon-queries | -7.46% | -2.94% | +2.03% |
+| signal-hysteresis | -4.76% | -6.53% | -6.65% |
+| numeric-record-stream | -5.18% | +3.14% | +2.42% |
+| live-policy-dispatch | -5.83% | -4.07% | -8.66% |
+| unicode-path-manifest | +3.05% | -6.01% | +2.34% |
+| local-manifest-copy | -16.85% | -11.12% | +21.56% |
+| local-range-copy | +6.87% | -5.31% | +28.10% |
+
+This is not a universal speedup claim. The extra scalar Function load/reassembly
+traffic is gone: final AOT Signal has 65,552 compositions / 196,612 projections;
+Unicode has 180 / 195,000. Unicode still selects 195,000 exact-address
+projections and performs zero register CFG/liveness work. The final recording
+runs match their independent output. Residual timing differences, including
+Unicode/local-range bound increases, remain visible in the table rather than
+being hidden by a blended score. A local-range diagnostic found no new machine
+operation fallback or Function reconstruction traffic; its instruction count is
+2,661 versus 2,805 and its one recording run was faster, which does not identify
+a stable causal explanation for the telemetry-off bound difference.
+
+The new real InstCombine pass also has a real compilation cost. Nine fresh
+process pairs with telemetry off give:
+
+| Compile-only source | Control p50 | Final p50 | Median paired delta |
+| --- | ---: | ---: | ---: |
+| numeric | 37.16 ms | 38.00 ms | +1.28 ms |
+| midend | 97.05 ms | 138.20 ms | +37.39 ms |
+
+Source-copy routes therefore retain meaningful regressions: adding a full
+optimization pass is not free on short programs. One separately recorded
+midend compile has 75.37 ms inclusive InstCombine time with recording enabled;
+that is a phase diagnostic, not the telemetry-off incremental cost above. No
+source/bound median subtraction is used to invent compilation, binding, JIT or
+execution stage times. Preparation's single compile/bind observations in the
+corpus report are not presented as paired compiler statistics.
+
+Portable evidence is in `docs/reviews/llvm-performance/results/instcombine/`:
+`benchmark-final.json`, both `compile-*-final.json`, `aot-receipt.json`,
+`range-aot.json`, `focused-executions.json`, and `final-aot-work-counts.json`.
+The earlier rejected/pre-coalescing results are retained under explicit names.
+The final AOT midend journey covers O0/O2 source, detached HIR/object and bound
+execution; the Range journey covers six routes and 33 files per route, including
+four generated indices `0123`. LLVM/native opcode contracts and Native2 compact
+revision 4 remain unchanged. There is no CI timing threshold or new safety gate.

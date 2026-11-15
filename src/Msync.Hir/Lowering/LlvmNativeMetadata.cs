@@ -27,7 +27,13 @@ public sealed class LlvmNativeMetadata(HirModule hir)
         var type = hir.Types[id.Value];
         int element = type.Element >= 0 ? Type(new(type.Element))
             : type.RuntimeType.Element is { } nested ? RuntimeType(nested) : -1;
-        int[]? admitted = type.Shape >= 0 ? [Layout(type.Shape)] : null;
+        int[]? admitted = null;
+        if (type.ScopeDomain.Count != 0)
+        {
+            admitted = new int[type.ScopeDomain.Count];
+            for (int layout = 0; layout < admitted.Length; ++layout)
+                admitted[layout] = Layout(type.ScopeDomain[layout]);
+        }
         types[index] = new(type.RuntimeType.Kind | (type.Nullable || admitsNull ? TypeKind.Null : TypeKind.Never), element, admitted);
         return index;
     }

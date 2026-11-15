@@ -30,6 +30,95 @@ internal static class Program
 
     public static async Task Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "--freeze-lowering")
+        {
+            Console.WriteLine(JsonSerializer.Serialize(new { status = "passed",
+                executions = await FreezeLoweringChecks.RunAsync() }));
+            return;
+        }
+        if (args.Length == 1 && args[0] == "--builtin-record-layouts")
+        {
+            Console.WriteLine($"PASS {await ScopeLayoutAliasChecks.RunBuiltinRecordsAsync()} builtin record layout properties");
+            return;
+        }
+        if (args.Length == 1 && args[0] == "--zero-sized-scope-fields")
+        {
+            Console.WriteLine($"PASS {await ScopeLayoutAliasChecks.RunZeroSizeAsync()} zero-sized scope field properties");
+            return;
+        }
+        if (args.Length == 1 && args[0] == "--scope-layout-aliases")
+        {
+            Console.WriteLine($"PASS {await ScopeLayoutAliasChecks.RunAsync()} formal scope layout properties");
+            return;
+        }
+        if (args.Length == 3 && args[0] == "--optimized-source-dump")
+        {
+            OptimizedSourceDump.Run(args[1], args[2]);
+            return;
+        }
+        if (args.Length > 0 && args[0] == "--instcombine-source-journey")
+        {
+            Console.WriteLine(JsonSerializer.Serialize(new { status = "passed",
+                executions = await InstCombineMemoryJourney.RunAsync(args.Length == 3 && args[1] == "--output" ? args[2] : null) }));
+            return;
+        }
+        if (args.Length > 0 && args[0] == "--instcombine-gep-journey")
+        {
+            Console.WriteLine(JsonSerializer.Serialize(new { status = "passed",
+                executions = await InstCombineGepJourney.RunAsync(args.Length == 3 && args[1] == "--output" ? args[2] : null) }));
+            return;
+        }
+        if (args.Length > 0 && args[0] == "--instcombine-vector-only")
+        {
+            Console.WriteLine(JsonSerializer.Serialize(new { status = "passed",
+                vectors = InstCombineVectorProperties.Run() }));
+            return;
+        }
+        if (args.Length > 0 && args[0] == "--instcombine-only")
+        {
+            Dictionary<string, object> groups = [];
+            List<Exception> failures = [];
+            RunGroup("booleanCompares", () =>
+            {
+                var comparisons = BooleanCompareProperties.Run();
+                return new { comparisons.ComparisonCodes, comparisons.FloatingPredicates };
+            });
+            RunGroup("sharedLogical", () =>
+            {
+                var logical = SharedLogicalProperties.Run();
+                return new { logical.OverflowMatches, logical.TruthTables };
+            });
+            RunGroup("controller", InstCombineControllerProperties.Run);
+            RunGroup("addSub", InstCombineAddSubProperties.Run);
+            RunGroup("exactNoWrap", ExactNoWrapProperties.Run);
+            RunGroup("floatingPatterns", FloatingSelectPatternChecks.Run);
+            RunGroup("integerCompares", InstCombineICmpConstantProperties.Run);
+            RunGroup("floatingCompares", InstCombineFCmpChecks.Run);
+            RunGroup("integerCasts", InstCombineIntegerCastProperties.Run);
+            RunGroup("shifts", InstCombineShiftProperties.Run);
+            RunGroup("memory", InstCombineMemoryProperties.Run);
+            RunGroup("vectors", InstCombineVectorProperties.Run);
+            RunGroup("geps", InstCombineGepProperties.Run);
+            RunGroup("sharedArithmetic", InstCombineSharedArithmeticProperties.Run);
+            RunGroup("bitOrder", InstCombineBitOrderProperties.Run);
+            RunGroup("integerCompareBitcasts", InstCombineICmpBitCastJourney.Run);
+            RunGroup("floatingCalls", InstCombineFloatingCallProperties.Run);
+            RunGroup("floatingIntrinsics", FloatingIntrinsicProperties.Run);
+            Console.WriteLine(JsonSerializer.Serialize(new { status = failures.Count == 0 ? "passed" : "failed", groups }));
+            if (failures.Count != 0)
+                throw new AggregateException("InstCombine property groups failed; see per-group results.", failures);
+            return;
+
+            void RunGroup<T>(string name, Func<T> run)
+            {
+                try { groups.Add(name, new { status = "passed", result = run() }); }
+                catch (Exception error)
+                {
+                    groups.Add(name, new { status = "failed", error = error.ToString() });
+                    failures.Add(new InvalidOperationException($"InstCombine property group '{name}' failed.", error));
+                }
+            }
+        }
         if (args.Length > 0 && args[0] == "--sroa-source-journey")
         {
             Console.WriteLine(JsonSerializer.Serialize(new { status = "passed", executions = await SroaSourceJourney.RunAsync() }));

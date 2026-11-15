@@ -1,0 +1,128 @@
+{
+  "baseline_sha256": "3c821875c8c954db6f2e1c70c7eb47bc69228e32ad0c572c1453b58f8dceb410",
+  "candidate_sha256": "ba275ad35b0c65b2ed9c6d22bf7f15608b77abca759908228d5377760c4b0324",
+  "platform": "linux-x64",
+  "validation": {
+    "scalar_instcombine_groups": {
+      "booleanCompares": {
+        "status": "passed",
+        "result": {
+          "ComparisonCodes": 4224,
+          "FloatingPredicates": 21443
+        }
+      },
+      "sharedLogical": {
+        "status": "passed",
+        "result": {
+          "OverflowMatches": 16,
+          "TruthTables": 20
+        }
+      },
+      "controller": {
+        "status": "passed",
+        "result": 7
+      },
+      "addSub": {
+        "status": "passed",
+        "result": 1282
+      },
+      "exactNoWrap": {
+        "status": "passed",
+        "result": 12209
+      },
+      "floatingPatterns": {
+        "status": "passed",
+        "result": 11
+      },
+      "integerCompares": {
+        "status": "passed",
+        "result": 357383
+      },
+      "floatingCompares": {
+        "status": "passed",
+        "result": 10
+      },
+      "integerCasts": {
+        "status": "passed",
+        "result": 7889
+      },
+      "shifts": {
+        "status": "passed",
+        "result": 4095
+      },
+      "memory": {
+        "status": "passed",
+        "result": 6
+      },
+      "geps": {
+        "status": "passed",
+        "result": 11
+      },
+      "sharedArithmetic": {
+        "status": "passed",
+        "result": 4
+      },
+      "bitOrder": {
+        "status": "passed",
+        "result": 7
+      },
+      "integerCompareBitcasts": {
+        "status": "passed",
+        "result": 8
+      },
+      "floatingCalls": {
+        "status": "passed",
+        "result": 16
+      },
+      "floatingIntrinsics": {
+        "status": "passed",
+        "result": 44
+      }
+    },
+    "vector_scenarios": 9,
+    "gep_source_executions": 16,
+    "scope_branch_capture_executions": 6,
+    "freeze_direct_and_native2_executions": 6,
+    "ordinary_initialization_properties": 57,
+    "ordinary_initialization_source_artifact_journeys": 4,
+    "register_demand_properties": 6,
+    "binary64_predicate_native2_and_pending_properties": 3201,
+    "formal_scope_layout_properties": 3,
+    "generated_indices_zero_field_properties": 3,
+    "builtin_record_executions_including_functions": 6,
+    "structured_ranges_source_free_stage_executions": 3,
+    "sroa_components": {
+      "status": "passed",
+      "pointerUses": 8,
+      "aggregates": 6,
+      "driver": 2,
+      "partitions": 3,
+      "rewriter": 8,
+      "earlyMemory": 39,
+      "floatingVectors": 112
+    },
+    "cfg_components": {
+      "status": "passed",
+      "cycles": 9,
+      "dominatorUpdater": 548,
+      "codeMetrics": 20,
+      "valueHandles": 8,
+      "localCfg": 82,
+      "unreachable": 8,
+      "builder": 17,
+      "cloning": 14,
+      "blockLifetimes": 27
+    },
+    "coalesced_function_ssa": {
+      "status": "passed",
+      "environments": 7,
+      "functions": 16,
+      "layout": 16,
+      "sourceExecutions": 4
+    },
+    "coalesced_builtin_record_executions": 6
+  },
+  "execution_policy": "Focused affected paths and real source/object/bound journeys; no blanket regression or timing gate. Earlier scalar groups were retained; failed vector and target subsets were rerun after their fixes.",
+  "arm64": "Emitter updated; these execution receipts are linux-x64, not an ARM execution claim.",
+  "pre_coalescing_candidate_sha256": "4f00d1165a7c2d64b405ee6145e3e59b200e76f7e5fd2f17329e9640645712a4"
+}

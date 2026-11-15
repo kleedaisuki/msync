@@ -15,12 +15,8 @@ public partial struct LlvmKnownFPClass
     private LlvmKnownFPClass(ushort signedMask) => mask = signedMask;
     public LlvmKnownFPClass(LlvmAPFloat value)
     {
-        ulong bits = value.BitcastToAPInt().GetZExtValue();
-        ulong significand = bits & 0xfffffffffffffUL;
-        ulong exponent = bits & 0x7ff0000000000000UL;
-        C classes = exponent == 0x7ff0000000000000UL
-            ? significand == 0 ? C.Infinity : (significand & 0x8000000000000UL) != 0 ? C.QNaN : C.SNaN
-            : exponent == 0 ? significand == 0 ? C.Zero : C.Subnormal : C.Normal;
+        C classes = value.IsNaN ? value.IsSignaling ? C.SNaN : C.QNaN :
+            value.IsInfinity ? C.Infinity : value.IsZero ? C.Zero : value.IsDenormal ? C.Subnormal : C.Normal;
         mask = ToMask(classes);
         SetSignBit(value.IsNegative);
     }

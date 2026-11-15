@@ -10,13 +10,14 @@ namespace Msync.Optimization.Llvm;
 
 public static partial class LlvmKnownFPClasses
 {
-    // fcmpToClassTest's SSAContext matcher has no fabs intrinsic in this IR model.
     public static (LlvmValue? Value, C Classes) FCmpToClassTest(P predicate,
         LlvmValue left, LlvmValue right, bool lookThroughSource = true)
     {
         if (right is not LlvmConstantFP constant) return (null, C.All);
-        var (ifTrue, ifFalse) = CompareImpliesClass(predicate, constant.Value);
-        return ifTrue == (C.All & ~ifFalse) ? (left, ifTrue) : (null, C.All);
+        LlvmFunction? function = left switch
+        { LlvmInstruction instruction => instruction.Parent?.Parent, LlvmArgument argument => argument.Parent, _ => null };
+        var (source, ifTrue, ifFalse) = FPPredicateImpliesClass(predicate, function, left, constant.Value, lookThroughSource);
+        return source is not null && ifTrue == (C.All & ~ifFalse) ? (source, ifTrue) : (null, C.All);
     }
 
     private static LlvmKnownFPClass SelectArm(LlvmValue arm, LlvmValue condition, bool invert, C interested,

@@ -17,6 +17,19 @@ public static partial class LlvmHirLowerer
             if (hir.Types[id.Value].Nullable || admitsNull) kinds |= TypeKind.Null;
             type = RepresentationType(kinds);
             types.Add(key, type);
+            // A row contract is not a storage declaration. Only physical scope
+            // domains establish the layouts used by opaque-pointer codegen.
+            var domain = hir.Types[id.Value].ScopeDomain;
+            if ((kinds & TypeKind.Scope) != 0)
+                for (int index = 0; index < domain.Count; ++index)
+                {
+                    if (trace?.Detail is { } detail)
+                    {
+                        detail.Metric("types.scope_layout_requests", 1);
+                        detail.Metric("types.scope_layout_materializations", layouts.ContainsKey(domain[index]) ? 0 : 1);
+                    }
+                    Layout(domain[index]);
+                }
             return type;
         }
         internal LlvmType RepresentationType(TypeKind kinds)

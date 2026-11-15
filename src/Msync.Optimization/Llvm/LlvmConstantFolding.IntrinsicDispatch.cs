@@ -20,7 +20,7 @@ public static partial class LlvmConstantFolding
         "llvm.minnum" or "llvm.maxnum" or "llvm.minimum" or "llvm.maximum" or "llvm.minimumnum" or "llvm.maximumnum" or
         "llvm.log" or "llvm.log2" or "llvm.log10" or "llvm.exp" or "llvm.exp2" or "llvm.exp10" or "llvm.sqrt" or
         "llvm.sin" or "llvm.cos" or "llvm.sinh" or "llvm.cosh" or "llvm.atan" or "llvm.pow" or "llvm.powi" or
-        "llvm.ldexp" or "llvm.fma" or "llvm.fmuladd" => !strictFp,
+        "llvm.ldexp" or "llvm.fma" or "llvm.fmuladd" or "llvm.frexp" or "llvm.sincos" => !strictFp,
         _ => false
     };
 

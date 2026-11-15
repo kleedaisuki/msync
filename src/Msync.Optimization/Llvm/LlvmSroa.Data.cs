@@ -165,7 +165,7 @@ public static partial class LlvmSroa
         internal bool Remove(T value) { if (!set.Remove(value)) return false; values.Remove(value); return true; }
         internal T PopBack() { var value = values[^1]; values.RemoveAt(values.Count - 1); set.Remove(value); return value; }
         internal void Clear() { values.Clear(); set.Clear(); }
-        internal void ExceptWith(IReadOnlySet<T> removed) { values.RemoveAll(value => removed.Contains(value)); set.ExceptWith(removed); }
+        internal void ExceptWith(IReadOnlySet<T> removed) { foreach (var value in removed) Remove(value); }
         internal List<T> TakeVector() { var result = values; values = []; set.Clear(); return result; }
         public IEnumerator<T> GetEnumerator() => values.GetEnumerator();
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();

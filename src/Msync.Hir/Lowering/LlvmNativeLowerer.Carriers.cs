@@ -48,9 +48,12 @@ public static partial class LlvmNativeLowerer
                 case LlvmLoadInstruction load: return LoadedCarrier(load, active);
                 case LlvmExtractValueInstruction extract when IsLeafAggregate(extract.AggregateOperand.Type):
                     var shape = AggregateShapeFor(extract.AggregateOperand.Type);
-                    return shape.Leaves[FindAggregateLeaf(shape, extract.Indices)].NativeType;
+                    return FunctionProjectionType(extract, shape.Leaves[FindAggregateLeaf(shape, extract.Indices)]);
                 case LlvmCastInstruction cast when cast.Operand.Type.IsPointerTy():
                     return FindCarrier(cast.Operand, active);
+                case LlvmFreezeInstruction freeze:
+                    return freeze.GetOperandUse(0).LogicalType >= 0 ? freeze.GetOperandUse(0).LogicalType
+                        : FindCarrier(freeze.Operand, active);
                 case LlvmPhiInstruction phi:
                     return JoinedCarrier(phi.OperandUses, value, active);
                 case LlvmSelectInstruction select:

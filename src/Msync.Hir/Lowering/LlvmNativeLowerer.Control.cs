@@ -89,7 +89,7 @@ public static partial class LlvmNativeLowerer
                 case LlvmGetElementPtrInstruction address: FieldAddress(address); break;
                 case LlvmLoadInstruction load: Load(load); break;
                 case LlvmStoreInstruction store:
-                    if (StaticStore(store)) break;
+                    if (StaticStore(store) || FunctionComponentStore(store)) break;
                     int pointee = MemoryStorageType(store.GetOperandUse(1), store.ValueOperand);
                     Add(new(NativeOp.Store, A: MemoryAddressSlot(store, 1, pointee), B: OperandSlot(store, 0, pointee), C: 0,
                         Type: pointee, Source: store.Source));
@@ -103,6 +103,7 @@ public static partial class LlvmNativeLowerer
                 case LlvmBinaryOperator binary: Binary(binary); break;
                 case LlvmCmpInstruction comparison: Compare(comparison); break;
                 case LlvmSelectInstruction select: Select(select); break;
+                case LlvmFreezeInstruction freeze: Freeze(freeze); break;
                 case LlvmFileInInst input: FileIn(input); break;
                 case LlvmFileOutInst output: FileOut(output); break;
                 case LlvmCallInstruction call:

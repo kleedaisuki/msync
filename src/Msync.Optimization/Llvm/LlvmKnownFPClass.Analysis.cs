@@ -47,6 +47,12 @@ public static partial class LlvmKnownFPClasses
             return result;
         }
         C flagsExcluded = value is ILlvmFastMathInstruction floating ? Excluded(floating.FastMathFlags) : C.None;
+        flagsExcluded |= value switch
+        {
+            LlvmCallBase call => call.GetRetNoFPClass(),
+            LlvmArgument argument => argument.Parent?.GetParamAttributes((int)argument.ArgNo).NoFPClass ?? C.None,
+            _ => C.None
+        };
         var assumed = FromContext(value, contextInstruction, tree, metrics, assumptions, allowEphemerals, conditions, condContext);
         C excluded = flagsExcluded | (C.All & ~assumed.GetKnownFPClasses());
         var known = new LlvmKnownFPClass();
@@ -65,9 +71,13 @@ public static partial class LlvmKnownFPClasses
     {
         if (metrics is not null) Count(metrics, "known_fp.opcode." + instruction.Opcode);
         LlvmKnownFPClass Recurse(LlvmValue value, C classes = C.All) => Compute(value, classes, context, tree, metrics, depth + 1, assumptions, allowEphemerals, conditions, condContext);
-        LlvmDenormalMode mode = instruction.Parent?.Parent is null ? LlvmDenormalMode.Dynamic : LlvmDenormalMode.IEEE;
+        LlvmDenormalModeInfo mode = instruction.Type.GetScalarType().IsFloatingPointTy()
+            ? instruction.Parent?.Parent?.GetDenormalMode(instruction.Type.GetScalarType().GetFltSemantics()) ?? LlvmDenormalModeInfo.Dynamic
+            : LlvmDenormalModeInfo.Dynamic;
         switch (instruction)
         {
+            case LlvmCallInstruction call:
+                return Intrinsic(call, interested, context, tree, metrics, depth, assumptions, allowEphemerals, conditions, condContext);
             case LlvmUnaryOperator negate:
                 return LlvmKnownFPClass.Negate(Recurse(negate.Operand, interested));
             case LlvmSelectInstruction select:
@@ -78,6 +88,17 @@ public static partial class LlvmKnownFPClasses
             case LlvmCastInstruction cast:
                 return Cast(cast, interested, context, tree, metrics, depth, assumptions, allowEphemerals, conditions, condContext);
             case LlvmExtractValueInstruction extract:
+                if (extract.Indices.Count == 1 && extract.Indices[0] == 0 &&
+                    extract.AggregateOperand is LlvmCallInstruction frexp && frexp.CalledFunction?.IntrinsicDescriptor?.Kind == LlvmIntrinsicKind.Frexp)
+                {
+                    C sourceInterest = interested;
+                    if ((interested & C.PosZero) != 0) sourceInterest |= C.Subnormal;
+                    if ((interested & C.NegZero) != 0) sourceInterest |= C.NegSubnormal;
+                    if ((interested & C.PosNormal) != 0) sourceInterest |= C.PosSubnormal;
+                    if ((interested & C.NegNormal) != 0) sourceInterest |= C.NegSubnormal;
+                    return LlvmKnownFPClass.FrexpMantissa(Recurse(frexp.GetArgument(0), sourceInterest),
+                        instruction.Parent?.Parent?.GetDenormalMode(extract.Type.GetScalarType().GetFltSemantics()) ?? LlvmDenormalModeInfo.Dynamic);
+                }
                 return Recurse(extract.AggregateOperand, interested);
             case LlvmBinaryOperator binary:
                 return Binary(binary, interested, context, tree, metrics, depth, mode, assumptions, allowEphemerals, conditions, condContext);
@@ -89,7 +110,7 @@ public static partial class LlvmKnownFPClasses
     }
 
     private static LlvmKnownFPClass Binary(LlvmBinaryOperator binary, C interested,
-        LlvmInstruction? context, LlvmDominatorTree? tree, Dictionary<string, ulong>? metrics, int depth, LlvmDenormalMode mode, LlvmAssumptionCache? assumptions, bool allowEphemerals, LlvmDomConditionCache? conditions = null, LlvmCondContext? condContext = null)
+        LlvmInstruction? context, LlvmDominatorTree? tree, Dictionary<string, ulong>? metrics, int depth, LlvmDenormalModeInfo mode, LlvmAssumptionCache? assumptions, bool allowEphemerals, LlvmDomConditionCache? conditions = null, LlvmCondContext? condContext = null)
     {
         LlvmKnownFPClass Recurse(LlvmValue value, C classes = C.All) => Compute(value, classes, context, tree, metrics, depth + 1, assumptions, allowEphemerals, conditions, condContext);
         bool self = ReferenceEquals(binary.Left, binary.Right);
@@ -132,7 +153,7 @@ public static partial class LlvmKnownFPClasses
     }
 
     private static LlvmKnownFPClass Remainder(LlvmBinaryOperator binary, C interested,
-        LlvmInstruction? context, LlvmDominatorTree? tree, Dictionary<string, ulong>? metrics, int depth, LlvmDenormalMode mode, LlvmAssumptionCache? assumptions, bool allowEphemerals, LlvmDomConditionCache? conditions = null, LlvmCondContext? condContext = null)
+        LlvmInstruction? context, LlvmDominatorTree? tree, Dictionary<string, ulong>? metrics, int depth, LlvmDenormalModeInfo mode, LlvmAssumptionCache? assumptions, bool allowEphemerals, LlvmDomConditionCache? conditions = null, LlvmCondContext? condContext = null)
     {
         C leftInterest = C.None, rightInterest = C.None;
         if ((interested & C.NaN) != 0) { leftInterest |= C.NaN | C.Infinity; rightInterest |= C.NaN | C.Zero | C.Subnormal; }
@@ -181,10 +202,17 @@ public static partial class LlvmKnownFPClasses
     private static LlvmKnownFPClass Cast(LlvmCastInstruction cast, C interested, LlvmInstruction? context,
         LlvmDominatorTree? tree, Dictionary<string, ulong>? metrics, int depth, LlvmAssumptionCache? assumptions, bool allowEphemerals, LlvmDomConditionCache? conditions = null, LlvmCondContext? condContext = null)
     {
-        if (cast.Opcode == LlvmOpcode.BitCast && cast.Operand.Type.IsIntegerTy() && cast.Type.IsDoubleTy())
-            return LlvmKnownFPClass.Bitcast(LlvmKnownBitsAnalysis.Compute(cast.Operand, (uint)depth + 1, context, tree, metrics, assumptions: assumptions, allowEphemerals: allowEphemerals, conditions: conditions, condContext: condContext));
+        if (cast.Opcode == LlvmOpcode.BitCast && cast.Operand.Type.IsIntegerTy() && cast.Type.IsFloatingPointTy())
+            return LlvmKnownFPClass.Bitcast(LlvmKnownBitsAnalysis.Compute(cast.Operand, (uint)depth + 1, context, tree, metrics, assumptions: assumptions, allowEphemerals: allowEphemerals, conditions: conditions, condContext: condContext), cast.Type.GetFltSemantics());
         if (cast.Opcode is LlvmOpcode.FPExt or LlvmOpcode.FPTrunc)
-            throw new NotSupportedException("KnownFPClass fpext/fptrunc require APFloat formats beyond represented binary64.");
+        {
+            var destination = cast.Type.GetScalarType().GetFltSemantics();
+            var source = cast.Operand.Type.GetScalarType().GetFltSemantics();
+            return LlvmKnownFPClass.FPConvert(Compute(cast.Operand, interested, context, tree, metrics, depth + 1,
+                assumptions, allowEphemerals, conditions, condContext), destination, source,
+                cast.Parent?.Parent?.GetDenormalMode(destination) ?? LlvmDenormalModeInfo.Dynamic,
+                cast.Parent?.Parent?.GetDenormalMode(source) ?? LlvmDenormalModeInfo.Dynamic);
+        }
         if (cast.Opcode is not (LlvmOpcode.SIToFP or LlvmOpcode.UIToFP)) return new();
         var known = new LlvmKnownFPClass();
         known.KnownNot(C.NaN | C.Subnormal | C.NegZero);
@@ -200,8 +228,7 @@ public static partial class LlvmKnownFPClasses
         if ((interested & C.Infinity) != 0)
         {
             uint size = bits.BitWidth - (cast.Opcode == LlvmOpcode.UIToFP ? bits.CountMinLeadingZeros() : bits.CountMinSignBits());
-            if (!cast.Type.IsDoubleTy()) throw new NotSupportedException("KnownFPClass integer-to-FP exponent query requires represented binary64.");
-            if (1023 >= size) known.KnownNot(C.Infinity);
+            if (LlvmAPFloat.SemanticsMaxExponent(cast.Type.GetScalarType().GetFltSemantics()) >= size) known.KnownNot(C.Infinity);
         }
         return known;
     }

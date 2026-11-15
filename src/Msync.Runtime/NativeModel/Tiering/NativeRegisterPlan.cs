@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Msync.Core.Native;
 
 namespace Msync.Runtime.Native;
@@ -39,13 +40,45 @@ internal sealed class NativeRegisterRegion
     }
 }
 
+internal sealed class NativeRegisterPlanMetrics
+{
+    internal long EligibilityInstructions, EligibilityNanoseconds;
+    internal long SkippedNoEligible, ControlFlowBuilds, ControlFlowNanoseconds;
+    internal long LivenessVisits, LivenessRequeues, LivenessNanoseconds;
+    internal long PendingIterations, PendingVisits, PendingNanoseconds;
+    internal long RegionNanoseconds;
+}
+
 internal static class NativeRegisterPlan
 {
-    internal static NativeRegisterRegion[] Create(NativeExecutionFunction function, NativeFastOperation[] operations)
+    internal static NativeRegisterRegion[] Create(NativeExecutionFunction function, NativeFastOperation[] operations,
+        NativeRegisterPlanMetrics? metrics = null)
     {
+        long started = metrics is null ? 0 : Stopwatch.GetTimestamp();
+        bool eligible = false;
+        for (int pc = 0; pc < operations.Length; pc += function.Instructions[pc].Span)
+        {
+            if (metrics is not null) ++metrics.EligibilityInstructions;
+            if (!Eligible(function, operations, pc)) continue;
+            eligible = true;
+            break;
+        }
+        if (metrics is not null) metrics.EligibilityNanoseconds += Elapsed(started);
+        if (!eligible)
+        {
+            if (metrics is not null) ++metrics.SkippedNoEligible;
+            return [];
+        }
+        started = metrics is null ? 0 : Stopwatch.GetTimestamp();
         NativeControlFlow flow = new(function.Metadata);
-        HashSet<int>[] live = LiveAfter(function.Metadata, flow);
-        bool[] pending = PendingSlots(function, operations);
+        if (metrics is not null) { ++metrics.ControlFlowBuilds; metrics.ControlFlowNanoseconds += Elapsed(started); }
+        started = metrics is null ? 0 : Stopwatch.GetTimestamp();
+        HashSet<int>[] live = LiveAfter(function.Metadata, flow, metrics);
+        if (metrics is not null) metrics.LivenessNanoseconds += Elapsed(started);
+        started = metrics is null ? 0 : Stopwatch.GetTimestamp();
+        bool[] pending = PendingSlots(function, operations, metrics);
+        if (metrics is not null) metrics.PendingNanoseconds += Elapsed(started);
+        started = metrics is null ? 0 : Stopwatch.GetTimestamp();
         List<NativeRegisterRegion> regions = [];
         foreach (NativeControlFlow.Block block in flow.Blocks)
         {
@@ -66,8 +99,11 @@ internal static class NativeRegisterPlan
                 regions.Add(Build(function, operations, start, pc, live[pc - 1], pending));
             }
         }
+        if (metrics is not null) metrics.RegionNanoseconds += Elapsed(started);
         return regions.ToArray();
     }
+
+    private static long Elapsed(long started) => Stopwatch.GetElapsedTime(started).Ticks * 100;
 
     private static bool Eligible(NativeExecutionFunction function, NativeFastOperation[] operations, int pc) =>
         operations[pc] is not (NativeFastOperation.Bridge or NativeFastOperation.Nop or NativeFastOperation.Jump
@@ -135,16 +171,18 @@ internal static class NativeRegisterPlan
         return region;
     }
 
-    private static bool[] PendingSlots(NativeExecutionFunction function, NativeFastOperation[] operations)
+    private static bool[] PendingSlots(NativeExecutionFunction function, NativeFastOperation[] operations, NativeRegisterPlanMetrics? metrics)
     {
         bool[] pending = new bool[function.Definition.Slots.Count];
         Array.Fill(pending, true, 0, function.Definition.CaptureCount + function.Definition.ParameterCount);
         bool changed;
         do
         {
+            if (metrics is not null) ++metrics.PendingIterations;
             changed = false;
             for (int pc = 0; pc < function.Metadata.Length; pc += function.Instructions[pc].Span)
             {
+                if (metrics is not null) ++metrics.PendingVisits;
                 NativeExecutionInstruction lowered = function.Instructions[pc];
                 NativeInstruction instruction = function.Metadata[pc + lowered.Span - 1] with
                 { Op = lowered.Op, Result = lowered.Result, A = lowered.A, B = lowered.B, C = lowered.C };
@@ -158,7 +196,7 @@ internal static class NativeRegisterPlan
         return pending;
     }
 
-    internal static HashSet<int>[] LiveAfter(NativeInstruction[] metadata, NativeControlFlow flow)
+    internal static HashSet<int>[] LiveAfter(NativeInstruction[] metadata, NativeControlFlow flow, NativeRegisterPlanMetrics? metrics = null)
     {
         int count = metadata.Length;
         HashSet<int>[] before = Enumerable.Range(0, count).Select(_ => new HashSet<int>()).ToArray();
@@ -170,6 +208,7 @@ internal static class NativeRegisterPlan
         bool[] queued = Enumerable.Repeat(true, count).ToArray();
         while (work.TryDequeue(out int pc))
         {
+            if (metrics is not null) ++metrics.LivenessVisits;
             queued[pc] = false;
             HashSet<int> live = [];
             foreach (int next in flow.Successors[pc]) live.UnionWith(before[next]);
@@ -180,7 +219,12 @@ internal static class NativeRegisterPlan
             if (before[pc].SetEquals(input)) continue;
             before[pc] = input;
             foreach (int previous in predecessors[pc])
-                if (!queued[previous]) { queued[previous] = true; work.Enqueue(previous); }
+                if (!queued[previous])
+                {
+                    queued[previous] = true;
+                    work.Enqueue(previous);
+                    if (metrics is not null) ++metrics.LivenessRequeues;
+                }
         }
         return after;
     }

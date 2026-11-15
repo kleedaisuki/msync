@@ -509,7 +509,7 @@ internal sealed partial class NativeExecutionFunction : IDisposable
         {
             if (compiled is not null || unavailable) return compiled;
             long started = System.Diagnostics.Stopwatch.GetTimestamp();
-            NativeCompiledFunction? code = NativeCompiledFunction.Compile(image, this, options.Policy);
+            NativeCompiledFunction? code = NativeCompiledFunction.Compile(image, this, options.Policy, profile.Observed);
             if (code is null) { unavailable = true; counters.Unavailable(); return null; }
             compiled = code;
             TimeSpan duration = System.Diagnostics.Stopwatch.GetElapsedTime(started);

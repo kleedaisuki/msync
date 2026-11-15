@@ -63,6 +63,8 @@ public static partial class NativeMachineOperations
 
     public static NativeValue Compare(LlvmCmpPredicate predicate, NativeValue left, NativeValue right)
     {
+        if (predicate < LlvmCmpPredicate.ICmpEq && left.Kind == NativeKind.Number && right.Kind == NativeKind.Number)
+            return NativeValue.FromBool(CompareDouble(predicate, left.AsNumber(), right.AsNumber()));
         if (predicate >= LlvmCmpPredicate.ICmpEq)
         {
             LlvmAPInt a = left.AsMachineInteger(), b = right.AsMachineInteger();
@@ -94,6 +96,27 @@ public static partial class NativeMachineOperations
             _ => throw new InvalidOperationException("Unknown floating machine predicate.")
         });
     }
+
+    public static bool CompareDouble(LlvmCmpPredicate predicate, double left, double right) => predicate switch
+    {
+        LlvmCmpPredicate.FCmpFalse => false,
+        LlvmCmpPredicate.FCmpOeq => left == right,
+        LlvmCmpPredicate.FCmpOgt => left > right,
+        LlvmCmpPredicate.FCmpOge => left >= right,
+        LlvmCmpPredicate.FCmpOlt => left < right,
+        LlvmCmpPredicate.FCmpOle => left <= right,
+        LlvmCmpPredicate.FCmpOne => left != right && !double.IsNaN(left) && !double.IsNaN(right),
+        LlvmCmpPredicate.FCmpOrd => !double.IsNaN(left) && !double.IsNaN(right),
+        LlvmCmpPredicate.FCmpUno => double.IsNaN(left) || double.IsNaN(right),
+        LlvmCmpPredicate.FCmpUeq => !(left != right && !double.IsNaN(left) && !double.IsNaN(right)),
+        LlvmCmpPredicate.FCmpUgt => !(left <= right),
+        LlvmCmpPredicate.FCmpUge => !(left < right),
+        LlvmCmpPredicate.FCmpUlt => !(left >= right),
+        LlvmCmpPredicate.FCmpUle => !(left > right),
+        LlvmCmpPredicate.FCmpUne => left != right,
+        LlvmCmpPredicate.FCmpTrue => true,
+        _ => throw new InvalidOperationException("Unknown floating machine predicate.")
+    };
 
     public static NativeValue Unary(LlvmOpcode opcode, NativeValue value, NativeType resultType) => opcode switch
     {

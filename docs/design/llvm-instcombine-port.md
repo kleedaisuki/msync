@@ -16,11 +16,21 @@ source call sites and supplies real query-based folds; it does not replace
 visitor families, reassociation, distribution, demanded-bit transforms,
 canonicalization, or memory/call transforms.
 
-The entire new pass remains staged in `.temp/llvm-instcombine` until its source
-families and shared dependencies are coherent. Its integration contract is
-`INTERFACES.md` there. Existing live shared-query improvements may be published
-separately with their actual consumers; that does not publish this pass or
-change the accepted product pipeline by itself.
+The pass is published in `src/Msync.Optimization/Llvm` and connected to the
+default O2 pipeline in `src/Msync.Compiler/Compiler.Llvm.cs`, after SCCP/DCE and
+before ADCE/DSE. The CLI product builds successfully. Publication includes the
+real driver, worklist, represented visitor families and shared-query closures;
+it no longer depends on compiling a disposable staging tree. The focused real
+source journeys below pass; Native AOT and performance acceptance remain
+pending the coordinated root runs.
+
+This is a source port into msync's IR and custom Native backend, not adoption of
+LLVM's backend or pass pipeline. Standard vector IR carriers and selected source
+vector helpers are present, but complete vector analysis/visitor coverage and a
+Native SIMD backend are **not** claimed. In particular, the main ICmp visitor
+retains its scalar boundary while the broader demanded-vector query closure is
+not integrated. HeapAlloc, FileIn and FileOut remain the only project instruction
+extensions; Range remains an ordinary object.
 
 ## State, ownership and source protocol
 
@@ -88,9 +98,8 @@ execution.
 
 ## Builder and common context
 
-InstCombine uses **TargetFolder**, not ConstantFolder. The builder owner is
-porting that source strategy and retains existing builder constructor defaults
-for all other passes. The new insertion callback queues inserted instructions,
+InstCombine uses **TargetFolder**, not ConstantFolder, while retaining existing
+builder constructor defaults for other passes. The insertion callback queues inserted instructions,
 registers newly created assumes, and preserves source diagnostic context.
 IRBuilder intrinsic operations may fold to a Value rather than always returning
 a CallInstruction; callers retain that actual source return contract.
@@ -137,11 +146,19 @@ change in physical type.
 
 ## Progress and evidence
 
-Controller, state, worklist, options, RPO preparation, sinking and visitor
-routing are staged as real source translations. Source families are being
-ported in parallel. No complete-InstCombine build, production journey or
-performance result is claimed yet. The last accepted Native AOT product remains
-the separately recorded pre-InstCombine baseline while this cohort is staged.
+The coordinated CLI product build completed with zero warnings/errors
+(`artifacts/diagnostics/llvm-instcombine/build-sixth.log`). The LlvmIr harness
+also builds successfully (`artifacts/diagnostics/llvm-instcombine/tests-build.log`)
+after adapting its old null-AA calls to actual AA/DT contexts. These are managed
+compilation receipts, not Native AOT, end-to-end or benchmark acceptance.
+
+Root reports passing real source journeys: GEP (16 executions), scope/branch/
+capture (six executions), the O2 middle-end journey and Range initialization.
+Native ordinary initialization also passes. The GEP journey includes target-side
+packing of scalar Function stores; the source transform was not disabled to
+avoid that backend boundary. These results do not imply complete property-group
+coverage or a speedup: the integer-cast structural assertion remains under
+investigation, and benchmark/Native AOT acceptance remains pending.
 
 Telemetry records actual preparation, deferred/worklist operations, visitation,
 constant folds, source rewrite decisions, removals, use-count changes and outer
@@ -150,7 +167,7 @@ allocate a metrics dictionary or per-visit attribute map. Validation will use
 focused real compiler/source/artifact journeys and discriminating instruction
 counts, not a new quality gate or a count of staged files.
 
-## Scalar cast family and shared cast semantics (staged cohort)
+## Scalar cast family and shared cast semantics
 
 `LlvmInstCombine.Casts*.cs` translates the scalar paths in
 [`InstCombineCasts.cpp`](https://github.com/llvm/llvm-project/blob/a55e64432a516fd6507d3ecfba7407cfe425f940/llvm/lib/Transforms/InstCombine/InstCombineCasts.cpp).
@@ -189,7 +206,7 @@ cannot be ordered by mantissa alone. FPTrunc narrowing intersects `ninf` from
 the operation and truncation, and SIToFP-to-UIToFP retains only meaningful
 `ninf`/`nsz` flags. Floating intrinsic reconstruction preserves operand bundles.
 
-The numerical-format dependency is the separately staged IEEE half, bfloat,
+The numerical-format dependency is the published IEEE half, bfloat,
 single and double APFloat implementation; extended multiword formats remain
 an explicitly unimplemented dependency, not a double-precision substitute.
 Vector resize/shuffle/lane casts are outside this scalar tranche. The represented
@@ -198,14 +215,14 @@ source declarations; vscale is not replaced by a guessed constant scale. No alwa
 provided for any represented scalar transform. Telemetry counts actual common
 queries, cast-pair rewrites, rebuilt expression nodes/cache hits, integer-width
 normalization, GEP/PHI work, exactness queries and the concrete floating rewrite
-families. Publication, a coherent build and real execution remain owned by the
-root integration cohort; this cast-family owner did not run MSBuild.
+families. The managed product build includes this family; real execution and
+performance acceptance follow the coordinated journeys described above.
 
 ## Integer cast visitors and adjacent bitwise cast/shift helpers
 
-The represented scalar integer-cast source cohort is staged in
-`.temp/llvm-instcombine/` and shares `Work` with the driver and all other visitor
-families. Its pinned `InstCombineCasts.cpp` mapping is:
+The represented scalar integer-cast source cohort is published alongside the
+driver in `src/Msync.Optimization/Llvm` and shares its `Work` context with all
+other visitor families. Its pinned `InstCombineCasts.cpp` mapping is:
 
 | Upstream algorithm | Managed file |
 | --- | --- |
@@ -260,21 +277,122 @@ No general boolean solver or heap proof is introduced.
 Optional counters report actual integer visitor and rewrite decisions,
 no-wrap/nneg updates, type-evaluation visits/cache hits/depth limits and pending
 user outcomes. Disabled recording does not construct keys dynamically.
-`InstCombineIntegerCastProperties.cs` is staged with the cohort and exercises
+`tests/LlvmIr/InstCombineIntegerCastProperties.cs` exercises
 the real shared pass on narrowing/extension, carry-boundary masking, boolean
 extraction, casted logic, three-input complemented patterns and funnel shifts,
 including zero shift. It checks defined small-width results rather than requiring
 one brittle final SSA spelling. Vector lane/shuffle transforms and debug-record
 propagation are outside this scalar mapping; numerical-format queries retain the
-separately owned APFloat dependency. Publication, builds and execution receipts
-remain coordinator-owned.
+published APFloat dependency. Execution receipts remain coordinator-owned.
 
-## Unintegrated source checkpoint
+## Historical staging checkpoint
 
-The unpublished staging tree is retained separately as
+The pre-integration staging tree is retained separately as
 `artifacts/source-snapshots/llvm-instcombine-staged.tar.gz`
 (SHA-256 `d707b568770c53f65707d442cf1b6bf948081ac03b0060b5b91ed24d57f84eeb`). This is a local
-source payload, not part of the product build or the default pipeline. It
-preserves the staging work if disposable `.temp/` inputs are cleaned. The
-versioned upstream reference and these family notes remain the provenance;
-this checkpoint is not an acceptance claim.
+historical source payload, not a product build input or a snapshot of the current
+implementation. The published source under `src/` is authoritative; integration
+repairs and shared-dependency merges postdate this archive. The versioned
+upstream reference and family notes retain the source provenance independently
+of disposable `.temp/` inputs.
+
+## Integer subtraction visitor integration tranche
+
+The `LlvmInstCombine.AddSub.Sub*.cs` family translates pinned
+`InstCombineAddSub.cpp:2441–3143`, with the adjacent min/max and NUW-mask helpers
+at 2371–2440. It retains source visitation order, including the early zero-minus
+Negator path, flag-deduction timing, shared distributive and select/PHI helpers,
+freely invertible operands' consumption requirement, and the final narrowing
+query. This is the actual visitor, not a replacement table of a few subtraction
+identities.
+
+The family includes constant and AddLike reassociation (including disjoint OR),
+bitwise arithmetic identities, min/max and unsigned-saturation relations,
+select sinking, ctpop inversion, difference-of-squares factoring, signed-extension
+cancellation and source instruction-tradeoff counting. Pointer subtraction uses
+the shared CommonPointerBase/GEP-offset routines and distinguishes direct,
+truncated and zero-extended pointer casts; it does not infer a new heap identity.
+The vector-reduce-add rule forms a vector difference and the actual standard
+reduction intrinsic, with the vector element as its scalar result type.
+
+Pattern adapters preserve the source distinctions between plain `m_APInt`
+(no poison lanes), predicate-bound splats (poison lanes allowed), SExtLike
+(sext or nneg zext), and AddLike (add or disjoint OR). Constant element-wise
+equality uses the source bitcast-and-compare rule, including poison results,
+rather than managed reference equality alone. The shared `DynCastNegVal` helper
+translates `InstructionCombining.cpp:1565–1601`, including fixed-vector lane
+checks and integer splats, for all source visitor consumers.
+
+Telemetry records visitor work, concrete rewrite identities, inferred NSW/NUW
+flags and the old/new instruction counts used by the signed-extension transform.
+Disabled detailed recording does not construct rewrite metric names. This family
+is published and included in the successful managed product build; actual
+execution and performance results are recorded by the integration coordinator.
+
+The additional `AndOrXor.Arithmetic.cs` tranche supplies the actual
+`foldXorToXor`, `canonicalizeAbs`,
+`canonicalizeConditionalNegationViaMathToSelect` and
+`foldMaskedAddXorPattern` routines from the same pinned source (4822–4875,
+5088–5121, 1677–1691 and 5455–5475). It retains each routine's different
+commutation policy, exact one-use/two-use conditions, poison-aware constant
+matching, and NSW/NUW transfer to newly formed negation/subtraction. Queries and
+successful rule identities use the existing detailed sink with no dynamic metric
+name construction when recording is disabled. This fills existing visitor
+calls; it does not introduce a second pass or four unconditional rewrites.
+
+## Publication and analysis ownership
+
+The driver API takes the actual function AA, assumption cache, target-library
+info, generic TTI and forward dominators. It uses TargetFolder and the source
+InstructionWorklist; it is not a wrapper around the old InstSimplify pass. The
+compiler selects the O2 placement described above and owns analysis reuse. The upstream
+pass preserves CFG analyses (`InstructionCombining.cpp:6396,6401`), so this
+entry does not require rebuilding a supplied dominator tree merely because it
+changed instructions. Source extension operations HeapAlloc/FileIn/FileOut
+remain in the worklist/effect/dead-code machinery without invented visitors.
+
+Publication deliberately selected files rather than copying every staging
+`.cs`: Core ConstantRange/APInt ownership has already moved, duplicate rounding
+partials existed, and staged shared-query overlays predated live CondContext,
+vector, ConstantExpr and lazy-cache improvements. Those current implementations
+are retained and only actual missing APIs are merged. The staged ICmp dispatch
+name is aligned to its real entry, and a duplicated FP sign-strip helper is
+unified with the source `InstCombiner.h` implementation.
+
+Published entry/family closures include Add/Sub/FP Add and GEP; vector
+helpers use real standard intrinsic descriptors rather than ordinary function
+name guesses. Exact floating sign-consumer queries are shared ValueTracking
+helpers. The builder's constant-folding return contract is retained: an
+intrinsic creation can return a Constant, so adapters do not force it back to
+a CallInstruction or create a temporary instruction to infer a declaration.
+
+Focused runner entries: `--instcombine-only` exercises actual source worklist
+and arithmetic/memory/GEP/vector transformations. It reports each property
+group's result or exception, then fails if any group failed, without skipping
+independent groups after the first failure. `--instcombine-source-journey` and
+`--instcombine-gep-journey` lower real source and execute direct plus Native2
+roundtrips; their passing execution counts are recorded above. Final performance
+receipts remain separate from these focused correctness results.
+
+The select-arm conditional KnownBits fold is now the pinned source's final
+`visitSelectInst` block (`InstCombineSelect.cpp:5465–5498`) rather than an
+unresolved helper call. Its affected-operand walk follows source
+`hasAffectedValue` (4466), including the shared depth-six limit and PHI handling;
+it avoids querying arms unaffected by the select condition. The query preserves
+CondContext, assumptions, dominators, layout and instruction context, and sends
+actual operand replacement through the worklist. Its scalar restriction is the
+upstream lane-crossing restriction. Telemetry distinguishes affected-operand
+work, actual arm queries, no affected values, and true/false arm rewrites.
+
+## Integrated execution and timing result
+
+The actual source families and default O2 selection are now integrated with the
+compact Native target's Function memory selection. Final linux-x64 AOT midend
+O0/O2 source/object/bound and Range six-route/33-file journeys passed. Function
+SSA, builtin records (including enumerated Function values), and IEEE predicate
+execution are covered by the focused receipts. The seven-application matched
+benchmark is complete; results are mixed, with real added compilation cost, not
+a claim that every source route became faster. See
+[`llvm-performance-regression-review.md`](llvm-performance-regression-review.md#final-integrated-result)
+for payload identities, exact route results, work counts and portable receipts.
+The separately documented vector-query scope remains unchanged.

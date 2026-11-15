@@ -50,9 +50,9 @@ public static partial class LlvmInstructionSimplify
         LlvmKnownFPClass? fullKnownClass = null;
         if (rhs is LlvmConstantFP constant)
         {
-            if (q.Context?.Parent?.Parent is not null)
+            if (q.Context?.Parent?.Parent is { } contextFunction)
             {
-                var (classValue, classes) = LlvmKnownFPClasses.FCmpToClassTest(predicate, lhs, rhs);
+                var (classValue, classes) = LlvmKnownFPClasses.FCmpToClassTest(predicate, contextFunction, lhs, rhs, metrics: q.Metrics);
                 if (classValue is not null)
                 {
                     fullKnownClass = ComputeLhs(LlvmFPClassTest.All);

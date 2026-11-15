@@ -489,3 +489,46 @@ with Native Function leaf-slot support. No Range or capture
 semantics, new heap proof, address-space-disjoint assumption or optimizer decision
 is introduced by the publication. This owner did not run a build or claim that
 default O2 SROA target execution is already complete.
+
+### Ordinary compiled locations versus public raw views
+
+The initialization policy now follows the entrypoint's represented contract,
+not every byte that a generic source carrier happens to occupy:
+
+| Entry point | Readiness maintenance |
+| --- | --- |
+| Public NativeStorage/NativeAddress stores, copies and clears | Existing full-extent behavior, including Number-write then interior OffsetBy machine reads |
+| Internal compiled ordinary source storage | One readiness flag at the declared location start |
+| Machine storage, including compiled writes/copies/clears | Actual machine byte extent |
+
+The internal compiled entrypoints share payload/root writes and copy routines
+with public operations. They do not scan consumers, reconstruct a heap model or
+add runtime admission checks. Number/Function/Address/Path payload bytes, union
+tags and CLR roots are unchanged; initialization arrays are unchanged in size.
+Explicit public raw writes still mark their observable interior views. Pending
+source stores clear the location's start flag and retain the same future;
+completion materializes through the corresponding compiled entrypoint.
+
+`NativeMemory` uses the compiled entrypoints, as do exact-address writes,
+scalar returns and the existing ready Number handlers. Public environment/range
+construction APIs retain their raw behavior. Frame reset and bulk region bitmap
+copy are not replaced by per-field readiness guesses. This does not introduce
+the still-separate pending raw-bitcast adapter described above.
+
+With profiling enabled, `vm.storage.initialization` reports actual writes,
+copies, clears and logical readiness flags written/avoided versus the former
+full-extent path, grouped by carrier kind and policy. Its attribution is
+explicitly RuntimeProfile-wide, since runtime memory can serve multiple session
+generations. Existing function/site telemetry remains intact. No storage counter
+object, per-write allocation or dictionary lookup is created when profiling is
+disabled. Flag counts are work counts, not elapsed-time attribution.
+
+`tests/NativeTiering/OrdinaryInitializationChecks.cs` covers public raw-interior
+compatibility, ordinary carriers/unions, exact addresses, machine extents,
+pending values and exact recording. Its real source journey runs capture
+mutation, Function calls and Scope stores through public Compiler O0/O2 and
+detached Native2, with result 24. Root's serialized run passed 57 ordinary
+initialization properties and four source/artifact journeys; see
+`artifacts/diagnostics/llvm-instcombine/ordinary-init.log`. This establishes the
+focused behavior, not a measured application speedup. Paired performance
+comparison remains separate from that execution result.

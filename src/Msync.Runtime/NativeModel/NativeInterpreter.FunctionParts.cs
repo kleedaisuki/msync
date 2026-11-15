@@ -16,7 +16,14 @@ public sealed partial class NativeInterpreter
     private void ProjectFunctionComponent(Activation activation, in NativeExecutionInstruction instruction, int pc)
     {
         NativeDatum function = activation.Frame.GetDatum(instruction.A);
-        activation.Work.Counters.FunctionComponent(function.IsReady);
+        bool exactAddress = function.IsReady && instruction.Immediate == 1 &&
+            activation.Frame.Location(instruction.Result).Type.Kinds == 1UL << (int)NativeKind.Address;
+        activation.Work.Counters.FunctionComponent(function.IsReady, exactAddress);
+        if (exactAddress)
+        {
+            activation.Frame.SetPointer(instruction.Result, function.Value.AsFunction().Environment!.Address);
+            return;
+        }
         if (function.IsReady)
         {
             activation.Frame.Set(instruction.Result, NativeFunctionParts.Component(function.Value, (int)instruction.Immediate));

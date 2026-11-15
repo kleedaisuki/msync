@@ -113,7 +113,8 @@ public sealed partial class NativeInterpreter
         if (!target.Type.IsUnion && target.Type.Kind == NativeKind.Number)
         {
             memory.RemovePending(target);
-            NativeStorage.StoreNumber(target, result);
+            NativeStorage.StoreNumberCompiled(target, result);
+            if (profile is not null) memory.RecordScalarWrite(target, NativeKind.Number);
         }
         else frame.Set(instruction.Result, NativeValue.FromNumber(result));
         return true;

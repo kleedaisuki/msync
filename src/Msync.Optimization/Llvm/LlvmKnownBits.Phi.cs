@@ -6,9 +6,9 @@ namespace Msync.Optimization.Llvm;
 
 public static partial class LlvmKnownBitsAnalysis
 {
-    private static LlvmKnownBits ComputePhi(LlvmPhiInstruction phi, uint depth, LlvmDominatorTree? tree, Dictionary<string, ulong>? metrics, bool useInstructionInfo, LlvmAssumptionCache? assumptions, bool allowEphemerals, LlvmDomConditionCache? conditions = null, LlvmCondContext? condContext = null, LlvmDataLayout? layout = null)
+    private static LlvmKnownBits ComputePhi(LlvmPhiInstruction phi, uint depth, LlvmDominatorTree? tree, Dictionary<string, ulong>? metrics, bool useInstructionInfo, LlvmAssumptionCache? assumptions, bool allowEphemerals, LlvmDomConditionCache? conditions = null, LlvmCondContext? condContext = null, LlvmDataLayout? layout = null, LlvmAPInt? demandedElements = null)
     {
-        uint width = phi.Type.IsPointerTy() ? (layout ?? GetQueryLayout(phi, null)).GetPointerTypeSizeInBits(phi.Type) : phi.Type.GetIntegerBitWidth();
+        uint width = GetKnownBitWidth(phi.Type, layout ?? GetQueryLayout(phi, null));
         LlvmKnownBits known = new(width);
         if (phi.IncomingCount == 2)
         {
@@ -19,7 +19,7 @@ public static partial class LlvmKnownBitsAnalysis
                 if (!leftPhi && !rightPhi) continue;
                 LlvmValue start = phi.GetIncomingValue(1 - index), step = leftPhi ? binary.Right : binary.Left;
                 if (ReferenceEquals(start, phi) || ReferenceEquals(step, phi)) continue;
-                LlvmKnownBits initial = Compute(start, depth + 1, phi, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, null, layout);
+                LlvmKnownBits initial = Compute(start, demandedElements ?? GetAllDemandedElements(start.Type), depth + 1, phi, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, null, layout);
                 Count(metrics, "known_bits.phi.recurrence");
                 switch (binary.Opcode)
                 {
@@ -35,8 +35,8 @@ public static partial class LlvmKnownBitsAnalysis
                     case LlvmOpcode.Add:
                     case LlvmOpcode.Sub:
                     case LlvmOpcode.Mul:
-                        LlvmKnownBits increment = Compute(step, depth + 1, phi.GetIncomingBlock(index).GetTerminator(), tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, null, layout);
-                        initial = Compute(start, depth + 1, phi.GetIncomingBlock(1 - index).GetTerminator(), tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, null, layout);
+                        LlvmKnownBits increment = Compute(step, demandedElements ?? GetAllDemandedElements(step.Type), depth + 1, phi.GetIncomingBlock(index).GetTerminator(), tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, null, layout);
+                        initial = Compute(start, demandedElements ?? GetAllDemandedElements(start.Type), depth + 1, phi.GetIncomingBlock(1 - index).GetTerminator(), tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, null, layout);
                         if (binary.Opcode == LlvmOpcode.And) known = new(initial.Zero, initial.One & increment.One);
                         else if (binary.Opcode == LlvmOpcode.Or) known = new(initial.Zero & increment.Zero, initial.One);
                         else known = new(LlvmAPInt.GetLowBitsSet(width, Math.Min(initial.CountMinTrailingZeros(), increment.CountMinTrailingZeros())), known.One);
@@ -57,14 +57,14 @@ public static partial class LlvmKnownBitsAnalysis
                 break;
             }
         }
-        if (known.IsUnknown && phi.Type.IsIntegerTy() && phi.IncomingCount == 2)
-            known = ComputeMinMaxPhiRecurrence(phi, depth, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, null, layout);
+        if (known.IsUnknown && phi.Type.GetScalarType().IsIntegerTy() && phi.IncomingCount == 2)
+            known = ComputeMinMaxPhiRecurrence(phi, depth, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, null, layout, demandedElements);
         if (known.IsUnknown && phi.Type.IsPointerTy() && phi.IncomingCount == 2)
         {
             for (int index = 0; index < 2; ++index)
             {
                 if (phi.GetIncomingValue(index) is not LlvmGetElementPtrInstruction gep || gep.IndexCount == 0 || !ReferenceEquals(gep.PointerOperand, phi)) continue;
-                LlvmKnownBits initial = Compute(phi.GetIncomingValue(1 - index), depth + 1,
+                LlvmKnownBits initial = Compute(phi.GetIncomingValue(1 - index), demandedElements ?? GetAllDemandedElements(phi.GetIncomingValue(1 - index).Type), depth + 1,
                     phi.GetIncomingBlock(1 - index).GetTerminator(), tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, null, layout);
                 uint zeros = Math.Min(initial.CountMinTrailingZeros(), GetGepPreservedZeros(gep, layout));
                 known = new(LlvmAPInt.GetLowBitsSet(width, zeros), known.One);
@@ -98,7 +98,7 @@ public static partial class LlvmKnownBitsAnalysis
             }
             hasIncoming = true;
             Count(metrics, "known_bits.phi.incoming");
-            LlvmKnownBits bits = Compute(incoming, MaxDepth - 1, edge, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, null, layout);
+            LlvmKnownBits bits = Compute(incoming, demandedElements ?? GetAllDemandedElements(incoming.Type), MaxDepth - 1, edge, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, null, layout);
             if (!bits.IsConstant && edge is LlvmCondBrInstruction { Condition: LlvmICmpInstruction cmp } branch)
             {
                 bool trueEdge = ReferenceEquals(branch.GetSuccessor(0), contextPhi.Parent), falseEdge = ReferenceEquals(branch.GetSuccessor(1), contextPhi.Parent);
@@ -109,7 +109,7 @@ public static partial class LlvmKnownBitsAnalysis
                 if (rhs is not null && trueEdge != falseEdge)
                 {
                     if (falseEdge) pred = LlvmCmpInstruction.GetInversePredicate(pred);
-                    LlvmKnownBits rhsBits = Compute(rhs, MaxDepth - 1, edge, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, null, layout);
+                    LlvmKnownBits rhsBits = Compute(rhs, demandedElements ?? GetAllDemandedElements(rhs.Type), MaxDepth - 1, edge, tree, metrics, useInstructionInfo, assumptions, allowEphemerals, conditions, null, layout);
                     if (!rhsBits.IsUnknown)
                     {
                         LlvmConstantRange range = LlvmConstantRange.FromKnownBits(rhsBits, pred is >= LlvmCmpPredicate.ICmpSgt and <= LlvmCmpPredicate.ICmpSle);
@@ -140,7 +140,7 @@ public static partial class LlvmKnownBitsAnalysis
         static bool Negates(LlvmValue a, LlvmValue b, bool nsw, bool poison) =>
             a is LlvmBinaryOperator { Opcode: LlvmOpcode.Sub } binary && ReferenceEquals(binary.Right, b)
             && (!nsw || binary.HasNoSignedWrap)
-            && binary.Left is LlvmConstantInt { IsZero: true };
+            && GetIntegerSplat(binary.Left, poison) is { IsZero: true };
         if (Negates(left, right, needNSW, allowPoison) || Negates(right, left, needNSW, allowPoison)) return true;
         return left is LlvmBinaryOperator { Opcode: LlvmOpcode.Sub } lhs && right is LlvmBinaryOperator { Opcode: LlvmOpcode.Sub } rhs
             && (!needNSW || (lhs.HasNoSignedWrap && rhs.HasNoSignedWrap))

@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Diagnostics;
 using Msync.Core;
 using Msync.Core.Native;
+using Msync.Core.Llvm;
 
 namespace Msync.Runtime.Native;
 
@@ -13,7 +14,8 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
     internal NativeTierLayout Layout { get; } = layout;
     internal NativeCodegenStatistics Statistics { get; } = statistics;
 
-    internal static NativeCompiledFunction? Compile(NativeImage image, NativeExecutionFunction function, NativeJitPolicy policy)
+    internal static NativeCompiledFunction? Compile(NativeImage image, NativeExecutionFunction function, NativeJitPolicy policy,
+        bool observeRegisterPlanning = false)
     {
         if (!NativeCodePage.IsSupported || !BitConverter.IsLittleEndian || function.Metadata.Length == 0) return null;
         long started = Stopwatch.GetTimestamp();
@@ -23,7 +25,8 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
             || !IsProfitableForAuto(function, operations))) return null;
         long selection = Stopwatch.GetElapsedTime(started).Ticks * 100;
         started = Stopwatch.GetTimestamp();
-        NativeTierLayout layout = NativeTierLayout.Create(function, operations, image);
+        NativeRegisterPlanMetrics? registerMetrics = observeRegisterPlanning ? new() : null;
+        NativeTierLayout layout = NativeTierLayout.Create(function, operations, image, registerMetrics);
         long allocation = Stopwatch.GetElapsedTime(started).Ticks * 100;
         started = Stopwatch.GetTimestamp();
         byte[] bytes = NativeMachineCode.Emit(function, operations, RuntimeInformation.ProcessArchitecture,
@@ -36,8 +39,11 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
             layout.Regions.Length, layout.Regions.Sum(region => region.Values.Length), layout.Regions.Sum(region => region.Spills),
             layout.Regions.Sum(region => region.Operations.Length - region.Outputs.Length))
         {
+            RegisterPlanning = registerMetrics,
             InitializationChecksElided = initializationElisions.Checks,
             InitializationWritesElided = initializationElisions.Writes,
+            DoubleComparisonSites = observeRegisterPlanning ? operations.Where((operation, pc) =>
+                operation != NativeFastOperation.Bridge && function.Instructions[pc].Op == NativeOp.MachineCompare).Count() : 0,
             UnsignedValues = layout.Regions.Sum(region => region.Values.Count(value => value.Unsigned)),
             UnsignedOperations = layout.Regions.Sum(region => region.Operations.Count(operation => operation.Form != NativeNumberForm.Float64))
         };
@@ -98,6 +104,8 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
         if (instruction.Handler == NativeInterpreter.NopHandler) return NativeFastOperation.Nop;
         if (instruction.Op == NativeOp.Jump) return NativeFastOperation.Jump;
         if (instruction.Op == NativeOp.Branch) return NativeFastOperation.Branch;
+        if (instruction.Op == NativeOp.MachineCompare && Kind(instruction.A, TypeKind.Number) && Kind(instruction.B, TypeKind.Number))
+            return NativeFastOperations.FloatingCompare((LlvmCmpPredicate)instruction.Immediate);
         if (instruction.Op == NativeOp.Return && instruction.A >= 0)
         {
             if (Kind(instruction.A, TypeKind.Number)) return NativeFastOperation.NumberReturn;
@@ -169,8 +177,10 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
 internal readonly record struct NativeCodegenStatistics(long SelectionNanoseconds, long AllocationNanoseconds,
     long EmissionNanoseconds, long PublicationNanoseconds, int Regions, int Values, int Spills, int EliminatedStores)
 {
+    internal NativeRegisterPlanMetrics? RegisterPlanning { get; init; }
     internal int UnsignedValues { get; init; }
     internal int UnsignedOperations { get; init; }
     internal int InitializationChecksElided { get; init; }
     internal int InitializationWritesElided { get; init; }
+    internal int DoubleComparisonSites { get; init; }
 }

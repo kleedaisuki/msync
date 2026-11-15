@@ -37,12 +37,25 @@ public static partial class LlvmSroa
             foreach (Partition partition in slices.Partitions())
             {
                 Count("presplit.partitions");
-                Dictionary<LlvmInstruction, HashSet<Slice>> map = [];
+                Dictionary<LlvmInstruction, SliceGroup> map = [];
                 foreach (Slice slice in partition)
                 {
                     var instruction = (LlvmInstruction)slice.Use!.User;
-                    if (!map.TryGetValue(instruction, out var uses)) map.Add(instruction, uses = []);
-                    uses.Add(slice);
+                    if (!map.TryGetValue(instruction, out var uses))
+                    {
+                        map.Add(instruction, new(slice));
+                        Count("presplit.slice_groups");
+                        continue;
+                    }
+                    if (ReferenceEquals(slice, uses.First)) continue;
+                    var overflow = uses.Overflow;
+                    if (overflow is null)
+                    {
+                        overflow = [];
+                        map[instruction] = new(uses.First, overflow);
+                        Count("presplit.slice_group_overflows");
+                    }
+                    overflow.Add(slice);
                 }
                 foreach (Slice slice in partition)
                 {

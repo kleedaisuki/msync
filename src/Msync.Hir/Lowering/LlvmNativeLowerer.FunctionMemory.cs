@@ -28,33 +28,18 @@ public static partial class LlvmNativeLowerer
         private bool FunctionComponentLoad(LlvmLoadInstruction load)
         {
             if (load.Type is not LlvmPointerType) return false;
-            var root = load.PointerOperand;
-            ulong offset = 0;
-            if (LlvmGepOperator.TryGet(root, out _))
-            {
-                var position = PointerPositionOf(root);
-                root = position.Root;
-                offset = position.Offset.GetZExtValue();
-            }
-            int pointer = root.LogicalType >= 0 ? root.LogicalType
-                : values.TryGetValue(root, out int rootSlot) ? slots[rootSlot].Type : -1;
-            if (pointer < 0 || owner.Types[pointer].Pointee is not (>= 0 and var pointee) ||
-                owner.Types[pointee].Kind != TypeKind.Function) return false;
+            if (!FunctionMemoryComponent(load.PointerOperand, load.Type, out var location, out int index)) return false;
+            if (TryFunctionMemoryLoadGroup(load, location, index)) return true;
             var structure = LlvmStructType.GetTypeByName(function.Context, "msync.function")!;
-            var layout = owner.Input.Module.DataLayout.GetStructLayout(structure);
-            int index = -1;
-            for (uint member = 0; member < 3; ++member)
-                if (layout.GetElementOffset(member).GetFixedValue() == offset && structure.Elements[(int)member] == load.Type)
-                { index = (int)member; break; }
-            if (index < 0) return false;
             var shape = AggregateShapeFor(structure);
-            int type = shape.Leaves[index].NativeType;
-            int storage = owner.Primitive(TypeKind.Function);
+            int type = FunctionProjectionType(load, shape.Leaves[index]);
+            int storage = location.Type;
             int whole = Register(storage);
-            Add(new(NativeOp.Load, whole, SlotForView(root, owner.Pointer(storage)),
+            Add(new(NativeOp.Load, whole, FunctionMemoryAddress(location),
                 Type: storage, Source: load.Source));
             SetSelectedValueType(load, type);
             Add(new(NativeOp.FunctionComponent, values[load], whole, Immediate: index, Source: load.Source));
+            RecordFunctionProjection(type, index);
             ++functionComponentLoads;
             return true;
         }
