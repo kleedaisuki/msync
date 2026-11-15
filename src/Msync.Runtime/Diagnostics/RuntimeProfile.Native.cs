@@ -65,6 +65,22 @@ public sealed partial class RuntimeProfile
             ["acquire_descendant_processes"] = (ulong)counters.AcquireDescendantProcesses,
             ["work_forwarded_futures"] = (ulong)counters.WorkForwardedFutures,
             ["work_forwarded_processes"] = (ulong)counters.WorkForwardedProcesses,
+            ["function_components_ready"] = (ulong)counters.FunctionComponentsReady,
+            ["function_components_pending"] = (ulong)counters.FunctionComponentsPending,
+            ["function_compositions_ready"] = (ulong)counters.FunctionCompositionsReady,
+            ["function_compositions_pending"] = (ulong)counters.FunctionCompositionsPending,
+            ["machine_ready_operations"] = (ulong)counters.MachineReady,
+            ["machine_pending_operations"] = (ulong)counters.MachinePending,
+            ["machine_binary_operations"] = (ulong)counters.MachineBinary,
+            ["machine_compare_operations"] = (ulong)counters.MachineCompare,
+            ["machine_cast_operations"] = (ulong)counters.MachineCast,
+            ["machine_intrinsic_operations"] = (ulong)counters.MachineIntrinsic,
+            ["machine_unary_operations"] = (ulong)counters.MachineUnary,
+            ["machine_wide_operations"] = (ulong)counters.MachineWide,
+            ["machine_retained_dependencies"] = (ulong)counters.MachineDependencies,
+            ["select_ready_conditions"] = (ulong)counters.SelectReadyConditions,
+            ["select_pending_conditions"] = (ulong)counters.SelectPendingConditions,
+            ["select_retained_candidates"] = (ulong)counters.SelectRetainedCandidates,
             ["tier_ready_materializations"] = (ulong)counters.TierReadyMaterializations,
             ["tier_context_pending"] = (ulong)counters.TierContextPending,
             ["tier_context_unrelated_pending"] = (ulong)counters.TierContextUnrelatedPending,
@@ -165,6 +181,14 @@ public sealed partial class RuntimeProfile
             attributes["source.offset"] = Number(source.Start);
             attributes["source.length"] = Number(source.Length);
         }
+        if (instruction.Op is NativeOp.MachineBinary or NativeOp.MachineCast or NativeOp.MachineUnary)
+            attributes["machine.operation"] = ((Msync.Core.Llvm.LlvmOpcode)instruction.Immediate).ToString();
+        else if (instruction.Op == NativeOp.MachineCompare)
+            attributes["machine.operation"] = ((Msync.Core.Llvm.LlvmCmpPredicate)instruction.Immediate).ToString();
+        else if (instruction.Op == NativeOp.MachineIntrinsic)
+            attributes["machine.operation"] = ((NativeMachineIntrinsic)instruction.Immediate).ToString();
+        if (instruction.Op == NativeOp.FunctionComponent) attributes["function.component"] = Number((int)instruction.Immediate);
+        if (instruction.Op == NativeOp.ComposeFunction && instruction.Symbol is { } origin) attributes["function.context_origin"] = origin;
         if (instruction.Op == NativeOp.CallNative && instruction.Symbol is { } symbol)
             attributes["native.name"] = symbol;
         samples.Add(new("vm.instruction", attributes, new() { ["hits"] = (ulong)hits }));
@@ -210,7 +234,7 @@ public sealed partial class RuntimeProfile
             Edges = new();
             Targets = new();
         }
-        internal readonly long[] Opcodes = new long[Enum.GetValues<NativeOp>().Length];
+        internal readonly long[] Opcodes = new long[Enum.GetValues<NativeOp>().Max(static op => (int)op) + 1];
         internal readonly long[]? Sites;
         internal readonly ConcurrentDictionary<(int From, int To), NativeCounter>? Edges;
         internal readonly ConcurrentDictionary<(int Pc, int Function), NativeCounter>? Targets;
@@ -223,6 +247,10 @@ public sealed partial class RuntimeProfile
         internal long FrameAllocations;
         internal long AcquireDescendantFutures, AcquireDescendantProcesses;
         internal long WorkForwardedFutures, WorkForwardedProcesses;
+        internal long SelectReadyConditions, SelectPendingConditions, SelectRetainedCandidates;
+        internal long FunctionComponentsReady, FunctionComponentsPending, FunctionCompositionsReady, FunctionCompositionsPending;
+        internal long MachineReady, MachinePending, MachineBinary, MachineCompare, MachineCast;
+        internal long MachineIntrinsic, MachineUnary, MachineWide, MachineDependencies;
         internal long GuestStackLimitedCalls, GuestLoopHandoffs;
         internal long TierReadyMaterializations;
         internal long TierContextPending, TierContextUnrelatedPending;
@@ -252,6 +280,41 @@ public sealed partial class RuntimeProfile
     internal readonly struct NativeFrameCounters(NativeProfileImage? image, int function, NativeFunctionCounters? counters)
     {
         internal bool Observed => counters is not null;
+        internal void FunctionComponent(bool ready)
+        {
+            if (counters is null) return;
+            if (ready) Interlocked.Increment(ref counters.FunctionComponentsReady);
+            else Interlocked.Increment(ref counters.FunctionComponentsPending);
+        }
+        internal void FunctionCompose(bool ready)
+        {
+            if (counters is null) return;
+            if (ready) Interlocked.Increment(ref counters.FunctionCompositionsReady);
+            else Interlocked.Increment(ref counters.FunctionCompositionsPending);
+        }
+        internal void Machine(NativeOp operation, bool pending, bool wide, int dependencies)
+        {
+            if (counters is null) return;
+            if (pending) Interlocked.Increment(ref counters.MachinePending);
+            else Interlocked.Increment(ref counters.MachineReady);
+            if (wide) Interlocked.Increment(ref counters.MachineWide);
+            Interlocked.Add(ref counters.MachineDependencies, dependencies);
+            switch (operation)
+            {
+                case NativeOp.MachineBinary: Interlocked.Increment(ref counters.MachineBinary); break;
+                case NativeOp.MachineCompare: Interlocked.Increment(ref counters.MachineCompare); break;
+                case NativeOp.MachineCast: Interlocked.Increment(ref counters.MachineCast); break;
+                case NativeOp.MachineIntrinsic: Interlocked.Increment(ref counters.MachineIntrinsic); break;
+                case NativeOp.MachineUnary: Interlocked.Increment(ref counters.MachineUnary); break;
+            }
+        }
+        internal void Selection(bool pending, int retainedCandidates = 0)
+        {
+            if (counters is null) return;
+            if (pending) Interlocked.Increment(ref counters.SelectPendingConditions);
+            else Interlocked.Increment(ref counters.SelectReadyConditions);
+            Interlocked.Add(ref counters.SelectRetainedCandidates, retainedCandidates);
+        }
         internal void LinkedEntry()
         {
             if (counters is not null) Interlocked.Increment(ref counters.LinkedEntries);

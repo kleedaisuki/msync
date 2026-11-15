@@ -21,7 +21,6 @@ public sealed partial class HirBuilder
     public List<HirFor> Fors { get; } = [];
     public List<HirMatch> Matches { get; } = [];
     public List<HirBarrier> Barriers { get; } = [];
-    public List<HirRange> Ranges { get; } = [];
     public List<HirFunctionAdaptation> Adaptations { get; } = [];
     public List<HirTemplateClosure> TemplateClosures { get; } = [];
     public List<HirConcept> Concepts { get; } = [];
@@ -86,7 +85,7 @@ public sealed partial class HirBuilder
         Edges.ToImmutableArray(), Literals.ToImmutableArray(), ScopeLayouts.ToImmutableArray(),
         Signatures.ToImmutableArray(), Calls.ToImmutableArray(), Closures.ToImmutableArray(),
         Scopes.ToImmutableArray(), Fors.ToImmutableArray(), Matches.ToImmutableArray(),
-        Barriers.ToImmutableArray(), Ranges.ToImmutableArray(), Adaptations.ToImmutableArray(), entry, Exports.ToImmutableArray(), isSession, TemplateClosures.ToImmutableArray(), Concepts.ToImmutableArray())
+        Barriers.ToImmutableArray(), Adaptations.ToImmutableArray(), entry, Exports.ToImmutableArray(), isSession, TemplateClosures.ToImmutableArray(), Concepts.ToImmutableArray())
         { UnresolvedImports = UnresolvedImports.ToImmutableArray() };
     }
 }

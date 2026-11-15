@@ -199,7 +199,7 @@ public sealed partial class NativeStorage
                 .CopyTo(output.bytes.Slice(destination.Offset.Bytes, format.Bytes));
         if (format.References > 0)
             CopyRoots(ref input, source.Offset.References, ref output, destination.Offset.References, format.References);
-        output.initialized[destination.Offset.Bytes] = true;
+        output.MarkInitialized(destination.Offset.Bytes, Math.Max(1, format.Bytes));
     }
 
     internal static void CopyKindTrusted(NativeKind actualKind, NativeAddress source, NativeAddress destination)
@@ -208,7 +208,7 @@ public sealed partial class NativeStorage
         ref Data output = ref destination.Allocation.Storage;
         NativeRepresentation srcFormat = source.Type.Representation;
         NativeRepresentation dstFormat = destination.Type.Representation;
-        NativeRepresentation actualFormat = NativeRepresentation.Of(actualKind);
+        NativeRepresentation actualFormat = source.Type.IsMachine ? source.Type.Representation : NativeRepresentation.Of(actualKind);
         int srcStart = checked(source.Offset.Bytes + srcFormat.PayloadOffset);
         int dstStart = checked(destination.Offset.Bytes + dstFormat.PayloadOffset);
         if (actualFormat.Bytes > 0)
@@ -219,7 +219,8 @@ public sealed partial class NativeStorage
             output.roots.Slice(destination.Offset.References + actualFormat.References,
                 dstFormat.References - actualFormat.References).Clear();
         if (destination.Type.IsUnion) output.bytes[destination.Offset.Bytes] = (byte)actualKind;
-        output.initialized[destination.Offset.Bytes] = true;
+        output.MarkInitialized(dstStart, Math.Max(1, actualFormat.Bytes));
+        if (destination.Type.IsUnion) output.initialized[destination.Offset.Bytes] = true;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -336,14 +337,15 @@ public sealed partial class NativeStorage
         if (kind == NativeKind.Number) BinaryPrimitives.WriteUInt64LittleEndian(storage.bytes.Slice(payload, 8), bits);
         else storage.bytes[payload] = (byte)bits;
         if (format.References != 0) storage.roots.Slice(address.Offset.References, format.References).Clear();
-        storage.initialized[offset] = true;
+        storage.MarkInitialized(payload, kind == NativeKind.Number ? 8 : 1);
+        if (format.PayloadOffset != 0) storage.initialized[offset] = true;
     }
 
     public static void StoreNumber(NativeAddress address, double value)
     {
         ref Data storage = ref address.Allocation.Storage;
         BinaryPrimitives.WriteUInt64LittleEndian(storage.bytes.Slice(address.Offset.Bytes, 8), BitConverter.DoubleToUInt64Bits(value));
-        storage.initialized[address.Offset.Bytes] = true;
+        storage.MarkInitialized(address.Offset.Bytes, 8);
     }
     public static void StoreBool(NativeAddress address, bool value)
     {
@@ -376,7 +378,7 @@ public sealed partial class NativeStorage
         storage.roots[root + 2] = new() { Text = value.HomeDirectory };
         storage.roots[root + 3] = new() { Text = value.LocalSpelling };
         storage.roots[root + 4] = new() { Text = value.Connection?.Address };
-        storage.initialized[raw] = true;
+        storage.MarkInitialized(raw, 2);
     }
     public static void StoreFunction(NativeAddress address, NativeFunction value)
     {
@@ -385,7 +387,7 @@ public sealed partial class NativeStorage
         BinaryPrimitives.WriteInt32LittleEndian(storage.bytes.Slice(address.Offset.Bytes, 4), value.Function);
         storage.roots[root] = new() { Environment = value.Environment };
         storage.roots[root + 1] = new() { Text = value.NativeName };
-        storage.initialized[address.Offset.Bytes] = true;
+        storage.MarkInitialized(address.Offset.Bytes, 4);
     }
     public static void StoreRange(NativeAddress address, NativeRange value)
     {
@@ -415,6 +417,6 @@ public sealed partial class NativeStorage
         BinaryPrimitives.WriteUInt64LittleEndian(storage.bytes.Slice(address.Offset.Bytes, 8), NativeValue.Pack(value.Offset));
         storage.roots[address.Offset.References] = new() { Allocation = value.Allocation };
         storage.roots[address.Offset.References + 1] = new() { StorageType = value.StorageType };
-        storage.initialized[address.Offset.Bytes] = true;
+        storage.MarkInitialized(address.Offset.Bytes, 8);
     }
 }

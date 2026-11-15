@@ -230,6 +230,15 @@ internal sealed partial class SemanticAnalyzer
         return definition.AdmitsNull ? Nullable(type) : type;
     }
 
+    // A by-value input supplies its structural row, not the caller's reaching-
+    // definition alternatives. Captured storage constraints remain separate.
+    private HirTypeId PlanType(SemanticValue value)
+    {
+        if (value.Scope is not { } scope) return value.Type;
+        HirType type = hir.Types[value.Type.Value];
+        return hir.Type(type with { Shape = scope.Layout, ScopeDomain = default, Alternatives = default });
+    }
+
     private HirTypeId InferredStorageType(HirTypeId type)
     {
         HirType description = hir.Types[StructuralStorageType(type).Value];
@@ -329,7 +338,9 @@ internal sealed partial class SemanticAnalyzer
                 var required = hir.Types[requiredType.Value];
                 if (!AcceptsRuntime(required.RuntimeType, Runtime(member), implicitConversion: false))
                     throw Error(source, $"Field '{field.Name}' requires {required.RuntimeType}, found {Runtime(member)}.", "E0203");
-                RequireStructure(member, requiredType, source, false, visited, context);
+                // Scope references admit compatible carriers here. Nested layout
+                // obligations belong to member projection, not a heap-graph walk:
+                // aliases may change the referent after this admission.
             }
         }
         if (expected.Element >= 0 && value.Element is { } element)

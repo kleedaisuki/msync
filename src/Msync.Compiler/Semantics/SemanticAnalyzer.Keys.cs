@@ -7,30 +7,18 @@ namespace Msync.Compiler.Semantics;
 internal sealed partial class SemanticAnalyzer
 {
     private string InstanceKey(HirTemplateId id, IReadOnlyList<SemanticValue> arguments,
-        IReadOnlyList<SemanticValue> captures, SemanticContext caller, ref SemanticInputSchema? schema,
-        bool recursive = false)
+        IReadOnlyList<SemanticValue> captures, SemanticContext caller, ref SemanticInputSchema? schema)
     {
         StringBuilder key = new();
         key.Append(id.Value).Append(caller.DeferredReads ? 'd' : 'i').Append(':');
-        if (arguments.All(IsScalarSchema) && captures.All(IsScalarSchema))
-        {
-            foreach (var value in arguments) AppendScalarKey(value, capture: false);
-            key.Append('|');
-            foreach (var value in captures) AppendScalarKey(value, capture: true);
-            return key.ToString();
-        }
         int prefix = key.Length;
-        if (AppendInputKey(key, id, arguments, captures, caller, new(readOnlyInput: true, recursive: recursive)))
+        if (AppendInputKey(key, id, arguments, captures, caller, new(readOnlyInput: true)))
             return key.ToString();
         key.Length = prefix;
-        // The recursive key can omit write-only inputs, but its formal input
-        // graph is the same snapshot until the invocation starts.
         schema ??= CodeSchema(arguments, captures, caller);
-        AppendInputKey(key, id, schema.Arguments, schema.Captures, schema.Context, new(recursive: recursive));
+        AppendInputKey(key, id, schema.Arguments, schema.Captures, schema.Context, new());
         return key.ToString();
 
-        void AppendScalarKey(SemanticValue value, bool capture) => key.Append(value.Type.Value).Append('T')
-            .Append(value.DenotedType?.Value ?? -1).Append('S').Append(capture ? value.StorageConstraint?.Value ?? -1 : -1).Append(';');
     }
 
     private bool AppendInputKey(StringBuilder key, HirTemplateId template, IReadOnlyList<SemanticValue> arguments,
@@ -46,22 +34,19 @@ internal sealed partial class SemanticAnalyzer
             var target = program.Original(hir.Templates[template.Value].Parameters[index]);
             HashSet<string>? usedFields = usage.WholeReads.Contains(target)
                 ? null : usage.FieldReads.GetValueOrDefault(target) ?? [];
-            AppendValueKey(key, IsScalarSchema(argument) ? argument with { StorageConstraint = null } : argument,
+            AppendValueKey(key, argument with { StorageConstraint = null },
                 context, active, provenance, usedFields);
             key.Append(';');
         }
         key.Append('|');
         for (int index = 0; index < captures.Count && provenance.Supported; index++)
         {
-            var templateCaptures = hir.Templates[template.Value].Captures;
-            if (index < templateCaptures.Length && StandardModuleCapture(templateCaptures[index].SourceLocation, context) is { } stdModule)
-                key.Append('M').Append(stdModule.Value);
-            else if (ReadsCapture(template, index, out var usedFields))
+            if (ReadsCapture(template, index, out var usedFields))
                 AppendValueKey(key, captures[index], context, active, provenance, usedFields);
             else
             {
                 provenance.Skip(captures[index]);
-                key.Append(captures[index].Type.Value);
+                key.Append(captures[index].StorageConstraint?.Value ?? captures[index].Type.Value);
             }
             key.Append(';');
         }
@@ -134,7 +119,7 @@ internal sealed partial class SemanticAnalyzer
                     }
                 }
             }
-            if (node.Kind is HirKind.ReadLocation or HirKind.ReadStorage or HirKind.Assign)
+            if (node.Kind is HirKind.ReadLocation or HirKind.ReadStorage)
                 wholeReads.Add(program.Original(new(node.Data)));
             if (node.Kind == HirKind.TemplateClosure)
             {
@@ -188,7 +173,7 @@ internal sealed partial class SemanticAnalyzer
             provenance.Supported = false;
             return;
         }
-        key.Append(value.Type.Value).Append(value.EagerRange ? '!' : '.').Append('S').Append(value.StorageConstraint?.Value ?? -1);
+        key.Append(PlanType(value).Value).Append(value.EagerRange ? '!' : '.').Append('S').Append(value.StorageConstraint?.Value ?? -1);
         if (value.DenotedType is { } denoted) key.Append('T').Append(denoted.Value);
         if (active?.Add(value) == false)
         {
@@ -214,7 +199,7 @@ internal sealed partial class SemanticAnalyzer
         if (value.Scope is { } scope)
             AppendScopeKey(key, context?.Objects.GetValueOrDefault(scope.Region, scope) ?? scope, context, active, provenance, usedScopeFields);
         if (!provenance.Supported) return;
-        if (value.Element is { } element) { key.Append('['); AppendValueKey(key, element, context, active, provenance); key.Append(']'); }
+        if (value.Element is { } element) { key.Append('['); AppendValueKey(key, element with { StorageConstraint = null }, context, active, provenance); key.Append(']'); }
         if (value.IndexedRegion is { } region && indexed is not null)
         {
             key.Append('I').Append(provenance.Region(region)).Append(':').Append(indexed.FixedCarrier?.Value ?? -1);
@@ -257,11 +242,6 @@ internal sealed partial class SemanticAnalyzer
                 for (int index = 0; index < callable.Captures.Length; index++)
                 {
                     var capture = callable.Captures[index];
-                    if (capture.Mode == HirCaptureMode.Location && StandardModuleCapture(capture.Source, context) is { } stdModule)
-                    {
-                        key.Append('M').Append(stdModule.Value);
-                        continue;
-                    }
                     SemanticValue? live = context?.Values.GetValueOrDefault(capture.Source);
                     if (provenance.ReadOnlyInput && (capture.Mode != HirCaptureMode.Location
                         || (live is null && !provenance.RecordUnbound(capture.Source, capture.Value))))
@@ -290,18 +270,6 @@ internal sealed partial class SemanticAnalyzer
                 }
             key.Append(')');
         }
-    }
-
-    private HirLocationId? StandardModuleCapture(HirLocationId location, SemanticContext? context)
-    {
-        HirLocationId definition = context is not null && context.Definitions.TryGetValue(location, out var mapped)
-            ? mapped
-            : CanonicalDefinition(location) ?? location;
-        var declaration = StandardDeclaration(definition)
-            ?? (CanonicalDefinition(location) is { } canonical ? StandardDeclaration(canonical) : null);
-        if (declaration is not { Kind: DeclarationKind.StandardModule or DeclarationKind.StandardRoot })
-            return null;
-        return context?.ReplacedProgramCells.Contains(declaration.Location) == true ? null : declaration.Location;
     }
 
     private static bool RedundantFutureDomain(SemanticValue value, SemanticCallableDomain future)
@@ -381,7 +349,7 @@ internal sealed partial class SemanticAnalyzer
     // Canonical alias partitions contain no allocation identities: two unrelated
     // calls with the same alias topology share code. Aliased and disjoint inputs
     // cannot share flow proofs after writes to nullable fields or captured cells.
-    private sealed class KeyProvenance(bool readOnlyInput = false, bool recursive = false)
+    private sealed class KeyProvenance(bool readOnlyInput = false)
     {
         public readonly record struct ScopeEmitPlan(bool ShouldEmit, bool IsFirst, HashSet<string>? Filter, HashSet<string>? AlreadyEmitted)
         {
@@ -390,7 +358,6 @@ internal sealed partial class SemanticAnalyzer
         }
 
         public bool ReadOnlyInput { get; } = readOnlyInput;
-        public bool Recursive { get; } = recursive;
         public bool Supported { get; set; } = true;
         public bool MaySkipCells { get; set; }
         public bool HasCompleteDetachedCells => !MaySkipCells || unbound is null;
@@ -433,24 +400,48 @@ internal sealed partial class SemanticAnalyzer
         public void AppendAliases(StringBuilder key)
         {
             if (aliases is null) return;
-            // Ordinary graph paths anchor identities before unordered edges are
-            // numbered. External-only targets are distinguished by incidence,
-            // never by their allocation numbers. Equal incidences are symmetric.
-            var external = aliases.SelectMany(group => group.Targets.Select(target => (group.Source, group.Kind, Target: target)))
+            var rows = aliases.Select(group => (group.Source, group.Kind,
+                Targets: group.Targets.Where(target => regions?.ContainsKey(target) == true)
+                    .Select(target => regions![target]).ToHashSet())).ToArray();
+            var external = aliases.SelectMany(group => group.Targets.Select(target =>
+                (group.Source, group.Kind, Target: target)))
                 .Where(edge => edge.Target >= 0 && regions?.ContainsKey(edge.Target) != true)
                 .GroupBy(edge => edge.Target)
-                .Select(group => (Target: group.Key, Signature: string.Join(";", group
-                    .Select(edge => $"{edge.Source}{edge.Kind}").Order(StringComparer.Ordinal))))
-                .OrderBy(node => node.Signature, StringComparer.Ordinal);
-            foreach (var node in external) Region(node.Target);
+                .Select(group => group.Select(edge => (edge.Source, edge.Kind)).Distinct()
+                    .OrderBy(edge => edge.Source, StringComparer.Ordinal).ThenBy(edge => edge.Kind).ToArray())
+                .Where(incidence => incidence.Select(edge => edge.Source).Distinct().Skip(1).Any()
+                    && !AlreadyLinked(incidence, rows))
+                .Select(incidence => string.Join(';', incidence.Select(edge => edge.Source + edge.Kind)))
+                .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+            if (rows.All(row => row.Targets.Count == 0) && external.Length == 0) return;
             key.Append("|aliases[");
-            foreach (var group in aliases.OrderBy(group => group.Source, StringComparer.Ordinal).ThenBy(group => group.Kind))
+            foreach (var row in rows.OrderBy(row => row.Source, StringComparer.Ordinal).ThenBy(row => row.Kind))
             {
-                key.Append(group.Source).Append(group.Kind).Append('(');
-                foreach (int target in group.Targets.Select(Region).Order()) key.Append(target).Append(',');
+                if (row.Targets.Count == 0) continue;
+                key.Append(row.Source).Append(row.Kind).Append('(');
+                foreach (int target in row.Targets.Order()) key.Append(target).Append(',');
                 key.Append(");");
             }
+            foreach (string incidence in external) key.Append('E').Append(incidence.Length).Append(':').Append(incidence);
             key.Append(']');
+        }
+
+        private static bool AlreadyLinked((string Source, char Kind)[] incidence,
+            (string Source, char Kind, HashSet<int> Targets)[] rows)
+        {
+            foreach (var from in incidence)
+            {
+                if (from.Source[0] != 'S') return false;
+                var row = rows.First(item => item.Source == from.Source && item.Kind == from.Kind);
+                foreach (var to in incidence)
+                {
+                    if (from.Source == to.Source) continue;
+                    if (from.Kind != to.Kind || to.Source[0] != 'S'
+                        || !row.Targets.Contains(int.Parse(to.Source.AsSpan(1), System.Globalization.CultureInfo.InvariantCulture)))
+                        return false;
+                }
+            }
+            return true;
         }
 
         public ScopeEmitPlan BeginScope(SemanticScope scope, HashSet<string>? usedFields) =>

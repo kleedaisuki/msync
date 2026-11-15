@@ -189,7 +189,7 @@ public static class HirValidation
                 if (node.Text is null) Fail("named node payload is missing"); Arity(count, 0, 0); break;
             case HirKind.ReadLocation or HirKind.ReadStorage: Id(node.Data, module.Locations.Length, "read location"); Arity(count, 0, 0); break;
             case HirKind.Declare or HirKind.Assign: Id(node.Data, module.Locations.Length, "assigned location"); Arity(count, 1, 1); break;
-            case HirKind.Discard or HirKind.IsNull or HirKind.DeferRange: Arity(count, 1, 1); break;
+            case HirKind.Discard or HirKind.IsNull: Arity(count, 1, 1); break;
             case HirKind.If: Arity(count, 3, 3); break;
             case HirKind.Match: Id(node.Data, module.Matches.Length, "match node"); Arity(count, 1, 1); break;
             case HirKind.For: Id(node.Data, module.Fors.Length, "for node"); Arity(count, 2, 2); break;
@@ -222,11 +222,7 @@ public static class HirValidation
                 break;
             case HirKind.MemberRead: if (node.Text is null) Fail("member name is missing"); Arity(count, 1, 1); break;
             case HirKind.MemberAssign: if (node.Text is null) Fail("member name is missing"); Arity(count, 2, 2); break;
-            case HirKind.Range or HirKind.LazyRange:
-                Id(node.Data, module.Ranges.Length, "range node");
-                if (!module.Ranges[node.Data].Deferred.IsDefaultOrEmpty && module.Ranges[node.Data].Deferred.Length != count)
-                    Fail("range item modes disagree with the item expressions");
-                break;
+            case HirKind.Range: break;
             case HirKind.Qualify or HirKind.QualifyOn or HirKind.PathJoin or HirKind.Transfer: Arity(count, 2, 2); break;
             case HirKind.Barrier: Id(node.Data, module.Barriers.Length, "barrier node"); Arity(count, 0, 1); break;
         }

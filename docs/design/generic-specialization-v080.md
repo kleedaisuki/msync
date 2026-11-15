@@ -18,44 +18,54 @@ write-only locations erases member/callable changes after a whole module or
 family replacement and can invoke the previous body with a new closure's
 capture layout.
 
-The generated dependency representation establishes these as reads; ordinary
-write-only lexical captures omit their old callable identity only when matching
-an active recursive promise. Completed summary cache keys retain the full domain
-so a conditional store can preserve a later caller's incoming callable. This does not merge detached namespace aliases
-or reload a module. `tests/StdlibLoading --captured-modules` checks warm calls
-before and after replacement, retained aliases, callee evaluation before a
-mutating argument, nested closures and lexical `std` shadowing. Its 81 focused
-contracts cover O0/O2/O3 source, `.mso`, `.mexe` and REPL execution.
+There is no fixed numeric-module shortcut in the key. Standard-module captures
+use the same ordinary Scope/member/callable projection as user namespaces. A
+stable module location is not proof that its members remain unchanged, including
+when a function returns another closure that reads the module later.
 
-## Nested calls are not recursive edges
+The generated dependency representation establishes these as reads. An ordinary
+write-only location capture contributes its storage schema, not the old value or
+callable graph. Conditional writes are represented by the function's formal
+write plan; a no-write branch preserves the current caller's value when the plan
+is applied. It does not require another body for each incoming callable.
 
-Consider a generic `apply(operation, value)` invoking a callback that itself
-calls `apply` with a different callback. Both calls may have parameter kinds
-`(Function, Number)`, but they require different specialized bodies. Reusing the
-unfinished outer body produces a spurious `Never` result. The same mistake
-affected nested sum elimination in the standard `Result::zip` implementation.
+## Share formal plans before constructing bodies
 
-Active specializations are therefore stacked per callable template. An active
-body closes a recursive edge only when its argument and capture shapes match:
-types, callable identities, Type values, Range elements, and recursively checked
-Scope members and storage constraints. Scope comparison tracks visited schema
-pairs so recursive records do not require a depth limit. Inner calls with
-different callbacks retain their own active frame; returning or failing restores
-the previous frame instead of deleting the outer context.
+The specialization key is computed before reserving a function or analyzing its
+body. It contains typed input roles and relevant callable, Type, layout and alias
+dependencies, not concrete caller region/location identities. By-value input
+roots and Range element values do not inherit their source variable's storage
+constraint. Scope rows do not carry unrelated reaching-definition alternatives.
+An incomplete cache entry is the recursive promise for that same key; there is
+no separate active-recursion identity or late whole-module body-folding pass.
+Different callbacks still produce different keys, including nested generic calls
+that share a template but do not form a recursive edge.
 
-## Reserved identities survive later rendering
+One cached instance owns the typed formal result, reachable formal object/cell
+metadata, contracts and a branching write-event program. Call sites bind formal
+roles to actual arguments and capture locations. They do not retain an independent
+callee heap/effect snapshot. Input alias partitions are premises only when the
+analysis uses them; introduced alias relations are transferred back to the
+caller, not replayed as fresh allocations for borrowed input objects.
 
-Recursive calls can construct a fresh Scope with the same schema. Their exact
-metadata identities differ, but the active semantic shape identifies the same
-recursive body. The compiler records that exact key as an alias of the reserved
-specialization. Mutable-call finalization can then revisit the edge after the
-active inference frame has finished without repeatedly creating equivalent
-recursive bodies. This is a fixed-point identity, not an iteration cap.
+Only writes reachable from formal inputs, captures or returned values are
+exported. Reachability expands through values installed by those writes; this
+also retains an escaping closure's cells. Private local writes remain useful
+during function/loop analysis but do not root the entire activation in the cached
+plan. Empty alternatives are preserved when another alternative writes, because
+"leave the caller unchanged" is a real branch, not a missing summary.
 
-Editor inference follows the same distinction. A shared function syntax node
-does not by itself mean recursion: nested generic calls must retain their actual
-result schema for hover and completion. The editor's recovery guard consults
-the active semantic shapes rather than a syntax-only membership set.
+Every control-flow exit carries its value and write-event sequence together.
+Function plans join normal completion and explicit returns; loops join their
+break exits. Omitting an early-return branch can incorrectly remove Null from a
+mutable linked field's inferred domain. The B+ tree churn journey exercises this
+through page split/merge, complete deletion and reinsertion. The Range journey
+also checks shared write-only setters with no-write, return and break branches.
+
+Branch contexts borrow unchanged facts through overlays. Joins read every
+branch's value for a key before publishing that key to the common ancestor;
+otherwise the first branch can contaminate an unchanged sibling. This is
+transient control-flow state, not a retained summary per invocation.
 
 ## Returned values and deferred reads
 
@@ -67,15 +77,12 @@ whose selected value is Number therefore does not turn a returned Number into
 remain intact; this is not a deep copy or blanket removal of storage metadata.
 External captured locations retain their callable result contracts.
 
-Deferred calls have a different observation boundary. Free reads compiled into a
-Range thunk use the legal future domain of mutable captured locations, rather
-than a type refinement that held only when the adapter was constructed. The
-fresh callee body then analyzes its own control-flow edges normally. This
-distinction lets a source `lines` function match String, Path or Range input
-and return Range in every case, including when an external argument changes
-alternative before consumption. A generic identity over String or Range is not
-always Range: if the deferred pass finds that union, it emits a normal call with
-the union result instead of an invalid `DeferRange` instruction.
+Explicit traversal callbacks have a different observation boundary. Free reads
+inside a callback use the legal future domain of mutable captured locations,
+rather than a refinement that held only when the adapter was constructed. The
+callback body then analyzes its own control-flow edges normally. This does not
+apply to ordinary calls returning Range or to literal element initializers:
+those execute at construction, and their argument reads are not deferred.
 
 An unwritten private binding cell retains its current value even when its
 admitted storage type is wider. A lexical write analysis identifies declarations,
@@ -100,9 +107,8 @@ immutable, and indexed-memory identity/version checks remain independent.
 This is not source-level immutability: an actual assignment or captured setter
 keeps the full mutable domain. Function syntax facts use a weak cache containing
 only declaration positions, never a first caller's semantic environment. Scalar
-deferred reads do not allocate the Scope-widening dictionary. Arguments and
-callbacks still evaluate on demand; no external live cell is frozen to recover
-a type proof.
+deferred reads do not allocate the Scope-widening dictionary. Ordinary arguments evaluate at the call; explicit traversal
+callbacks execute on demand. No callback capture is frozen to recover a type proof.
 
 ## Focused acceptance
 

@@ -2,7 +2,6 @@ using System.Collections.Immutable;
 using Msync.Compiler.Syntax;
 using Msync.Core;
 using Msync.Core.Native;
-using Msync.Optimization;
 using Msync.Compiler.Semantics;
 using Msync.Hir;
 
@@ -14,7 +13,7 @@ namespace Msync.Compiler.Session;
 internal sealed class SemanticSession(string sourceName, int optimization)
 {
     private readonly HirBuilder workspace = new();
-    private readonly NativeHirLoweringSession lowering = new();
+    private readonly LlvmHirLoweringSession lowering = new();
     private readonly SemanticInstanceCache instances = new();
     private BoundProgram? accepted;
     private SemanticContext? facts;
@@ -37,16 +36,25 @@ internal sealed class SemanticSession(string sourceName, int optimization)
         SemanticSessionDispatch nextDispatches = dispatches.Fork();
         SemanticAnalyzer analyzer = new(bound, codeCache: instances, sessionDispatch: nextDispatches);
         HirModule module = Compiler.Analyze(analyzer, facts, trace);
-        var options = new NativeHirLoweringOptions(optimization, PreserveLocals: true);
-        NativeHirLoweringResult result = trace is null ? lowering.Lower(module, options)
-            : trace.MeasureDetailed("compiler.lower", (lowering, module, options, trace),
-                static state => state.lowering.Lower(state.module, state.options, state.trace),
+        LlvmHirLoweringResult graph = trace is null ? lowering.Lower(module)
+            : trace.MeasureDetailed("compiler.lower", (lowering, module, trace),
+                static state => state.lowering.Lower(state.module, state.trace),
+                metrics: static lowered => new Dictionary<string, ulong>
+                {
+                    ["functions"] = (ulong)lowered.SourceFunctions.Count,
+                    ["blocks"] = (ulong)lowered.Module.Functions.Sum(function => function.BasicBlocks.Count),
+                    ["instructions"] = (ulong)lowered.Module.Functions.Sum(function => function.BasicBlocks.Sum(block => block.Instructions.Count)),
+                    ["types"] = (ulong)lowered.Types.Count,
+                    ["layouts"] = (ulong)lowered.Layouts.Count,
+                    ["session.cells"] = (ulong)lowered.SessionCells.Count
+                });
+        graph = Compiler.OptimizeLlvm(graph, optimization, trace);
+        NativeHirLoweringResult result = trace is null ? lowering.Emit(graph)
+            : trace.MeasureDetailed("compiler.target", (lowering, graph, trace),
+                static state => state.lowering.Emit(state.graph, state.trace),
                 size: static lowered => CompilationSize.Of(lowered.Program),
                 metrics: static lowered => CompilationMetrics.Of(lowered.Program));
-        NativeProgram executable = trace is null ? NativeOptimizer.Optimize(result.Program, optimization)
-            : trace.MeasureDetailed("compiler.optimize", (result.Program, optimization, trace),
-                static state => NativeOptimizer.Optimize(state.Program, state.optimization, state.trace),
-                CompilationSize.Of(result.Program), CompilationSize.Of, metrics: CompilationMetrics.Of);
+        NativeProgram executable = result.Program with { OptimizationLevel = optimization };
         pending = new(bound, analyzer.FinalState, result.Layout, nextDispatches);
         additions.Commit();
         transaction.Commit();

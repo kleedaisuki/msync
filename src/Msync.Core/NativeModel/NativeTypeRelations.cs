@@ -2,6 +2,14 @@ namespace Msync.Core.Native;
 
 public static class NativeTypeRelations
 {
+    public static bool SameStorageRepresentation(IReadOnlyList<NativeCodeType> types, int left, int right)
+    {
+        NativeCodeType first = types[left], second = types[right];
+        if (first.IsMachine || second.IsMachine) return first.Machine?.HasSameValueType(second.Machine) == true;
+        return first.Pointee >= 0 ? second.Pointee >= 0
+            : second.Pointee < 0 && first.Kind == second.Kind;
+    }
+
     public static bool Same(IReadOnlyList<NativeCodeType> types, int left, int right) =>
         left == right || Accepts(types, left, right) && Accepts(types, right, left);
 
@@ -15,6 +23,11 @@ public static class NativeTypeRelations
         {
             if (pair.Destination == pair.Source || !seen.Add(pair)) continue;
             NativeCodeType target = types[pair.Destination], value = types[pair.Source];
+            if (target.IsMachine || value.IsMachine)
+            {
+                if (target.Machine?.HasSameValueType(value.Machine) != true) return false;
+                continue;
+            }
             if (target.Pointee >= 0 || value.Pointee >= 0)
             {
                 if (target.Pointee < 0 || value.Pointee < 0) return false;
@@ -40,6 +53,7 @@ public static class NativeTypeRelations
     public static bool StorageAccepts(IReadOnlyList<NativeCodeType> types, int destination, int source)
     {
         NativeCodeType target = types[destination], value = types[source];
+        if (target.IsMachine || value.IsMachine) return target.Machine?.HasSameValueType(value.Machine) == true;
         if (target.Pointee >= 0 || value.Pointee >= 0) return Same(types, destination, source);
         if ((target.Kind & value.Kind) != value.Kind) return false;
         // Referent layout domains are checked at dependent access, not stored in the address carrier.
@@ -50,6 +64,7 @@ public static class NativeTypeRelations
     public static bool PathStringStore(IReadOnlyList<NativeCodeType> types, int destination, int source)
     {
         NativeCodeType target = types[destination], value = types[source];
+        if (target.IsMachine || value.IsMachine) return false;
         const TypeKind kinds = TypeKind.Path | TypeKind.String | TypeKind.Null;
         if (target.Pointee >= 0 || value.Pointee >= 0 || (target.Kind & ~kinds) != 0 || (value.Kind & ~kinds) != 0)
             return false;

@@ -133,13 +133,18 @@ let generic_value = fn(value) { value };
 ((decltype(generic_value) is Function) as String) -> ./uncalled-generic.txt;
 fn unused_invalid(value) { 1 + true };
 "deferred" -> ./unused-body.txt;
+let union_source: Range<Number> | String = [1];
+fn range_identity(value: Range<Number> | String) { value };
+let initialized_copy = range_identity(union_source);
+union_source = "later";
+($std::ranges::size(initialized_copy) as String) -> ./initialized-union.txt;
 acquire;
 """
 
 OUTPUTS: dict[str, bytes] = {
     "guarded.txt": b"2,3",
     "nullable-write.txt": b"true",
-    "before-demand.txt": b"0",
+    "before-demand.txt": b"1",
     "first-demand.txt": b"1",
     "second-demand.txt": b"1",
     "after-demand.txt": b"1",
@@ -165,6 +170,7 @@ OUTPUTS: dict[str, bytes] = {
     "unevaluated-endpoint.txt": b"true",
     "uncalled-generic.txt": b"true",
     "unused-body.txt": b"deferred",
+    "initialized-union.txt": b"1",
 }
 
 type DiagnosticFragment = str | tuple[str, ...]
@@ -187,17 +193,6 @@ if first::child is not null {
 };
 """,
         (("Null", "Scope?"),),
-    ),
-    (
-        "unsafe-live-union",
-        """
-let values: Range<Number> | String = [1];
-fn identity(value: Range<Number> | String) { value };
-let delayed = identity(values);
-values = "later";
-$std::ranges::size(delayed);
-""",
-        ("Range", "String"),
     ),
     (
         "called-invalid-generic",

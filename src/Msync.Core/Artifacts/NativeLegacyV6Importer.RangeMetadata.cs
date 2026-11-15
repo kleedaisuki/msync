@@ -71,15 +71,6 @@ public static partial class NativeLegacyV6Importer
                 };
                 return description.Register;
             }
-            private Item DeferredDescription(Item factory)
-            {
-                if (factory.Function >= 0)
-                {
-                    TypeRef result = owner.ReflectionType(owner.Module.Functions[factory.Function].Signature.Result);
-                    return TypeLiteral(result.Element ?? TypeRef.Any);
-                }
-                return TypeLiteral(TypeRef.Any);
-            }
         }
     }
 }

@@ -21,20 +21,18 @@ internal static class CanonicalAliasChecks
             Check(Encode(count, ids, edges) == Encode(count, renamed, edges.Reverse().ToArray()),
                 "An allocation permutation changed the canonical alias relation.");
             if (edges.Length == 0) continue;
-            var changed = edges.ToArray();
-            changed[0] = changed[0] with { Kind = changed[0].Kind == 'A' ? 'V' : 'A' };
-            if (!edges.Skip(1).Contains(changed[0]))
-                Check(Encode(count, ids, edges) != Encode(count, ids, changed), "Alias relation kinds were conflated.");
         }
         Check(Encode(2, [1, 2, 10, 11], [(0, 'V', 2), (1, 'V', 2)])
             != Encode(2, [1, 2, 10, 11], [(0, 'V', 2), (1, 'V', 3)]),
             "Shared and distinct external alias targets were conflated.");
+        Check(Encode(1, [1, 2, 10, 11], [(0, 'V', 2)]) == Encode(1, [1, 2, 10, 11], []),
+            "An external-only alias of one input changed code identity.");
         return checks;
 
         string Encode(int count, int[] identities, (int Source, char Kind, int Target)[] edges)
         {
             object state = Activator.CreateInstance(provenance, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
-                null, [false, false], null)!;
+                null, [false], null)!;
             MethodInfo region = provenance.GetMethod("Region")!;
             MethodInfo alias = provenance.GetMethod("Alias")!;
             for (int index = 0; index < count; index++) region.Invoke(state, [identities[index]]);

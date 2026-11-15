@@ -24,7 +24,6 @@ internal sealed class SemanticArena(HirBuilder builder)
     public IReadOnlyList<HirFor> Fors => builder.Fors;
     public IReadOnlyList<HirMatch> Matches => builder.Matches;
     public IReadOnlyList<HirBarrier> Barriers => builder.Barriers;
-    public IReadOnlyList<HirRange> Ranges => builder.Ranges;
     public IReadOnlyList<HirFunctionAdaptation> Adaptations => builder.Adaptations;
     public IReadOnlyList<HirTemplateClosure> TemplateClosures => builder.TemplateClosures;
     public IReadOnlyList<HirConcept> Concepts => builder.Concepts;

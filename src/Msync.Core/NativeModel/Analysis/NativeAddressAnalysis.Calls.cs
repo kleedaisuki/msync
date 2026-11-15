@@ -384,22 +384,9 @@ internal sealed partial class NativeAddressAnalysis
         {
             Points value = Input(pc, items[index]);
             changed |= destination.Retained.Add(value);
-            if (instruction.Op == NativeOp.MakeLazyRange && (instruction.Symbol is null || instruction.Symbol[index] == '1'))
-            {
-                Points called = ElementValue(pc, index);
-                changed |= Invoke(pc, value, [], called);
-                value = called;
-            }
             changed |= destination.Elements.Add(value);
         }
         return changed;
-    }
-
-    private bool Deferred(int pc, NativeInstruction instruction, Points destination)
-    {
-        Points producer = Input(pc, instruction.A), result = ElementValue(pc, 0);
-        bool changed = destination.Retained.Add(producer) | Invoke(pc, producer, [], result);
-        return CopyElements(result, destination) | changed;
     }
 
     private bool Next(int pc, NativeInstruction instruction, Points destination)

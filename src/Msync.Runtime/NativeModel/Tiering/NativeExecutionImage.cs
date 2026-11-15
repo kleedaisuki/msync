@@ -90,7 +90,9 @@ internal sealed partial class NativeExecutionFunction : IDisposable
             instructions = backend.Instructions.Select(code => new NativeExecutionInstruction(code)).ToArray();
             Operands = backend.Instructions.Select(code => NativeExecutionOperand.Link(image, Definition, Metadata[code.Operand]) with
             {
-                Type = code.OperandKinds == ulong.MaxValue ? null : NativeType.FromKinds(code.OperandKinds),
+                Type = code.OperandKinds == ulong.MaxValue ? null
+                    : Metadata[code.Operand].Type >= 0 && image.Program.Types[Metadata[code.Operand].Type].IsMachine
+                        ? image.Type(Metadata[code.Operand].Type) : NativeType.FromKinds(code.OperandKinds),
                 NeedsLayoutCheck = code.NeedsLayoutCheck
             }).ToArray();
             rawWritable = backend.RawWritable;
@@ -111,7 +113,7 @@ internal sealed partial class NativeExecutionFunction : IDisposable
             }
             if (!pureSynchronous && !contextFree) continue;
             if (instruction.Op is NativeOp.Call or NativeOp.CallNative or NativeOp.Transfer
-                or NativeOp.MakeLazyRange or NativeOp.DeferRange or NativeOp.OpenIterator
+                or NativeOp.OpenIterator
                 or NativeOp.NextIterator or NativeOp.CloseIterator or NativeOp.ProcessCall
                 or NativeOp.SelectPath or NativeOp.Barrier or NativeOp.Acquire
                 or NativeOp.ExecutePlan or NativeOp.PlanResult)

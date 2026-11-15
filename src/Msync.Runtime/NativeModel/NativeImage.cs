@@ -10,9 +10,11 @@ internal sealed class NativeImage
 {
     private readonly NativeType[] types;
     private readonly NativeLayout[] layouts;
+    private readonly NativeEnvironmentLayout?[] environmentLayouts;
+    private readonly Action<RuntimeObservation>? observe;
     private readonly FrameAllocation[] frames;
     private readonly NativeValue[] constants;
-    private readonly TypeRef[] sourceTypes;
+    private readonly TypeRef?[] sourceTypes;
     private readonly ConditionalWeakTable<NativeRuntimeContext, NativeValue[]> contextualConstants = new();
     private readonly int[] layoutLinkOrder;
     private readonly ConcurrentDictionary<NativeLayout, int> linkedLayouts = new(ReferenceEqualityComparer.Instance);
@@ -23,14 +25,17 @@ internal sealed class NativeImage
         Dictionary<(int OriginId, int OriginOffset), NativeValue>? retainedLiterals = null)
     {
         Program = program;
+        observe = context.Observe;
+        EnvironmentLayoutResolver = EnvironmentLayout;
         Connections = program.Backend?.Connections.Select(context.Connections.Get).ToArray() ?? [];
         layoutLinkOrder = program.Types.Where(type => (type.Kind & TypeKind.Scope) != 0)
             .SelectMany(type => type.Layouts ?? []).Concat(Enumerable.Range(0, program.Layouts.Count)).Distinct().ToArray();
         types = program.Types.Select(StorageType).ToArray();
-        sourceTypes = new TypeRef[program.Types.Count];
+        sourceTypes = new TypeRef?[program.Types.Count];
         for (int index = 0; index < sourceTypes.Length; index++) sourceTypes[index] = BuildSourceType(index);
         layouts = program.Layouts.Select(layout => new NativeLayout(layout.Fields.Select(
             field => new NativeField(field.Name, types[field.Type])))).ToArray();
+        environmentLayouts = new NativeEnvironmentLayout?[layouts.Length];
         ILookup<int, NativeAllocationPlan> framePlans = program.Allocations
             .Where(plan => plan.Placement == NativeAllocationPlacement.Frame).ToLookup(plan => plan.Function);
         frames = program.Functions.Select((function, number) => new FrameAllocation(program, number,
@@ -51,8 +56,25 @@ internal sealed class NativeImage
 
     internal NativeConnections.NativeEndpoint[] Connections { get; }
     internal NativeProgram Program { get; }
+    internal Func<NativeAddress, NativeEnvironmentLayout> EnvironmentLayoutResolver { get; }
     internal NativeType Type(int index) => types[index];
     internal NativeLayout Layout(int index) => layouts[index];
+    internal NativeEnvironmentLayout EnvironmentLayout(NativeAddress address)
+    {
+        if (address.Allocation.Layout.EnvironmentSchema is { } schema) return schema;
+        int index = LayoutIdentity(address);
+        if (Volatile.Read(ref environmentLayouts[index]) is { } existing) return existing;
+        var layout = new NativeEnvironmentLayout(Program.Layouts[index].Fields.Select(field =>
+        {
+            int pointee = Program.Types[field.Type].Pointee;
+            return new NativeCaptureLayout(Type(pointee >= 0 ? pointee : field.Type), pointee >= 0);
+        }));
+        var published = Interlocked.CompareExchange(ref environmentLayouts[index], layout, null);
+        if (published is not null) return published;
+        observe?.Invoke(new("function-environment-schema", "linked",
+            Detail: $"layout={index}; captures={layout.Captures.Count}; locations={layout.Captures.Count(capture => capture.Location)}; source=producer-storage"));
+        return layout;
+    }
     internal FrameAllocation Frame(int function) => frames[function];
     internal bool TryRegionLayout(NativeAddress address, out NativeLayout layout)
     {
@@ -99,11 +121,14 @@ internal sealed class NativeImage
         throw new ArgumentOutOfRangeException(nameof(offset), "Native address is outside its logical allocation.");
     }
 
-    internal TypeRef SourceType(int index) => sourceTypes[index];
+    internal TypeRef? OptionalSourceType(int index) => sourceTypes[index];
+    internal TypeRef SourceType(int index) => sourceTypes[index] ??
+        throw new InvalidOperationException($"Native machine type #{index} has no source-language projection.");
 
-    private TypeRef BuildSourceType(int index)
+    private TypeRef? BuildSourceType(int index)
     {
         NativeCodeType type = Program.Types[index];
+        if (type.IsMachine) return null;
         return new(type.Kind, type.Element >= 0 ? BuildSourceType(type.Element) : null);
     }
 
@@ -115,6 +140,8 @@ internal sealed class NativeImage
         NativeFunctionCode definition = Program.Functions[function.Function];
         if (definition.ReflectionSignature is { } reflected) return new(reflected.Parameters, reflected.Result);
         Msync.Core.Native.NativeSignature code = definition.Signature;
+        if (code.Parameters.Any(type => OptionalReflectedType(type) is null) || OptionalReflectedType(code.Result) is null)
+            return null;
         return new(code.Parameters.Select(ReflectedType).ToArray(), ReflectedType(code.Result));
     }
 
@@ -122,6 +149,11 @@ internal sealed class NativeImage
     {
         int pointee = Program.Types[type].Pointee;
         return SourceType(pointee >= 0 ? pointee : type);
+    }
+    private TypeRef? OptionalReflectedType(int type)
+    {
+        int pointee = Program.Types[type].Pointee;
+        return OptionalSourceType(pointee >= 0 ? pointee : type);
     }
 
     internal NativeValue Convert(NativeValue value, int target, bool explicitConversion, NativeRuntimeContext origin)
@@ -139,7 +171,7 @@ internal sealed class NativeImage
         throw new MsyncException($"Cannot implicitly convert {value.Type} to {type}.");
     }
 
-    internal NativeValue Narrow(NativeValue value, NativeType storage, int type, SourceSpan? source, string function, int pc) => storage.Accepts(value.Kind)
+    internal NativeValue Narrow(NativeValue value, NativeType storage, int type, SourceSpan? source, string function, int pc) => storage.Accepts(value)
         && (value.Kind != NativeKind.Address || AdmitsLayout(type, value.AsAddress()))
         ? value : throw new MsyncException($"Expected {SourceType(type)}, received {value.Type}{(value.Kind == NativeKind.Address ? $" (allocation layout #{value.AsAddress().Allocation.LayoutId})" : "")}. Native Narrow in function '{function}', instruction {pc}, type #{type}.", source);
 
@@ -170,6 +202,7 @@ internal sealed class NativeImage
         NativeKind.Null => NativeValue.Null,
         NativeKind.Bool => NativeValue.FromBool(literal.Boolean),
         NativeKind.Number => NativeValue.FromNumber(literal.Number),
+        NativeKind.MachineInteger or NativeKind.MachineFloat => literal.ToMachineValue(),
         NativeKind.String => NativeValue.FromString(literal.Text ?? ""),
         NativeKind.Path => NativeValue.FromPath(literal.Path ?? context.Capture(new NativePathValue(literal.Text ?? ""))),
         NativeKind.Connection => NativeValue.FromConnectionResource(context.Connections.Get(new(literal.ConnectionKind, literal.Text ?? ""))),
@@ -234,6 +267,5 @@ internal sealed class NativeImage
         return true;
     }
 
-    private static NativeType StorageType(NativeCodeType type) => type.Pointee >= 0
-        ? NativeType.Of(NativeKind.Address) : NativeType.FromTypeRef(new(type.Kind));
+    private static NativeType StorageType(NativeCodeType type) => type.PhysicalType;
 }

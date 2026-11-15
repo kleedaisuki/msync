@@ -107,49 +107,18 @@ internal sealed partial class SemanticContext(HirFunctionId function, SemanticOu
     public HashSet<int> IndexedWrites { get; init; } = [];
     public HashSet<HirLocationId> CellWrites { get; init; } = [];
     public HashSet<(int Region, string Field)> FieldWrites { get; init; } = [];
-    public List<SemanticValue> Returns { get; } = [];
-    public Dictionary<HirLoopId, List<SemanticValue>> Breaks { get; } = [];
+    public List<SemanticExit> Returns { get; } = [];
+    public Dictionary<HirLoopId, List<SemanticExit>> Breaks { get; } = [];
 
-    public SemanticContext Fork()
-    {
-        if (Output is null) return QueryFork();
-        SemanticContext fork = new(Function, Output)
-        {
-            ActivatedModules = ActivatedModules,
-            ReplacedProgramCells = ReplacedProgramCells,
-            DeferredReads = DeferredReads,
-            ExpectedReturn = ExpectedReturn,
-            Queries = Queries,
-            FlowAnalysis = FlowAnalysis,
-            FieldWrites = FieldWrites,
-            NextRegion = NextRegion,
-            InitializedSingletons = InitializedSingletons,
-            MaybeInitializedSingletons = MaybeInitializedSingletons,
-            ActiveSingletonGuards = ActiveSingletonGuards,
-            WriteEvents = WriteEvents is null ? null : new(WriteEvents)
-        };
-        foreach (var pair in SingletonWriteFacts) fork.SingletonWriteFacts.Add(pair.Key, pair.Value);
-        foreach (var pair in SingletonSchemas) fork.SingletonSchemas.Add(pair.Key, pair.Value);
-        foreach (var pair in Locations) fork.Locations.Add(pair.Key, pair.Value);
-        foreach (var pair in Definitions) fork.Definitions.Add(pair.Key, pair.Value);
-        foreach (var pair in ClosedCallRequirements) fork.ClosedCallRequirements.Add(pair.Key, pair.Value);
-        foreach (var pair in CallableContracts) fork.CallableContracts.Add(pair.Key, pair.Value);
-        foreach (var pair in Values) fork.Values.Add(pair.Key, pair.Value);
-        foreach (var pair in Storage) fork.Storage.Add(pair.Key, pair.Value);
-        foreach (var pair in Objects) fork.Objects.Add(pair.Key, pair.Value);
-        foreach (var pair in Indexed) fork.Indexed.Add(pair.Key, pair.Value);
-        foreach (var pair in AliasViews) fork.AliasViews.Add(pair.Key, pair.Value);
-        foreach (var pair in MemberContracts) fork.MemberContracts.Add(pair.Key, pair.Value);
-        foreach (var pair in Substitutions) fork.Substitutions.Add(pair.Key, pair.Value);
-        return fork;
-    }
+    public SemanticContext Fork() => Borrow(Output);
+    public SemanticContext QueryFork() => Borrow(null);
 
-    public SemanticContext QueryFork() => new(Function, parent: this)
+    private SemanticContext Borrow(SemanticOutput? output) => new(Function, output, this)
     {
         QueryBinding = QueryBinding,
         DeferredReads = DeferredReads,
         ExpectedReturn = ExpectedReturn,
-        Queries = Queries ?? new(),
+        Queries = Queries,
         FlowAnalysis = FlowAnalysis,
         ReturnPlaces = ReturnPlaces,
         NextRegion = NextRegion,

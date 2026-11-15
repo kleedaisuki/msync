@@ -112,6 +112,7 @@ internal sealed partial class SemanticAnalyzer
         SemanticValue sequence = Analyze(children[0], context);
         Require(sequence, hir.Type(new TypeRef(TypeKind.Range)), program.Node(children[0]).Source);
         ApplyDeferredEffects(sequence, context);
+        ActivateLoopWrites(node, context);
         HirFor iteration = hir.Fors[node.Data];
         SemanticContext bodyContext = ForkFlow(context);
         bodyContext.FlowAnalysis = PrepareFlow(id, context, sequence);
@@ -123,7 +124,9 @@ internal sealed partial class SemanticAnalyzer
             context.Output!.SetLocation(item, hir.Locations[item.Value] with { StorageType = element.Type });
         bodyContext.Breaks[iteration.Loop] = [];
         SemanticValue body = Analyze(children[1], bodyContext);
-        MergeContexts(context, context.Fork(), bodyContext);
+        var exits = bodyContext.Breaks[iteration.Loop].Select(exit => exit.Events).ToList();
+        if (Runtime(body).Kind != TypeKind.Never) exits.Add(bodyContext.WriteEvents?.ToImmutableArray() ?? []);
+        MergeLoopExits(context, bodyContext, exits, node.Source, maySkip: true);
         context.Returns.AddRange(bodyContext.Returns);
         int index = node.Data;
         if (context.Publish)
@@ -139,6 +142,7 @@ internal sealed partial class SemanticAnalyzer
         SemanticContext context)
     {
         HirLoopId loop = new(node.Data);
+        ActivateLoopWrites(node, context);
         SemanticContext bodyContext = ForkFlow(context);
         bodyContext.FlowAnalysis = PrepareFlow(id, context);
         bodyContext.Breaks[loop] = [];
@@ -147,9 +151,43 @@ internal sealed partial class SemanticAnalyzer
         var exits = bodyContext.Breaks[loop];
         SemanticValue result = exits.Count == 0
             ? new(hir.Type(new TypeRef(TypeKind.Never)), HirNodeId.None)
-            : exits.Aggregate(Join);
-        if (exits.Count != 0) MergeContexts(context, bodyContext);
+            : exits.Select(exit => exit.Value).Aggregate(Join);
+        if (exits.Count != 0)
+            MergeLoopExits(context, bodyContext, exits.Select(exit => exit.Events).ToArray(), node.Source, maySkip: false);
         return result with { Node = Add(node, result.Type, [body.Node], context) };
+    }
+
+    private void ActivateLoopWrites(HirNode node, SemanticContext context)
+    {
+        if (context.WriteEvents is not null) return;
+        if (Trace?.Detail is not { } detail) { context.ActivateWriteEvents(); return; }
+        detail.Run("compiler.semantic.loop_write_events", (Context: context, Trace: detail), static state =>
+        {
+            state.Context.ActivateWriteEvents();
+            state.Trace.Metric("events.initial", state.Context.WriteEvents!.Count);
+        }, HirTelemetry.Source(hir.Sources, node.Source));
+    }
+
+    private void MergeLoopExits(SemanticContext context, SemanticContext body,
+        IReadOnlyList<ImmutableArray<SemanticWriteEvent>> exits, HirSourceRange source, bool maySkip)
+    {
+        int prefix = context.WriteEvents?.Count ?? 0;
+        var sequences = exits.Select(events => events.Skip(prefix).ToImmutableArray()).ToList();
+        if (maySkip) sequences.Add([]);
+        // Retain new lexical definitions, not one iteration's post-state of
+        // existing cells. The same transfer program joins every exit at entry.
+        foreach (var pair in body.Values.LocalEntries) context.Values.TryAdd(pair.Key, pair.Value);
+        foreach (var pair in body.Objects.LocalEntries) context.Objects.TryAdd(pair.Key, pair.Value);
+        foreach (var pair in body.Indexed.LocalEntries) context.Indexed.TryAdd(pair.Key, pair.Value);
+        foreach (var pair in body.Storage.LocalEntries) context.Storage.TryAdd(pair.Key, pair.Value);
+        foreach (var pair in body.Definitions.LocalEntries) context.Definitions[pair.Key] = pair.Value;
+        foreach (var pair in body.AliasViews.LocalEntries)
+            context.AliasViews[pair.Key] = context.AliasViews.GetValueOrDefault(pair.Key, []).Union(pair.Value);
+        foreach (var pair in body.MemberContracts.LocalEntries)
+            context.MemberContracts[pair.Key] = context.MemberContracts.GetValueOrDefault(pair.Key, [])
+                .AddRange(pair.Value).Distinct().ToImmutableArray();
+        MergeSessionContracts(context, [body]);
+        ApplyEventPlan(MergeEventSequences(sequences).ToImmutableArray(), context, source);
     }
 
     private SemanticValue Break(HirNode node, ReadOnlySpan<HirNodeId> children,
@@ -162,7 +200,7 @@ internal sealed partial class SemanticAnalyzer
         if (iteration && children.Length != 0)
             throw Error(node.Source, "A for expression cannot return a break value.", "E0207");
         SemanticValue value = children.Length == 0 ? Null(node.Source, context) : Analyze(children[0], context);
-        values.Add(value);
+        values.Add(new(value, context.WriteEvents?.ToImmutableArray() ?? []));
         HirTypeId never = hir.Type(new TypeRef(TypeKind.Never));
         return new(never, Add(node, never, children.Length == 0 ? [] : [value.Node], context));
     }
@@ -177,7 +215,7 @@ internal sealed partial class SemanticAnalyzer
             Require(value, expected, node.Source, allowImplicit: true, context: context);
             value = Convert(value, expected, node.Source, context);
         }
-        context.Returns.Add(value);
+        context.Returns.Add(new(value, context.WriteEvents?.ToImmutableArray() ?? []));
         HirTypeId never = hir.Type(new TypeRef(TypeKind.Never));
         return new(never, Add(node, never, [value.Node], context));
     }
@@ -393,24 +431,7 @@ internal sealed partial class SemanticAnalyzer
         }
         MergeSingletonFlow(destination, branches);
         MergeIndexedContexts(destination, branches);
-        if (!destination.Publish) { MergeQueryContexts(destination, branches); return; }
-        foreach (var pair in branches[0].Values) destination.Values[pair.Key] = pair.Value;
-        foreach (var pair in branches[0].Storage) destination.Storage[pair.Key] = pair.Value;
-        foreach (var pair in branches[0].Objects) destination.Objects[pair.Key] = pair.Value;
-        foreach (SemanticContext branch in branches.Skip(1))
-        {
-            foreach (var (location, value) in branch.Values)
-                destination.Values[location] = destination.Values.TryGetValue(location, out var previous) ? Join(previous, value) : value;
-            foreach (var (location, type) in branch.Storage) destination.Storage[location] = type;
-            foreach (var (region, scope) in branch.Objects)
-            {
-                if (!destination.Objects.TryGetValue(region, out var previous)) { destination.Objects[region] = scope; continue; }
-                var fields = previous.Fields;
-                foreach (var (name, value) in scope.Fields)
-                    fields = fields.SetItem(name, fields.TryGetValue(name, out var before) ? Join(before, value) : value);
-                destination.Objects[region] = previous with { Fields = fields };
-            }
-        }
+        MergeFlowFacts(destination, branches);
     }
 
     private void MergeIndexedContexts(SemanticContext destination, SemanticContext[] branches)
@@ -436,7 +457,7 @@ internal sealed partial class SemanticAnalyzer
         foreach (var (region, resource) in merged) destination.Indexed[region] = resource;
     }
 
-    private void MergeQueryContexts(SemanticContext destination, SemanticContext[] branches)
+    private void MergeFlowFacts(SemanticContext destination, SemanticContext[] branches)
     {
         HashSet<HirLocationId>? values = null, storage = null;
         HashSet<int>? objects = null;

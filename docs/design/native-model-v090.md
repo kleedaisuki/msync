@@ -75,6 +75,20 @@ structural validation on every trusted field access. Logical schema information
 must not be mistaken for a proven physical layout merely to delete a necessary
 check.
 
+Here "carrier" means the builtin value representation (for example Number or a
+nullable Scope reference), not an additional object or mandatory runtime check.
+The frontend checks the immediate field schema without recursively walking the
+referenced mutable heap. Trusted internal calls do not acquire another runtime
+structural admission scan. Physical layout obligations remain at actual member
+projection unless already proved.
+
+Range literals initialize their element expressions once in source order and
+retain the resulting values, including shared Scope identities. A regular
+Range-returning call evaluates its callee, arguments and body normally. Only
+explicit traversal adapters/generators defer callbacks. Native `MakeRange` stores
+datums and never invokes an element as a producer. The retired implicit lazy
+literal/call opcodes have reserved numeric gaps, not execution fallbacks.
+
 The compact codec, typed-flow verifier and executable linker share
 `NativeInstructionFacts.Schema`: encoded operands, semantic value-read operands
 and required/optional result behavior have one readonly opcode description.

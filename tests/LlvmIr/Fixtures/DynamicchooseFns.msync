@@ -1,0 +1,7 @@
+fn chooseFns(flag: Bool) {
+    if flag { fn(value: Number) { value + 1 } }
+    else { fn(value: Number) { value + 2 } }
+};
+let first = chooseFns(true);
+let second = chooseFns(false);
+first(4) * 10 + second(4)

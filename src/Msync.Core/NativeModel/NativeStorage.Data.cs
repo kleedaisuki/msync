@@ -5,7 +5,7 @@ namespace Msync.Core.Native;
 public sealed partial class NativeStorage
 {
     // Owned inline by NativeAllocation; rebinding must operate through its ref accessor.
-    internal struct Data
+    internal partial struct Data
     {
         internal readonly NativeLayout layout;
         internal NativeStorageSlice<byte> bytes;
@@ -66,6 +66,7 @@ public sealed partial class NativeStorage
         }
         internal readonly NativeValue ReadInitialized(NativeType type, NativeOffset offset)
         {
+            if (type.Machine is { } machine) return ReadMachineInitialized(machine, offset);
             NativeRepresentation format = NativeRepresentation.Of(type);
             bool union = type.IsUnion;
             NativeKind kind = union ? (NativeKind)bytes[offset.Bytes] : type.Kind;
@@ -85,6 +86,7 @@ public sealed partial class NativeStorage
         }
         internal readonly void Write(NativeType type, NativeOffset offset, NativeValue value)
         {
+            if (type.Machine is { } machine) { WriteMachine(machine, offset, value); return; }
             NativeRepresentation format = NativeRepresentation.Of(type);
             NativeRepresentation actual = NativeRepresentation.Of(value.Kind);
             int start = checked(offset.Bytes + format.PayloadOffset);
@@ -100,13 +102,13 @@ public sealed partial class NativeStorage
             if (format.References > actual.References)
                 roots.Slice(offset.References + actual.References, format.References - actual.References).Clear();
             if (type.IsUnion) bytes[offset.Bytes] = (byte)value.Kind;
-            initialized[offset.Bytes] = true;
+            MarkInitialized(offset.Bytes, Math.Max(1, format.Bytes));
         }
         internal readonly void Erase(NativeType type, NativeOffset offset)
         {
             NativeRepresentation format = NativeRepresentation.Of(type);
             roots.Slice(offset.References, format.References).Clear();
-            initialized[offset.Bytes] = false;
+            initialized.Slice(offset.Bytes, Math.Max(1, format.Bytes)).Clear();
         }
     }
 }

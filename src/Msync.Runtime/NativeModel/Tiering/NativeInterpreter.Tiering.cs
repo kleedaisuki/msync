@@ -279,6 +279,11 @@ public sealed partial class NativeInterpreter
                         frame.SetPointer(exec.Result, owner.EnvironmentAddress(frame.GetDatum(exec.A).Value.AsFunction(), executable.Metadata[pc]));
                         nextPc = pc + exec.Span;
                         break;
+                    case NativeOp.FunctionComponent:
+                        bridgeDirect++;
+                        owner.ProjectFunctionComponent(activation, exec, pc);
+                        nextPc = pc + exec.Span;
+                        break;
                     case NativeOp.Copy when exec.Handler == CompiledCopyHandler:
                         bridgeDirect++;
                         mem.CopyCompiled(operands[pc].Type!, frame.Location(exec.A), frame.Location(exec.Result));
@@ -339,6 +344,11 @@ public sealed partial class NativeInterpreter
                     case NativeOp.Binary when exec.Handler == UnsignedBinaryHandler:
                         bridgeDirect++;
                         nextPc = ExecuteUnsignedBinary(owner, activation, in exec, pc, token).Next;
+                        break;
+                    case NativeOp.Select:
+                        bridgeDirect++;
+                        frame.SetDatum(exec.Result, owner.SelectDatum(frame, executable.Metadata[pc], activation.Work.Counters));
+                        nextPc = pc + exec.Span;
                         break;
                     case NativeOp.Binary when exec.Handler != ConnectionQualifyHandler:
                     {

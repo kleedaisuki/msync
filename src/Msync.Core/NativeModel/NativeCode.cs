@@ -31,9 +31,7 @@ public enum NativeOp : byte
     CallNative,
     MakeRange,
     RangeFromMemory,
-    MakeLazyRange,
-    DeferRange,
-    OpenIterator,
+    OpenIterator = 30,
     NextIterator,
     CloseIterator,
     Transfer,
@@ -48,7 +46,15 @@ public enum NativeOp : byte
     PublishStatic,
     Return,
     Unreachable,
-    MakeType
+    MakeType,
+    Select,
+    MachineBinary = 48,
+    MachineCompare = 49,
+    MachineCast = 50,
+    MachineIntrinsic = 51,
+    MachineUnary = 54,
+    FunctionComponent = 55,
+    ComposeFunction = 56
 }
 
 public enum NativeUnary : byte { Not, Negate, IsNull, IsType, HasLayout, ValueType }
@@ -57,7 +63,8 @@ public enum NativeBinary : byte
 {
     Add, Subtract, Multiply, Divide, Remainder, Power,
     Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual,
-    RegexMatch, PathJoin, Qualify
+    RegexMatch, PathJoin, Qualify,
+    BoolAnd, BoolOr
 }
 
 public enum NativeSlotRole : byte { Parameter, Capture, Local, Temporary }
@@ -103,7 +110,7 @@ public sealed record NativeFunctionReflectionSignature(IReadOnlyList<TypeRef> Pa
 
 // Namespace domains describe admitted referents, not the address carrier's storage.
 // Direct backend offsets need physical producer/admission proof, not this domain alone.
-public sealed record NativeCodeType(TypeKind Kind, int Element = -1,
+public sealed partial record NativeCodeType(TypeKind Kind, int Element = -1,
     IReadOnlyList<int>? Layouts = null, int Pointee = -1);
 
 public sealed record NativeCodeField(string Name, int Type);
@@ -112,7 +119,7 @@ public readonly record struct NativeProjectionCase(int Layout, int Field);
 public sealed record NativeProjection(IReadOnlyList<NativeProjectionCase> Cases);
 public readonly record struct NativeStatic(int Layout, int Declaration);
 
-public sealed record NativeConstant(NativeKind Kind, string? Text = null,
+public sealed partial record NativeConstant(NativeKind Kind, string? Text = null,
     double Number = 0, bool Boolean = false, TypeRef? Type = null,
     ConnectionKind ConnectionKind = ConnectionKind.Local)
 {

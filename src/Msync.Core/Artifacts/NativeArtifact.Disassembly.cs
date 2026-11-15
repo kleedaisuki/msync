@@ -26,6 +26,13 @@ public static partial class NativeArtifact
             {
                 NativeCodeType type = program.Types[index];
                 output.WriteStartObject(); output.WriteNumber("id", index); output.WriteString("kind", type.Kind.ToString());
+                if (type.Machine is { } machine)
+                {
+                    output.WriteString("machineClass", machine.Class.ToString());
+                    output.WriteNumber("machineBits", machine.BitWidth);
+                    output.WriteNumber("machineAlignment", machine.Alignment);
+                    if (machine.IsFloating) output.WriteString("machineFormat", machine.FloatFormat.ToString());
+                }
                 output.WriteNumber("element", type.Element); output.WriteNumber("pointee", type.Pointee);
                 WriteJsonInts(output, "layouts", type.Layouts ?? []); output.WriteEndObject();
             }

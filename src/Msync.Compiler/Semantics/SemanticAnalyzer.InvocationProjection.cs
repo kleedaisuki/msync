@@ -10,11 +10,31 @@ internal sealed partial class SemanticAnalyzer
         IReadOnlyList<SemanticValue> captures, ImmutableArray<SemanticCapture> captureDefinitions, SemanticContext caller,
         bool applyEffects, HirSourceRange source)
     {
+        if (Trace is null)
+            return ProjectInvocationCore(instance, arguments, captures, captureDefinitions, caller, applyEffects, source);
+        return Trace.MeasureDetailed("compiler.semantic.bind_plan",
+            (self: this, instance, arguments, captures, captureDefinitions, caller, applyEffects, source),
+            static state => state.self.ProjectInvocationCore(state.instance, state.arguments, state.captures,
+                state.captureDefinitions, state.caller, state.applyEffects, state.source),
+            attributes: new Dictionary<string, string>(HirTelemetry.Source(hir.Sources, source))
+            {
+                ["function.id"] = instance.Id.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["effects.apply"] = applyEffects ? "true" : "false"
+            });
+    }
+
+    private FunctionInvocation ProjectInvocationCore(FunctionInstance instance, IReadOnlyList<SemanticValue> arguments,
+        IReadOnlyList<SemanticValue> captures, ImmutableArray<SemanticCapture> captureDefinitions, SemanticContext caller,
+        bool applyEffects, HirSourceRange source)
+    {
+        Trace?.Metric("plan.events", instance.WriteEvents.Length);
+        Trace?.Metric("plan.objects", instance.Objects.Count);
+        Trace?.Metric("plan.cells", instance.Cells.Count);
         if (instance.Objects.IsEmpty && instance.Indexed.IsEmpty && instance.Cells.IsEmpty
             && instance.Result.Scope is null && instance.Result.Element is null
             && instance.Result.Callables.IsDefaultOrEmpty
             && instance.Result.DeferredEffects.IsDefaultOrEmpty && instance.Result.OpenSessionCalls.IsDefaultOrEmpty
-            && instance.CallableContracts.IsEmpty && instance.WriteEvents.IsDefault)
+            && instance.CallableContracts.IsEmpty && instance.WriteEvents.IsDefaultOrEmpty)
         {
             if (instance.Result.Origin is { } origin && origin.Fields.IsDefaultOrEmpty)
                 for (int index = 0; index < instance.Arguments.Length; index++)
@@ -32,17 +52,11 @@ internal sealed partial class SemanticAnalyzer
             if (captureDefinitions[index].Mode == HirCaptureMode.Location)
                 projection.Locations[instance.CaptureTargets[index]] = captureDefinitions[index].Source;
         }
-        var events = instance.Complete && !instance.WriteEvents.IsDefault
-            ? projection.ProjectEvents(instance.WriteEvents) : default;
-        var effects = !instance.Complete ? [] : events.IsDefault
-            ? projection.ProjectWrites() : projection.EventEffects(events);
-        // Deferred execution suppresses writes, not the ABI obligations of escaped code.
+        var events = instance.Complete ? projection.ProjectEvents(instance.WriteEvents) : [];
+        var effects = events.IsDefaultOrEmpty ? [] : projection.EventEffects(events);
+        Trace?.Metric("effects.projected", effects.Length);
         projection.ApplyCallableContracts(caller);
-        if (applyEffects)
-        {
-            if (events.IsDefault) projection.ApplyEffects(effects);
-            else projection.ApplyEvents(events);
-        }
+        if (applyEffects) projection.ApplyEvents(events);
         return new(instance.Id, projection.Project(instance.Result) with { Location = null, Node = HirNodeId.None }, effects);
     }
 
@@ -468,83 +482,22 @@ internal sealed partial class SemanticAnalyzer
 
         public void ApplyEvents(ImmutableArray<SemanticWriteEvent> events)
         {
-            caller.ActivateWriteEvents();
-            var log = caller.WriteEvents!;
-            caller.WriteEvents = null;
-            Replay(events, caller);
-            caller.WriteEvents = log;
-            log.AddRange(events);
+            if (events.IsDefaultOrEmpty) return;
+            ApplyRelations();
+            owner.ApplyEventPlan(events, caller, source);
+            foreach (var pair in regions)
+                if (instance.Objects.GetValueOrDefault(pair.Key)?.Named == true
+                    && caller.Objects.TryGetValue(pair.Value, out var target)) singletonViews[pair.Key] = target;
         }
 
-        private void Replay(ImmutableArray<SemanticWriteEvent> events, SemanticContext destination)
+        private void ApplyRelations()
         {
-            foreach (var item in events)
-            {
-                if (item.Guards.Any(destination.InitializedSingletons.Contains)) continue;
-                if (!item.Branches.IsDefaultOrEmpty)
-                {
-                    SemanticContext[] branches = new SemanticContext[item.Branches.Length];
-                    for (int index = 0; index < branches.Length; index++)
-                    {
-                        var branch = new SemanticContext(destination.Function, destination.Output, destination)
-                        {
-                            Queries = destination.Queries,
-                            DeferredReads = destination.DeferredReads,
-                            InitializedSingletons = destination.InitializedSingletons,
-                            MaybeInitializedSingletons = destination.MaybeInitializedSingletons,
-                            ActiveSingletonGuards = destination.ActiveSingletonGuards
-                        };
-                        Replay(item.Branches[index], branch);
-                        branches[index] = branch;
-                    }
-                    owner.MergeContexts(destination, branches);
-                }
-                if (item.Write is { } write)
-                {
-                    var after = write.After;
-                    var before = destination.ReadWriteTarget(destination.WriteTarget(write));
-                    if (before is not null)
-                        foreach (int guard in item.Guards)
-                            if (destination.MaybeInitializedSingletons.Contains(guard))
-                                after = owner.Join(after, destination.FactWhenInitialized(guard, write, before));
-                    var saved = destination.ActiveSingletonGuards;
-                    destination.ActiveSingletonGuards = item.Guards;
-                    ApplyEffects([write with { After = after }], destination);
-                    destination.ActiveSingletonGuards = saved;
-                }
-                if (item.InitializeSingleton is { } singleton)
-                {
-                    destination.InitializedSingletons = destination.InitializedSingletons.Add(singleton);
-                    destination.MaybeInitializedSingletons = destination.MaybeInitializedSingletons.Add(singleton);
-                }
-            }
-        }
-
-        public ImmutableArray<SemanticDeferredWrite> ProjectWrites()
-        {
-            if (instance.CellWrites.IsEmpty && instance.FieldWrites.IsEmpty && instance.IndexedWrites.IsEmpty) return [];
-            ImmutableArray<SemanticDeferredWrite>.Builder writes = ImmutableArray.CreateBuilder<SemanticDeferredWrite>();
-            foreach (var formal in instance.CellWrites)
-                if (instance.Cells.TryGetValue(formal, out var value))
-                    writes.AddRange(ProjectWrite(new(SemanticWriteKind.Location, value, Location: formal)));
-            foreach (var write in instance.FieldWrites)
-                if (instance.Objects.TryGetValue(write.Region, out var shape) && shape.Fields.TryGetValue(write.Field, out var value))
-                    writes.AddRange(ProjectWrite(new(SemanticWriteKind.Field, value, Region: write.Region, Field: write.Field)));
-            foreach (var region in instance.IndexedWrites)
-                if (instance.Indexed.TryGetValue(region, out var storage))
-                    writes.AddRange(ProjectWrite(new(SemanticWriteKind.Indexed, storage.Element, Region: region, IndexedStorage: storage)));
-            return writes.ToImmutable();
-        }
-
-        public void ApplyEffects(ImmutableArray<SemanticDeferredWrite> writes, SemanticContext? destination = null)
-        {
-            var context = destination ?? caller;
             foreach (var pair in instance.MemberContracts)
             {
                 foreach (int region in ScopeTargets(pair.Key.Region))
                 {
                     var key = (region, pair.Key.Field);
-                    context.MemberContracts[key] = context.MemberContracts.GetValueOrDefault(key, [])
+                    caller.MemberContracts[key] = caller.MemberContracts.GetValueOrDefault(key, [])
                         .AddRange(pair.Value).Distinct().ToImmutableArray();
                 }
             }
@@ -552,71 +505,8 @@ internal sealed partial class SemanticAnalyzer
             {
                 var views = pair.Value.SelectMany(scope => ScopeTargets(scope)).ToImmutableHashSet();
                 foreach (int source in ScopeTargets(pair.Key))
-                    context.AliasViews[source] = context.AliasViews.GetValueOrDefault(source, ImmutableHashSet<int>.Empty).Union(views);
+                    caller.AliasViews[source] = caller.AliasViews.GetValueOrDefault(source, ImmutableHashSet<int>.Empty).Union(views);
             }
-            foreach (var write in writes)
-            {
-                if (write.Kind == SemanticWriteKind.Location)
-                {
-                    SealWriteStorage(write.Location, write.After, context);
-                    owner.CheckSessionAssignment(write.Location, write.After, source, context);
-                    context.Values[write.Location] = write.After;
-                    owner.MarkProgramCell(write.Location, context);
-                    context.CellWrites.Add(write.Location);
-                    context.RecordWrite(write);
-                    continue;
-                }
-                if (write.Kind == SemanticWriteKind.Indexed)
-                {
-                    if (context.Indexed.TryGetValue(write.Region, out var storage))
-                        context.Indexed[write.Region] = write.IndexedStorage is { } summarized
-                            ? owner.JoinIndexed(storage, summarized) with { Element = write.After }
-                            : storage with
-                            {
-                                Element = write.After,
-                                FixedCarrier = storage.FixedCarrier ?? (storage.CarrierConstraints.IsDefaultOrEmpty
-                                    && owner.Runtime(write.After).Kind != TypeKind.Never ? write.After.Type : null)
-                            };
-                    context.IndexedWrites.Add(write.Region);
-                    context.RecordWrite(write);
-                    continue;
-                }
-                if (!context.Objects.TryGetValue(write.Region, out var target)) continue;
-                if (target.Locations.TryGetValue(write.Field!, out var fieldLocation))
-                {
-                    SealWriteStorage(fieldLocation, write.After, context);
-                    owner.CheckSessionMemberAssignment(target, write.Field!, write.After, owner.hir.Locations[fieldLocation.Value].Source, context);
-                }
-                owner.InvalidateScopeAliases(target, write.Field!, write.After, context);
-                target = target with { Fields = target.Fields.SetItem(write.Field!, write.After) };
-                context.Objects[write.Region] = target;
-                if (target.Locations.TryGetValue(write.Field!, out var location))
-                {
-                    context.Values[location] = write.After;
-                    owner.MarkProgramCell(location, context);
-                }
-                context.FieldWrites.Add((write.Region, write.Field!));
-                context.RecordWrite(write);
-                foreach (var pair in regions)
-                    if (ReferenceEquals(context, caller) && pair.Value == write.Region && instance.Objects.GetValueOrDefault(pair.Key)?.Named == true)
-                        singletonViews[pair.Key] = target;
-            }
-        }
-
-        private void SealWriteStorage(HirLocationId location, SemanticValue value, SemanticContext context)
-        {
-            var target = owner.StorageType(location, context);
-            try { owner.Require(value, target, source, allowImplicit: true, context); }
-            catch (CompileException error)
-            {
-                var declaration = owner.hir.Locations[location.Value];
-                SemanticDiagnosticFactory.FixedStorage(error, owner.hir.Sources[declaration.Source.Source.Value],
-                    declaration, owner.hir.Types[target.Value].RuntimeType);
-                throw;
-            }
-            var resolved = owner.ResolveHirType(target, context);
-            if (owner.hir.Locations[location.Value].AdmitsNull) resolved = owner.Nullable(resolved);
-            if (resolved != target) owner.SealStorage(location, resolved, context);
         }
 
         private bool TrySingleton(int region, out SemanticScope singleton) =>

@@ -15,6 +15,7 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
     private readonly SemanticArena hir = new(program.Hir);
     private readonly int boundNodeCount = program.Hir.Nodes.Count;
     private int nextRegion;
+    private readonly InstantiationWorkspace queries = new();
 
     internal SemanticContext FinalState => entryState ?? throw new InvalidOperationException("No semantic generation has been analyzed.");
     internal bool InspectedInvocationGraph => futureCallableWrites?.InspectedInvocationGraph == true;
@@ -33,7 +34,7 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
     internal void AnalyzeForEditor(SemanticContext? seed = null)
     {
         if (Trace is null) { AnalyzeCore(seed); return; }
-        analyzedKinds = new long[Enum.GetValues<HirKind>().Length];
+        analyzedKinds = new long[Enum.GetValues<HirKind>().Max(static kind => (int)kind) + 1];
         Trace.Run("compiler.semantic.body", (self: this, seed), static state =>
         {
             try { state.self.AnalyzeCore(state.seed); }
@@ -52,11 +53,11 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
     private void AnalyzeCore(SemanticContext? seed)
     {
         SemanticOutput output = new(program.Hir);
-        SemanticContext context = new(program.Entry, output, seed);
+        SemanticContext context = new(program.Entry, output, seed) { Queries = queries };
         nextRegion = seed?.NextRegion ?? 0;
         entryState = context;
         SemanticValue body = Analyze(program.Body, context);
-        foreach (var returned in context.Returns) body = Join(body, returned);
+        foreach (var returned in context.Returns) body = Join(body, returned.Value);
         if (entryPrelude.Count != 0)
         {
             entryPrelude.Add(body.Node);
@@ -88,7 +89,7 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
             HirKind.Block => Block(node, children, context),
             HirKind.TemplateClosure => TemplateClosure(node, context),
             HirKind.Scope or HirKind.AllocateScope => Scope(node, children, context),
-            HirKind.Range or HirKind.LazyRange => Range(node, children, context),
+            HirKind.Range => Range(node, children, context),
             HirKind.Call => Call(node, children, context),
             HirKind.If or HirKind.Match or HirKind.For or HirKind.Loop
                 or HirKind.Break or HirKind.Return or HirKind.Barrier => Control(id, node, children, context),

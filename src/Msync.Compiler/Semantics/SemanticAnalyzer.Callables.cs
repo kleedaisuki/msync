@@ -6,36 +6,33 @@ namespace Msync.Compiler.Semantics;
 
 internal sealed partial class SemanticAnalyzer
 {
-    private SemanticValue Call(HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext context, bool allowDeferral = true)
+    private SemanticValue Call(HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext context)
     {
+        if (Trace is null) return CallCore(node, children, context);
+        return Trace.MeasureDetailed("compiler.semantic.call", (self: this, node, context),
+            static state => state.self.CallCore(state.node, state.self.hir.Children(state.node), state.context),
+            attributes: new Dictionary<string, string>(HirTelemetry.Source(hir.Sources, node.Source))
+            { ["evaluation.order"] = "callee-then-arguments" });
+    }
+
+    private SemanticValue CallCore(HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext context)
+    {
+        Trace?.Metric("arguments", children.Length - 1);
         if (TryMetaCall(node, children, context, out SemanticValue metadata)) return metadata;
-        ReturnShape? shape = null;
-        if (allowDeferral && !HasImmediateResult(node, children[0], context))
-        {
-            var locations = CallLocations(children);
-            shape = CallShape(node, children, context, locations.Read);
-            if (shape is { Fact.Type.Kind: TypeKind.Range, Eager: false })
-                return DeferredCall(node, children, context, locations);
-        }
         SemanticValue callee = Analyze(children[0], context);
         if (TryMetaCall(callee, node, children, context, out SemanticValue computedMetadata)) return computedMetadata;
         SemanticValue[] inputs = new SemanticValue[children.Length - 1];
         for (int index = 0; index < inputs.Length; index++) inputs[index] = Analyze(children[index + 1], context);
         if (hir.Calls[node.Data] is { Kind: HirCallKind.Native } native)
             return InvokeNative(native.NativeName!, inputs, node.Source, context, callee);
-        HirTypeId? resultDomain = shape is { } projected && !projected.Eager
-            && projected.Fact.Type.WithoutNull != TypeRef.Any.WithoutNull
-            && (projected.Fact.Type.Kind & TypeKind.Range) != 0
-                ? projected.Fact.SemanticType : null;
-        SemanticValue result = Invoke(callee, inputs, node.Source, context, resultDomain);
-        return shape?.Eager == true ? result with { EagerRange = true } : result;
+        return Invoke(callee, inputs, node.Source, context);
     }
 
     private SemanticValue InvokeType(SemanticValue callee, IReadOnlyList<SemanticValue> arguments,
         HirSourceRange source, SemanticContext context) => Invoke(callee, arguments, source, QueryContext(context, callee, arguments));
 
     private SemanticValue Invoke(SemanticValue callee, IReadOnlyList<SemanticValue> arguments,
-        HirSourceRange source, SemanticContext context, HirTypeId? resultDomain = null)
+        HirSourceRange source, SemanticContext context)
     {
         if (Runtime(callee).WithoutNull == TypeRef.Path)
         {
@@ -85,7 +82,6 @@ internal sealed partial class SemanticAnalyzer
         var call = choices.Length == 1
             ? new HirCall(HirCallKind.Function, dispatch[0].Target)
             : new HirCall(HirCallKind.Dynamic, new(-1), Targets: dispatch.Distinct().ToImmutableArray());
-        if (resultDomain is { } domain) result = result! with { Type = domain };
         int slot = OpenSessionCall(callee, arguments, result!.Type, source, context);
         if (slot >= 0)
         {
@@ -166,7 +162,7 @@ internal sealed partial class SemanticAnalyzer
         MergeSessionContracts(context, branches);
         MergeSingletonFlow(context, branches);
         MergeIndexedContexts(context, branches);
-        MergeQueryContexts(context, branches);
+        MergeFlowFacts(context, branches);
         var effects = ImmutableArray.CreateBuilder<SemanticDeferredWrite>();
         foreach (HirLocationId location in branches.SelectMany(branch => branch.CellWrites).Distinct())
         {

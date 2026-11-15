@@ -20,7 +20,6 @@ public sealed partial class NativeInterpreter
             return SubmitFileRead(signature, arguments, origin, source, predecessor, token);
         if (signature is not null && IsStreamReduction(name))
         {
-            arguments = await ResolveReadyProducers(arguments, source, token);
             if (arguments.Any(DatumExecutionMayDefer))
                 return SubmitStreamReduction(signature, arguments, origin, source, predecessor, token, rangePhysicalType);
         }

@@ -48,6 +48,14 @@ def catalog() -> dict[str, Task]:
             receipt="{work}/journey.json",
         ),
         python(
+            "range-initialization",
+            "tests/Msync.EndToEnd/range_initialization_journey.py",
+            "--binary", "{binary}", "--output", "{work}/journey.json",
+            cpu=2,
+            memory_mib=2048,
+            receipt="{work}/journey.json",
+        ),
+        python(
             "artifact",
             "tests/NativeArtifact/test_journey.py",
             "--binary",

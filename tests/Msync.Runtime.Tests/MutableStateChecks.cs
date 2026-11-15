@@ -32,12 +32,12 @@ internal static class MutableStateChecks
             await using NativeExecutionSession session = new(new(WorkingDirectory: root));
             await session.ExecuteAsync(compiler.Compile("fn item() { \"lazy\" -> ./lazy-flag; ./lazy-flag }; let sequence = [item()];"));
             compiler.AcceptSubmission(session.GetLocalValue);
-            Check(!File.Exists(Path.Combine(root, "lazy-flag")), "Stored session range evaluated eagerly");
+            Check(await File.ReadAllTextAsync(Path.Combine(root, "lazy-flag")) == "lazy", "Stored session Range must initialize immediately");
             NativeValue value = await session.ExecuteAsync(compiler.Compile("$std::ranges::first(sequence)"));
             compiler.AcceptSubmission(session.GetLocalValue);
-            Check(value.AsPath().Raw == "./lazy-flag" && await File.ReadAllTextAsync(Path.Combine(root, "lazy-flag")) == "lazy", "Session lazy range lost original callback or I/O context");
+            Check(value.AsPath().Raw == "./lazy-flag" && await File.ReadAllTextAsync(Path.Combine(root, "lazy-flag")) == "lazy", "Stored Range lost its initialized Path or I/O context");
         }
         finally { Directory.Delete(root, true); }
-        Console.WriteLine("PASS native live captures, fresh allocations and persistent lazy session");
+        Console.WriteLine("PASS native live captures, fresh allocations and initialized session Range");
     }
 }

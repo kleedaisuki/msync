@@ -5,15 +5,16 @@ using Msync.Core.Native;
 
 namespace Msync.Runtime.Native;
 
-internal readonly struct NativeDatum
+internal readonly partial struct NativeDatum
 {
     private readonly NativeValue value;
     internal NativeDatum(NativeValue value) => (this.value, Future) = (value, null);
     internal NativeDatum(NativeFuture future) => (value, Future) = (default, future);
     internal NativeFuture? Future { get; }
     internal bool IsReady => Future is null;
-    internal TypeRef LogicalType => Future?.LogicalType ?? value.Type;
-    internal NativeType PhysicalType => Future?.PhysicalType ?? NativeType.Of(value.Kind);
+    internal TypeRef? OptionalSourceType => Future is { } future ? future.OptionalSourceType : value.OptionalSourceType;
+    internal TypeRef LogicalType => OptionalSourceType ?? throw new InvalidOperationException("A machine scalar has no source-language type.");
+    internal NativeType PhysicalType => Future?.PhysicalType ?? value.PhysicalType;
     internal NativeValue Value => IsReady ? value : throw new InvalidOperationException("The operand is not ready.");
     internal ValueTask<NativeValue> ResolveAsync(CancellationToken token) => Future is { } future
         ? future.CompleteAsync(token) : new(value);
@@ -23,9 +24,10 @@ internal readonly struct NativeDatum
     {
         if (IsReady) return new(transform(value));
         NativeFuture dependency = Future!;
+        NativeType resultPhysical = physicalType ?? (resultType is null ? dependency.PhysicalType : NativeType.FromTypeRef(resultType));
         return new(new NativeFuture(ApplyAsync(dependency, transform), [dependency], source: source,
-            logicalType: resultType ?? dependency.LogicalType,
-            physicalType: physicalType ?? (resultType is null ? dependency.PhysicalType : NativeType.FromTypeRef(resultType)),
+            logicalType: resultPhysical.IsMachine ? null : resultType ?? dependency.OptionalSourceType,
+            physicalType: resultPhysical,
             identity: preserveIdentity ? dependency.Identity : null));
     }
 
@@ -52,7 +54,8 @@ internal sealed class NativeFuture(Task<NativeValue> completion,
             Submission?.RecordEscape(null, child.Completion, process: true);
     }
     internal Task<NativeValue> Completion { get; } = completion;
-    internal TypeRef LogicalType { get; } = logicalType ?? (transfer ? TypeRef.Bool : TypeRef.Any);
+    internal TypeRef? OptionalSourceType { get; } = physicalType?.IsMachine == true ? null : logicalType ?? (transfer ? TypeRef.Bool : TypeRef.Any);
+    internal TypeRef LogicalType => OptionalSourceType ?? throw new InvalidOperationException("A machine scalar future has no source-language type.");
     internal NativeType PhysicalType { get; } = physicalType ?? NativeType.FromTypeRef(logicalType ?? (transfer ? TypeRef.Bool : TypeRef.Any));
     internal NativeFuture Identity => identity ?? this;
     internal IReadOnlyList<NativeFuture> Dependencies { get; } = dependencies ?? [];
@@ -189,6 +192,13 @@ internal sealed class NativeMemory
             NativeStorage.CopyTrusted(source.Type, source, destination);
             return true;
         }
+        if (source.Type.IsMachine || destination.Type.IsMachine)
+        {
+            if (source.Type.Machine?.HasSameValueType(destination.Type.Machine) != true) return false;
+            RemovePending(destination);
+            NativeStorage.CopyKindTrusted(source.Type.Kind, source, destination);
+            return true;
+        }
         NativeKind kind = source.Type.IsUnion ? source.Allocation.Storage.ReadKind(source.Offset) : source.Type.Kind;
         if (!destination.Type.Accepts(kind)) return false;
         RemovePending(destination);
@@ -202,6 +212,7 @@ internal sealed class NativeMemory
         if (!frame.IsReady(sourceSlot, source)) return false;
         // Lowering assigns the result carrier; only the source alternative needs admission.
         NativeType sourceType = source.Type;
+        if ((sourceType.IsMachine || storage.IsMachine) && !storage.Accepts(sourceType)) return false;
         NativeKind kind = sourceType.IsUnion ? source.Allocation.Storage.ReadKind(source.Offset) : sourceType.Kind;
         if (!storage.Accepts(kind)) return false;
         if (checkLayout && kind == NativeKind.Address
@@ -224,6 +235,7 @@ internal sealed class NativeMemory
         NativeKind kind = sourceType.IsUnion ? source.Allocation.Storage.ReadKind(source.Offset) : sourceType.Kind;
         if (kind == NativeKind.Range) return false;
         NativeType targetStorage = image.Type(targetType);
+        if ((sourceType.IsMachine || targetStorage.IsMachine) && !targetStorage.Accepts(sourceType)) return false;
         if (!targetStorage.Accepts(kind)) return false;
         if (checkLayout && kind == NativeKind.Address
             && (!source.Allocation.Storage.TryReadAddressHeader(sourceType, source.Offset, out NativeAllocation allocation, out NativeOffset offset)

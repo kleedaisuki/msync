@@ -53,7 +53,6 @@ Check(read.Functions[2].Captures.Select(capture => capture.Mode).SequenceEqual([
 Check(read.Templates[0].ResultAnnotation == new HirTypeId(10) && read.Templates[0].TypeParameterTypes[0] == new HirTypeId(10), "Bound generic annotations survive");
 Check(read.TemplateClosures[0].Template == new HirTemplateId(0), "Generic closure identity");
 Check(read.Concepts[0].Members[0].Name == "value" && read.Concepts[0].Members[0].Nullable, "Structural concept requirements");
-Check(read.Ranges[0].Deferred.SequenceEqual([false, true]), "Range demand ownership");
 Check(read.Adaptations[0].Targets[0].Target == new HirFunctionId(2), "Callable adaptation");
 Check(read.Calls[2].Targets[0].Identity.IsTemplate, "Generic dispatch identity is not a function index");
 Check(read.Literals.Single(value => value.Kind == HirLiteralKind.String).Text == "line one\nline two\r\n𐐀", "Literal newlines remain data");
@@ -303,7 +302,6 @@ static HirModule Tables()
     builder.Fors.Add(new(new(0), new(6)));
     builder.Matches.Add(new([new(new(HirPatternKind.Any), literal)]));
     builder.Barriers.Add(new(true, false));
-    builder.Ranges.Add(new([false, true]));
     builder.Adaptations.Add(new([new(new(2), new(2))]));
     builder.TemplateClosures.Add(new(new(0), []));
     builder.Concepts.Add(new("Carrier", source, [], [new(10)], [new("value", new(10), source, Nullable: true)]));

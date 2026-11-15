@@ -75,6 +75,8 @@ public sealed partial class NativeInterpreter
 
     internal static NativeValue BinaryValue(NativeBinary operation, NativeValue left, NativeValue right, NativeRuntimeContext? origin)
     {
+        if (operation == NativeBinary.BoolAnd) return NativeValue.FromBool(left.AsBool() & right.AsBool());
+        if (operation == NativeBinary.BoolOr) return NativeValue.FromBool(left.AsBool() | right.AsBool());
         if (operation == NativeBinary.PathJoin)
             return NativeValue.FromPath(NativeBuiltins.JoinPath(origin!.AsPath(left), right));
         if (operation == NativeBinary.Qualify)
@@ -117,6 +119,12 @@ public sealed partial class NativeInterpreter
     private NativeDatum CoerceStore(NativeDatum value, NativeType type)
     {
         if (value.PhysicalType.Equals(type)) return value;
+        if (type.IsMachine || value.PhysicalType.IsMachine)
+        {
+            if (type.Machine?.HasSameValueType(value.PhysicalType.Machine) != true)
+                throw new MsyncException($"Cannot store {value.PhysicalType} in the actual physical location {type}.");
+            return value;
+        }
         if (!type.IsUnion && !type.IsNever && type.Kind is NativeKind.Path or NativeKind.String)
         {
             NativeRuntimeContext origin = context.CaptureDirectory();

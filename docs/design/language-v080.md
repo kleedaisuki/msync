@@ -392,16 +392,23 @@ checks comment and regex braces, actual multiline strings and incomplete EOF.
 
 ## Lazy ranges and artifacts
 
-Literal ranges keep a pure-value fast path. Effectful items become typed,
-zero-argument closure thunks; the range evaluates only demanded items. Calls
-returning Range ordinarily defer the call and its arguments until demand.
-`take(0)` therefore does not execute filesystem queries, mutations, or programs
-inside the source expression. Thunks capture only referenced existing slots;
-their bytecode owns any internal local slots. A finite range transfer remains
-one selected operation, not an implicit source-level `for`.
-Explicit eager snapshot operations (`materialize`, `environment.variables`)
-consume their input at the call and propagate that effect through source
-functions. They must not become deferred observations of later mutable state.
+Range literals initialize their elements exactly once, in source order, when the
+literal expression executes. Initializers use ordinary expression evaluation:
+`[value]` and `[value + 0]` read `value` at the same time. The resulting sequence
+retains its element values and shared Scope identities; enumerating it again does
+not rerun initializers, create replacement Scopes, or repeat their effects.
+There are no implicit per-element functions or syntax-selected evaluation modes.
+
+Ordinary function calls evaluate their callee and arguments and execute their
+body normally, independent of whether the result is a Range. Returning a lazy
+pipeline does not enumerate it, but does not retroactively defer the function
+call or its arguments. Traversal adapters (`map`, `filter`, `take`, etc.) and
+explicit generators defer element production and callbacks until consumption.
+`take(source, 0)` invokes no traversal callback; it does not suppress source
+initialization or factory calls that have already executed. Explicit snapshot
+operations (`materialize`, `environment.variables`) consume their input at the
+call, and their result retains the captured sequence. A finite Range transfer
+remains one selected operation, not an implicit source-level `for`.
 
 The compiler emits source-independent, typed stack bytecode with explicit
 function tables, local slots, branches, capture layouts and native identities.

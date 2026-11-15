@@ -1,0 +1,6 @@
+let left = 7;
+let right = 9;
+fn choose(flag: Bool) {
+    if flag { left } else { right }
+};
+choose(true) * 10 + choose(false)

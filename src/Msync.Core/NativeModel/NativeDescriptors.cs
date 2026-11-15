@@ -74,7 +74,7 @@ public sealed class NativeEnvironmentLayout
         Captures = Array.AsReadOnly(contracts);
         Storage = new(contracts.Select((capture, index) => new NativeField(
             index.ToString(System.Globalization.CultureInfo.InvariantCulture),
-            capture.Location ? NativeType.Of(NativeKind.Address) : capture.Type)));
+            capture.Location ? NativeType.Of(NativeKind.Address) : capture.Type))) { EnvironmentSchema = this };
     }
     public IReadOnlyList<NativeCaptureLayout> Captures { get; }
     public NativeLayout Storage { get; }
@@ -82,12 +82,18 @@ public sealed class NativeEnvironmentLayout
 
 public sealed class NativeEnvironment
 {
-    private readonly NativeAllocation storage;
+    private readonly NativeAddress address;
+    private NativeEnvironment(NativeEnvironmentLayout layout, NativeAddress existing)
+    {
+        Layout = layout;
+        address = existing;
+    }
+    internal static NativeEnvironment View(NativeEnvironmentLayout layout, NativeAddress address) => new(layout, address);
     public NativeEnvironment(NativeEnvironmentLayout layout, int layoutId = -1)
     {
         ArgumentNullException.ThrowIfNull(layout);
         Layout = layout;
-        storage = new(layout.Storage, layoutId);
+        address = new NativeAllocation(layout.Storage, layoutId).Address;
     }
     public NativeEnvironment(NativeEnvironmentLayout layout, IReadOnlyList<NativeCapture> captures) : this(layout)
     {
@@ -96,8 +102,8 @@ public sealed class NativeEnvironment
             throw new ArgumentException("Capture count disagrees with the static environment layout.", nameof(captures));
         for (int index = 0; index < captures.Count; index++) Initialize(index, captures[index]);
     }
-    public NativeAddress Address => storage.Address;
-    public NativeAddress CaptureAddress(int index) => storage.Field(index);
+    public NativeAddress Address => address;
+    public NativeAddress CaptureAddress(int index) => address.OffsetBy(Layout.Storage[index].Offset, Layout.Storage[index].Type);
     public void Initialize(int index, NativeCapture capture)
     {
         NativeCaptureLayout contract = Layout.Captures[index];
@@ -108,11 +114,11 @@ public sealed class NativeEnvironment
             throw new ArgumentException("Capture location type disagrees with its invariant contract.", nameof(capture));
         if (!Layout.Storage[index].Type.Accepts(value))
             throw new ArgumentException("Capture value disagrees with its static storage type.", nameof(capture));
-        NativeStorage.StoreTrusted(Layout.Storage[index].Type, storage.Field(index), value);
+        NativeStorage.StoreTrusted(Layout.Storage[index].Type, CaptureAddress(index), value);
     }
     public bool TryGetCapture(int index, out NativeCapture capture)
     {
-        if (!storage.Field(index).IsInitialized) { capture = default; return false; }
+        if (!CaptureAddress(index).IsInitialized) { capture = default; return false; }
         capture = this[index];
         return true;
     }
@@ -123,7 +129,7 @@ public sealed class NativeEnvironment
         get
         {
             NativeCaptureLayout contract = Layout.Captures[index];
-            NativeValue value = NativeStorage.LoadTrusted(Layout.Storage[index].Type, storage.Field(index));
+            NativeValue value = NativeStorage.LoadTrusted(Layout.Storage[index].Type, CaptureAddress(index));
             return contract.Location ? new(value.AsAddress(), contract.Type) : new(value);
         }
     }

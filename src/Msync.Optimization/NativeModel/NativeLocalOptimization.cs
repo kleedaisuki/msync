@@ -16,6 +16,9 @@ internal sealed class NativeLocalOptimization(NativeProgram program, NativeFunct
     private readonly HashSet<int> bound = code.Where(item => item.Op == NativeOp.BindLocation).Select(item => item.A).ToHashSet();
     private readonly HashSet<int> addressed = code.Where(item => item.Op == NativeOp.FrameAddress).Select(item => item.A)
         .Concat(code.Where(item => item.Op == NativeOp.BindLocation).Select(item => item.A)).ToHashSet();
+    private readonly bool[] singleAssignment = NativeDefinitionFacts.SingleAssignmentTemporaries(function);
+    private bool[] cyclic = [];
+    private long freshDefinitions;
     private NativeInstruction? previous;
     private NativeFrameCells frameCells = null!;
     private readonly HashSet<int> initialized = [];
@@ -106,6 +109,7 @@ internal sealed class NativeLocalOptimization(NativeProgram program, NativeFunct
 
     internal bool Run(NativeControlFlow flow, NativeOptimizationProfile? profile = null)
     {
+        cyclic = flow.Cyclic;
         frameCells = new(program, function, escape);
         profile?.Trace.Metric("local_opt.frame_cells_known", frameCells.Known ? 1 : 0);
         redundantNarrows.Clear();
@@ -149,6 +153,7 @@ internal sealed class NativeLocalOptimization(NativeProgram program, NativeFunct
         changed |= RemoveUnusedNarrows(profile);
         if (eliminatedNarrows > 0) profile?.Trace.Metric("local_opt.eliminated_narrows", eliminatedNarrows);
         if (eliminatedConverts > 0) profile?.Trace.Metric("local_opt.eliminated_converts", eliminatedConverts);
+        profile?.Trace.Metric("local_opt.fresh_definitions", freshDefinitions);
         return changed;
     }
 
@@ -533,7 +538,12 @@ internal sealed class NativeLocalOptimization(NativeProgram program, NativeFunct
             instruction = stored.Constant is { } constant
                 ? Constant(instruction, constant) : instruction with { Op = NativeOp.Copy, A = stored.Source, B = -1 };
         ObserveReads(instruction);
-        foreach (int result in NativeInstructionFacts.Definitions(instruction)) Invalidate(result, instruction.Op == NativeOp.BindLocation);
+        foreach (int result in NativeInstructionFacts.Definitions(instruction))
+        {
+            if (result == instruction.Result && singleAssignment[result] && !addressed.Contains(result) && !cyclic[pc])
+            { freshDefinitions++; continue; }
+            Invalidate(result, instruction.Op == NativeOp.BindLocation);
+        }
         if (NativeInstructionFacts.MemoryBarrier(instruction) && !PrivateDrop(instruction)) Barrier();
         AdvanceTypeFacts(instruction, provenTypes, provenNonNull, slotOrigins, nullChecks, out _, out _);
         if (instruction.Op == NativeOp.Narrow && instruction.A != instruction.Result)

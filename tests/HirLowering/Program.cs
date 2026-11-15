@@ -160,7 +160,6 @@ static HirModule ForBreak()
 {
     Example x = New(); var total = x.Location("total", x.NumberType);
     var item = x.Location("item", x.NumberType);
-    x.Hir.Ranges.Add(new([]));
     var values = x.Node(HirKind.Range, x.Hir.Type(new TypeRef(TypeKind.Range, TypeRef.Number)),
         [x.Number(1), x.Number(2), x.Number(3), x.Number(4)]);
     var body = x.Block(x.Assign(total, x.Binary(HirBinaryOperator.Add, x.Read(total), x.Read(item))),

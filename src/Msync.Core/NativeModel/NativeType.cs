@@ -4,14 +4,32 @@ namespace Msync.Core.Native;
 
 public sealed class NativeType : IEquatable<NativeType>
 {
-    private static readonly NativeType[] Builtins = Enum.GetValues<NativeKind>()
+    private static readonly NativeKind[] SourceKinds = [NativeKind.Null, NativeKind.Bool, NativeKind.Number,
+        NativeKind.String, NativeKind.Path, NativeKind.Connection, NativeKind.Function, NativeKind.Range,
+        NativeKind.Process, NativeKind.Type, NativeKind.Address];
+    private static readonly NativeType[] Builtins = SourceKinds
         .Select(kind => new NativeType(1UL << (int)kind)).ToArray();
     private readonly NativeRepresentation representation;
     private NativeType(ulong kinds)
     {
         Kinds = kinds;
+        TypeKind source = TypeKind.Never;
+        foreach (NativeKind kind in SourceKinds)
+            if ((kinds & (1UL << (int)kind)) != 0) source |= NativeValue.TypeOfKind(kind).Kind;
+        OptionalSourceType = BitOperations.IsPow2(kinds)
+            ? NativeValue.TypeOfKind((NativeKind)BitOperations.TrailingZeroCount(kinds)) : new(source);
         representation = NativeRepresentation.Compute(this);
     }
+    internal NativeType(NativeMachineType machine)
+    {
+        Machine = machine;
+        Kinds = 1UL << (int)machine.Kind;
+        representation = new(machine.ByteSize, 0, machine.Alignment);
+    }
+    public NativeMachineType? Machine { get; }
+    public TypeRef? OptionalSourceType { get; }
+    public bool IsMachine => Machine is not null;
+    public static NativeType ForMachine(NativeMachineType machine) => machine.PhysicalType;
     internal NativeRepresentation Representation => representation;
     public static NativeType Never { get; } = new(0);
     public ulong Kinds { get; }
@@ -19,8 +37,11 @@ public sealed class NativeType : IEquatable<NativeType>
     public bool IsUnion => BitOperations.PopCount(Kinds) > 1;
     public NativeKind Kind => !IsUnion && !IsNever ? (NativeKind)BitOperations.TrailingZeroCount(Kinds)
         : throw new InvalidOperationException("The storage type has no single native kind.");
-    public bool Accepts(NativeKind kind) => (uint)kind < Builtins.Length && (Kinds & (1UL << (int)kind)) != 0;
-    public bool Accepts(NativeValue value) => Accepts(value.Kind);
+    public bool Accepts(NativeKind kind) => IsMachine ? kind == Kind
+        : (uint)kind < Builtins.Length && (Kinds & (1UL << (int)kind)) != 0;
+    public bool Accepts(NativeValue value) => IsMachine ? Machine!.HasSameValueType(value.MachineType) : Accepts(value.Kind);
+    public bool Accepts(NativeType value) => IsMachine || value.IsMachine
+        ? Machine?.HasSameValueType(value.Machine) == true : (value.Kinds & ~Kinds) == 0;
     public static NativeType Of(NativeKind kind) => (uint)kind < Builtins.Length
         ? Builtins[(int)kind] : throw new ArgumentOutOfRangeException(nameof(kind));
     public static NativeType FromTypeRef(TypeRef type)
@@ -36,6 +57,9 @@ public sealed class NativeType : IEquatable<NativeType>
     public static NativeType Union(params NativeType[] alternatives)
     {
         ArgumentNullException.ThrowIfNull(alternatives);
+        if (alternatives.FirstOrDefault(alternative => alternative.IsMachine) is { } machine)
+            return alternatives.All(alternative => alternative.Equals(machine)) ? machine
+                : throw new ArgumentException("Machine SSA types do not form source-language unions.", nameof(alternatives));
         ulong kinds = 0;
         foreach (NativeType alternative in alternatives)
         {
@@ -46,11 +70,11 @@ public sealed class NativeType : IEquatable<NativeType>
     }
     internal static NativeType FromKinds(ulong kinds) => kinds == 0 ? Never
         : BitOperations.IsPow2(kinds) ? Of((NativeKind)BitOperations.TrailingZeroCount(kinds)) : new(kinds);
-    public IEnumerable<NativeKind> Alternatives => Enum.GetValues<NativeKind>().Where(Accepts);
-    public bool Equals(NativeType? other) => other is not null && Kinds == other.Kinds;
+    public IEnumerable<NativeKind> Alternatives => IsMachine ? [Kind] : SourceKinds.Where(Accepts);
+    public bool Equals(NativeType? other) => other is not null && Kinds == other.Kinds && ReferenceEquals(Machine, other.Machine);
     public override bool Equals(object? obj) => obj is NativeType other && Equals(other);
-    public override int GetHashCode() => Kinds.GetHashCode();
-    public override string ToString() => IsNever ? "Never" : string.Join(" | ", Alternatives);
+    public override int GetHashCode() => IsMachine ? HashCode.Combine(Kinds, Machine) : Kinds.GetHashCode();
+    public override string ToString() => Machine?.ToString() ?? (IsNever ? "Never" : string.Join(" | ", Alternatives));
 }
 
 public readonly record struct NativeOffset(int Bytes, int References)
@@ -66,6 +90,7 @@ public readonly record struct NativeFieldLayout(NativeType Type, NativeOffset Of
 
 public sealed class NativeLayout
 {
+    internal NativeEnvironmentLayout? EnvironmentSchema { get; init; }
     private readonly IReadOnlyList<NativeFieldLayout> fields;
     private readonly NativeType? repeatedType;
     private readonly NativeLayout? repeatedLayout;

@@ -2,7 +2,7 @@ using System.Globalization;
 
 namespace Msync.Core.Native;
 
-public readonly struct NativeValue : IEquatable<NativeValue>
+public readonly partial struct NativeValue : IEquatable<NativeValue>
 {
     private static readonly TypeRef RangeType = new(TypeKind.Range);
     private readonly ulong bits;
@@ -134,6 +134,7 @@ public readonly struct NativeValue : IEquatable<NativeValue>
     {
         NativeKind.Null => true,
         NativeKind.Bool or NativeKind.Number => bits == other.bits,
+        NativeKind.MachineInteger or NativeKind.MachineFloat => MachineEquals(other),
         NativeKind.String => root0.Text == other.root0.Text,
         NativeKind.Path => AsPath() == other.AsPath(),
         NativeKind.Connection => AsConnection() == other.AsConnection(),
@@ -149,6 +150,7 @@ public readonly struct NativeValue : IEquatable<NativeValue>
     {
         NativeKind.Null => 0,
         NativeKind.Bool or NativeKind.Number => HashCode.Combine(Kind, bits),
+        NativeKind.MachineInteger or NativeKind.MachineFloat => MachineHashCode(),
         NativeKind.String => HashCode.Combine(Kind, root0.Text),
         NativeKind.Path => HashCode.Combine(Kind, AsPath()),
         NativeKind.Connection => HashCode.Combine(Kind, AsConnection()),
@@ -164,6 +166,7 @@ public readonly struct NativeValue : IEquatable<NativeValue>
         NativeKind.Null => "null",
         NativeKind.Bool => AsBool() ? "true" : "false",
         NativeKind.Number => AsNumber().ToString(CultureInfo.InvariantCulture),
+        NativeKind.MachineInteger or NativeKind.MachineFloat => $"{MachineType}:0x{NativeMachineBits.Format(MachineBits)}",
         NativeKind.String => AsString(),
         NativeKind.Path => AsPath().ToString(),
         NativeKind.Connection => AsConnection().ToString(),

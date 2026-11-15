@@ -208,30 +208,13 @@ public static partial class NativeLegacyV6Importer
                         int type = owner.Type(TypeKind.Connection);
                         Push(new(type, Register: Constant(new(NativeKind.Connection, Text: name is "pwd" or "file" ? name : "", ConnectionKind: kind), type))); break;
                     }
-                    case LegacyV6Op.MakeRange: case LegacyV6Op.MakeLazyRange:
+                    case LegacyV6Op.MakeRange:
                     {
                         Item[] items = Take(instruction.A); int element = owner.Type(TypeKind.Never);
-                        for (int item = 0; item < items.Length; item++)
-                        {
-                            bool deferred = instruction.Op == LegacyV6Op.MakeLazyRange && (instruction.Text is null || instruction.Text[item] == '1');
-                            int type = deferred && items[item].Function >= 0 ? owner.Module.Functions[items[item].Function].Signature.Result : items[item].Type;
-                            element = owner.Join(element, type);
-                        }
-                        if (instruction.Op == LegacyV6Op.MakeLazyRange && instruction.B > 0)
-                        {
-                            TypeRef declared = owner.Module.Constants[instruction.B - 1].Type!.RuntimeType;
-                            if (ExecutableType(declared)) element = owner.Type(declared);
-                        }
-                        Item description = instruction.Op == LegacyV6Op.MakeRange ? ElementDescription(items)
-                            : TypeLiteral(instruction.B > 0 ? owner.Module.Constants[instruction.B - 1].Type!.RuntimeType : TypeRef.Any);
-                        Push(Result(owner.Type(TypeKind.Range, element), new(instruction.Op == LegacyV6Op.MakeRange ? NativeOp.MakeRange : NativeOp.MakeLazyRange,
-                            C: description.Register, Symbol: instruction.Text, Inputs: items.Select(item => item.Register).ToArray()))); break;
-                    }
-                    case LegacyV6Op.DeferRange:
-                    {
-                        Item factory = Pop(); int type = factory.Function < 0 ? owner.Type(TypeKind.Range)
-                            : owner.Module.Functions[factory.Function].Signature.Result;
-                        Push(Result(type, new(NativeOp.DeferRange, A: factory.Register, C: DeferredDescription(factory).Register))); break;
+                        foreach (Item item in items) element = owner.Join(element, item.Type);
+                        Item description = ElementDescription(items);
+                        Push(Result(owner.Type(TypeKind.Range, element), new(NativeOp.MakeRange,
+                            C: description.Register, Inputs: items.Select(item => item.Register).ToArray()))); break;
                     }
                     case LegacyV6Op.NewScope: case LegacyV6Op.PublishStatic:
                     {

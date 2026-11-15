@@ -111,16 +111,16 @@ Check(scopes.Hir.Scopes[1].Singleton < 0 && scopes.Hir.Scopes[2].Singleton >= 0,
 Check(scopes.MemberUses.Single().Name == "later", "Member access retains its own name source span");
 
 var ranges = Bind("let value=1; [value, value + 1, ~/.codex]");
-var range = ranges.Hir.Nodes.Single(item => item.Kind == HirKind.LazyRange);
-Check(ranges.Hir.Ranges[range.Data].Deferred.SequenceEqual(new[] { false, true, false }),
-    "Range membership preserves eager values versus deferred expressions");
+var range = ranges.Hir.Nodes.Single(item => item.Kind == HirKind.Range);
+Check(range.Children.Count == 3, "Range retains three ordinary initializer expressions");
 var barriers = Bind("acquire; acquire null; release; release null");
 Check(barriers.Hir.Nodes.Where(item => item.Kind == HirKind.Barrier).Select(item => item.Children.Count)
     .SequenceEqual(new[] { 0, 1, 0, 1 }), "A bare barrier is distinct from an explicit Null operand");
 try { _ = Bind("loop { let callback = fn { break }; }"); throw new InvalidOperationException("Cross-function break was accepted"); }
 catch (CompileException error) { Check(error.Diagnostic.Code == "E0207", "A closure cannot break an outer loop"); }
-try { _ = Bind("loop { let values = [break]; }"); throw new InvalidOperationException("Cross-thunk break was accepted"); }
-catch (CompileException error) { Check(error.Diagnostic.Code == "E0207", "A deferred Range item cannot break its caller"); }
+var rangeBreak = Bind("loop { let values = [break]; }");
+Check(rangeBreak.Hir.Nodes.Any(node => node.Kind == HirKind.Break),
+    "An eager Range initializer retains its enclosing loop control flow");
 
 var patterns = Bind("let (first, second) = [1, 2]; match first { -1 => { 0 }, _ => { second } }");
 Check(patterns.Hir.Calls.Count(item => item.NativeName == "ranges.materialize") == 1,

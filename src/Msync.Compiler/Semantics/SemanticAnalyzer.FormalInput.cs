@@ -50,6 +50,7 @@ internal sealed partial class SemanticAnalyzer
             // Bool argument must not delete the other caller's branch from shared code.
             var result = value with
             {
+                Type = owner.PlanType(value),
                 Node = HirNodeId.None,
                 Location = null,
                 Literal = value.DenotedType is null ? null : value.Literal,
@@ -116,7 +117,8 @@ internal sealed partial class SemanticAnalyzer
                     result = result with { Scope = symbolic };
                 }
             }
-            if (value.Element is { } element) result = result with { Element = Abstract(element, roles.Element(role)) };
+            if (value.Element is { } element) result = result with
+            { Element = Abstract(element with { StorageConstraint = null }, roles.Element(role)) };
             if (!value.Callables.IsDefaultOrEmpty)
                 result = result with { Callables = AbstractCallables(value.Callables, role) };
             if (value.FutureCallableDomain is { } future)
@@ -321,7 +323,7 @@ internal sealed partial class SemanticAnalyzer
         public void Complete()
         {
             foreach (var pair in Locations.ToArray())
-                if (caller.Values.TryGetValue(pair.Key, out var value))
+                if (!formal.Values.ContainsKey(pair.Value) && caller.Values.TryGetValue(pair.Key, out var value))
                     formal.Values[pair.Value] = Abstract(value, roles.Capture(pair.Value));
             for (int index = 0; index < admittedRegions.Count; index++)
             {

@@ -101,7 +101,6 @@ internal sealed partial class HirTypeProjection(BoundProgram program, SemanticAr
             case HirKind.QualifyOn:
                 return Fact(hir.Type(TypeRef.Path));
             case HirKind.Range:
-            case HirKind.LazyRange:
                 {
                     HirTypeId element = hir.Type(new TypeRef(TypeKind.Never));
                     FlowDenotationDomain? denotations = null;

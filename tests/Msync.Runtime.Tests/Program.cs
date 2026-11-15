@@ -67,7 +67,8 @@ static async Task FileJourneys()
         Check(File.Exists(Path.Combine(other, "c")), "Relocatable object did not bind current cwd");
         NativeProgram lazy = Compile("fn item() { \"lazy\" -> ./lazy-flag; ./lazy-flag }; $std::ranges::empty($std::ranges::take([item()], 0))");
         Check((await Run(Reload(lazy), new(WorkingDirectory: root))).AsBool(), "Lazy take0 is not empty");
-        Check(!File.Exists(Path.Combine(root, "lazy-flag")), "Unselected lazy item executed");
+        Check(await File.ReadAllTextAsync(Path.Combine(root, "lazy-flag")) == "lazy",
+            "take(0) must not suppress literal source initialization");
         if (!OperatingSystem.IsWindows())
         {
             Directory.CreateDirectory(Path.Combine(root, "real")); Directory.CreateSymbolicLink(Path.Combine(root, "alias"), "real");
@@ -80,7 +81,7 @@ static async Task FileJourneys()
             catch (MsyncException error) { Check(error.ToString().Contains("spool limit", StringComparison.Ordinal), error.ToString()); }
             NativeProgram deferred = Compile("fn items() { /bin/sh(\"-c\", \"printf x >> deferred-calls\"); [./item] }; let r = items(); $std::ranges::first(r); $std::ranges::first(r)");
             await Run(Reload(deferred), new(WorkingDirectory: root));
-            Check(await File.ReadAllTextAsync(Path.Combine(root, "deferred-calls")) == "x", "Deferred range producer executed twice");
+            Check(await File.ReadAllTextAsync(Path.Combine(root, "deferred-calls")) == "x", "Ordinary Range factory must execute once");
         }
         List<MsyncException> reports = []; using StringWriter errors = new();
         NativeProgram missing = Compile("./missing -> ./b");

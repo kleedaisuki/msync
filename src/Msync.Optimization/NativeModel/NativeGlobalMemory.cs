@@ -41,6 +41,8 @@ internal static class NativeGlobalMemory
     {
         NativeFunctionCode function = program.Functions[index];
         NativeAddressAnalysis addresses = escape.Addresses;
+        bool[] singleAssignment = NativeDefinitionFacts.SingleAssignmentTemporaries(function);
+        long freshDefinitions = 0;
         HashSet<int> addressed = code.Where(instruction => instruction.Op is NativeOp.FrameAddress or NativeOp.BindLocation)
             .Select(instruction => instruction.A).ToHashSet();
         HashSet<int> bound = code.Where(instruction => instruction.Op == NativeOp.BindLocation)
@@ -108,6 +110,7 @@ internal static class NativeGlobalMemory
                 Transfer(pc, instruction, state);
             }
         }
+        profile?.Trace.Metric("global_memory.fresh_definitions", freshDefinitions);
         if (eliminatedLoads > 0) profile?.Trace.Metric("global_memory.eliminated_loads", eliminatedLoads);
         return rewritten;
 
@@ -120,6 +123,8 @@ internal static class NativeGlobalMemory
         {
             foreach (int definition in NativeInstructionFacts.Definitions(instruction))
             {
+                if (definition == instruction.Result && singleAssignment[definition] && stable.Contains(definition) && !flow.Cyclic[pc])
+                { freshDefinitions++; continue; }
                 foreach (NativeAddressAnalysis.Target target in state.Targets.Where(pair => pair.Value.Source == definition
                     || pair.Key.Slot == definition).Select(pair => pair.Key).ToArray()) state.Targets.Remove(target);
                 foreach (int ptr in state.Pointers.Where(pair => pair.Key == definition || pair.Value.BaseSlot == definition)

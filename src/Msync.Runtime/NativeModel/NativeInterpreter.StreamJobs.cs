@@ -28,28 +28,6 @@ public sealed partial class NativeInterpreter
         return captured.Futures.Any(static future => !future.Completion.IsCompletedSuccessfully);
     }
 
-    private async ValueTask<IReadOnlyList<NativeDatum>> ResolveReadyProducers(
-        IReadOnlyList<NativeDatum> arguments, SourceSpan? source, CancellationToken token)
-    {
-        NativeDatum[]? resolved = null;
-        for (int index = 0; index < arguments.Count; index++)
-        {
-            NativeDatum value = arguments[index];
-            if (!value.IsReady || value.Value.Kind != NativeKind.Range) continue;
-            NativeRange range = value.Value.AsRange();
-            while (range.Resolve?.Target is DeferredRange producer && producer.CanResolveInline)
-            {
-                using RuntimeTimelineScope? observation = context.Timeline?.Begin("stream.resolve_ready_producer");
-                observation?.SetSource(source);
-                observation?.SetMetric("argument", index);
-                range = await producer.ResolveAsync(token);
-                resolved ??= arguments.ToArray();
-                resolved[index] = new(NativeValue.FromRange(range));
-            }
-        }
-        return resolved ?? arguments;
-    }
-
     private NativeDatum SubmitStreamReduction(Msync.Core.NativeSignature signature,
         IReadOnlyList<NativeDatum> arguments, NativeRuntimeContext origin, SourceSpan? source,
         Task predecessor, CancellationToken token, NativeType? resultPhysical)

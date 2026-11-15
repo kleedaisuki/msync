@@ -58,6 +58,12 @@ public static partial class NativeArtifact
     {
         foreach (NativeCodeType type in program.Types)
         {
+            if (type.IsMachine)
+            {
+                if (type.Kind != TypeKind.Never || type.Element != -1 || type.Pointee != -1 || type.Layouts is not null)
+                    throw new MsyncException("Native machine scalars cannot carry source type, element or referent metadata");
+                continue;
+            }
             if ((type.Kind & ~TypeKind.Any) != 0 || type.Element < -1 || type.Pointee < -1)
                 throw new MsyncException("Native IR contains an unknown builtin type or invalid type reference");
             if (type.Element >= 0)
@@ -180,7 +186,9 @@ public static partial class NativeArtifact
             case NativeOp.Nop: case NativeOp.Barrier: case NativeOp.Unreachable: break;
             case NativeOp.Constant:
                 if ((uint)instruction.A >= (uint)program.Constants.Count) throw Error(instruction, "Invalid native constant index");
-                RequireResult(program, function, instruction, NativeValue.TypeOfKind(program.Constants[instruction.A].Kind).Kind);
+                if (program.Constants[instruction.A].Kind is NativeKind.MachineInteger or NativeKind.MachineFloat)
+                    RequireMachineConstant(program, function, instruction, program.Constants[instruction.A]);
+                else RequireResult(program, function, instruction, NativeValue.TypeOfKind(program.Constants[instruction.A].Kind).Kind);
                 break;
             case NativeOp.Copy: case NativeOp.Move:
                 RequireAssignable(program, function, instruction, instruction.Result, instruction.A);
@@ -252,8 +260,8 @@ public static partial class NativeArtifact
             case NativeOp.Load:
                 TypeIndex(program, instruction.Type, instruction.Source);
                 RequirePointer(program, function, instruction, instruction.A, instruction.Type);
-                if (!SameType(program, function.Slots[instruction.Result].Type, instruction.Type))
-                    throw Error(instruction, "A native load must preserve the declared storage type; use Narrow for a checked refinement");
+                if (!NativeTypeRelations.SameStorageRepresentation(program.Types, function.Slots[instruction.Result].Type, instruction.Type))
+                    throw Error(instruction, "A native load's destination must use the declared storage representation");
                 break;
             case NativeOp.Store:
                 TypeIndex(program, instruction.Type, instruction.Source);
@@ -270,6 +278,13 @@ public static partial class NativeArtifact
                 break;
             case NativeOp.Unary: ValidateUnary(program, function, instruction); break;
             case NativeOp.Binary: ValidateBinary(program, function, instruction); break;
+            case NativeOp.MachineBinary: case NativeOp.MachineCompare: case NativeOp.MachineCast:
+            case NativeOp.MachineIntrinsic: case NativeOp.MachineUnary: ValidateMachine(program, function, instruction); break;
+            case NativeOp.Select:
+                RequireKind(program, function, instruction, instruction.A, TypeKind.Bool);
+                RequireAssignable(program, function, instruction, instruction.Result, instruction.B);
+                RequireAssignable(program, function, instruction, instruction.Result, instruction.C);
+                break;
             case NativeOp.Convert: case NativeOp.Narrow:
                 Register(function, instruction, instruction.A);
                 TypeIndex(program, instruction.Type, instruction.Source);
@@ -292,22 +307,16 @@ public static partial class NativeArtifact
                 else if (instruction.A != -1) throw Error(instruction, "Invalid native Type construction element register");
                 RequireResult(program, function, instruction, TypeKind.Type);
                 break;
+            case NativeOp.FunctionComponent: case NativeOp.ComposeFunction:
+                ValidateFunctionPart(program, function, instruction); break;
             case NativeOp.MakeFunction: ValidateClosure(program, function, instruction); break;
             case NativeOp.AdaptFunction: ValidateCall(program, function, instruction, invoke: false); break;
             case NativeOp.Call: ValidateCall(program, function, instruction, invoke: true); break;
             case NativeOp.CallNative: ValidateNativeCall(program, function, instruction); break;
-            case NativeOp.MakeRange: case NativeOp.MakeLazyRange:
+            case NativeOp.MakeRange:
                 RequireRangeDescriptor(program, function, instruction);
                 RequireResult(program, function, instruction, TypeKind.Range);
                 foreach (int input in instruction.Inputs ?? []) Register(function, instruction, input);
-                if (instruction.Op == NativeOp.MakeLazyRange && instruction.Symbol is { } modes
-                    && (modes.Length != (instruction.Inputs?.Count ?? 0) || modes.Any(character => character is not ('0' or '1'))))
-                    throw Error(instruction, "Lazy Range element modes disagree with its operands");
-                break;
-            case NativeOp.DeferRange:
-                RequireRangeDescriptor(program, function, instruction);
-                RequireKind(program, function, instruction, instruction.A, TypeKind.Function);
-                RequireResult(program, function, instruction, TypeKind.Range);
                 break;
             case NativeOp.OpenIterator:
                 RequireKind(program, function, instruction, instruction.A, TypeKind.Range);
@@ -391,7 +400,13 @@ public static partial class NativeArtifact
             throw Error(instruction, "Unknown native binary operation");
         NativeBinary operation = (NativeBinary)instruction.Immediate;
         Register(function, instruction, instruction.A); Register(function, instruction, instruction.B);
-        if (operation is NativeBinary.Subtract or NativeBinary.Multiply or NativeBinary.Divide or NativeBinary.Remainder or NativeBinary.Power)
+        if (operation is NativeBinary.BoolAnd or NativeBinary.BoolOr)
+        {
+            RequireKind(program, function, instruction, instruction.A, TypeKind.Bool);
+            RequireKind(program, function, instruction, instruction.B, TypeKind.Bool);
+            RequireResult(program, function, instruction, TypeKind.Bool);
+        }
+        else if (operation is NativeBinary.Subtract or NativeBinary.Multiply or NativeBinary.Divide or NativeBinary.Remainder or NativeBinary.Power)
         {
             RequireKind(program, function, instruction, instruction.A, TypeKind.Number);
             RequireKind(program, function, instruction, instruction.B, TypeKind.Number);
@@ -570,8 +585,9 @@ public static partial class NativeArtifact
             || value.Kind != NativeKind.Path && (value.OriginId != -1 || value.OriginOffset != 0))
             throw new MsyncException("Native literal has an invalid definition origin");
         if (value.Kind is not (NativeKind.Null or NativeKind.Bool or NativeKind.Number or NativeKind.String
-            or NativeKind.Path or NativeKind.Connection or NativeKind.Type))
+            or NativeKind.Path or NativeKind.Connection or NativeKind.Type or NativeKind.MachineInteger or NativeKind.MachineFloat))
             throw new MsyncException($"Runtime-owned {value.Kind} cannot appear in a native constant table");
+        if (value.Kind is NativeKind.MachineInteger or NativeKind.MachineFloat) _ = value.ToMachineValue();
         if (value.Kind is NativeKind.String or NativeKind.Connection && value.Text is null
             || value.Kind == NativeKind.Path && value.Text is null && value.Path is null)
             throw new MsyncException("Native text/path/connection literal is missing its text");
@@ -684,6 +700,7 @@ public static partial class NativeArtifact
         {
             if (!seen.Add(next)) throw new MsyncException("Recursive Range element type cannot be projected into a finite builtin descriptor");
             NativeCodeType type = program.Types[next];
+            if (type.IsMachine) throw new MsyncException("A machine scalar is not a source builtin type");
             if (type.Pointee >= 0) throw new MsyncException("An IR pointer is not a source builtin type");
             kinds.Add(type.Kind);
         }

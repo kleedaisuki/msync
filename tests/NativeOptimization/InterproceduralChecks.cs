@@ -12,7 +12,7 @@ internal static class InterproceduralChecks
     private static bool reverseDefinitions;
     internal static int Run()
     {
-        RecordChain(); AliasSubstitution(); CaptureSnapshots(); ForeignContainer(); RecursiveProducer(); LazyAndDeferred(); IteratorEdges(); MixedNative(); FreshnessAndPublication(); CorrelatedFields(); RecursiveApplications(); BulkMemoryEffects(); RecursiveFields();
+        RecordChain(); AliasSubstitution(); CaptureSnapshots(); ForeignContainer(); RecursiveProducer(); LiteralAndOrdinaryCalls(); IteratorEdges(); MixedNative(); FreshnessAndPublication(); CorrelatedFields(); RecursiveApplications(); BulkMemoryEffects(); RecursiveFields();
         reverseDefinitions = true;
         RecordChain(); AliasSubstitution(); CaptureSnapshots();
         reverseDefinitions = false;
@@ -111,20 +111,27 @@ internal static class InterproceduralChecks
             "Recursive producer summaries must converge without treating the callee activation as caller storage");
     }
 
-    private static void LazyAndDeferred()
+    private static void LiteralAndOrdinaryCalls()
     {
-        NativeFunctionCode thunk = new("thunk", [new(2)], [new(NativeOp.Allocate, 0, 0), new(NativeOp.Return, A: 0)], new([], 2, []));
-        NativeFunctionCode main = new("lazy", [new(5), new(7), new(2), new(9)],
-            [new(NativeOp.MakeFunction, 0, 1, C: 0, Inputs: []), new(NativeOp.MakeLazyRange, 1, Type: 7, Symbol: "1", Inputs: [0]),
-                new(NativeOp.OpenIterator, A: 1, B: 0), new(NativeOp.NextIterator, 2, 0, 5), new(NativeOp.Jump, A: 3),
-                new(NativeOp.CloseIterator, A: 0), new(NativeOp.Constant, 3, 0), new(NativeOp.Return, A: 3)], new([], 9, []), IteratorCount: 1);
-        NativeAddressAnalysis facts = Facts(Program(main, thunk));
-        Check(facts.ProvenLayoutsAt(4, 2)?.SetEquals([0]) == true, "A lazy function item uses its actual return producer");
-        NativeFunctionCode rangeThunk = new("range-thunk", [new(2), new(7)],
+        NativeFunctionCode producer = new("producer", [new(2)],
+            [new(NativeOp.Allocate, 0, 0), new(NativeOp.Return, A: 0)], new([], 2, []));
+        NativeFunctionCode main = new("literal", [new(5), new(2), new(7), new(2), new(9)],
+            [new(NativeOp.MakeFunction, 0, 1, C: 0, Inputs: []), new(NativeOp.Call, 1, 0, 1, Inputs: []),
+                new(NativeOp.MakeRange, 2, Type: 7, Inputs: [1]), new(NativeOp.OpenIterator, A: 2, B: 0),
+                new(NativeOp.NextIterator, 3, 0, 6), new(NativeOp.Jump, A: 4),
+                new(NativeOp.CloseIterator, A: 0), new(NativeOp.Constant, 4, 0), new(NativeOp.Return, A: 4)],
+            new([], 9, []), IteratorCount: 1);
+        NativeAddressAnalysis facts = Facts(Program(main, producer));
+        Check(facts.ProvenLayoutsAt(5, 3)?.SetEquals([0]) == true, "An initialized literal retains its actual element producer");
+        NativeFunctionCode rangeProducer = new("range-producer", [new(2), new(7)],
             [new(NativeOp.Allocate, 0, 0), new(NativeOp.MakeRange, 1, Type: 7, Inputs: [0]), new(NativeOp.Return, A: 1)], new([], 7, []));
-        main = main with { Instructions = [main.Instructions[0], new(NativeOp.DeferRange, 1, 0, Type: 7), .. main.Instructions.Skip(2)] };
-        facts = Facts(Program(main, rangeThunk));
-        Check(facts.ProvenLayoutsAt(4, 2)?.SetEquals([0]) == true, "DeferRange uses the returned Range's items, not its thunk or a nested Range");
+        main = new("ordinary-range-call", [new(5), new(7), new(2), new(9)],
+            [new(NativeOp.MakeFunction, 0, 1, C: 0, Inputs: []), new(NativeOp.Call, 1, 0, 1, Inputs: []),
+                new(NativeOp.OpenIterator, A: 1, B: 0), new(NativeOp.NextIterator, 2, 0, 5), new(NativeOp.Jump, A: 3),
+                new(NativeOp.CloseIterator, A: 0), new(NativeOp.Constant, 3, 0), new(NativeOp.Return, A: 3)],
+            new([], 9, []), IteratorCount: 1);
+        facts = Facts(Program(main, rangeProducer));
+        Check(facts.ProvenLayoutsAt(4, 2)?.SetEquals([0]) == true, "An ordinary Range call retains its returned element provenance");
     }
 
     private static void IteratorEdges()

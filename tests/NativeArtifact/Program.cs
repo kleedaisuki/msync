@@ -141,7 +141,7 @@ NativeProgram InvalidRangeDescriptor(int pc, NativeInstruction instruction) => l
 Require(NativeInstructionFacts.ValueReads(logicalRanges.Functions[0].Instructions[2]).Order().SequenceEqual([0, 1]),
     "Logical Range metadata Type operand was omitted from register reads.");
 Require(NativeInstructionFacts.RewriteValues(logicalRanges.Functions[0].Instructions[6], value => value + 1).C == 2,
-    "Deferred Range metadata Type operand was omitted from register rewriting.");
+    "Initialized Range metadata Type operand was omitted from register rewriting.");
 Reject(InvalidRangeDescriptor(2, logicalRanges.Functions[0].Instructions[2] with { C = 0 }), "requires Type");
 Reject(InvalidRangeDescriptor(2, logicalRanges.Functions[0].Instructions[2] with { C = -2 }), "descriptor register");
 Reject(InvalidRangeDescriptor(1, new(NativeOp.Nop)), "not definitely initialized");

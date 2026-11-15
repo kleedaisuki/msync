@@ -1,4 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><IsAotCompatible>true</IsAotCompatible></PropertyGroup>
+  <ItemGroup><InternalsVisibleTo Include="Msync.NativeOptimization.Tests" /></ItemGroup>
   <ItemGroup><ProjectReference Include="../Msync.Core/Msync.Core.csproj" /></ItemGroup>
 </Project>

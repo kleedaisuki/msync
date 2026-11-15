@@ -45,8 +45,7 @@ internal sealed class HirBinaryReader(BinaryReader reader)
             Array("for loops", 8, () => new HirFor(new(reader.ReadInt32()), new(reader.ReadInt32()))),
             Array("matches", 4, () => new HirMatch(Array("match arms", 14, () => new HirMatchArm(Pattern(), new(reader.ReadInt32()))))),
             Array("barriers", 2, () => new HirBarrier(Boolean(), Boolean())),
-            Array("ranges", 4, () => new HirRange(Array("range deferred items", 1, Boolean))),
-            Array("function adaptations", 8, () => new HirFunctionAdaptation(Array("adaptation targets", 9, Target)) { SessionSlot = reader.ReadInt32() }),
+            Adaptations(),
             entry,
             Array("exports", 5, () => new HirExport(String(), new(reader.ReadInt32()))), session,
             Array("template closures", 8, () => new HirTemplateClosure(new(reader.ReadInt32()), Array("template captures", 13, Capture))),
@@ -58,6 +57,16 @@ internal sealed class HirBinaryReader(BinaryReader reader)
                 Array("session parameters", 4, () => new HirTypeId(reader.ReadInt32())), new(reader.ReadInt32()),
                 Array("session targets", 9, Target)))
         };
+    }
+
+    private ImmutableArray<HirFunctionAdaptation> Adaptations()
+    {
+        // Consume the reserved format-4 section without restoring retired evaluation behavior.
+        var modes = Array("reserved range modes", 4, () => Array("reserved item modes", 1, Boolean));
+        if (modes.Any(items => items.Any(deferred => deferred)))
+            throw new MsyncException("Implicit lazy Range artifacts are retired; recompile the source.");
+        return Array("function adaptations", 8, () => new HirFunctionAdaptation(Array("adaptation targets", 9, Target))
+        { SessionSlot = reader.ReadInt32() });
     }
 
     private ImmutableArray<T> Array<T>(string name, int minimumBytes, Func<T> read)

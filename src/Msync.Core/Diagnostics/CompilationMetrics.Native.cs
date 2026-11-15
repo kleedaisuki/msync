@@ -19,7 +19,7 @@ public static class CompilationMetrics
         };
         foreach (NativeAllocationPlacement placement in Enum.GetValues<NativeAllocationPlacement>())
             metrics["allocations." + placement] = (ulong)program.Allocations.Count(plan => plan.Placement == placement);
-        ulong[] operations = new ulong[Enum.GetValues<NativeOp>().Length];
+        ulong[] operations = new ulong[Enum.GetValues<NativeOp>().Max(static op => (int)op) + 1];
         foreach (NativeFunctionCode function in program.Functions)
             foreach (NativeInstruction instruction in function.Instructions) operations[(int)instruction.Op]++;
         foreach (NativeOp op in Enum.GetValues<NativeOp>())

@@ -34,10 +34,7 @@ internal sealed partial class SemanticAnalyzer
         public ImmutableDictionary<HirLocationId, HirLocationId> Definitions { get; set; } = ImmutableDictionary<HirLocationId, HirLocationId>.Empty;
         public ImmutableDictionary<HirLocationId, ImmutableArray<int>> CallableContracts { get; set; }
             = ImmutableDictionary<HirLocationId, ImmutableArray<int>>.Empty;
-        public ImmutableArray<SemanticWriteEvent> WriteEvents { get; set; } = default;
-        public ImmutableHashSet<int> IndexedWrites { get; set; } = [];
-        public ImmutableHashSet<HirLocationId> CellWrites { get; set; } = [];
-        public ImmutableHashSet<(int Region, string Field)> FieldWrites { get; set; } = [];
+        public ImmutableArray<SemanticWriteEvent> WriteEvents { get; set; } = [];
         public bool Complete { get; set; }
     }
 
@@ -50,7 +47,7 @@ internal sealed partial class SemanticAnalyzer
         IReadOnlyList<SemanticValue> arguments)
     {
         SemanticContext query = new(context.Function)
-        { Queries = context.Queries ?? new(), DeferredReads = context.DeferredReads };
+        { Queries = context.Queries ?? queries, DeferredReads = context.DeferredReads };
         HashSet<SemanticValue> visited = new(ReferenceEqualityComparer.Instance);
         HashSet<int> importedRegions = [];
         Import(callee);
@@ -203,6 +200,9 @@ internal sealed partial class SemanticAnalyzer
             var value = capture.Mode == HirCaptureMode.Location
                 ? StorageValue(capture.Source, caller) ?? capture.Value : capture.Value;
             var storage = capture.Mode == HirCaptureMode.Location ? StorageType(capture.Source, caller) : value.Type;
+            if (capture.Mode == HirCaptureMode.Location)
+                value = !ReadsCapture(id, index, out _) ? ValueForType(storage) with { StorageConstraint = storage }
+                    : value with { StorageConstraint = storage };
             if (hir.Types[value.Type.Value].TypeParameter >= 0) value = value with { Type = storage };
             value = EnrichFutureDomains(value, caller, capture.Source, rootStorage: capture.Mode == HirCaptureMode.Location);
             if (caller.DeferredReads && capture.Mode == HirCaptureMode.Location
@@ -212,29 +212,23 @@ internal sealed partial class SemanticAnalyzer
         }
         SemanticInputSchema? schema = null;
         string key = InstanceKey(id, arguments, captureValues, caller, ref schema);
-        var cache = caller.Publish ? instances : (caller.Queries ??= new()).Instances;
+        var cache = caller.Publish ? instances : (caller.Queries ??= queries).Instances;
         if (!cache.TryGetValue(key, out var instance))
         {
             Trace?.Metric("cache.miss", 1);
             // A new specialization could add concrete facts to an earlier
             // function body. That edit must replace the whole projection.
             if (id.Value < reusedEditorTemplates) throw new EditorPrefixChanged();
-            // Write-only environments may grow across recursive edges without
-            // changing the body. Completed summaries still need the full input
-            // key: a branch that skips a write must retain that caller's value.
-            string recursiveKey = InstanceKey(id, arguments, captureValues, caller, ref schema, recursive: true);
-            if (!cache.Active.TryGetValue(recursiveKey, out instance))
-                instance = BuildInstance(id, template, arguments, captureValues, actualCaptures, source, caller, cache, key, recursiveKey);
-            else Trace?.Metric("cache.recursive", 1);
+            instance = BuildInstance(id, template, arguments, captureValues, actualCaptures, source, caller, cache, key);
         }
-        else Trace?.Metric("cache.hit", 1);
+        else Trace?.Metric(instance.Complete ? "cache.hit" : "cache.recursive", 1);
         return ProjectInvocation(instance, arguments, captureValues, actualCaptures, caller, applyEffects, source);
     }
 
     private FunctionInstance BuildInstance(HirTemplateId id, HirTemplate template,
         IReadOnlyList<SemanticValue> arguments, IReadOnlyList<SemanticValue> captureValues,
         ImmutableArray<SemanticCapture> captured, HirSourceRange source, SemanticContext caller,
-        SemanticInstanceCache cache, string key, string recursiveKey)
+        SemanticInstanceCache cache, string key)
     {
         SemanticValue? recursiveSignature = null;
         if (caller.Publish && template.ResultAnnotation is null
@@ -248,9 +242,20 @@ internal sealed partial class SemanticAnalyzer
             recursiveSignature = Instantiate(id, captured, arguments, source, query).Result;
         }
         HirFunctionId function = new(caller.Publish ? hir.Functions.Count : -1);
+        if (Trace is not null)
+            Trace.Report(new("compiler.semantic.specialization", CompilationTrace.UnixNow(), 0, 0, CompilationOutcome.Ok, Aggregated: true)
+            {
+                Attributes = new Dictionary<string, string>(HirTelemetry.Source(hir.Sources, source))
+                {
+                    ["template.id"] = id.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["function.id"] = function.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    ["specialization.key"] = key
+                }
+            });
         caller.Output?.ReserveFunction(new(template.Name, [], [],
             hir.Type(new TypeRef(TypeKind.Never)), HirNodeId.None, id, IsOpen: true));
-        SemanticContext context = new(function, caller.Output) { Queries = caller.Queries, DeferredReads = caller.DeferredReads };
+        SemanticContext context = new(function, caller.Output)
+        { Queries = caller.Queries, DeferredReads = caller.DeferredReads, WriteEvents = [] };
         foreach (var declaration in program.DeclarationsOf(id))
         {
             var location = hir.Locations[declaration.Location.Value];
@@ -298,7 +303,7 @@ internal sealed partial class SemanticAnalyzer
             var original = template.Parameters[index];
             var target = context.Location(original);
             var definition = hir.Locations[original.Value];
-            var argument = input.Abstract(arguments[index]);
+            var argument = input.Abstract(arguments[index] with { StorageConstraint = null });
             parameterEntryTypes?.Add(argument.Type);
             var parameterType = ResolveHirType(definition.StorageType, context);
             if (hir.Types[parameterType.Value].TypeParameter >= 0)
@@ -369,7 +374,6 @@ internal sealed partial class SemanticAnalyzer
         // Both query and code generation reserve before examining a recursive body.
         var entryAliases = context.AliasViews.ToImmutableDictionary();
         cache.Add(key, instance);
-        cache.Active.Add(recursiveKey, instance);
         try
         {
             var body = Analyze(template.Body, context);
@@ -379,7 +383,7 @@ internal sealed partial class SemanticAnalyzer
                 body = Convert(body, bodyType, template.Source, context);
             }
             var result = body;
-            foreach (var returned in context.Returns) result = Join(result, returned);
+            foreach (var returned in context.Returns) result = Join(result, returned.Value);
             if (context.ExpectedReturn is { } expected)
                 Require(result, expected, template.Source, true, context);
             if (context.Publish && parameterInitializers.Count != 0)
@@ -395,6 +399,10 @@ internal sealed partial class SemanticAnalyzer
                 ? observations?.ReturnedPath(body, context) : null;
             result = ResolveSummaryTypes(result, context);
             instance.Result = result with { Node = HirNodeId.None, Location = null, Observation = observation ?? result.Observation };
+            var exits = context.Returns.Select(exit => exit.Events).ToList();
+            if (Runtime(body).Kind != TypeKind.Never) exits.Add(context.WriteEvents?.ToImmutableArray() ?? []);
+            Trace?.Metric("plan.exits", exits.Count);
+            context.WriteEvents = MergeEventSequences(exits);
             FreezeSummary(instance, context, entryAliases);
             instance.Complete = true;
             caller.Output?.SealFunction(function, new(template.Name,
@@ -412,10 +420,6 @@ internal sealed partial class SemanticAnalyzer
                 new(source.Start, source.Length), "while checking this call"));
             throw;
         }
-        finally
-        {
-            cache.Active.Remove(recursiveKey);
-        }
     }
 
     private void FreezeSummary(FunctionInstance instance, SemanticContext context,
@@ -430,14 +434,19 @@ internal sealed partial class SemanticAnalyzer
         foreach (var argument in instance.Arguments) Visit(argument);
         foreach (var capture in instance.Captures) Visit(capture);
         foreach (var target in instance.CaptureTargets) VisitCell(target);
+        HashSet<SemanticWriteEvent> exported = new(ReferenceEqualityComparer.Instance);
+        int discovered;
+        do
+        {
+            discovered = exported.Count;
+            VisitEvents(context.WriteEvents ?? []);
+        } while (exported.Count != discovered);
         instance.Objects = objects.ToImmutableDictionary();
         instance.Indexed = indexed.ToImmutableDictionary();
         instance.Cells = cells.ToImmutableDictionary();
         instance.NamedCells = namedCells?.ToImmutableHashSet() ?? [];
-        instance.FieldWrites = context.FieldWrites.ToImmutableHashSet();
-        instance.CellWrites = context.CellWrites.ToImmutableHashSet();
-        instance.IndexedWrites = context.IndexedWrites.ToImmutableHashSet();
-        instance.WriteEvents = context.WriteEvents is null ? default : context.WriteEvents.ToImmutableArray();
+        instance.WriteEvents = ExportEvents(context.WriteEvents ?? []);
+        Trace?.Metric("plan.writes.exported", exported.Count);
         instance.MemberContracts = context.MemberContracts.Where(pair => objects.ContainsKey(pair.Key.Region))
             .ToImmutableDictionary(pair => pair.Key, pair => pair.Value);
         HashSet<HirLocationId> reachedLocations = [.. cells.Keys, .. instance.CaptureTargets];
@@ -463,6 +472,42 @@ internal sealed partial class SemanticAnalyzer
             if (!introduced.IsEmpty) aliasEffects.Add(pair.Key, introduced);
         }
         instance.AliasEffects = aliasEffects.ToImmutable();
+
+        void VisitEvents(IEnumerable<SemanticWriteEvent> events)
+        {
+            foreach (var item in events)
+            {
+                if (item.Write is { } write && Escapes(write) && exported.Add(item))
+                {
+                    Visit(write.After);
+                    if (write.IndexedStorage is { } storage) Visit(storage.Element);
+                }
+                if (!item.Branches.IsDefaultOrEmpty)
+                    foreach (var branch in item.Branches) VisitEvents(branch);
+            }
+        }
+
+        bool Escapes(SemanticDeferredWrite write) => write.Kind switch
+        {
+            SemanticWriteKind.Location => cells.ContainsKey(write.Location),
+            SemanticWriteKind.Field => objects.ContainsKey(write.Region),
+            _ => indexed.ContainsKey(write.Region)
+        };
+
+        ImmutableArray<SemanticWriteEvent> ExportEvents(IEnumerable<SemanticWriteEvent> events)
+        {
+            var result = ImmutableArray.CreateBuilder<SemanticWriteEvent>();
+            foreach (var item in events)
+            {
+                var branches = item.Branches.IsDefaultOrEmpty ? default
+                    : item.Branches.Select(branch => ExportEvents(branch)).ToImmutableArray();
+                bool hasBranches = !branches.IsDefaultOrEmpty && branches.Any(branch => !branch.IsEmpty);
+                var write = exported.Contains(item) ? item.Write : null;
+                if (write is null && item.InitializeSingleton is null && !hasBranches) continue;
+                result.Add(item with { Write = write, Branches = hasBranches ? branches : default });
+            }
+            return result.ToImmutable();
+        }
 
         void VisitRegion(int region)
         {

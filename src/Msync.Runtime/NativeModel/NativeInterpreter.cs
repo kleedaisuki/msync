@@ -264,8 +264,7 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
     private async ValueTask<NativeStep> RangeInstructionAsync(NativeFrame frame, NativeInstruction instruction, int pc, CancellationToken token)
     {
         TypeRef? logicalType = instruction.C >= 0 ? (await frame.GetDatum(instruction.C).ResolveAsync(token)).AsType() : null;
-        if (instruction.Op == NativeOp.DeferRange) MakeDeferredRange(frame, instruction, logicalType);
-        else MakeRange(frame, instruction, instruction.Op == NativeOp.MakeLazyRange, logicalType);
+        MakeRange(frame, instruction, logicalType);
         return new(pc + 1);
     }
 

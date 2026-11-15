@@ -69,6 +69,8 @@ public sealed partial class NativeInterpreter
         NativeOp.FrameAddress => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteFrameAddress,
         NativeOp.BindLocation => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteBindLocation,
         NativeOp.AddressOffset => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteAddressOffset,
+        NativeOp.FunctionComponent => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteFunctionComponent,
+        NativeOp.ComposeFunction => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteComposeFunction,
         NativeOp.EnvironmentAddress => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteEnvironmentAddress,
         NativeOp.ProjectAddress => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteProjectAddress,
         NativeOp.Load => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteLoad,
@@ -76,6 +78,12 @@ public sealed partial class NativeInterpreter
         NativeOp.Unary => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteUnary,
         NativeOp.Binary when number => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteNumberBinary,
         NativeOp.Binary => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteBinary,
+        NativeOp.MachineBinary => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteMachineBinary,
+        NativeOp.MachineCompare => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteMachineCompare,
+        NativeOp.MachineCast => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteMachineCast,
+        NativeOp.MachineIntrinsic => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteMachineIntrinsic,
+        NativeOp.MachineUnary => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteMachineUnary,
+        NativeOp.Select => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteSelect,
         NativeOp.Convert => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteConvert,
         NativeOp.Narrow => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteNarrow,
         NativeOp.MakeType => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteMakeType,
@@ -97,8 +105,6 @@ public sealed partial class NativeInterpreter
         NativeOp.Call => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteCall,
         NativeOp.CallNative => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteCallNative,
         NativeOp.MakeRange => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteMakeRange,
-        NativeOp.MakeLazyRange => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteMakeLazyRange,
-        NativeOp.DeferRange => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteDeferRange,
         NativeOp.OpenIterator => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteOpenIterator,
         NativeOp.NextIterator => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteNextIterator,
         NativeOp.CloseIterator => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteCloseIterator,
@@ -462,16 +468,6 @@ public sealed partial class NativeInterpreter
     }
 
     private static NativeStep ExecuteMakeRange(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
-    {
-        return owner.RangeInstructionAsync(activation.Frame, activation.Execution.Metadata[pc], pc, token);
-    }
-
-    private static NativeStep ExecuteMakeLazyRange(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
-    {
-        return owner.RangeInstructionAsync(activation.Frame, activation.Execution.Metadata[pc], pc, token);
-    }
-
-    private static NativeStep ExecuteDeferRange(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
     {
         return owner.RangeInstructionAsync(activation.Frame, activation.Execution.Metadata[pc], pc, token);
     }

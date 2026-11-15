@@ -3,6 +3,8 @@ using Msync.Hir;
 
 namespace Msync.Compiler.Semantics;
 
+internal sealed record SemanticExit(SemanticValue Value, ImmutableArray<SemanticWriteEvent> Events);
+
 internal sealed record SemanticWriteEvent(SemanticDeferredWrite? Write,
     ImmutableArray<int> Guards, int? InitializeSingleton = null,
     ImmutableArray<ImmutableArray<SemanticWriteEvent>> Branches = default);

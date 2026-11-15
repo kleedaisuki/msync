@@ -61,12 +61,6 @@ internal sealed class SemanticOutput(HirBuilder builder)
         builder.Barriers.Add(value);
         return index;
     }
-    public int AddRange(HirRange value)
-    {
-        int index = builder.Ranges.Count;
-        builder.Ranges.Add(value);
-        return index;
-    }
     public int AddAdaptation(HirFunctionAdaptation value)
     {
         int index = builder.Adaptations.Count;

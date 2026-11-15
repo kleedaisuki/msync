@@ -51,6 +51,11 @@ internal sealed partial class NativeArtifactRenderer(NativeProgram module, int v
         for (int id = 0; id < module.Types.Count; id++)
         {
             NativeCodeType type = module.Types[id];
+            if (type.Machine is { } machine)
+            {
+                Table("type", "@t" + id, machine.ToString());
+                continue;
+            }
             string element = type.Element < 0 ? "" : $" element @t{type.Element}";
             string pointee = type.Pointee < 0 ? "" : $" pointee @t{type.Pointee}";
             string layouts = type.Layouts is not { Count: > 0 } cases ? ""
@@ -162,14 +167,20 @@ internal sealed partial class NativeArtifactRenderer(NativeProgram module, int v
             NativeOp.CopyMemory => $"destination {Register(instruction.A)}, source {Register(instruction.B)}, count {Register(instruction.C)}, layout @l{instruction.Immediate}",
             NativeOp.ClearMemory => $"{Register(instruction.A)}, count {Register(instruction.C)}, layout @l{instruction.Immediate}",
             NativeOp.RangeFromMemory => $"{Register(instruction.A)}, count {Register(instruction.B)}, layout @l{instruction.C}, field #{instruction.Immediate}",
+            NativeOp.FunctionComponent => $"{Register(instruction.A)}, component #{instruction.Immediate}",
+            NativeOp.ComposeFunction => $"({string.Join(", ", (instruction.Inputs ?? []).Select(Register))})"
+                + (instruction.Symbol is null ? "" : $", context origin {instruction.Symbol}"),
             NativeOp.EnvironmentAddress => $"{Register(instruction.A)}, environment @l{instruction.B}",
             NativeOp.Unary => $"{(NativeUnary)instruction.Immediate} {Register(instruction.A)}"
                 + ((NativeUnary)instruction.Immediate == NativeUnary.HasLayout ? $", @t{instruction.B}"
                     : (NativeUnary)instruction.Immediate == NativeUnary.IsType ? ", " + Register(instruction.B) : ""),
             NativeOp.Binary => $"{(NativeBinary)instruction.Immediate} {Register(instruction.A)}, {Register(instruction.B)}",
+            NativeOp.MachineBinary => $"{(Msync.Core.Llvm.LlvmOpcode)instruction.Immediate} {Register(instruction.A)}, {Register(instruction.B)}",
+            NativeOp.MachineCompare => $"{(Msync.Core.Llvm.LlvmCmpPredicate)instruction.Immediate} {Register(instruction.A)}, {Register(instruction.B)}",
+            NativeOp.MachineCast or NativeOp.MachineUnary => $"{(Msync.Core.Llvm.LlvmOpcode)instruction.Immediate} {Register(instruction.A)}",
+            NativeOp.MachineIntrinsic => $"{(NativeMachineIntrinsic)instruction.Immediate} ({string.Join(", ", (instruction.Inputs ?? []).Select(Register))})",
             NativeOp.Copy or NativeOp.Move or NativeOp.FrameAddress or NativeOp.Load or NativeOp.Convert or NativeOp.Narrow
-                or NativeOp.Drop or NativeOp.Return or NativeOp.ProcessCall or NativeOp.SelectPath or NativeOp.Acquire
-                or NativeOp.DeferRange => Register(instruction.A),
+                or NativeOp.Drop or NativeOp.Return or NativeOp.ProcessCall or NativeOp.SelectPath or NativeOp.Acquire => Register(instruction.A),
             NativeOp.Store or NativeOp.BindLocation => $"{Register(instruction.A)}, {Register(instruction.B)}",
             _ => ""
         };
@@ -259,6 +270,8 @@ internal sealed partial class NativeArtifactRenderer(NativeProgram module, int v
         NativeKind.Null => "null",
         NativeKind.Bool => value.Boolean ? "true" : "false",
         NativeKind.Number => $"number({value.Number.ToString("R", CultureInfo.InvariantCulture)}, bits=0x{BitConverter.DoubleToUInt64Bits(value.Number):x16})",
+        NativeKind.MachineInteger or NativeKind.MachineFloat =>
+            $"machine({value.MachineType}, bits=0x{value.Text![(value.Text!.LastIndexOf(':') + 1)..]})",
         NativeKind.String => Quote(value.Text ?? ""),
         NativeKind.Connection => $"connection({value.ConnectionKind}, {Quote(value.Text ?? "")})",
         NativeKind.Path => PathText(value.Path ?? new NativePath(value.Text ?? "")),

@@ -66,17 +66,22 @@ internal sealed partial class SemanticAnalyzer
     private static List<SemanticWriteEvent>? MergeSingletonEvents(SemanticContext[] branches)
     {
         if (branches.All(branch => branch.WriteEvents is null)) return null;
-        var first = branches[0].WriteEvents;
-        int prefix = first?.Count ?? 0;
-        foreach (var branch in branches.AsSpan(1))
+        return MergeEventSequences(branches.Select(branch => branch.WriteEvents?.ToImmutableArray() ?? []).ToArray());
+    }
+
+    private static List<SemanticWriteEvent> MergeEventSequences(IReadOnlyList<ImmutableArray<SemanticWriteEvent>> sequences)
+    {
+        if (sequences.Count == 0) return [];
+        var first = sequences[0];
+        int prefix = first.Length;
+        foreach (var sequence in sequences.Skip(1))
         {
-            prefix = Math.Min(prefix, branch.WriteEvents?.Count ?? 0);
+            prefix = Math.Min(prefix, sequence.Length);
             for (int index = 0; index < prefix; index++)
-                if (!ReferenceEquals(first![index], branch.WriteEvents![index])) { prefix = index; break; }
+                if (!ReferenceEquals(first[index], sequence[index])) { prefix = index; break; }
         }
-        List<SemanticWriteEvent> result = first is null ? [] : first.GetRange(0, prefix);
-        var alternatives = branches.Select(branch => branch.WriteEvents is { } events
-            ? events.Skip(prefix).ToImmutableArray() : ImmutableArray<SemanticWriteEvent>.Empty).ToImmutableArray();
+        List<SemanticWriteEvent> result = first.Take(prefix).ToList();
+        var alternatives = sequences.Select(sequence => sequence.Skip(prefix).ToImmutableArray()).ToImmutableArray();
         if (alternatives.Any(alternative => !alternative.IsEmpty)) result.Add(new(null, [], Branches: alternatives));
         return result;
     }

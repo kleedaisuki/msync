@@ -149,109 +149,28 @@ internal sealed partial class SemanticAnalyzer
 
     private SemanticValue Range(HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext context)
     {
-        var delayed = node.Kind == HirKind.LazyRange ? hir.Ranges[node.Data].Deferred : default;
-        List<HirNodeId> values = [];
+        if (Trace is null) return RangeCore(node, children, context);
+        return Trace.MeasureDetailed("compiler.semantic.range_literal", (self: this, node, context),
+            static state => state.self.RangeCore(state.node, state.self.hir.Children(state.node), state.context),
+            attributes: HirTelemetry.Source(hir.Sources, node.Source));
+    }
+
+    private SemanticValue RangeCore(HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext context)
+    {
+        Trace?.Metric("elements.initialized", children.Length);
+        HirNodeId[] values = new HirNodeId[children.Length];
         SemanticValue? element = null;
-        ImmutableArray<SemanticDeferredWrite>.Builder? admission = null;
         for (int index = 0; index < children.Length; index++)
         {
-            SemanticValue value;
-            if (!delayed.IsDefaultOrEmpty && delayed[index])
-            {
-                var thunk = RangeThunk(children[index], context);
-                value = thunk.Value;
-                values.Add(thunk.Closure);
-                if (!thunk.AdmissionEffects.IsDefaultOrEmpty)
-                    (admission ??= ImmutableArray.CreateBuilder<SemanticDeferredWrite>()).AddRange(thunk.AdmissionEffects);
-            }
-            else
-            {
-                value = Analyze(children[index], context);
-                values.Add(value.Node);
-            }
-            value = value with { Location = null };
+            SemanticValue value = Analyze(children[index], context) with { Location = null };
+            values[index] = value.Node;
             element = element is null ? value : Join(element, value);
         }
         element ??= ValueForType(hir.Type(new TypeRef(TypeKind.Never)));
         HirTypeId type = RangeType(element.Type);
-        HirNodeId expression = HirNodeId.None;
-        if (context.Publish)
-        {
-            int descriptor = node.Data;
-            if (node.Kind == HirKind.LazyRange)
-            {
-                descriptor = hir.Ranges.Count;
-                context.Output!.AddRange(new(delayed));
-            }
-            expression = context.Output!.Add(node.Kind, type, node.Source,
-                System.Runtime.InteropServices.CollectionsMarshal.AsSpan(values), descriptor, effects: node.Effects);
-        }
-        return new(type, expression, Element: element, DeferredEffects: admission?.ToImmutable() ?? []);
-    }
-
-    private (SemanticValue Value, HirNodeId Closure, ImmutableArray<SemanticDeferredWrite> AdmissionEffects) RangeThunk(HirNodeId expression, SemanticContext context)
-    {
-        HashSet<HirLocationId> read = [], declared = [];
-        CollectLocations(expression, read, declared);
-        read.ExceptWith(declared);
-        SemanticContext deferred = new(new(context.Publish ? hir.Functions.Count : -1), context.Output, context)
-        { DeferredReads = true, NextRegion = context.NextRegion };
-        ImmutableArray<HirCapture>.Builder captures = ImmutableArray.CreateBuilder<HirCapture>();
-        foreach (var original in read.OrderBy(location => location.Value))
-        {
-            var source = context.Location(original);
-            var target = AllocateThunkLocation(original, deferred);
-            var value = context.Values.GetValueOrDefault(source)
-                ?? ValueForType(ResolveHirType(hir.Locations[source.Value].StorageType, context));
-            HirTypeId storage = context.Storage.GetValueOrDefault(source, value.Type);
-            deferred.Values[target] = !Stable(original) || value.Scope is not null
-                ? FutureRead(value, storage, deferred, source) : value;
-            deferred.Storage[target] = storage;
-            RegisterStorageAlias(target, source, deferred);
-            captures.Add(new(target, HirCaptureMode.Location, source, HirNodeId.None));
-        }
-        foreach (var local in declared) _ = AllocateThunkLocation(local, deferred);
-        context.Output?.ReserveFunction(new("<range-item>", [], captures.ToImmutable(),
-            hir.Type(TypeRef.Any), HirNodeId.None, IsOpen: true));
-        SemanticValue result = Analyze(expression, deferred);
-        MergeSessionContracts(context, [deferred]);
-        result = PublishResultGraph(result, deferred, context, out var admissionEffects);
-        if (!context.Publish) return (result, HirNodeId.None, admissionEffects);
-        context.Output!.SealFunction(deferred.Function, new("<range-item>", [], captures.ToImmutable(), result.Type, result.Node));
-        int closure = hir.Closures.Count;
-        context.Output!.AddClosure(new(deferred.Function, captures.ToImmutable()));
-        return (result, context.Output!.Add(HirKind.Closure, hir.Type(TypeRef.Function), program.Node(expression).Source, data: closure), admissionEffects);
-    }
-
-    private HirLocationId AllocateThunkLocation(HirLocationId original, SemanticContext context)
-    {
-        HirLocationId definition = context.Definitions.GetValueOrDefault(context.Location(original), program.Original(original));
-        HirLocationId target = original;
-        if (context.Publish)
-        {
-            target = new(hir.Locations.Count);
-            context.Output!.ReserveLocation(hir.Locations[original.Value] with { Owner = context.Function, TemplateOwner = null });
-        }
-        context.Locations.Add(original, target);
-        context.Definitions[target] = definition;
-        return target;
-    }
-
-    private void CollectLocations(HirNodeId id, HashSet<HirLocationId> read, HashSet<HirLocationId> declared)
-    {
-        var node = program.Node(id);
-        if (node.Kind is HirKind.ReadLocation or HirKind.ReadStorage or HirKind.Assign) read.Add(new(node.Data));
-        if (node.Kind == HirKind.Declare) declared.Add(new(node.Data));
-        if (node.Kind == HirKind.TemplateClosure)
-            foreach (var capture in hir.TemplateClosures[node.Data].Captures) read.Add(capture.SourceLocation);
-        if (node.Kind == HirKind.For) declared.Add(hir.Fors[node.Data].Item);
-        if (node.Kind == HirKind.Match)
-            foreach (var arm in hir.Matches[node.Data].Arms)
-            {
-                if (arm.Pattern.Binding is { } binding) declared.Add(binding);
-                CollectLocations(arm.Value, read, declared);
-            }
-        if (node.Kind is (HirKind.Scope or HirKind.AllocateScope) && hir.Scopes[node.Data].Self is { } self) declared.Add(self);
-        foreach (var child in program.Children(id)) CollectLocations(child, read, declared);
+        HirNodeId expression = context.Publish
+            ? context.Output!.Add(HirKind.Range, type, node.Source, values, node.Data, effects: node.Effects)
+            : HirNodeId.None;
+        return new(type, expression, Element: element, EagerRange: true);
     }
 }

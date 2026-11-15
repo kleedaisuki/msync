@@ -58,5 +58,5 @@ public static partial class NativeInstructionFacts
 
     public static NativeOperands ValueOperands(NativeInstruction instruction) => Schema(instruction.Op).Values
         | (instruction.Op == NativeOp.Unary && instruction.Immediate == (int)NativeUnary.IsType ? NativeOperands.B : 0)
-        | (instruction.Op is NativeOp.MakeRange or NativeOp.MakeLazyRange or NativeOp.DeferRange or NativeOp.CallNative or NativeOp.Allocate ? NativeOperands.C : 0);
+        | (instruction.Op is NativeOp.MakeRange or NativeOp.CallNative or NativeOp.Allocate ? NativeOperands.C : 0);
 }

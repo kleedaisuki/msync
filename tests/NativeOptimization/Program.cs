@@ -13,6 +13,11 @@ internal static class Program
 
     public static void Main(string[] args)
     {
+        if (args.Contains("--liveness"))
+        {
+            Console.WriteLine($"PASS liveness equivalence {LivenessChecks.Run()}");
+            return;
+        }
         if (args.Contains("--storage-copy"))
         {
             Console.WriteLine($"PASS storage copy {StorageCopyChecks.Run()}");

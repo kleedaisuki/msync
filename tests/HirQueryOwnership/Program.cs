@@ -1,7 +1,10 @@
 using Msync.Compiler.Semantics;
 using Msync.Core;
+using Msync.Core.Native;
 using Msync.Hir;
+using Msync.Optimization;
 using Msync.Runtime;
+using Msync.Runtime.Native;
 
 if (args is ["--allocations", var path])
 {
@@ -48,7 +51,6 @@ async Task Query(string source, double expected, int emittedScopes = 0)
     int matches = bound.Hir.Matches.Count;
     int fors = bound.Hir.Fors.Count;
     int scopes = bound.Hir.Scopes.Count;
-    int ranges = bound.Hir.Ranges.Count;
     int calls = bound.Hir.Calls.Count;
     int closures = bound.Hir.Closures.Count;
     int adaptations = bound.Hir.Adaptations.Count;
@@ -58,7 +60,6 @@ async Task Query(string source, double expected, int emittedScopes = 0)
     Check(bound.Hir.Matches.Count == matches, "Query published Match payload.");
     Check(bound.Hir.Fors.Count == fors, "Query published For payload.");
     Check(bound.Hir.Scopes.Count == scopes + emittedScopes, "Query published Scope payload.");
-    Check(bound.Hir.Ranges.Count == ranges, "Query published Range payload.");
     Check(bound.Hir.Calls.Count == calls, "Query published Call payload.");
     Check(bound.Hir.Closures.Count == closures, "Query published Closure payload.");
     Check(bound.Hir.Adaptations.Count == adaptations, "Query published callback adaptation.");
@@ -66,9 +67,10 @@ async Task Query(string source, double expected, int emittedScopes = 0)
     HirArtifact.Write(analyzed, bytes);
     bytes.Position = 0;
     HirModule restored = HirArtifact.Read(bytes);
-    Module lowered = HirLowerer.Lower(restored, new(OptimizationLevel: 0)).Module;
-    Value result = await Interpreter.ExecuteAsync(lowered);
-    Check(result is NumberValue number && number.Data == expected,
+    NativeProgram lowered = NativeHirLowerer.Lower(restored, new(OptimizationLevel: 0)).Program;
+    await using NativeInterpreter interpreter = new(NativeOptimizer.PlanStorage(lowered));
+    NativeValue result = await interpreter.ExecuteAsync();
+    Check(result.AsNumber() == expected,
         $"Unexpected result for {source}: {result}");
 }
 

@@ -41,10 +41,9 @@ HirModule sealedPayloads = HirSealer.Seal(payloads);
 HirValidation.Validate(sealedPayloads);
 Check(sealedPayloads.Calls.Length == 1 && sealedPayloads.Scopes.Length == 1
     && sealedPayloads.Fors.Length == 1 && sealedPayloads.Barriers.Length == 1
-    && sealedPayloads.Ranges.Length == 1 && sealedPayloads.Adaptations.Length == 1,
-    "Every executable payload arena is compacted");
+    && sealedPayloads.Adaptations.Length == 1, "Every executable payload arena is compacted");
 Check(sealedPayloads.Nodes.Where(node => node.Kind is HirKind.Call or HirKind.Scope or HirKind.For
-    or HirKind.Barrier or HirKind.Range or HirKind.LazyRange or HirKind.AdaptFunction).All(node => node.Data == 0),
+    or HirKind.Barrier or HirKind.Range or HirKind.AdaptFunction).All(node => node.Data == 0),
     "Every executable payload node uses its remapped identity");
 Check(sealedPayloads.Edges.Length == payloads.Edges.Length - 1, "Unused child-edge storage removed");
 Check(sealedPayloads.UnresolvedImports == payloads.UnresolvedImports, "External imports preserve stable location identities");
@@ -140,16 +139,15 @@ static HirModule PayloadFixture()
     builder.Scopes.Add(new(0, [])); builder.Scopes.Add(new(0, []));
     builder.Fors.Add(new(new(0), new(0))); builder.Fors.Add(new(new(1), new(0)));
     builder.Barriers.Add(new(false, false)); builder.Barriers.Add(new(true, true));
-    builder.Ranges.Add(new([])); builder.Ranges.Add(new([false]));
     builder.Adaptations.Add(new([])); builder.Adaptations.Add(new([]));
     var call = builder.Add(HirKind.Call, number, source, [native], data: 1);
     var scope = builder.Add(HirKind.Scope, scopeType, source, data: 1);
-    var range = builder.Add(HirKind.Range, rangeType, source, [value], data: 1);
-    var lazy = builder.Add(HirKind.LazyRange, rangeType, source, [value], data: 1);
+    var range = builder.Add(HirKind.Range, rangeType, source, [value]);
+    var secondRange = builder.Add(HirKind.Range, rangeType, source, [value]);
     var loop = builder.Add(HirKind.For, builder.Type(TypeRef.Null), source, [range, value], data: 1);
     var barrier = builder.Add(HirKind.Barrier, number, source, [value], data: 1);
     var adaptation = builder.Add(HirKind.AdaptFunction, function, source, [native], data: 1);
-    var body = builder.Add(HirKind.Block, number, source, [call, scope, range, lazy, loop, barrier, adaptation, value]);
+    var body = builder.Add(HirKind.Block, number, source, [call, scope, range, secondRange, loop, barrier, adaptation, value]);
     builder.Functions.Add(new("main", [], [], number, body));
     return builder.Freeze(new(0)) with { UnresolvedImports = [new(0)] };
 }

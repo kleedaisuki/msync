@@ -104,13 +104,39 @@ The source layer adds `map`, `reject`, `flat_map`, `join`, `indices`, `keys`,
 `min`, `max`, `min_by`, `max_by`, `partition`, `equal`, `starts_with`,
 `ends_with`, `lexicographical_compare` and `adjacent_find_or`.
 
+## Source initialization and traversal are separate
+
+Range is an ordinary builtin object. Its LLVM-facing representation is `ptr`;
+literal construction is an ordinary constructor call with already evaluated
+element operands. It does not introduce a Range instruction, implicit element
+functions, a distinct capture model, or a prerequisite heap/alias proof. LLVM's
+`ConstantRange` and `ConstantFPRange` are compiler numeric-analysis structures,
+not representations or evaluation policies for the language Range object.
+
+A literal `[a, b, c]` evaluates its initializers once in source order and stores
+the resulting elements. Scopes retain their allocation identity across repeated
+enumeration. This is the source-container side of the Stream/C++ ranges model,
+not an implicit generator of constructor closures. Explicit callbacks are the
+lazy boundary: `map(source, callback)` creates a pipeline now and invokes the
+callback during traversal; `generate(count, factory)` produces elements on demand.
+A function returning either object is still called normally. No function-result
+projection chooses whether an ordinary source call should execute.
+
+Native/HIR opcode numbers formerly used for implicit literal/call thunks are
+retired without renumbering other instructions. HIR format 4 retains an empty
+reserved wire section, not a range-mode arena. Artifacts containing the retired
+evaluation modes/opcodes require source recompilation. There is no compatibility
+execution fallback.
+
 ## Effects, reuse and ownership
 
 Constructing an adapter does not enumerate its source or invoke its callbacks.
 The signature's `Deferred` behavior carries that distinction into memory/effect
 analysis. Parameter-domain failures such as zero window width are separate from
 effects encountered during enumeration. In particular `take(adapter, 0)` does
-not resolve the adapter's deferred source call.
+not enumerate the adapter or invoke its traversal callbacks. Ordinary calls that
+construct the source and adapter have already executed; their arguments are not
+implicitly captured for later evaluation.
 
 Adapters enumerate again when the consumer enumerates again, subject to the
 source's own capabilities. They do not silently promise that an external or

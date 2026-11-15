@@ -201,8 +201,6 @@ internal sealed partial class SemanticAnalyzer
         if (value.Literal is { } literal) return value with { Node = context.Output!.Literal(literal, value.Type, source) };
         HirNodeId[] children = new HirNodeId[answer.Items.Length];
         for (int index = 0; index < children.Length; index++) children[index] = EmitMetaResult(answer.Items[index], source, context).Node;
-        int range = hir.Ranges.Count;
-        context.Output!.AddRange(new(ImmutableArray.Create(new bool[children.Length])));
-        return value with { Node = context.Output!.Add(HirKind.Range, value.Type, source, children, range) };
+        return value with { Node = context.Output!.Add(HirKind.Range, value.Type, source, children) };
     }
 }

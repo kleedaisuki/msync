@@ -13,8 +13,8 @@ public enum HirKind : byte
     Error, Literal, TypeValue, TypeOf, NativeFunction, Builtin, ReadLocation, ReadStorage,
     Declare, Assign, Discard, Block, If, Match, For, Loop, Break, Return,
     Unary, Binary, Coerce, Convert, IsNull, IsType, RegexMatch, Call, Closure, TemplateClosure, AdaptFunction,
-    Scope, MemberRead, MemberAssign, Range, LazyRange, DeferRange,
-    Qualify, PathJoin, SelectPath, Transfer, Barrier,
+    Scope, MemberRead, MemberAssign, Range,
+    Qualify = 35, PathJoin, SelectPath, Transfer, Barrier,
     QualifyOn, AllocateScope
 }
 

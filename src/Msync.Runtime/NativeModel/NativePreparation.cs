@@ -22,18 +22,19 @@ public static class NativePreparation
         cancellationToken.ThrowIfCancellationRequested();
         NativeProgram prepared = !program.Functions.Any(function => function.Instructions.Any(IsContextual))
             ? program with { Context = binding, Stage = ArtifactStage.Executable, ExecutionPlans = [] }
-            : new NativePreparationState(program, options, cancellationToken, binding: binding).Run();
+            : new NativePreparationState(program, options, cancellationToken, binding: binding, trace: trace?.Detail).Run();
         return NativeBackendCompiler.Compile(prepared, new(options, binding), trace);
     }
 
     private static bool IsContextual(NativeInstruction instruction) => instruction.Op is NativeOp.Transfer or NativeOp.SelectPath
-        || (instruction.Op is NativeOp.CallNative or NativeOp.MakeFunction) && instruction.Symbol is { } name && name.StartsWith("fs.", StringComparison.Ordinal)
+        || (instruction.Op is NativeOp.CallNative or NativeOp.MakeFunction or NativeOp.ComposeFunction) && instruction.Symbol is { } name && name.StartsWith("fs.", StringComparison.Ordinal)
             && NativeSignatures.TryGet(name, out var signature) && signature.Effect == NativeEffect.Read;
 }
 
 internal sealed partial class NativePreparationState
 {
     private readonly NativeProgram program;
+    private readonly CompilationTrace? trace;
     private readonly NativeRuntimeContext context;
     private readonly NativeImage image;
     private readonly NativeMemory memory = new();
@@ -59,9 +60,10 @@ internal sealed partial class NativePreparationState
     private int pc;
 
     internal NativePreparationState(NativeProgram program, ExecutionOptions? options, CancellationToken token,
-        int functionIndex = -1, NativeEnvironment? environment = null, IReadOnlyList<NativeValue>? arguments = null, NativePreparationState? parent = null, BindingContext? binding = null)
+        int functionIndex = -1, NativeEnvironment? environment = null, IReadOnlyList<NativeValue>? arguments = null, NativePreparationState? parent = null, BindingContext? binding = null, CompilationTrace? trace = null)
     {
         this.program = program;
+        this.trace = trace ?? parent?.trace;
         this.token = token;
         int selected = functionIndex < 0 ? program.EntryPoint : functionIndex;
         computingCall = parent is not null;
@@ -170,6 +172,14 @@ internal sealed partial class NativePreparationState
                     SetComputed(instruction, NativeInterpreter.BinaryValue((NativeBinary)instruction.Immediate, left, right, context));
                 else frame.Drop(instruction.Result);
                 return true;
+            case NativeOp.MachineBinary: case NativeOp.MachineCompare: case NativeOp.MachineCast:
+            case NativeOp.MachineIntrinsic: case NativeOp.MachineUnary: return Machine(instruction);
+            case NativeOp.Select:
+                if (Known(instruction.A, out NativeValue selectionCondition) &&
+                    Known(selectionCondition.AsBool() ? instruction.B : instruction.C, out NativeValue selectedValue))
+                    SetComputed(instruction, selectedValue);
+                else frame.Drop(instruction.Result);
+                return true;
             case NativeOp.Narrow:
             case NativeOp.Convert:
                 if (Known(instruction.A, out NativeValue converted))
@@ -188,6 +198,7 @@ internal sealed partial class NativePreparationState
                 NativeRange selected = NativeHostIO.SelectPath(context.AsPath(directory), instruction.Symbol!, context);
                 selections.Add(selected, (pc, instruction));
                 frame.Set(instruction.Result, NativeValue.FromRange(selected)); return true;
+            case NativeOp.FunctionComponent: case NativeOp.ComposeFunction: return FunctionPart(instruction);
             case NativeOp.MakeFunction: return MakeFunction(instruction);
             case NativeOp.EnvironmentAddress:
                 if (!Known(instruction.A, out NativeValue callable) || callable.AsFunction().Environment is not { } environment) return false;

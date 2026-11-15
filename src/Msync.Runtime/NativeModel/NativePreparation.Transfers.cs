@@ -236,7 +236,7 @@ internal sealed partial class NativePreparationState
             };
         }
         functions[program.EntryPoint] = function with { Instructions = output, Slots = slots, Storage = storage };
-        return program with
+        NativeProgram prepared = program with
         {
             Constants = constants,
             Functions = functions,
@@ -245,5 +245,6 @@ internal sealed partial class NativePreparationState
             ExecutionPlans = plans.Select(plan => plan with { Start = positions[plan.Start], End = positions[plan.End] }).ToArray(),
             Allocations = program.Allocations.Select(plan => plan.Function == program.EntryPoint ? plan with { Instruction = positions[plan.Instruction] } : plan).ToArray()
         };
+        return RebuildImage(prepared);
     }
 }

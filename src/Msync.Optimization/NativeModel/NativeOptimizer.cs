@@ -155,7 +155,7 @@ public static partial class NativeOptimizer
             flow = new(code);
             profile?.Add(NativeOptimizationProfile.Pass.ControlFlow, started, function);
             started = profile?.Start(NativeOptimizationProfile.Pass.DeadResults, function) ?? default;
-            bool removedResults = RemoveDead(view, index, flow, code, plans);
+            bool removedResults = RemoveDead(view, index, flow, code, plans, profile?.Trace);
             changed |= removedResults;
             profile?.Add(NativeOptimizationProfile.Pass.DeadResults, started, function, removedResults);
             if (removedResults) { factsDirty = true; }
@@ -184,7 +184,7 @@ public static partial class NativeOptimizer
         // Capture the converged analysis here; later coloring/compaction relocates it.
         function = function with { Storage = NativeStoragePlanning.Capture(view, index, finalEscape, profile?.Trace) };
         var finalStarted = profile?.Start(NativeOptimizationProfile.Pass.LastUseMoves, function) ?? default;
-        bool moved = MoveLastUses(view, index, finalFlow, code);
+        bool moved = MoveLastUses(view, index, finalFlow, code, profile?.Trace);
         if (level >= 2) moved |= CollapseSingleUseMoves(view, index, finalFlow, code, profile);
         profile?.Add(NativeOptimizationProfile.Pass.LastUseMoves, finalStarted, function, moved);
         if (moved) { factsDirty = true; }
@@ -220,10 +220,10 @@ public static partial class NativeOptimizer
     }
 
     private static bool RemoveDead(NativeProgram program, int index, NativeControlFlow flow,
-        NativeInstruction[] code, List<NativeAllocationPlan> plans)
+        NativeInstruction[] code, List<NativeAllocationPlan> plans, CompilationTrace? trace)
     {
         NativeFunctionCode function = program.Functions[index];
-        NativeLiveness live = new(program, index, flow);
+        NativeLiveness live = new(program, index, flow, trace);
         HashSet<int> addressed = code.Where(item => item.Op is NativeOp.FrameAddress or NativeOp.BindLocation)
             .Select(item => item.A).ToHashSet();
         bool changed = false;
@@ -248,10 +248,10 @@ public static partial class NativeOptimizer
         return changed;
     }
 
-    private static bool MoveLastUses(NativeProgram program, int index, NativeControlFlow flow, NativeInstruction[] code)
+    private static bool MoveLastUses(NativeProgram program, int index, NativeControlFlow flow, NativeInstruction[] code, CompilationTrace? trace)
     {
         NativeFunctionCode function = program.Functions[index];
-        NativeLiveness live = new(program, index, flow);
+        NativeLiveness live = new(program, index, flow, trace);
         HashSet<int> addressed = code.Where(item => item.Op is NativeOp.FrameAddress or NativeOp.BindLocation)
             .Select(item => item.A).ToHashSet();
         bool changed = false;
@@ -279,7 +279,7 @@ public static partial class NativeOptimizer
         int collapsed = 0;
         for (int round = 0; round < 3; round++)
         {
-            NativeLiveness live = new(program, index, flow);
+            NativeLiveness live = new(program, index, flow, profile?.Trace);
             bool roundChanged = false;
             foreach (NativeControlFlow.Block block in flow.Blocks)
             {

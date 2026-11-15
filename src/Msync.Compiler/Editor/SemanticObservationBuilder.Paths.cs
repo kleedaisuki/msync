@@ -103,7 +103,7 @@ internal sealed partial class SemanticObservationBuilder
         }
         foreach (var returned in context.Returns)
         {
-            var current = KnownPath(returned, context);
+            var current = KnownPath(returned.Value, context);
             if (current is null || path is not null && path != current) return null;
             path = current;
         }

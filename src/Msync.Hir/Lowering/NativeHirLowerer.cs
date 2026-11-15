@@ -62,6 +62,12 @@ public static partial class NativeHirLowerer
         private readonly Dictionary<int, int> mappedLayouts = [];
         private readonly Dictionary<HirLocationId, int> fieldStorage = [];
         private readonly HashSet<HirLocationId> captured = Captured(hir);
+        private HashSet<HirLocationId> fieldBindings = [];
+        private readonly Dictionary<HirFunctionId, HirLocationId[]> functionLocations = hir.Locations
+            .Select((location, index) => (location, id: new HirLocationId(index)))
+            .Where(item => item.location.TemplateOwner is null)
+            .GroupBy(item => item.location.Owner)
+            .ToDictionary(group => group.Key, group => group.Select(item => item.id).ToArray());
         private readonly HashSet<HirLocationId> roots = hir.IsSession
             ? hir.Exports.Select(export => export.Location).ToHashSet() : [];
         private HirLoweringMap Locations => session.Locations;
@@ -70,6 +76,7 @@ public static partial class NativeHirLowerer
 
         internal NativeHirLoweringResult Run()
         {
+            Stage("compiler.lower.field_bindings", static self => self.PrepareFieldBindings());
             Stage("compiler.lower.reserve", static self =>
             {
                 self.SeedPathOrigins();
@@ -118,9 +125,15 @@ public static partial class NativeHirLowerer
                     hir.SessionDispatches.Select(dispatch => new SessionDispatchTable(dispatch.Slot,
                         dispatch.Targets.ToDictionary(target => Callable(target.Identity), target => Function(target.Target)))).ToArray()
             };
-            if (!hir.IsSession && options.OptimizationLevel > 0)
-                program = FoldIdenticalFunctions(program);
             return new(program, Locations.Layout);
+        }
+
+        private void PrepareFieldBindings()
+        {
+            fieldBindings = HirFieldBindings.Find(hir);
+            trace?.Metric("fields.frame_bindings", fieldBindings.Count);
+            trace?.Metric("fields.lexical_addresses", hir.Scopes.Sum(scope =>
+                scope.Fields.Count(field => !fieldBindings.Contains(field))));
         }
 
         private void Stage(string name, Action<Lowering> action)
@@ -202,13 +215,14 @@ public static partial class NativeHirLowerer
         internal int TemplateFunction(HirTemplateId id) => Locations.Templates[id];
         internal bool IsCaptured(HirLocationId location) => captured.Contains(location) || roots.Contains(location)
             || SharedImport(location);
+        internal bool NeedsFieldBinding(HirLocationId location) =>
+            hir.Locations[location.Value].Kind != HirLocationKind.Field || fieldBindings.Contains(location);
         internal bool IsRoot(HirLocationId location) => roots.Contains(location);
         internal bool SharedImport(HirLocationId location) => hir.Locations[location.Value] is
         { Owner: var owner, Kind: HirLocationKind.Import, TemplateOwner: null } && owner == hir.Entry
             && !hir.UnresolvedImports.Contains(location);
         internal IEnumerable<HirLocationId> FunctionLocations(HirFunctionId owner) =>
-            Enumerable.Range(0, hir.Locations.Length).Where(i => hir.Locations[i].Owner == owner
-                && hir.Locations[i].TemplateOwner is null).Select(i => new HirLocationId(i));
+            functionLocations.GetValueOrDefault(owner, []);
         internal int Slot(HirFunctionId function, HirLocationId location) => Locations.Locations[new(function, location)];
         internal void BindSlot(HirFunctionId function, HirLocationId location, int slot) =>
             Locations.Locations[new(function, location)] = slot;

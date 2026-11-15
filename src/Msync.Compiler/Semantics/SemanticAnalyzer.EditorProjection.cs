@@ -8,7 +8,7 @@ internal sealed partial class SemanticAnalyzer
     // Literal payload and source provenance belong to this query, never the type cache.
     internal SemanticValue ProjectBoundResult(HirNodeId id, Func<HirLocationId, SemanticValue> bindings)
     {
-        SemanticContext context = new(program.Entry) { QueryBinding = location => ObservationBinding(location, bindings(location)) };
+        SemanticContext context = new(program.Entry) { Queries = queries, QueryBinding = location => ObservationBinding(location, bindings(location)) };
         HirFlowTypeAlgebra algebra = new(hir);
         FlowFacts facts = FlowFacts.Create(ImmutableDictionary<HirLocationId, FlowLocationDomain>.Empty, algebra);
         List<ReturnShape> returns = [];

@@ -3,11 +3,10 @@ using Msync.Core.Native;
 using Msync.Hir;
 using Msync.Compiler.Semantics;
 using Msync.Compiler.Syntax;
-using Msync.Optimization;
 
 namespace Msync.Compiler;
 
-public static class Compiler
+public static partial class Compiler
 {
     public static NativeProgram Compile(string source, string? sourceName = null,
         int optimization = 2, CompilationTrace? trace = null) =>
@@ -16,16 +15,16 @@ public static class Compiler
     public static NativeProgram LowerInstructions(HirModule module, int optimization = 2,
         CompilationTrace? trace = null)
     {
-        var options = new NativeHirLoweringOptions(OptimizationLevel: optimization);
-        NativeProgram lowered = trace is null ? NativeHirLowerer.Lower(module, options).Program
-            : trace.MeasureDetailed("compiler.lower", (module, options, trace),
-                static state => NativeHirLowerer.Lower(state.module, state.options, null, state.trace).Program,
+        LlvmHirLoweringResult graph = trace is null ? LlvmHirLowerer.Lower(module)
+            : trace.MeasureDetailed("compiler.lower", (module, trace),
+                static state => LlvmHirLowerer.Lower(state.module, state.trace),
+                size: static result => LlvmSize(result));
+        OptimizeLlvm(graph, optimization, trace);
+        NativeProgram program = trace is null ? LlvmNativeLowerer.Lower(graph)
+            : trace.MeasureDetailed("compiler.target", (graph, trace),
+                static state => LlvmNativeLowerer.Lower(state.graph, state.trace),
                 size: CompilationSize.Of, metrics: CompilationMetrics.Of);
-        NativeProgram optimized = trace is null ? NativeOptimizer.Optimize(lowered, optimization)
-            : trace.MeasureDetailed("compiler.optimize", (lowered, optimization, trace),
-                static state => NativeOptimizer.Optimize(state.lowered, state.optimization, state.trace),
-                CompilationSize.Of(lowered), CompilationSize.Of, metrics: CompilationMetrics.Of);
-        return optimization > 0 ? NativeHirLowerer.FoldIdenticalFunctions(optimized, trace) : optimized;
+        return program with { OptimizationLevel = optimization };
     }
 
     public static HirModule Analyze(string source, string? sourceName = null) =>

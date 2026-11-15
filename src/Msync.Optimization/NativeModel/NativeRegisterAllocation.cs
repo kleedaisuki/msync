@@ -14,14 +14,14 @@ internal static class NativeRegisterAllocation
             profile?.Function(index);
             var started = profile?.Start(NativeOptimizationProfile.Pass.Slots, program.Functions[index]) ?? default;
             NativeFunctionCode original = program.Functions[index];
-            functions[index] = Allocate(program, index, facts);
+            functions[index] = Allocate(program, index, facts, profile?.Trace);
             profile?.Add(NativeOptimizationProfile.Pass.Slots, started, original, functions[index],
                 original.Slots.Count != functions[index].Slots.Count || !original.Instructions.SequenceEqual(functions[index].Instructions));
         }
         return program with { Functions = functions };
     }
 
-    private static NativeFunctionCode Allocate(NativeProgram program, int index, NativeAddressAnalysis.ProgramFacts sharedFacts)
+    private static NativeFunctionCode Allocate(NativeProgram program, int index, NativeAddressAnalysis.ProgramFacts sharedFacts, Msync.Core.CompilationTrace? trace)
     {
         NativeFunctionCode function = program.Functions[index];
         if (function.IsTemplate || function.Instructions.Count == 0 || ObservesFrame(program, function)) return function;
@@ -41,7 +41,7 @@ internal static class NativeRegisterAllocation
                 string.Join(',', facts.PhysicalTypes(slot).Order()));
         });
         Dictionary<int, HashSet<int>> edges = used.ToDictionary(slot => slot, _ => new HashSet<int>());
-        NativeLiveness live = new(program, index, new NativeControlFlow(function.Instructions));
+        NativeLiveness live = new(program, index, new NativeControlFlow(function.Instructions), trace);
         for (int pc = 0; pc < function.Instructions.Count; pc++)
         {
             NativeInstruction instruction = function.Instructions[pc];

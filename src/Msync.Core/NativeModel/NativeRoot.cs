@@ -15,4 +15,6 @@ internal struct NativeRoot
     [FieldOffset(0)] internal NativeProcess? Process;
     [FieldOffset(0)] internal TypeRef? Type;
     [FieldOffset(0)] internal NativeType? StorageType;
+    [FieldOffset(0)] internal NativeMachineType? MachineType;
+    [FieldOffset(0)] internal NativeWideScalar? WideScalar;
 }

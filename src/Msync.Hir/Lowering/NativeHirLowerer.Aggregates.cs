@@ -97,14 +97,18 @@ public static partial class NativeHirLowerer
             for (int ordinal = 0; ordinal < construction.Fields.Length; ordinal++)
             {
                 var field = construction.Fields[ordinal];
-                int address = Register(owner.Pointer(owner.LocationType(field)));
-                Add(new(NativeOp.AddressOffset, address, result, layout, ordinal, Source: Source(node)));
-                Add(new(NativeOp.BindLocation, A: owner.Slot(id, field), B: address, Source: Source(node)));
+                if (owner.NeedsFieldBinding(field))
+                {
+                    int address = Register(owner.Pointer(owner.LocationType(field)));
+                    Add(new(NativeOp.AddressOffset, address, result, layout, ordinal, Source: Source(node)));
+                    Add(new(NativeOp.BindLocation, A: owner.Slot(id, field), B: address, Source: Source(node)));
+                }
                 boundFields[field] = node.Kind == HirKind.Scope ? new BoundField(result, layout, ordinal) : null;
             }
             foreach (var initializer in Hir.Children(node))
             {
-                int value = Emit(initializer); Add(new(NativeOp.Drop, A: value));
+                if (Hir.Node(initializer).Kind == HirKind.Declare) Initialize(Hir.Node(initializer));
+                else { int value = Emit(initializer); Add(new(NativeOp.Drop, A: value)); }
             }
             if (node.Kind == HirKind.Scope)
                 foreach (var field in construction.Fields) boundFields.Remove(field);
@@ -216,16 +220,9 @@ public static partial class NativeHirLowerer
         private int Range(HirNode node)
         {
             int[] values = Children(node); int result = Register(node.Type);
-            string? deferred = node.Kind == HirKind.LazyRange
-                ? new string(Hir.Ranges[node.Data].Deferred.Select(item => item ? '1' : '0').ToArray()) : null;
-            Add(new(node.Kind == HirKind.LazyRange ? NativeOp.MakeLazyRange : NativeOp.MakeRange,
-                result, C: HistoricalRangeMetadata(node), Type: owner.Type(node.Type), Symbol: deferred, Inputs: values, Source: Source(node))); return result;
-        }
-
-        private int Defer(HirNode node)
-        {
-            int function = Emit(Child(node, 0)); int result = Register(node.Type);
-            Add(new(NativeOp.DeferRange, result, function, C: HistoricalRangeMetadata(node), Type: owner.Type(node.Type), Source: Source(node))); return result;
+            Add(new(NativeOp.MakeRange, result, C: HistoricalRangeMetadata(node),
+                Type: owner.Type(node.Type), Inputs: values, Source: Source(node)));
+            return result;
         }
 
         private int HistoricalRangeMetadata(HirNode node) => owner.HistoricalElement(node.Type) is { } element

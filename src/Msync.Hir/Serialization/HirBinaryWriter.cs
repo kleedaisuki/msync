@@ -27,7 +27,7 @@ internal sealed class HirBinaryWriter(BinaryWriter writer)
         Array(module.Fors, value => { writer.Write(value.Loop.Value); writer.Write(value.Item.Value); });
         Array(module.Matches, value => Array(value.Arms, arm => { Pattern(arm.Pattern); writer.Write(arm.Value.Value); }));
         Array(module.Barriers, value => { writer.Write(value.Release); writer.Write(value.Acquire); });
-        Array(module.Ranges, value => Array(value.Deferred, writer.Write));
+        writer.Write(0); // Reserved format-4 section; implicit element evaluation modes are retired.
         Array(module.Adaptations, value => { Array(value.Targets, Target); writer.Write(value.SessionSlot); });
         Array(module.Exports, value => { String(value.Name); writer.Write(value.Location.Value); });
         Array(module.TemplateClosures, value => { writer.Write(value.Template.Value); Array(value.Captures, Capture); });

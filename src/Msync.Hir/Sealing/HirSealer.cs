@@ -57,12 +57,11 @@ public static class HirSealer
         private readonly Arena fors = new(module.Fors.Length, "for");
         private readonly Arena matches = new(module.Matches.Length, "match");
         private readonly Arena barriers = new(module.Barriers.Length, "barrier");
-        private readonly Arena ranges = new(module.Ranges.Length, "range");
         private readonly Arena adaptations = new(module.Adaptations.Length, "function adaptation");
         private readonly Stack<HirNodeId> pending = new();
         private int edgeCount;
 
-        private Arena[] Arenas => [nodes, literals, calls, closures, templates, scopes, fors, matches, barriers, ranges, adaptations];
+        private Arena[] Arenas => [nodes, literals, calls, closures, templates, scopes, fors, matches, barriers, adaptations];
 
         public HirSealingResult Run(bool includeMap)
         {
@@ -128,7 +127,6 @@ public static class HirSealer
                     if (matches.Mark(node.Data)) MatchDependencies(module.Matches[node.Data]);
                     break;
                 case HirKind.Barrier: barriers.Mark(node.Data); break;
-                case HirKind.Range: case HirKind.LazyRange: ranges.Mark(node.Data); break;
                 case HirKind.AdaptFunction: adaptations.Mark(node.Data); break;
             }
         }
@@ -170,7 +168,6 @@ public static class HirSealer
                 Fors = fors.Copy(module.Fors),
                 Matches = matches.Copy(module.Matches, RewriteMatch),
                 Barriers = barriers.Copy(module.Barriers),
-                Ranges = ranges.Copy(module.Ranges),
                 Adaptations = adaptations.Copy(module.Adaptations)
             };
         }
@@ -196,7 +193,6 @@ public static class HirSealer
                 HirKind.For => fors.Map[node.Data],
                 HirKind.Match => matches.Map[node.Data],
                 HirKind.Barrier => barriers.Map[node.Data],
-                HirKind.Range or HirKind.LazyRange => ranges.Map[node.Data],
                 HirKind.AdaptFunction => adaptations.Map[node.Data],
                 _ => node.Data
             };

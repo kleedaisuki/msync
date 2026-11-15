@@ -4,6 +4,24 @@ using Msync.Core.Native;
 using Msync.Runtime;
 using Msync.Runtime.Native;
 
+if (args.Contains("--machine-scalars"))
+{
+    Console.WriteLine($"PASS {await MachineScalarReadinessChecks.RunAsync()} machine scalar readiness; {await MachinePendingChecks.RunAsync()} machine operation pending properties");
+    return;
+}
+
+if (args.Contains("--function-parts"))
+{
+    Console.WriteLine($"PASS {await FunctionPartsPendingChecks.RunAsync()} Function component pending properties");
+    return;
+}
+
+if (args.Contains("--selection"))
+{
+    Console.WriteLine($"PASS {await SelectChecks.RunAsync()} LLVM/Native2 selection and pending resource properties");
+    return;
+}
+
 if (args.Contains("--argument-sources"))
 {
     ArgumentSourceChecks.Run();

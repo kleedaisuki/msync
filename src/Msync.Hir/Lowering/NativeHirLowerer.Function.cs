@@ -55,7 +55,7 @@ public static partial class NativeHirLowerer
                 FixedSlot(function.Captures[i].Target, i, NativeSlotRole.Capture);
             for (int i = 0; i < function.Parameters.Length; i++)
                 FixedSlot(function.Parameters[i], function.Captures.Length + i, NativeSlotRole.Parameter);
-            foreach (var location in owner.FunctionLocations(id))
+            foreach (var location in owner.FunctionLocations(id).Where(owner.NeedsFieldBinding))
             {
                 if (!owner.TrySlot(id, location, out int slot))
                 {
@@ -149,8 +149,7 @@ public static partial class NativeHirLowerer
                 HirKind.Scope or HirKind.AllocateScope => Scope(node),
                 HirKind.MemberRead => Field(node, false),
                 HirKind.MemberAssign => Field(node, true),
-                HirKind.Range or HirKind.LazyRange => Range(node),
-                HirKind.DeferRange => Defer(node),
+                HirKind.Range => Range(node),
                 HirKind.Qualify => Pair(node, NativeBinary.Qualify, reverse: true),
                 HirKind.QualifyOn => Pair(node, NativeBinary.Qualify),
                 HirKind.PathJoin => Pair(node, NativeBinary.PathJoin),
@@ -273,10 +272,17 @@ public static partial class NativeHirLowerer
         }
         private int Declare(HirNode node)
         {
+            Initialize(node);
+            return Null();
+        }
+
+        private void Initialize(HirNode node)
+        {
             HirLocationId location = new(node.Data);
             if (owner.IsCaptured(location) && !owner.IsRoot(location) && !owner.SharedImport(location)
                 && !boundFields.ContainsKey(location)) FreshLocation(location);
-            int value = Emit(Child(node, 0)); Store(location, value, true, Source(node)); return Null();
+            int value = Emit(Child(node, 0));
+            Store(location, value, true, Source(node));
         }
         private int Assign(HirNode node)
         {

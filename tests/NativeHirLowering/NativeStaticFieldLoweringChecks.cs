@@ -65,7 +65,6 @@ internal static class NativeStaticFieldLoweringChecks
                 [hir.Literal(new(HirLiteralKind.Bool, Boolean: repetitions == 1), boolean, source), rebind, Null()]);
         else
         {
-            hir.Ranges.Add(new([]));
             hir.Fors.Add(new(new(0), item));
             HirNodeId range = Node(HirKind.Range, hir.Type(new TypeRef(TypeKind.Range, TypeRef.Number)), repetitions < 0 ? [] : [Number(0), Number(1)]);
             control = Node(HirKind.For, none, [range, rebind]);

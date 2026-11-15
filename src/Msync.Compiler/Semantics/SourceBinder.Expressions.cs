@@ -272,35 +272,9 @@ internal sealed partial class SourceBinder
 
     private HirNodeId RangeValue(RangeExpr range)
     {
-        var children = new HirNodeId[range.Items.Count];
-        var deferred = ImmutableArray.CreateBuilder<bool>(range.Items.Count);
-        for (int index = 0; index < range.Items.Count; index++)
-        {
-            bool delayed = !PureValue(range.Items[index]);
-            deferred.Add(delayed);
-            var outerLoops = delayed && loops.Count != 0 ? loops.ToArray() : null;
-            if (delayed) loops.Clear();
-            try { children[index] = Expression(range.Items[index]); }
-            finally
-            {
-                if (outerLoops is not null)
-                    for (int outer = outerLoops.Length - 1; outer >= 0; outer--) loops.Push(outerLoops[outer]);
-            }
-        }
+        HirNodeId[] children = range.Items.Select(Expression).ToArray();
         var item = children.Length == 0 ? hir.Type(new TypeRef(TypeKind.Never)) : OpenType("element");
         var type = hir.Type(new HirType(new(TypeKind.Range, hir.Types[item.Value].RuntimeType), Element: item.Value));
-        int descriptor = hir.Ranges.Count;
-        var delayedItems = deferred.MoveToImmutable();
-        hir.Ranges.Add(new(delayedItems));
-        return Node(delayedItems.Any(value => value) ? HirKind.LazyRange : HirKind.Range,
-            type, range.Span, children, descriptor);
+        return Node(HirKind.Range, type, range.Span, children);
     }
-
-    private static bool PureValue(Expr expression) => expression switch
-    {
-        BoolExpr or NullExpr or StringExpr or NumberExpr or PathExpr or NameExpr or TypeExpr => true,
-        BinaryExpr { Operator: "/" or "::" } binary => PureValue(binary.Left) && PureValue(binary.Right),
-        UnaryExpr { Operator: "$" } unary => PureValue(unary.Operand),
-        _ => false
-    };
 }

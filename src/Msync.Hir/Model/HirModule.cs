@@ -39,7 +39,6 @@ public sealed record HirSessionDispatch(int Slot, ImmutableArray<HirTypeId> Para
 public sealed record HirScopeConstruction(int Layout, ImmutableArray<HirLocationId> Fields,
     int Singleton = -1, HirLocationId? Self = null, HirAllocationSiteId? Site = null);
 public sealed record HirFor(HirLoopId Loop, HirLocationId Item);
-public sealed record HirRange(ImmutableArray<bool> Deferred);
 public sealed record HirFunctionAdaptation(ImmutableArray<HirDispatchTarget> Targets)
 {
     public int SessionSlot { get; init; } = -1;
@@ -91,7 +90,6 @@ public sealed record HirModule(
     ImmutableArray<HirFor> Fors,
     ImmutableArray<HirMatch> Matches,
     ImmutableArray<HirBarrier> Barriers,
-    ImmutableArray<HirRange> Ranges,
     ImmutableArray<HirFunctionAdaptation> Adaptations,
     HirFunctionId Entry,
     ImmutableArray<HirExport> Exports,

@@ -11,8 +11,8 @@ public static partial class NativeArtifact
         Add(CompactSection.Header, writer => WriteCompactHeader(writer, program));
         Add(CompactSection.Types, writer => WriteArray(writer, program.Types, static (output, value) =>
         {
-            output.Write((ushort)value.Kind); output.Write(value.Element);
-            WriteOptionalArray(output, value.Layouts, static (item, layout) => item.Write(layout));
+            output.Write(value.WireKind); output.Write(value.WireElement);
+            WriteOptionalArray(output, value.WireLayouts, static (item, layout) => item.Write(layout));
             output.Write(value.Pointee);
         }));
         Add(CompactSection.Layouts, writer => WriteArray(writer, program.Layouts, static (output, value) =>
@@ -41,6 +41,7 @@ public static partial class NativeArtifact
         trace?.Metric("pool.source_spans", pool.Spans.Count);
         trace?.Metric("sections", sections.Count);
         trace?.Metric("sections.bytes", sections.Sum(section => (long)section.Bytes.Length));
+        RecordMachineTypes(program.Types, trace);
         using BinaryWriter output = new(stream, Encoding.UTF8, leaveOpen: true);
         output.Write(Magic); output.Write(FormatVersion); output.Write(CompactMarker); output.Write(CompactRevision);
         WriteUnsigned(output, checked((uint)pool.Strings.Count));
@@ -147,8 +148,9 @@ public static partial class NativeArtifact
         if (sections != (uint)CompactSection.Backend) throw new MsyncException("Native IR compact section set is incomplete or unknown");
         (ModuleSemantics semantics, ArtifactStage stage, int optimization, int entry, bool preserve, BindingContext? context)
             = ReadSection(CompactSection.Header, ReadCompactHeader);
-        NativeCodeType[] types = ReadSection(CompactSection.Types, reader => ReadArray(reader, value => new NativeCodeType(
-            (TypeKind)value.ReadUInt16(), value.ReadInt32(), ReadOptionalArray(value, item => item.ReadInt32()), value.ReadInt32())));
+        NativeCodeType[] types = ReadSection(CompactSection.Types, reader => ReadArray(reader, value => NativeCodeType.FromWire(
+            value.ReadUInt16(), value.ReadInt32(), ReadOptionalArray(value, item => item.ReadInt32()), value.ReadInt32())));
+        RecordMachineTypes(types, trace);
         NativeCodeLayout[] layouts = ReadSection(CompactSection.Layouts, reader => ReadArray(reader, value => new NativeCodeLayout(
             ReadArray(value, field => new NativeCodeField(ReadText(field), field.ReadInt32())))));
         NativeProjection[] projections = ReadSection(CompactSection.Projections, reader => ReadArray(reader, value => new NativeProjection(

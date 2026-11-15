@@ -93,9 +93,6 @@ public static class HirPrinter
             for (int index = 0; index < module.Barriers.Length; index++)
                 Define($"barrier @z{index} release {module.Barriers[index].Release.ToString().ToLowerInvariant()} acquire {module.Barriers[index].Acquire.ToString().ToLowerInvariant()}",
                     "@z" + index, "Directional barrier " + index, "Preserves selected-work ordering, not an unconditional global join.", HirTextCategory.Table);
-            for (int index = 0; index < module.Ranges.Length; index++)
-                Define($"range @r{index} modes [{string.Join(", ", module.Ranges[index].Deferred.OrEmpty().Select(deferred => deferred ? "defer" : "value"))}]",
-                    "@r" + index, "Range evaluation " + index, "Explicit per-element evaluation mode.", HirTextCategory.Table);
             for (int index = 0; index < module.Adaptations.Length; index++)
                 Define($"adapt @a{index} [{Targets(module.Adaptations[index].Targets)}]{(module.Adaptations[index].SessionSlot >= 0 ? " session @d" + module.Adaptations[index].SessionSlot : "")}", "@a" + index,
                     "Function adaptation " + index, "Maps semantic callable identities to finalized bodies.", HirTextCategory.Table);
@@ -176,7 +173,6 @@ public static class HirPrinter
                 HirKind.For => "@j" + node.Data,
                 HirKind.Match => "@m" + node.Data,
                 HirKind.Barrier => "@z" + node.Data,
-                HirKind.Range or HirKind.LazyRange => "@r" + node.Data,
                 HirKind.Unary => ((HirUnaryOperator)node.Data).ToString(),
                 HirKind.Binary => ((HirBinaryOperator)node.Data).ToString(),
                 HirKind.Loop or HirKind.Break => "loop " + node.Data,

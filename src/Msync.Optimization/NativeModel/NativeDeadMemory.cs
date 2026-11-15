@@ -55,7 +55,7 @@ internal static class NativeDeadMemory
         or NativeOp.Copy or NativeOp.Move or NativeOp.FrameAddress or NativeOp.BindLocation
         or NativeOp.Allocate or NativeOp.AddressOffset or NativeOp.ProjectAddress or NativeOp.Load
         or NativeOp.Store or NativeOp.Jump or NativeOp.Branch or NativeOp.Narrow
-        or NativeOp.MakeFunction or NativeOp.MakeRange or NativeOp.MakeLazyRange or NativeOp.DeferRange;
+        or NativeOp.MakeFunction or NativeOp.MakeRange;
 
     private static void AddFields(HashSet<NativeAddressAnalysis.Target> read, NativeProgram program,
         NativeFunctionCode function, int allocation)

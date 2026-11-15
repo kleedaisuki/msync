@@ -207,88 +207,48 @@ public sealed partial class NativeInterpreter
         return values;
     }
 
-    private void MakeRange(NativeFrame frame, NativeInstruction instruction, bool lazy, TypeRef? logicalItemType = null)
+    private void MakeRange(NativeFrame frame, NativeInstruction instruction, TypeRef? logicalItemType = null)
     {
+        using RuntimeTimelineScope? observation = context.Timeline?.Begin("range.initialize");
+        observation?.SetSource(instruction.Source);
         NativeDatum[] values = (instruction.Inputs ?? []).Select(frame.GetDatum).ToArray();
+        observation?.SetMetric("elements", values.Length);
+        if (observation is not null) observation.SetMetric("elements.ready", values.Count(static value => value.IsReady));
         int element = image.Program.Types[instruction.Type].Element;
         TypeRef itemType = logicalItemType ?? (element >= 0 ? image.SourceType(element) : TypeRef.Any);
         NativeType physicalItemType = element >= 0 ? image.Type(element) : NativeType.FromTypeRef(TypeRef.Any);
-        bool needsContext = false;
-        if (lazy)
-        {
-            string? mask = instruction.Symbol;
-            for (int index = 0; index < values.Length; index++)
-            {
-                if (!(mask is null || mask.Length > index && mask[index] == '1')) continue;
-                NativeDatum item = values[index];
-                if (!item.IsReady || item.Value.Kind != NativeKind.Function
-                    || item.Value.AsFunction() is not { NativeName: null, Function: >= 0 } callable
-                    || !ExecutionFunction(image, callable.Function).IsContextFree)
-                { needsContext = true; break; }
-            }
-        }
-        IAsyncEnumerable<NativeDatum> items = new DatumSequence(this, values, lazy ? instruction.Symbol : "");
-        if (needsContext) items = CaptureDatums(items);
-        NativeRange range = !lazy && values.All(static value => value.IsReady)
+        IAsyncEnumerable<NativeDatum> items = new DatumSequence(values);
+        NativeRange range = values.All(static value => value.IsReady)
             ? NativeRange.Snapshot(values.Select(static value => value.Value), itemType, physicalItemType)
             : new(ResolveDatumItems(items, CancellationToken.None), itemType,
                 values.Where(static value => value.IsReady).Select(static value => value.Value).ToArray(), physicalItemType: physicalItemType);
         rangeRoots.Add(range, new(values));
-        datumRanges.Add(range, new(items, lazy || values.Any(DatumMayDefer)));
+        datumRanges.Add(range, new(items, values.Any(DatumMayDefer)));
         frame.Set(instruction.Result, NativeValue.FromRange(range));
     }
 
-    private sealed class DatumSequence(NativeInterpreter owner, IReadOnlyList<NativeDatum> values, string? mask)
-        : IAsyncEnumerable<NativeDatum>
+    private sealed class DatumSequence(IReadOnlyList<NativeDatum> values) : IAsyncEnumerable<NativeDatum>
     {
         public IAsyncEnumerator<NativeDatum> GetAsyncEnumerator(CancellationToken cancellationToken = default) =>
-            new DatumSequenceEnumerator(owner, values, mask, cancellationToken);
+            new DatumSequenceEnumerator(values, cancellationToken);
     }
 
-    private sealed class DatumSequenceEnumerator(NativeInterpreter owner, IReadOnlyList<NativeDatum> values,
-        string? mask, CancellationToken token) : IAsyncEnumerator<NativeDatum>
+    private sealed class DatumSequenceEnumerator(IReadOnlyList<NativeDatum> values, CancellationToken token)
+        : IAsyncEnumerator<NativeDatum>
     {
         private int index;
         public NativeDatum Current { get; private set; }
-
         public ValueTask<bool> MoveNextAsync()
         {
             if (index >= values.Count) return new(false);
             token.ThrowIfCancellationRequested();
-            NativeDatum item = values[index];
-            if (mask is null || mask.Length > index && mask[index] == '1')
-            {
-                if (!item.IsReady) return MoveNextSlowAsync(item);
-                ValueTask<NativeDatum> pending = owner.InvokeDatumAsync(item.Value, [], token);
-                if (!pending.IsCompletedSuccessfully) return AwaitInvokeAsync(pending);
-                Current = pending.Result;
-                index++;
-                return new(true);
-            }
-            Current = item;
-            index++;
+            Current = values[index++];
             return new(true);
         }
-
-        private async ValueTask<bool> MoveNextSlowAsync(NativeDatum item)
-        {
-            NativeValue callable = await item.ResolveAsync(token);
-            Current = await owner.InvokeDatumAsync(callable, [], token);
-            index++;
-            return true;
-        }
-
-        private async ValueTask<bool> AwaitInvokeAsync(ValueTask<NativeDatum> pending)
-        {
-            Current = await pending;
-            index++;
-            return true;
-        }
-
         public ValueTask DisposeAsync() => default;
     }
 
-    private static async IAsyncEnumerable<NativeValue> EnumerateItems(IReadOnlyList<NativeDatum> values, string? mask,
+    private static async IAsyncEnumerable<NativeValue> EnumerateItems(IReadOnlyList<NativeDatum> values,
         [EnumeratorCancellation] CancellationToken token)
     {
         await Task.CompletedTask;
@@ -337,50 +297,11 @@ public sealed partial class NativeInterpreter
             values[index] = memory.Read(address.OffsetBy(layout.Extent * index + field.Offset, field.Type));
         NativeRange range = values.All(static value => value.IsReady)
             ? NativeRange.Snapshot(values.Select(static value => value.Value), itemType, physicalItemType)
-            : new(EnumerateItems(values, "", CancellationToken.None), itemType,
+            : new(EnumerateItems(values, CancellationToken.None), itemType,
                 values.Where(static value => value.IsReady).Select(static value => value.Value).ToArray(), physicalItemType: physicalItemType);
         rangeRoots.Add(range, new(values));
-        datumRanges.Add(range, new(new DatumSequence(this, values, ""), values.Any(DatumMayDefer)));
+        datumRanges.Add(range, new(new DatumSequence(values), values.Any(DatumMayDefer)));
         frame.Set(instruction.Result, NativeValue.FromRange(range));
-    }
-
-    private void MakeDeferredRange(NativeFrame frame, NativeInstruction instruction, TypeRef? logicalItemType = null)
-    {
-        NativeDatum function = frame.GetDatum(instruction.A);
-        int element = image.Program.Types[instruction.Type].Element;
-        TypeRef itemType = logicalItemType ?? (element >= 0 ? image.SourceType(element) : TypeRef.Any);
-        NativeType physicalItemType = element >= 0 ? image.Type(element) : NativeType.FromTypeRef(TypeRef.Any);
-        DeferredRange producer = new(this, function, itemType, context.CaptureDirectory());
-        NativeRange range = new(producer, itemType,
-            function.IsReady ? [function.Value] : [], resolve: producer.ResolveAsync, physicalItemType: physicalItemType);
-        rangeRoots.Add(range, new([function]));
-        datumRanges.Add(range, new(producer.Datums(CancellationToken.None)));
-        frame.Set(instruction.Result, NativeValue.FromRange(range));
-    }
-
-    private sealed class DeferredRange(NativeInterpreter interpreter, NativeDatum function, TypeRef itemType, NativeRuntimeContext origin) : IAsyncEnumerable<NativeValue>
-    {
-        private Task<NativeRange>? resolved;
-        internal bool CanResolveInline => !interpreter.DatumExecutionMayDefer(function);
-        internal ValueTask<NativeRange> ResolveAsync(CancellationToken token) => new(resolved ??= ResolveCoreAsync(token));
-        private async Task<NativeRange> ResolveCoreAsync(CancellationToken token)
-        {
-            using var directory = interpreter.EnterDeferredDirectory(origin.ForkDirectory());
-            NativeValue callable = await function.ResolveAsync(token);
-            NativeRange range = (await interpreter.InvokeAsync(callable, [], token)).AsRange();
-            return interpreter.RefineRange(range, itemType);
-        }
-        internal async IAsyncEnumerable<NativeDatum> Datums([EnumeratorCancellation] CancellationToken token)
-        {
-            NativeRange range = await ResolveAsync(token);
-            await using IAsyncEnumerator<NativeDatum> iterator = interpreter.GetDatumIterator(range, token);
-            while (await iterator.MoveNextAsync()) yield return iterator.Current;
-        }
-        public async IAsyncEnumerator<NativeValue> GetAsyncEnumerator(CancellationToken cancellationToken = default)
-        {
-            NativeRange range = await ResolveAsync(cancellationToken);
-            await foreach (NativeValue value in range.Items.WithCancellation(cancellationToken)) yield return value;
-        }
     }
 
     private NativeStep OpenIterator(Activation activation, NativeInstruction instruction, int pc, CancellationToken token)

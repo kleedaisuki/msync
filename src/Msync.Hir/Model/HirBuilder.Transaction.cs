@@ -44,7 +44,6 @@ public sealed partial class HirBuilder
         private readonly int fors;
         private readonly int matches;
         private readonly int barriers;
-        private readonly int ranges;
         private readonly int adaptations;
         private readonly int templateClosures;
         private readonly int concepts;
@@ -74,7 +73,6 @@ public sealed partial class HirBuilder
             fors = owner.Fors.Count;
             matches = owner.Matches.Count;
             barriers = owner.Barriers.Count;
-            ranges = owner.Ranges.Count;
             adaptations = owner.Adaptations.Count;
             templateClosures = owner.TemplateClosures.Count;
             concepts = owner.Concepts.Count;
@@ -136,7 +134,6 @@ public sealed partial class HirBuilder
             owner.Fors.RemoveRange(fors, owner.Fors.Count - fors);
             owner.Matches.RemoveRange(matches, owner.Matches.Count - matches);
             owner.Barriers.RemoveRange(barriers, owner.Barriers.Count - barriers);
-            owner.Ranges.RemoveRange(ranges, owner.Ranges.Count - ranges);
             owner.Adaptations.RemoveRange(adaptations, owner.Adaptations.Count - adaptations);
             owner.TemplateClosures.RemoveRange(templateClosures, owner.TemplateClosures.Count - templateClosures);
             owner.Concepts.RemoveRange(concepts, owner.Concepts.Count - concepts);

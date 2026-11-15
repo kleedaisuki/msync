@@ -145,6 +145,8 @@ internal sealed partial class NativePreparationState
         NativeKind.Null => new(NativeKind.Null),
         NativeKind.Bool => new(NativeKind.Bool, Boolean: value.AsBool()),
         NativeKind.Number => new(NativeKind.Number, Number: value.AsNumber()),
+        NativeKind.MachineInteger => NativeConstant.FromMachineInteger(value.AsMachineInteger(), value.MachineType),
+        NativeKind.MachineFloat => NativeConstant.FromMachineFloat(value.AsMachineFloat(), value.MachineType),
         NativeKind.String => new(NativeKind.String, Text: value.AsString()),
         NativeKind.Path => new(NativeKind.Path, Text: value.AsPath().Raw) { Path = value.AsPath() },
         NativeKind.Connection => new(NativeKind.Connection, Text: value.AsConnection().Address, ConnectionKind: value.AsConnection().Kind),
