@@ -372,3 +372,12 @@ expected output are retained under
 `artifacts/diagnostics/llvm-sroa/unicode-tier/`, so disposable work can be cleaned
 without losing this comparison. Final telemetry-off timing is preserved as
 `artifacts/diagnostics/llvm-sroa/benchmark-tier-standard.json`.
+
+## Independent residual-cost review
+
+Eight independent reviewers examined the final cohort without changing product
+code or timing it again. The [integrated review](llvm-performance-regression-review.md)
+connects entry-prelude code/name lifetimes to3x Unicode liveness-set traffic in a
+zero-consumer register analysis, and identifies lost exact environment carriers
+and widened ordinary initialization bookkeeping as separate executed costs.
+It also records exclusions, evidence limits and prioritized follow-up work.

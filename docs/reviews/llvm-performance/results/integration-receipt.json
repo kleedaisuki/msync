@@ -1,0 +1,180 @@
+{
+  "status": "functionally-integrated-performance-open",
+  "binary": "artifacts/native/llvm-sroa/msync",
+  "binary_sha256": "3c821875c8c954db6f2e1c70c7eb47bc69228e32ad0c572c1453b58f8dceb410",
+  "default_pipeline": {
+    "sroa": true,
+    "sroa_preserve_cfg": false,
+    "promotion_owner": "sroa",
+    "backend": "custom-native"
+  },
+  "midend": {
+    "status": "passed",
+    "files_per_route": 29,
+    "levels": [
+      {
+        "level": 0,
+        "routes": [
+          "source",
+          "detached-hir-object",
+          "detached-bound"
+        ],
+        "selected_failure_routes": [
+          "source",
+          "detached-hir-object",
+          "detached-bound"
+        ],
+        "instructions": 3061,
+        "calls": 58,
+        "logical_allocations": 89,
+        "kernel_binary_hits": 16
+      },
+      {
+        "level": 2,
+        "routes": [
+          "source",
+          "detached-hir-object",
+          "detached-bound"
+        ],
+        "selected_failure_routes": [
+          "source",
+          "detached-hir-object",
+          "detached-bound"
+        ],
+        "instructions": 2446,
+        "calls": 58,
+        "logical_allocations": 88,
+        "kernel_binary_hits": 2
+      }
+    ]
+  },
+  "range": {
+    "status": "passed",
+    "routes": [
+      {
+        "route": "source",
+        "level": 0
+      },
+      {
+        "route": "hir-to-object",
+        "level": 0
+      },
+      {
+        "route": "executable",
+        "level": 0
+      },
+      {
+        "route": "source",
+        "level": 2
+      },
+      {
+        "route": "hir-to-object",
+        "level": 2
+      },
+      {
+        "route": "executable",
+        "level": 2
+      }
+    ],
+    "files_per_route": 32
+  },
+  "applications": {
+    "status": "complete",
+    "configuration": {
+      "route": "both",
+      "pairs": 5,
+      "warmups": 2,
+      "profile": "off",
+      "shared_artifact": false,
+      "scales": [
+        "standard"
+      ],
+      "seeds": [
+        29
+      ]
+    },
+    "workloads": [
+      {
+        "case": "numeric-record-stream",
+        "size": 32768,
+        "seed": 29,
+        "routes": {
+          "bound": {
+            "baseline_p50_ms": 332.393697,
+            "candidate_p50_ms": 329.553173,
+            "paired_median_percent_change": 1.7116939705001277
+          },
+          "source": {
+            "baseline_p50_ms": 342.272,
+            "candidate_p50_ms": 344.017205,
+            "paired_median_percent_change": 3.6628227602707897
+          }
+        }
+      },
+      {
+        "case": "live-policy-dispatch",
+        "size": 28000,
+        "seed": 29,
+        "routes": {
+          "bound": {
+            "baseline_p50_ms": 443.223134,
+            "candidate_p50_ms": 460.59658,
+            "paired_median_percent_change": 1.698167657531613
+          },
+          "source": {
+            "baseline_p50_ms": 505.048784,
+            "candidate_p50_ms": 530.360451,
+            "paired_median_percent_change": 5.011727144362355
+          }
+        }
+      },
+      {
+        "case": "unicode-path-manifest",
+        "size": 65000,
+        "seed": 29,
+        "routes": {
+          "bound": {
+            "baseline_p50_ms": 3049.08816,
+            "candidate_p50_ms": 3161.939929,
+            "paired_median_percent_change": 3.9670916788334454
+          },
+          "source": {
+            "baseline_p50_ms": 3270.938592,
+            "candidate_p50_ms": 3367.297497,
+            "paired_median_percent_change": 7.686130398457447
+          }
+        }
+      }
+    ]
+  },
+  "compilation": {
+    "numeric": {
+      "baseline_p50_ms": 31.044449,
+      "candidate_p50_ms": 33.180874,
+      "paired_median_delta_ms": 0.3700140000000012,
+      "pairs": 9
+    },
+    "midend": {
+      "baseline_p50_ms": 92.125085,
+      "candidate_p50_ms": 97.010243,
+      "paired_median_delta_ms": 4.737886000000003,
+      "pairs": 9
+    }
+  },
+  "tier_projection_same_artifact": {
+    "native_instructions": 6355874,
+    "fallback_to_direct": 194763,
+    "ready_projections": 195000,
+    "pending_projections": 0
+  },
+  "performance_conclusion": "No overall wall-time improvement established; retain residual application and compilation increases as open work.",
+  "receipts": [
+    "aot-receipt.json",
+    "range-aot.json",
+    "benchmark-tier-standard.json",
+    "compile-numeric.json",
+    "compile-midend.json",
+    "unicode-tier/before.jsonl",
+    "unicode-tier/after.jsonl"
+  ]
+}

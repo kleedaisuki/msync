@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pair fresh Native O2 List compilation without a benchmark matrix."""
+"""Pair fresh Native O2 compilation of one existing source workload."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def observe(
     binary: Path, source: Path, command: str, output: Path
 ) -> tuple[float, dict[str, object] | None]:
     environment: dict[str, str] = {**os.environ, "NO_COLOR": "1"}
-    arguments: list[str] = [str(binary), command, str(source)]
+    arguments: list[str] = [str(binary), "--no-config", "--no-telemetry", command, str(source)]
     if command == "compile":
         arguments.extend(["-O2", "-o", str(output)])
     started: int = time.perf_counter_ns()
@@ -97,7 +97,7 @@ def main() -> None:
             }
         )
     report: dict[str, Any] = {
-        "scope": "one List source; fresh Native process",
+        "scope": "one source workload; fresh Native process",
         "mode": args.command,
         "optimization": 2 if args.command == "compile" else "product check behavior",
         "check_caveat": (
@@ -115,7 +115,7 @@ def main() -> None:
         "platform": platform.platform(),
         "python_executable": sys.executable,
         "python_version": sys.version,
-        "command": ["BINARY", args.command, str(source)]
+        "command": ["BINARY", "--no-config", "--no-telemetry", args.command, str(source)]
         + (["-O2", "-o", str(artifact_path)] if args.command == "compile" else []),
         "output_policy": (
             "same existing output.mso overwritten; hash outside timer"

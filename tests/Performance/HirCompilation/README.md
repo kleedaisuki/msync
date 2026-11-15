@@ -61,10 +61,13 @@ budget only on the discriminating cases. Do not add timing thresholds to CI.
 
 ## Final Native user-latency control
 
-`native_list.py` pairs only the original short List source on the published
-Native executable and the exact release-candidate Native image. Every
+`native_list.py` pairs one supplied source workload on the published
+Native executable and the exact release-candidate Native image. Its historical
+filename remains a supported entry point; `--source` can select an existing
+application fixture without introducing another harness. Every
 observation starts a fresh `compile SOURCE -O2 -o WORK/output.mso` process;
-both images overwrite the same existing output path. One untimed launch per
+both images overwrite the same existing output path. Config discovery and
+telemetry are disabled for both images. One untimed launch per
 image warms OS file caches. Pair order alternates,
 and raw times, paired differences, source/image hashes and the candidate's
 receipt are retained. This is user-facing process latency, not managed component
