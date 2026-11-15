@@ -1,4 +1,4 @@
-"""Exercise old-native input, compact output and source-free bound CLI execution."""
+"""Exercise current compiled output, old-format rejection and source-free bound execution."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def main() -> None:
     log: list[dict[str, Any]] = []
 
     def invoke(
-        arguments: tuple[str, ...], cwd: Path = work, data: bytes = b""
+        arguments: tuple[str, ...], cwd: Path = work, data: bytes = b"", success: bool = True
     ) -> bytes:
         command: tuple[str, ...] = (
             str(binary),
@@ -72,23 +72,29 @@ def main() -> None:
         }
         log.append(entry)
         (work / "invocations.json").write_text(json.dumps(log, indent=2) + "\n")
-        if result.returncode != 0:
+        if (result.returncode == 0) != success:
             raise AssertionError(entry)
         return result.stdout
 
-    invoke(("compile", "old.mso", "-o", "compact.mso"))
+    invoke(("run-ir", "old.mso"), success=False)
+    source: Path = work / "current.msync"
+    source.write_text('let line? = $std::io::read_line(); '
+        'let n = if line is null { 0 } else { line as Number }; '
+        'let row = scope { value: n }; '
+        'fn bump(row) { row::value = row::value + 1; row::value }; '
+        '$std::io::println(bump(row) as String)')
+    source_hash: str = digest(source)
+    invoke(("compile", "current.msync", "-o", "compact.mso"))
+    source.unlink()
     compact: Path = work / "compact.mso"
-    old_bytes: int = original.stat().st_size
     compact_bytes: int = compact.stat().st_size
-    if compact_bytes >= old_bytes:
-        raise AssertionError((old_bytes, compact_bytes))
     inspected: dict[str, Any] = json.loads(
         invoke(("disassemble", "compact.mso", "--json"))
     )
-    if inspected["representation"] != "native-v1":
+    if inspected["formatVersion"] != 2:
         raise AssertionError(inspected)
-    expected: bytes = b"7021\n105397\n146049\n"
-    stdin: bytes = b"17\n8192\n"
+    expected: bytes = b"18\n"
+    stdin: bytes = b"17\n"
     original.unlink()
     if invoke(("run-ir", "compact.mso"), data=stdin) != expected:
         raise AssertionError("Detached compact record stream changed its oracle")
@@ -107,13 +113,14 @@ def main() -> None:
         "payload_sha256": frozen,
         "input_sha256": digest(fixture),
         "compact_sha256": compact_hash,
-        "unpooled_bytes": old_bytes,
+        "source_sha256": source_hash,
+        "old_artifact_rejected": True,
         "compact_bytes": compact_bytes,
         "source_present": False,
         "invocations": len(log),
     }
     (work / "result.json").write_text(json.dumps(report, indent=2) + "\n")
-    print(f"PASS detached compact codec journey: {old_bytes} -> {compact_bytes} bytes")
+    print(f"PASS current storage artifact journey: {compact_bytes} bytes, detached execution and old-format rejection")
 
 
 if __name__ == "__main__":

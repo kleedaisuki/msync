@@ -38,6 +38,7 @@ internal static class Program
         await ControlRelocation();
         await PlanRelocation();
         await GlobalMemoryFacts();
+        await CrossBlockNarrowReuse();
         await SourceJourneys();
         await OwnershipBoundaries();
         Console.WriteLine($"PASS {checks} native middle-end contracts");
@@ -419,6 +420,47 @@ internal static class Program
                     [NativeValue.FromBool(condition), NativeValue.FromNumber(7)]);
                 Check(result.AsNumber() == expected, "Global private-memory facts changed the stored value through a CFG join");
             }
+    }
+
+    private static async Task CrossBlockNarrowReuse()
+    {
+        foreach (int blocks in new[] { 2, 3, 5 })
+        {
+            List<NativeSlot> slots = [new(0, NativeSlotRole.Parameter), new(1)];
+            List<NativeInstruction> code =
+            [
+                new(NativeOp.Unary, 1, 0, Immediate: (long)NativeUnary.IsNull),
+                new(NativeOp.Branch, A: 1, B: 2 + 2 * blocks, C: 2)
+            ];
+            for (int block = 0; block < blocks; block++)
+            {
+                slots.Add(new(2));
+                code.Add(new(NativeOp.Narrow, 2 + block, 0, Type: 2));
+                code.Add(block == blocks - 1 ? new(NativeOp.Return, A: 2 + block)
+                    : new(NativeOp.Jump, A: code.Count + 1));
+            }
+            slots.Add(new(2));
+            code.Add(new(NativeOp.Constant, slots.Count - 1, 0));
+            code.Add(new(NativeOp.Return, A: slots.Count - 1));
+            NativeProgram source = new([new(NativeKind.Number, Number: -1)],
+                [new("cross-block-narrow-reuse", slots, code, new([0], 2, []), ParameterCount: 1)],
+                [new(TypeKind.Number | TypeKind.Null), new(TypeKind.Bool), new(TypeKind.Number)], []);
+            foreach (int level in new[] { 0, 1, 2, 3 })
+            {
+                NativeProgram program = Detached(NativeOptimizer.Optimize(source, level));
+                if (level > 0)
+                    Check(program.Functions[0].Instructions.Count(instruction => instruction.Op == NativeOp.Narrow) == 1,
+                        $"O{level}: repeated cross-block narrows did not share one live definition");
+                await using NativeInterpreter interpreter = new(program);
+                foreach (NativeValue input in new[] { NativeValue.Null, NativeValue.FromNumber(42), NativeValue.FromNumber(-0d) })
+                {
+                    NativeValue result = await interpreter.InvokeAsync(NativeValue.FromFunction(new(0)), [input]);
+                    double expected = input.Kind == NativeKind.Null ? -1 : input.AsNumber();
+                    Check(BitConverter.DoubleToUInt64Bits(result.AsNumber()) == BitConverter.DoubleToUInt64Bits(expected),
+                        $"O{level}: cross-block narrow reuse changed the selected branch or number bits");
+                }
+            }
+        }
     }
 
     private static async Task OwnershipBoundaries()

@@ -63,6 +63,8 @@ internal sealed class HirFlowTypeAlgebra(SemanticArena hir) : IFlowTypeAlgebra
             HirType payload = left.RuntimeType == TypeRef.Null ? right : left;
             result = hir.Type(payload with { RuntimeType = runtime, Nullable = true });
         }
+        else if (runtime.WithoutNull == TypeRef.Scope && (IsOpaqueScope(left) || IsOpaqueScope(right)))
+            result = hir.Type(new HirType(runtime, Nullable: runtime.Nullable));
         else if (left.Shape == right.Shape && left.Signature == right.Signature
             && left.Element == right.Element && left.TypeParameter == right.TypeParameter
             && left.Concept == right.Concept && left.Alternatives.IsDefaultOrEmpty && right.Alternatives.IsDefaultOrEmpty)
@@ -70,7 +72,9 @@ internal sealed class HirFlowTypeAlgebra(SemanticArena hir) : IFlowTypeAlgebra
         else
         {
             var alternatives = Alternatives(first).Concat(Alternatives(second)).Distinct().OrderBy(item => item.Value).ToImmutableArray();
-            result = hir.Type(new HirType(runtime, Alternatives: alternatives) { ScopeDomain = scopeDomain });
+            result = alternatives.Length == 1
+                ? alternatives[0]
+                : hir.Type(new HirType(runtime, Alternatives: alternatives) { ScopeDomain = scopeDomain });
         }
         joins[(first, second)] = result;
         return result;
@@ -171,4 +175,10 @@ internal sealed class HirFlowTypeAlgebra(SemanticArena hir) : IFlowTypeAlgebra
         var alternatives = hir.Types[type.Value].Alternatives;
         return alternatives.IsDefaultOrEmpty ? [type] : alternatives;
     }
+
+    private static bool IsOpaqueScope(HirType type) =>
+        type.RuntimeType.WithoutNull == TypeRef.Scope
+        && type.Shape < 0 && type.Signature < 0 && type.Element < 0
+        && type.TypeParameter < 0 && type.Concept < 0
+        && type.ScopeDomain.Count == 0 && type.Alternatives.IsDefaultOrEmpty;
 }

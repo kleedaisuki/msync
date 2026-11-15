@@ -78,8 +78,8 @@ public static partial class NativeHostIO
         NativeConnection connection = executable.Connection ?? default;
         string[] argv = arguments.Select(value => ProcessArgument(value, context, remote)).ToArray();
         ProcessStartInfo info = remote
-            ? pipeInput ? RemoteProcessControl.StartInfo(connection.Kind, connection.Address, executable.Raw, argv)
-                : NativeTransferProtocol.CreateRemoteProcessStartInfo(connection.Kind, connection.Address, executable.Raw, argv)
+            ? pipeInput ? RemoteProcessControl.StartInfo(connection.Kind, connection.Address, executable.Raw, argv, context)
+                : NativeTransferProtocol.CreateRemoteProcessStartInfo(connection.Kind, connection.Address, executable.Raw, argv, context)
             : new(executable.LocalPath(context.WorkingDirectory, context.HomeDirectory));
         if (!remote) foreach (string argument in argv) info.ArgumentList.Add(argument);
         info.WorkingDirectory = context.WorkingDirectory;

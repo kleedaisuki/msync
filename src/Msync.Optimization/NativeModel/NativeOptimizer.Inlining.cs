@@ -5,16 +5,16 @@ namespace Msync.Optimization;
 
 public static partial class NativeOptimizer
 {
-    private static NativeProgram InlineCleaned(NativeProgram program, int level, NativeOptimizationProfile? profile, int[] budgets)
+    private static NativeProgram InlineCleaned(NativeProgram program, int level, NativeOptimizationProfile? profile,
+        int[] budgets, ref NativeAddressAnalysis.ProgramFacts? shared)
     {
-        NativeProgram expanded = NativeInlining.Run(program, level, profile, budgets);
+        NativeProgram expanded = NativeInlining.Run(program, level, profile, budgets, ref shared);
         int[] changed = Enumerable.Range(0, program.Functions.Count)
             .Where(index => !ReferenceEquals(program.Functions[index], expanded.Functions[index])).ToArray();
         if (changed.Length == 0) return program;
         NativeFunctionCode[] functions = expanded.Functions.ToArray();
         NativeConstantPool constants = new(expanded.Constants);
         List<NativeAllocationPlan> plans = expanded.Allocations.ToList();
-        NativeAddressAnalysis.ProgramFacts? shared = null;
         foreach (int index in changed)
         {
             profile?.Function(index);
@@ -30,6 +30,6 @@ public static partial class NativeOptimizer
                     attributes: new Dictionary<string, string>
                     { ["function.id"] = index.ToString(System.Globalization.CultureInfo.InvariantCulture), ["function.name"] = functions[index].Name });
         }
-        return Compact(expanded with { Functions = functions, Constants = constants.Values.ToArray(), Allocations = plans.ToArray() }, profile);
+        return Compact(expanded with { Functions = functions, Constants = constants.Values.ToArray(), Allocations = plans.ToArray() }, profile, shared);
     }
 }

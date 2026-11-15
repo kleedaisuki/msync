@@ -1,43 +1,39 @@
 # Native artifact contracts
 
-`dotnet run --project tests/NativeArtifact -c Release` checks the real codec and
-strict native IR validator, including all builtin literals, exact Number bits,
-captured paths, closures, typed memory/control, logical Range descriptors,
-portable plans, streamed reads and malformed input. `CompactEncodingChecks`
-checks exact UTF-16 pooling, one-byte Nop code, sparse source mappings, optional
-operands, deterministic re-encoding, bounded sections and invalid indices/varints.
-Versioned fixtures retain both accepted unpooled native-v1 function layouts; do
-not regenerate them with the current writer.
+The v0.9 release reads Native format 2 (compact revision 2) and HIR format 4.
+Old artifacts must be rebuilt from source. Readers decode the compiler's storage
+and call plans; they do not repeat semantic verification, alias/escape analysis,
+or allocation-hint normalization. The explicit `NativeArtifact.Validate` API is
+still available for compiler/test diagnostics.
 
-Detached codec/inspection acceptance:
+Current real CLI acceptance:
 
 ```sh
-dotnet run --project tests/NativeArtifact -c Release -- produce .temp/codec-plan.mexe
-dotnet run --project tests/NativeArtifact -c Release -- consume .temp/codec-plan.mexe
+python3 tests/NativeArtifact/test_journey.py --binary PATH_TO_MSYNC
+python3 tests/CallLowering/storage_journey.py --binary PATH_TO_MSYNC --work .temp/storage-journey
+python3 tests/Telemetry/compiler.py PATH_TO_MSYNC
 ```
 
-For a controlled encoding/loading comparison, `measure OLD_INPUT OUTPUT.json`
-reads an original unpooled native-v1 artifact and writes its compact encoding,
-checks complete rendered-document identity, then alternates seven warmed parse +
-validation + allocation-hint-normalization trials. It records bytes, SHA-256,
-allocation and elapsed samples, and writes the compact artifact next to the
-report. Timing excludes source compilation and guest execution; it is not an
-end-to-end VM throughput result. Both frozen unpooled fixtures remain accepted;
-the retired production encoder is not retained solely to reconstruct benchmark
-inputs. Supply an original unpooled artifact, such as the fixture under `Fixtures/`.
+The artifact journey rejects a frozen old-native input, compiles current source,
+removes source, inspects/executes its object, binds it, removes the object and runs
+the bound executable from another directory. The storage journey covers source-free
+HIR lowering, O0/O2, Off/Auto/Force, selected transfer lifetime and old Native/HIR
+format rejection. Telemetry verifies that decoding does not invent compiler
+analysis spans and that compilation reports storage/call decisions.
 
-Use `--artifacts-path artifacts/NAME` for isolated managed builds, or publish the
-same project with `-p:PublishAot=true -r linux-x64` for a Native AOT codec probe.
+Hand-constructed Native IR must be finalized with `NativeOptimizer.PlanStorage`
+(or `NativeOptimizer.Optimize`) before encoding/execution. The source compiler
+already produces these plans. See the
+[compiled storage contract](../../docs/design/native-execution-lowering-v090.md#v09-compiled-storage-contract-2026-11-13).
 
-`python3 tests/NativeArtifact/test_journey.py --binary PATH` re-encodes an
-unchanged earlier native-v1 input through the real CLI, removes the portable
-input/source, inspects and executes compact output, then binds it and executes
-the `.mexe` from another directory against the independent record-stream oracle.
+## Historical codec diagnostics
 
-The 2026-11-12 controlled encoding receipt reduced the record stream from
-29,197 to 6,088 bytes and a real Set artifact from 4,091,313 to 653,033 bytes,
-without dropping their full rendered document or source mappings. Validation
-dominates allocations: managed Set loading changed about 139.2 to 136.7 MB,
-not an 84% allocation reduction. Local reports are under
-`.temp/compact-native-ir/{record-flat-debug,set,record-aot}.json`; they are
-diagnostic load windows, not guest execution or whole-product speed claims.
+The older C# codec fixture/measurement harness describes the pre-contract codec:
+unpooled-v1 acceptance, malformed semantic inputs, and parse + validation + hint
+normalization timings. Those acceptance expectations are superseded by the v0.9
+contract above, not runtime compatibility requirements. Frozen files in `Fixtures/`
+remain useful as rejection inputs and must not be regenerated with the new writer.
+
+The 2026-11-12 historical receipt reduced a record stream from 29,197 to 6,088
+bytes and a Set artifact from 4,091,313 to 653,033 bytes. Those are historical
+encoding receipts, not measurements of the current execution contract.

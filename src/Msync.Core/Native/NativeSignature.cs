@@ -29,6 +29,26 @@ public sealed record NativeSignature(string Name, IReadOnlyList<TypeRef> Paramet
     public NativeElementCallback? ElementCallback { get; init; }
     public NumericIntrinsic Numeric { get; init; }
 
+    // Deferred callbacks belong to consumption, not construction of the range.
+    internal bool RequiresWorkScope => ReturnsFileValue
+        || Effect != NativeEffect.Pure && !Behavior.GetValueOrDefault().HasFlag(NativeBehavior.LocalMemory)
+        || Behavior.GetValueOrDefault().HasFlag(NativeBehavior.Enumerates)
+        || Behavior.GetValueOrDefault().HasFlag(NativeBehavior.Invokes)
+            && !Behavior.GetValueOrDefault().HasFlag(NativeBehavior.Deferred);
+
+    internal bool ReturnsFileValue
+    {
+        get
+        {
+            if ((Behavior.GetValueOrDefault() & (NativeBehavior.LocalMemory | NativeBehavior.Invokes | NativeBehavior.Enumerates | NativeBehavior.Deferred)) != 0
+                || Effect == NativeEffect.Write || (Result.Kind & ~TypeKind.Null) == TypeKind.Range) return false;
+            for (int index = 0; index < Parameters.Count; index++)
+                if ((Parameters[index].Kind & TypeKind.Path) != 0
+                    && AccessOfPathArgument(index) is NativePathAccess.Read or NativePathAccess.ReadIfPath) return true;
+            return false;
+        }
+    }
+
     public NativePathAccess AccessOfPathArgument(int argument) => PathAccess is { } access ? access[argument] : Effect switch
     {
         NativeEffect.Read => NativePathAccess.Read,

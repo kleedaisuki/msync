@@ -6,12 +6,21 @@ internal static partial class NativeMachineCode
 {
     private sealed partial class X64
     {
+        private bool StoreInitialized(int slot, FixedTierSlot location)
+        {
+            if (function.InitializationUnobserved(slot)) { InitializationWritesElided++; return false; }
+            Bytes(0x4d, 0x8b, 0x54, 0x24, 0x30);
+            Bytes(0x41, 0xc6, 0x82); Int(location.ByteOffset); Bytes(0x01);
+            return true;
+        }
+
         private void Region(NativeRegisterRegion region)
         {
             foreach (int input in region.Inputs)
             {
                 NativeRegisterValue value = region.Values[input];
                 Scalar(value.Slot, value.Kind, false, region.Start);
+                if (value.Unsigned) Bytes(0xf2, 0x48, 0x0f, 0x2c, 0xc0);
                 WriteValue(value);
             }
             foreach (NativeRegisterOperation operation in region.Operations)
@@ -33,12 +42,17 @@ internal static partial class NativeMachineCode
                 Bytes(0xf2, 0x0f, 0x10, (byte)(0x84 | target << 3), 0x24);
                 Int((windows ? 32 : 0) + value.Spill * 8);
             }
+            if (value.Unsigned && kind == NativeKind.Number)
+            {
+                Bytes(0x66, 0x48, 0x0f, 0x7e, second ? (byte)0xc9 : (byte)0xc0);
+                Bytes(0xf2, 0x48, 0x0f, 0x2a, second ? (byte)0xc9 : (byte)0xc0);
+            }
             if (kind == NativeKind.Bool) Bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0);
         }
 
         private void WriteValue(NativeRegisterValue value)
         {
-            if (value.Kind == NativeKind.Bool) Bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
+            if (value.Unsigned || value.Kind == NativeKind.Bool) Bytes(0x66, 0x48, 0x0f, 0x6e, 0xc0);
             if (value.Register >= 0) Bytes(0x66, 0x0f, 0x28, (byte)(0xc0 | value.Register << 3));
             else
             {
@@ -60,8 +74,7 @@ internal static partial class NativeMachineCode
                 {
                     Bytes(0x41, 0xc6, 0x82); Int(fixedSlot.ByteOffset); Bytes((byte)value.Kind);
                 }
-                Bytes(0x4d, 0x8b, 0x54, 0x24, 0x30);
-                Bytes(0x41, 0xc6, 0x82); Int(fixedSlot.ByteOffset); Bytes(0x01);
+                StoreInitialized(value.Slot, fixedSlot);
                 return;
             }
             int offset = checked(layout.Scalars[value.Slot] * 32);
@@ -117,12 +130,20 @@ internal static partial class NativeMachineCode
 
     private sealed partial class Arm64
     {
+        private bool StoreInitialized(int slot, FixedTierSlot location)
+        {
+            if (function.InitializationUnobserved(slot)) { InitializationWritesElided++; return false; }
+            Word(0xf9401a71); Load(14, 1); StoreFrameByte(14, location.ByteOffset);
+            return true;
+        }
+
         private void Region(NativeRegisterRegion region)
         {
             foreach (int input in region.Inputs)
             {
                 NativeRegisterValue value = region.Values[input];
                 Scalar(value.Slot, value.Kind, false, region.Start);
+                if (value.Unsigned) Word(0x9e790002);
                 WriteValue(value);
             }
             foreach (NativeRegisterOperation operation in region.Operations)
@@ -144,12 +165,17 @@ internal static partial class NativeMachineCode
                 Load(17, (ulong)(value.Spill * 8)); Word(0x8b3163f1);
                 Word(0xfd400220 | target);
             }
+            if (value.Unsigned && kind == NativeKind.Number)
+            {
+                Word(second ? 0x9e660023u : 0x9e660002u);
+                Word(second ? 0x9e630061u : 0x9e630040u);
+            }
             if (kind == NativeKind.Bool) Word(0x9e660002);
         }
 
         private void WriteValue(NativeRegisterValue value)
         {
-            if (value.Kind == NativeKind.Bool) Word(0x9e670040);
+            if (value.Unsigned || value.Kind == NativeKind.Bool) Word(0x9e670040);
             if (value.Register >= 0) Word(0x1e604000 | (uint)value.Register);
             else
             {
@@ -174,7 +200,7 @@ internal static partial class NativeMachineCode
                     Load(14, (ulong)value.Kind);
                     StoreFrameByte(14, fixedSlot.ByteOffset);
                 }
-                Word(0xf9401a71); Load(14, 1); StoreFrameByte(14, fixedSlot.ByteOffset);
+                StoreInitialized(value.Slot, fixedSlot);
                 return;
             }
             Word(0xf9400670); Load(15, (ulong)checked(layout.Scalars[value.Slot] * 32)); Word(0x8b0f020f);

@@ -56,6 +56,8 @@ public sealed partial class HirBuilder
     {
         if ((type.RuntimeType.Kind & TypeKind.Scope) == 0 && type.ScopeDomain.Count != 0)
             type = type with { ScopeDomain = default };
+        if (type.TypeParameter < 0 && type.RuntimeType.Nullable && !type.Nullable)
+            type = type with { Nullable = true };
         if (types.TryGetValue(type, out var existing)) return existing;
         HirTypeId id = new(Types.Count);
         Types.Add(type); types.Add(type, id); return id;

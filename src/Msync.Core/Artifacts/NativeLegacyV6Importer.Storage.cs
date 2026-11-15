@@ -20,11 +20,11 @@ public static partial class NativeLegacyV6Importer
         private void PrepareStorage()
         {
             int originalCount = Module.Types.Count;
-            foreach (TypeKind kind in Module.Types.Where(type => (type.Kinds & LegacyV6Reader.LegacyStorageMask) != 0)
+            foreach (TypeKind kind in Module.Types.Where(type => (type.Kinds & (ushort)TypeKind.Storage) != 0)
                 .Select(type => type.Element < 0 ? TypeKind.Any : Types[type.Element].Kind).Distinct())
             {
                 int element = Type(TypeKind.Never);
-                foreach (LegacyV6CodeType type in Module.Types.Where(type => (type.Kinds & LegacyV6Reader.LegacyStorageMask) != 0))
+                foreach (LegacyV6CodeType type in Module.Types.Where(type => (type.Kinds & (ushort)TypeKind.Storage) != 0))
                 {
                     int candidate = type.Element < 0 ? Type(TypeKind.Any) : type.Element;
                     if (Types[candidate].Kind == kind) element = Join(element, candidate);
@@ -34,12 +34,12 @@ public static partial class NativeLegacyV6Importer
             for (int type = 0; type < originalCount; type++)
             {
                 LegacyV6CodeType legacy = Module.Types[type];
-                if ((legacy.Kinds & LegacyV6Reader.LegacyStorageMask) == 0) continue;
+                if ((legacy.Kinds & (ushort)TypeKind.Storage) == 0) continue;
                 TypeKind kind = legacy.Element < 0 ? TypeKind.Any : Types[legacy.Element].Kind;
                 StorageShape shape = storageShapes[kind]; storageTypes[type] = shape;
                 int[] headers = storageShapes.Values.Where(candidate => (kind & Types[candidate.Element].Kind) == Types[candidate.Element].Kind)
                     .Select(candidate => candidate.Header).Append(shape.Header).ToArray();
-                Types[type] = new((TypeKind)(legacy.Kinds & ~LegacyV6Reader.LegacyStorageMask) | TypeKind.Scope,
+                Types[type] = new((TypeKind)(legacy.Kinds & ~(ushort)TypeKind.Storage) | TypeKind.Scope,
                     (legacy.Kinds & (ushort)TypeKind.Range) != 0 ? legacy.Element : -1,
                     (legacy.Kinds & (ushort)TypeKind.Scope) != 0 && legacy.Layouts.Count == 0 ? [] : legacy.Layouts.Concat(headers).Distinct().Order().ToArray());
             }

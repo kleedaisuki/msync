@@ -6,16 +6,30 @@ using Msync.Core.Native;
 namespace Msync.Runtime.Native;
 
 [StructLayout(LayoutKind.Sequential)]
-internal readonly struct NativeExecutionInstruction(NativeInstruction source, int span = 1, nint handler = 0)
+internal readonly struct NativeExecutionInstruction
 {
-    internal readonly NativeOp Op = source.Op;
-    internal readonly int Result = source.Result;
-    internal readonly int A = source.A;
-    internal readonly int B = source.B;
-    internal readonly int C = source.C;
-    internal readonly int Span = span;
-    internal readonly long Immediate = source.Immediate;
-    internal readonly nint Handler = handler == 0 ? NativeInterpreter.ExecutionHandlerAddress(source.Op) : handler;
+    internal readonly NativeOp Op;
+    internal readonly int Result;
+    internal readonly int A;
+    internal readonly int B;
+    internal readonly int C;
+    internal readonly int Span;
+    internal readonly long Immediate;
+    internal readonly nint Handler;
+
+    internal NativeExecutionInstruction(NativeInstruction source, int span = 1, nint handler = 0) =>
+        (Op, Result, A, B, C, Span, Immediate, Handler) = (source.Op, source.Result, source.A, source.B, source.C,
+            span, source.Immediate, handler == 0 ? NativeInterpreter.ExecutionHandlerAddress(source.Op) : handler);
+
+    internal NativeExecutionInstruction(NativeBackendInstruction source) =>
+        (Op, Result, A, B, C, Span, Immediate, Handler) = (source.Op, source.Result, source.A, source.B, source.C,
+            source.Span, source.Immediate, NativeInterpreter.BackendHandlerAddress(source.Handler, source.Op));
+
+    internal NativeExecutionInstruction(in NativeExecutionInstruction source, long immediate)
+    {
+        this = source;
+        Immediate = immediate;
+    }
 }
 
 internal sealed class NativeExecutionImage(NativeImage image, NativeTierOptions options) : IDisposable
@@ -45,7 +59,6 @@ internal sealed partial class NativeExecutionFunction : IDisposable
     private readonly object gate = new();
     private readonly NativeImage image;
     private readonly NativeTierOptions options;
-    private NativeEscapeAnalysis? provenance;
     private int calls;
     private int backedges;
     private int invalidations;
@@ -54,14 +67,37 @@ internal sealed partial class NativeExecutionFunction : IDisposable
     private readonly NativeExecutionInstruction[] instructions;
     internal NativeExecutionOperand[] Operands { get; }
     private NativeSiteProfile?[]? profiles;
-    private bool[]? rawWritable;
-    internal NativeExecutionFunction(NativeImage image, int index, NativeTierOptions options)
+    private IReadOnlyList<bool>? rawWritable;
+    private readonly int[] operandSources = [];
+    private readonly NativeNumberForm[]? numberForms;
+    private readonly NativeBackendFunction? backend;
+    internal NativeNumberForm NumberForm(int pc) => backend is { } body ? body.Instructions[pc].Numbers : numberForms![pc];
+    internal int ConnectionSlot(int pc) => backend!.Instructions[pc].Connection;
+
+    internal NativeExecutionFunction(NativeImage image, int index, NativeTierOptions options, bool lowering = false, CompilationTrace? trace = null)
     {
         this.image = image;
         this.options = options;
         Index = index;
         Definition = image.Program.Functions[index];
         Metadata = Definition.Instructions as NativeInstruction[] ?? Definition.Instructions.ToArray();
+        if (!lowering)
+        {
+            backend = image.Program.Backend!.Functions[index];
+            IsPureSynchronous = backend.PureSynchronous;
+            IsContextFree = backend.ContextFree;
+            HasObservableBinary = backend.ObservableBinary;
+            instructions = backend.Instructions.Select(code => new NativeExecutionInstruction(code)).ToArray();
+            Operands = backend.Instructions.Select(code => NativeExecutionOperand.Link(image, Definition, Metadata[code.Operand]) with
+            {
+                Type = code.OperandKinds == ulong.MaxValue ? null : NativeType.FromKinds(code.OperandKinds),
+                NeedsLayoutCheck = code.NeedsLayoutCheck
+            }).ToArray();
+            rawWritable = backend.RawWritable;
+            LinkCalls();
+            return;
+        }
+        operandSources = Enumerable.Range(0, Metadata.Length).ToArray();
         bool pureSynchronous = true;
         bool contextFree = true;
         bool observableBinary = false;
@@ -87,10 +123,19 @@ internal sealed partial class NativeExecutionFunction : IDisposable
         IsPureSynchronous = pureSynchronous;
         IsContextFree = contextFree;
         HasObservableBinary = observableBinary;
-        Operands = Metadata.Select(instruction => NativeExecutionOperand.Link(image, instruction)).ToArray();
+        Operands = Metadata.Select(instruction => NativeExecutionOperand.Link(image, Definition, instruction)).ToArray();
         instructions = Lower();
-        LinkCalls();
+        numberForms = trace is null ? NativeNumberLowering.Analyze(image.Program, Definition, instructions)
+            : trace.MeasureDetailed("backend.number_analysis", 0, _ => NativeNumberLowering.Analyze(image.Program, Definition, instructions, trace));
     }
+
+    internal NativeBackendFunction ExportBackend() => backend ?? new(instructions.Select((code, pc) =>
+        new NativeBackendInstruction(code.Op, code.Result, code.A, code.B, code.C, code.Span, code.Immediate,
+            code.Op == NativeOp.Binary && code.Handler == NativeInterpreter.ExecutionHandlerAddress(NativeOp.Binary, number: true)
+                && NumberForm(pc).HasFlag(NativeNumberForm.UnsignedA | NativeNumberForm.UnsignedB)
+                ? NativeBackendHandler.UnsignedBinary : NativeInterpreter.BackendHandlerKind(code.Handler, code.Op), operandSources[pc],
+            Operands[pc].Type?.Kinds ?? ulong.MaxValue, Operands[pc].NeedsLayoutCheck, NumberForm(pc))).ToArray(),
+        RawWritable, IsPureSynchronous, IsContextFree, HasObservableBinary);
 
     internal int Index { get; }
     internal bool IsPureSynchronous { get; }
@@ -100,11 +145,15 @@ internal sealed partial class NativeExecutionFunction : IDisposable
     internal NativeFunctionCode Definition { get; }
     internal NativeInstruction[] Metadata { get; }
     internal NativeExecutionInstruction[] Instructions => instructions;
-    private NativeEscapeAnalysis Provenance => provenance ??= new(image.Program, Index, image.Provenance);
-    internal bool HasKind(int slot, NativeKind kind) => image.Program.Types[Definition.Slots[slot].Type] is { Pointee: < 0 } type
-        && type.Kind == (kind == NativeKind.Number ? TypeKind.Number : TypeKind.Bool);
+    private bool Escapes(int slot) => Definition.Slots[slot].Escapes
+        || Definition.Storage!.Slots[slot].HasFlag(NativeSlotStorage.Escapes);
+    internal bool HasKind(int slot, NativeKind kind) => image.Program.Types[Definition.Slots[slot].Type] is { Pointee: < 0 }
+        && image.Type(Definition.Slots[slot].Type) is { IsNever: false, IsUnion: false } type && type.Kind == kind;
     internal bool CanWriteRaw(int slot) => slot >= 0 && RawWritable[slot]
         && image.Type(Definition.Slots[slot].Type).Representation.References == 0;
+    internal bool IsPrivateTemporary(int slot) => Definition.Storage!.Slots[slot].HasFlag(NativeSlotStorage.PrivateArgument);
+    internal bool InitializationUnobserved(int slot) =>
+        Definition.Storage!.Slots[slot].HasFlag(NativeSlotStorage.UnobservedInitialization);
     internal bool IsUnion(int slot) => image.Type(Definition.Slots[slot].Type).IsUnion;
     internal bool AdmitsKind(int slot, NativeKind kind) => image.Type(Definition.Slots[slot].Type).Accepts(kind);
     private NativeExecutionInstruction[] Lower()
@@ -138,6 +187,7 @@ internal sealed partial class NativeExecutionFunction : IDisposable
                     code[pc] = new(access with { Result = address.A, A = access.B }, 2, NativeInterpreter.FrameStoreHandler);
                 else continue;
                 Operands[pc] = Operands[pc + 1];
+                operandSources[pc] = operandSources[pc + 1];
                 pc++;
             }
             else if (address.Op == NativeOp.AddressOffset && CanElideTemp(address.Result))
@@ -186,7 +236,7 @@ internal sealed partial class NativeExecutionFunction : IDisposable
             safeValueSlot[slot] = FixedCell(slot, rebound)
                 && !unfusedExposed[slot]
                 && !Definition.Slots[slot].Escapes
-                && !Provenance.EscapingLocations.Contains(slot);
+                && !Escapes(slot);
         }
         int[] slotVersion = new int[Definition.Slots.Count];
         (int Slot, int Version)[] copyOrigin = new (int, int)[Definition.Slots.Count];
@@ -280,32 +330,12 @@ internal sealed partial class NativeExecutionFunction : IDisposable
         }
         for (int pc = 0; pc < code.Length; pc += code[pc].Span)
         {
-            while (true)
-            {
-                NativeExecutionInstruction first = code[pc];
-                int nextPc = pc + first.Span;
-                if (first.Op != NativeOp.Copy || first.Handler != 0 || nextPc >= code.Length || entry[nextPc]) break;
-                NativeExecutionInstruction second = code[nextPc];
-                int temp = first.Result, source = first.A;
-                if (source == temp || !CanElideTemp(temp) || !FixedCell(source, rebound)) break;
-                if (liveAfter[nextPc + second.Span - 1].Contains(temp) && second.Result != temp) break;
-                if (second.Op == NativeOp.Copy && second.Handler == 0 && second.A == temp && FixedCell(second.Result, rebound))
-                {
-                    NativeType sourceType = image.Type(Definition.Slots[source].Type);
-                    NativeType destType = image.Type(Definition.Slots[second.Result].Type);
-                    code[pc] = new(Metadata[pc] with { Op = NativeOp.Copy, Result = second.Result, A = source }, first.Span + second.Span);
-                    Operands[pc] = Operands[pc] with { Type = sourceType.Equals(destType) ? sourceType : null };
-                    continue;
-                }
-                if (second.Op == NativeOp.Load && second.Handler == NativeInterpreter.ProjectLoadHandler && second.A == temp)
-                {
-                    code[pc] = new(Metadata[nextPc + second.Span - 1] with { A = source },
-                        first.Span + second.Span, NativeInterpreter.ProjectLoadHandler);
-                    Operands[pc] = Operands[nextPc];
-                    continue;
-                }
-                break;
-            }
+            NativeExecutionInstruction copy = code[pc];
+            if (copy.Op != NativeOp.Copy || copy.Handler != NativeInterpreter.ExecutionHandlerAddress(NativeOp.Copy)
+                || Operands[pc].Type is null) continue;
+            if (!Definition.Storage!.Slots[copy.A].HasFlag(NativeSlotStorage.PrivateArgument)) continue;
+            code[pc] = new(Metadata[pc] with { Op = NativeOp.Copy, A = copy.A, Result = copy.Result },
+                copy.Span, NativeInterpreter.CompiledCopyHandler);
         }
         return code;
     }
@@ -351,7 +381,7 @@ internal sealed partial class NativeExecutionFunction : IDisposable
         if (admitted.Count == 0) return false;
         IReadOnlyList<int>? declared = image.Program.Types[slotTypeIndex].Layouts;
         if (declared is { Count: > 0 } && declared.All(admitted.Contains)) return true;
-        if (Provenance.Addresses.ProvenLayoutsAt(pc, instruction.A) is { Count: > 0 } proven && proven.All(admitted.Contains)) return true;
+        if (Definition.Storage!.Instructions[pc].HasFlag(NativeInstructionStorage.NarrowLayout)) return true;
         int current = instruction.A;
         int scanPc = pc - 1;
         for (int depth = 0; depth < 8; depth++)
@@ -403,7 +433,9 @@ internal sealed partial class NativeExecutionFunction : IDisposable
             counters.Visit(index, Metadata[index].Op);
         }
     }
-    internal NativeSiteProfile?[] Profiles
+    internal NativeSiteProfile?[]? ObservedProfiles => Volatile.Read(ref profiles);
+
+    private NativeSiteProfile?[] Profiles
     {
         get
         {
@@ -412,51 +444,35 @@ internal sealed partial class NativeExecutionFunction : IDisposable
             return Interlocked.CompareExchange(ref profiles, created, null) ?? created;
         }
     }
-    internal bool[] RawWritable
+    internal IReadOnlyList<bool> RawWritable
     {
         get
         {
             if (Volatile.Read(ref rawWritable) is { } ready) return ready;
-            bool[] proof = PrivateWrites(image.Program, Index, Provenance, instructions);
+            bool[] proof = PrivateWrites(image.Program, Index, instructions);
             return Interlocked.CompareExchange(ref rawWritable, proof, null) ?? proof;
         }
     }
-    private static bool TryCollectExposed(NativeEscapeAnalysis escape, NativeExecutionInstruction[] lowered, HashSet<int> exposed)
+    private static bool TryCollectExposed(NativeFunctionCode function, NativeExecutionInstruction[] lowered, HashSet<int> exposed)
     {
         for (int pc = 0; pc < lowered.Length; pc += lowered[pc].Span)
         {
             NativeExecutionInstruction instruction = lowered[pc];
             if (instruction.Op is NativeOp.FrameAddress or NativeOp.BindLocation) exposed.Add(instruction.A);
-            if (instruction.Op == NativeOp.EnvironmentAddress && escape.Addresses.At(pc, instruction.Result).MayAliasCurrentFrame)
-                return false;
-            else if (instruction.Op == NativeOp.BindLocation && escape.Addresses.At(pc, instruction.B).MayAliasCurrentFrame)
-                return false;
-            else if (instruction.Op == NativeOp.ProjectAddress)
-            {
-                if (escape.Addresses.At(pc, instruction.A).MayAliasCurrentFrameAllocation)
-                    return false;
-            }
-            else if (instruction.Op is NativeOp.AddressOffset or NativeOp.IndexAddress
-                or NativeOp.CopyMemory or NativeOp.ClearMemory or NativeOp.RangeFromMemory)
-            {
-                if (escape.Addresses.At(pc, instruction.A).MayAliasCurrentFrame) return false;
-                if (instruction.Op == NativeOp.CopyMemory
-                    && escape.Addresses.At(pc, instruction.B).MayAliasCurrentFrame)
-                    return false;
-            }
+            if (function.Storage!.Instructions[pc].HasFlag(NativeInstructionStorage.FrameAlias)) return false;
         }
         return true;
     }
 
-    private static bool[] PrivateWrites(NativeProgram program, int index, NativeEscapeAnalysis escape, NativeExecutionInstruction[] lowered)
+    private static bool[] PrivateWrites(NativeProgram program, int index, NativeExecutionInstruction[] lowered)
     {
         NativeFunctionCode function = program.Functions[index];
         bool[] result = new bool[function.Slots.Count];
         HashSet<int> exposed = [];
-        if (!TryCollectExposed(escape, lowered, exposed)) return result;
+        if (!TryCollectExposed(function, lowered, exposed)) return result;
         for (int slot = 0; slot < result.Length; slot++)
             result[slot] = slot >= function.CaptureCount && function.Slots[slot].Role == NativeSlotRole.Temporary
-                && !function.Slots[slot].Escapes && !escape.EscapingLocations.Contains(slot)
+                && !function.Slots[slot].Escapes && !function.Storage!.Slots[slot].HasFlag(NativeSlotStorage.Escapes)
                 && !exposed.Contains(slot) && program.Types[function.Slots[slot].Type].Pointee < 0
                 && !(index == program.EntryPoint && program.PreserveLocals && program.SessionRoots?.Contains(slot) == true);
         return result;
@@ -520,10 +536,12 @@ internal sealed partial class NativeExecutionFunction : IDisposable
 
 internal sealed class NativeTierCounters
 {
+    private long readinessExits;
+    internal void ReadinessExit() => Interlocked.Increment(ref readinessExits);
     private long compilations, compilationNanoseconds, codeBytes, entries, operations, directOperations;
     private long guardMisses, deoptimizations, suspensions, recompilations, cancellationPolls, unavailable;
     private long linkedEntries, linkedOperations;
-    private long rawOperations;
+    private long rawOperations, bridgeDirectOperations, bridgeFallbackOperations;
     private long registerRegions, registerValues, registerSpills, eliminatedStores;
     private long selectionNs, allocationNs, emissionNs, publicationNs;
     internal void LinkedEntry() => Interlocked.Increment(ref linkedEntries);
@@ -555,10 +573,12 @@ internal sealed class NativeTierCounters
         Interlocked.Add(ref directOperations, count);
         Interlocked.Add(ref rawOperations, count);
     }
-    internal void BridgeBatch(long count, long polls)
+    internal void BridgeBatch(long count, long polls, long bridgeDirect = 0, long bridgeFallback = 0)
     {
         Interlocked.Add(ref operations, count);
         Interlocked.Add(ref cancellationPolls, polls);
+        if (bridgeDirect != 0) Interlocked.Add(ref bridgeDirectOperations, bridgeDirect);
+        if (bridgeFallback != 0) Interlocked.Add(ref bridgeFallbackOperations, bridgeFallback);
     }
     internal void GuardMiss() { Interlocked.Increment(ref guardMisses); Interlocked.Increment(ref deoptimizations); }
     internal void Suspended() => Interlocked.Increment(ref suspensions);
@@ -569,7 +589,8 @@ internal sealed class NativeTierCounters
         Volatile.Read(ref guardMisses), Volatile.Read(ref deoptimizations), Volatile.Read(ref suspensions),
         Volatile.Read(ref recompilations), Volatile.Read(ref cancellationPolls), Volatile.Read(ref unavailable))
     {
-        LinkedEntries = Volatile.Read(ref linkedEntries), LinkedOperations = Volatile.Read(ref linkedOperations), RawOperations = Volatile.Read(ref rawOperations),
+        ReadinessExits = Volatile.Read(ref readinessExits), LinkedEntries = Volatile.Read(ref linkedEntries), LinkedOperations = Volatile.Read(ref linkedOperations), RawOperations = Volatile.Read(ref rawOperations),
+        BridgeDirectOperations = Volatile.Read(ref bridgeDirectOperations), BridgeFallbackOperations = Volatile.Read(ref bridgeFallbackOperations),
         RegisterRegions = Volatile.Read(ref registerRegions), RegisterValues = Volatile.Read(ref registerValues),
         RegisterSpills = Volatile.Read(ref registerSpills), EliminatedFrameStores = Volatile.Read(ref eliminatedStores),
         SelectionNanoseconds = Volatile.Read(ref selectionNs), RegisterAllocationNanoseconds = Volatile.Read(ref allocationNs),

@@ -17,13 +17,11 @@ public static partial class NativeBuiltins
     public static NativePathValue JoinPath(NativePathValue left, NativeValue right) => right.Kind == NativeKind.Path
         ? PathSemantics.JoinValue(left, right.AsPath()) : PathSemantics.JoinValue(left, Text(right));
 
-    public static NativePathValue QualifyPath(NativePathValue path, NativeConnection connection, NativeRuntimeContext context)
+    public static NativePathValue QualifyPath(NativePathValue path, NativeConnection connection, NativeRuntimeContext context) =>
+        context.Connections.Get(connection).Qualify(path, context);
+
+    internal static NativePathValue QualifyLocal(NativePathValue path, NativeConnection connection, NativeRuntimeContext context)
     {
-        if (connection.Kind == ConnectionKind.Environment)
-            return context.AsPath(NativeValue.FromString(Environment.GetEnvironmentVariable(path.Raw)
-                ?? throw new MsyncException($"Environment variable '{path.Raw}' is not set")));
-        if (connection.Kind == ConnectionKind.SearchPath)
-            return new(ResolvePathName(path.Raw, context), context.WorkingDirectory, HomeDirectory: context.HomeDirectory);
         if (connection.Kind == ConnectionKind.Local && connection.Address == "pwd" && path.Raw == "pwd")
             return new(context.WorkingDirectory, context.WorkingDirectory, HomeDirectory: context.HomeDirectory);
         if (connection.Kind == ConnectionKind.Local && connection.Address == "file")
@@ -40,7 +38,7 @@ public static partial class NativeBuiltins
         return connection.Kind == ConnectionKind.Local ? context.Capture(qualified) : qualified;
     }
 
-    private static string ResolvePathName(string name, NativeRuntimeContext context)
+    internal static string ResolvePathName(string name, NativeRuntimeContext context)
     {
         // Qualification resolves a pathname; executable admission belongs to invocation/which.
         if (name.Contains(Path.DirectorySeparatorChar) || name.Contains(Path.AltDirectorySeparatorChar))

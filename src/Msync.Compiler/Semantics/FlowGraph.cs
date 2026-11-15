@@ -60,9 +60,11 @@ internal readonly record struct FlowEdge(FlowBlockId Target,
 {
     public FlowFacts Apply(FlowFacts facts, Func<HirNodeId, FlowFacts, FlowFact>? evaluate = null)
     {
-        if (!Predicates.IsDefault)
-            foreach (FlowPredicate predicate in Predicates) facts = predicate.Apply(facts, evaluate);
-        return facts;
+        if (Predicates.IsDefault || Predicates.Length == 0) return facts;
+        if (Predicates.Length == 1) return Predicates[0].Apply(facts, evaluate);
+        facts = facts.ToMutable();
+        foreach (FlowPredicate predicate in Predicates) facts = predicate.Apply(facts, evaluate);
+        return facts.Freeze();
     }
 }
 
@@ -90,9 +92,15 @@ internal static class FlowSolver
         while (queue.TryDequeue(out FlowBlockId current))
         {
             queued[current.Value] = false;
+            FlowBlock block = graph.Blocks[current.Value];
             FlowFacts facts = inputs[current.Value]!;
-            foreach (FlowOperation operation in graph.Blocks[current.Value].Operations)
-                facts = operation.Apply(facts, evaluate);
+            if (block.Operations.Length > 0)
+            {
+                facts = facts.ToMutable();
+                foreach (FlowOperation operation in block.Operations)
+                    facts = operation.Apply(facts, evaluate);
+                facts = facts.Freeze();
+            }
             transfers++;
             if (outputs[current.Value] is { } previous && previous.SameFacts(facts)) continue;
             outputs[current.Value] = facts;

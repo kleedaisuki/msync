@@ -28,9 +28,12 @@ public readonly record struct NativeTierStatistics(long Compilations, long Compi
     long Deoptimizations, long Suspensions, long Recompilations, long CancellationPolls,
     long UnavailableCompilations)
 {
+    public long ReadinessExits { get; init; }
     public long LinkedEntries { get; init; }
     public long LinkedOperations { get; init; }
     public long RawOperations { get; init; }
+    public long BridgeDirectOperations { get; init; }
+    public long BridgeFallbackOperations { get; init; }
     public long RegisterRegions { get; init; }
     public long RegisterValues { get; init; }
     public long RegisterSpills { get; init; }

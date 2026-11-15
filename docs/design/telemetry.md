@@ -331,6 +331,17 @@ profiles and SQLite files are in `.temp/timeline-study/compare/`.
 
 ## Compiler telemetry
 
+The v0.9 compiled-storage contract adds `compiler.storage.analysis` for producers
+without an existing converged optimizer analysis, `compiler.storage.function` (function
+identity, slots/escape/parameter/address/layout decisions) and
+`compiler.storage.calls` (call sites, snapshot decisions and borrowed arguments).
+Plans are relocated through compaction/coloring/folding and encoded in artifacts.
+Artifact decoding no longer emits `compiler.verify.*`, `compiler.hir.verify` or
+`compiler.artifact.allocation_hints`; explicit `NativeArtifact.Validate` remains
+available to compiler/test diagnostics. This supersedes the historical admission
+behavior in the table below. Runtime `vm.function` reports snapshot allocations
+and tail argument buffer reuse separately from semantic snapshot/copy counts.
+
 Compiler recording uses the same local JSONL/SQLite session as execution. `phases`
 retains the existing coarse boundaries. `profile`, `instructions` and `diagnostics`
 also record the following actual work; selecting a level alone never enables a
@@ -1014,3 +1025,203 @@ remote shell startup or filesystem flushes. Unix master/check clients remain
 outside this process runner and must not be counted as authenticated sessions
 merely because a process was launched. The maintained actual-SSH acceptance
 runner checks both the phase records and their complete ancestry.
+
+### Native backend and synchronous evaluator transition
+
+- `backend.function` attributes each lowered function and counts instructions,
+  fused instructions, u64 results and u64 operand operations.
+- Nested `backend.number_analysis` records blocks, fixed-point rounds,
+  instructions transferred and alias-exposed slots. These are backend range
+  facts, not a repeated escape analysis.
+- `vm.function.jit_u64_values` / `jit_u64_operations` count emitted native values
+  and operations, not dynamic hits. `heap_escaping_locations` counts individually
+  allocated escaping cells; `frame_storage_reuses` still counts frame reuse.
+- `connection.resource` records concrete implementation, endpoint and table
+  creation/reuse; `connection.command.prepare` reports the requested SSH session
+  strategy. Actual authentication reuse requires server evidence, not client
+  process counts. `connection.close` records owned-client shutdown outcome.
+- `process.synchronous_wait` attributes default external-process completion.
+- `vm.demand` identifies the function, instruction opcode and PC at an actual
+  interpreter or JIT-helper wait. Guest async continuation helpers have been
+  removed in the current transition. Existing pause/continue counters represent
+  these waits; they do not imply suspended guest coroutine frames.
+
+The explicit guest-stack loop records `guest_call_pushes`, `guest_call_resumes`
+and `guest_max_call_depth` on caller function counters. Depth is the ordinary
+caller-record depth within that evaluator entry, not host stack depth or tail
+iteration count. `jit_readiness_exits` / `tier.readiness_exits` distinguish an
+unavailable operand from `jit_guard_misses` / `tier.guard_misses`; readiness exits
+preserve native code and must not increment deoptimization counters. Fixed-slot
+stores consult their destination descriptor rather than treating a pending value
+elsewhere in the VM as a reason to call the scalar publication helper.
+
+Released process admission now has `process.submit` (source, argument/dependency
+counts and causal links), `process.background` (owned job lifetime and actual
+outcome/exit code), and `process.launch` (resolved executable and admission).
+Launch errors and cancellation explicitly fail the corresponding scopes rather
+than leaving successful-looking timing records. The submission Future is
+registered before the worker starts, and source diagnostics retain the original
+call location after the creating guest frame has been released.
+
+Input submissions use `input.submit` and `input.background`, with source spans,
+input-order and captured ordering predecessor links. Cancelling an unconsumed
+input marks that job cancelled; a noncooperative host reader may still finish
+its already-started physical read. The input turn remains owned by that physical
+read until it ends, and its worker does not retain ambient guest execution
+context. Process/input submissions share lifetime code while retaining their
+different scope-exit rules (join child work versus cancel an unused read).
+
+`backend.work_scope` records function/call-edge counts, required/elided scopes,
+propagated requirements, direct-call sites and their maximum compiled callee
+depth. These are compilation decisions, not dynamic hit counts. Runtime
+`guest_direct_calls` counts actual bounded/context-free direct calls;
+`guest_leaf_calls` remains the context-free subset. Recursive/unknown calls
+continue to count explicit stack pushes/resumes. Profile mode can allocate a
+scope for counters even for a work-free function; do not equate profile-mode
+scope allocations with the recording-disabled ownership policy.
+
+### Segmented frame backing and filesystem values
+
+The vm.function metric stack_frames counts segmented frame admissions;
+stack_frame_bytes and stack_frame_roots sum admitted layout extents, not peak or
+resident memory. stack_segment_allocations counts newly allocated segments
+attributed to the function needing them (including initial thread storage).
+These distinguish descriptor reuse from actual backing-segment reuse.
+
+Filesystem scalar submissions emit file_read.submit (source, native name,
+reader resource keys and matched dependencies), file_read.background (job
+lifetime), and file_read.refine (path, concrete resource kind, stream co-start).
+Synchronous native writes emit native_io.admit with concrete read/write keys
+and dependency counts. A stream can release its ordering lease while its value
+Future remains pending; these are deliberately different lifetimes.
+
+### Frame descriptors and background callback ownership
+
+Each guest call records one activation_descriptor_allocations or
+activation_descriptor_reuses event in vm.function; descriptors now belong to
+frames rather than an independent pool. work_forwarded_futures and
+work_forwarded_processes attribute late promotion to a closed lexical owner.
+transfer.background spans the owned submission; transfer.execute records source,
+matched dependency count, callback cleanup and concrete failures. Completion is
+published after callback/resource cleanup, not at the first successful I/O result.
+
+vm.function.tier_workspace_leases counts first native workspace acquisition for
+a guest call chain; tier_workspace_reuses counts subsequent native entries using
+that chain's workspace. Recursive guest calls on the explicit stack do not rent
+separate workspaces; nested bounded direct calls have separate active chains.
+
+Direct return telemetry: direct_return_slots counts typed representation/Future
+copies into caller-owned return storage; direct_return_scalars counts native
+Number/Bool bit publication without a generic result container.
+
+Native readiness setup: tier_context_pending counts entries with relevant pending
+slots. tier_context_unrelated_pending counts entries where the VM had pending
+values but the invocation's slot descriptors did not. The coarse native mask now
+represents the latter descriptors, not VM-global activity.
+
+guest_stack_limited_calls counts work-scope-free targets that cannot extend the
+current native stack. guest_loop_handoffs counts thin direct activations handing
+a deep subtree or tail chain to the explicit loop. guest_direct_calls now includes
+stack-admitted recursive calls, not only statically bounded sites.
+
+### Captured acquire frontiers and escaped descendants
+
+work.disposition records each owned submission's promote/join decision, whether
+the owner is a job scope, and reachable Future/Process counts. work.escape links
+the creator job and work transferred beyond its lifetime. The child list is not
+an archive of cancelled/handled internal operations.
+acquire_descendant_futures and acquire_descendant_processes count followed
+escaped-work edges, not newly launched operations or globally unique tasks.
+
+### Completed Future materialization in private tier slots
+
+`vm.function.tier_ready_materializations` counts successful Future payloads
+written into compiler-planned private fixed slots during native-context readiness
+refresh. It does not count waits, faults, cancellation, or borrowed/external slot
+rewrites. NativeTierMemory accumulates the count only when the context is observed
+and flushes it through the existing RuntimeProfile counters. This metric is a
+mechanism count, not evidence of a throughput improvement; see the ready-slots
+paired receipt in native-execution-lowering-v090.md.
+
+### Scalar stream jobs
+
+`stream.submit` records source location, native operation, captured Future
+count, and ordering linkage. `stream.background` owns the queued job interval;
+`stream.execute` records the native operation, inherited frontier size, and
+`callback.work_finished` before result publication. Stream jobs share existing
+`work.disposition` and `work.escape` observations for cancellation/promotion and
+escaped child work. Ready inline ranges do not allocate submission observations.
+
+`stream.admission` reports the actual caller-release decision: `outcome=completed`
+means the ready prefix finished (value or failure), while `outcome=pending` means
+an incomplete demanded operation released the caller. The latter links the
+specific dependency task. Exactly one outcome wins each stream admission.
+Creating a dependent Future alone does not constitute a demand observation.
+
+Direct native child contexts now remain owned by their parent workspace between
+sibling calls. Existing `tier_workspace_leases` and `tier_workspace_reuses` count
+actual native-entry cache misses/hits for this ownership path too; no new timing
+proxy is used. A child remains distinct from a live parent bridge context.
+
+The direct-child workspace cache experiment was subsequently rejected: reduced
+lease counts did not establish a throughput benefit. The cache was removed;
+lease/reuse counters retain their previous pool/explicit-chain meaning. See the
+tier-child-pinned receipt and interpretation in native-execution-lowering-v090.md.
+
+### Native bridge representation-copy outcomes
+
+For observed TierBridge Narrow/Convert attempts, vm.function exposes
+`tier_copy_fallbacks`, `tier_copy_zero_roots`, `tier_copy_one_root`,
+`tier_copy_two_roots`, and `tier_copy_bulk_roots`. Ready counts distinguish the
+actual copied representation: equal carrier types copy their full root width;
+kind refinement copies the actual destination payload width. Fallback does not
+inspect an unready payload. These are a scoped view of bridge attempts, not a
+count of every storage copy in the VM. Existing opcode/function/source context
+identifies the operations. Core's small-root helper remains sink-independent.
+
+### Rendezvous removal
+
+The deletion-first cleanup removes `stream.admission`; it is no longer emitted.
+`stream.resolve_ready_producer` records the actual inline constructor resolution
+with source and argument index. Existing stream submission/execution/failure and
+ownership links remain. `backend.work_scope` adds
+`work_scope.deferred_constructors` for the corrected construction-versus-callback
+rule in the existing compiler pass. There is no replacement submission-wait hook.
+
+`backend.function` includes `copy.compiled_sites` for copies selected from exact
+carrier/fixed-location and compiler-private source facts. `vm.function` includes
+`compiled_copies` for actual linked/bridge execution of that handler and frame
+Copy/Move and value captures consuming the existing private-slot proof. Argument
+transfers use the compiled call contract directly and remain accounted for by
+the existing call/snapshot/borrow telemetry, not this counter. Pending
+Future forwarding remains a runtime data decision; initialization/type/layout
+proofs are not recomputed by this handler.
+
+`vm.function.jit_initialization_checks_elided` records actual native emitter
+omissions of private fixed-cell scalar/IsNull initialization guards. It is summed
+from compilation statistics, not incremented on each runtime scalar read.
+Pending-value and kind guards are not included in this count.
+
+`compiler.storage.calls.unobserved_initialization_slots` counts private slots whose
+initialization flags have no borrowed-parameter observer. The decision reuses
+the final call/borrow plan. `vm.function.jit_initialization_writes_elided` records
+actual native flag-store omissions, including moved-from clearing and register
+region outputs; it is summed from emitter statistics rather than incremented
+per guest instruction. The corresponding `UnobservedInitialization` bit lives in
+the existing slot storage byte.
+
+`vm.function.compiled_reads` counts GetDatum reads selected
+by the compiled private-temporary fact. It excludes native scalar loads (reported
+by code-generation elision statistics) and generic checked reads. Future payload
+resolution remains shared with the checked path.
+
+`vm.function.refinement_copies` and `refinement_fallbacks` count ordinary
+interpreter Narrow/Convert direct-copy outcomes. A fallback includes pending
+values and conversions requiring representation or semantic work. Native bridge
+execution retains its existing `tier_copy_*` counters; the two families are not
+double-counted. Counters are attached to the executing function and do no atomic
+work when recording is disabled.
+
+Artifact decoding retains section and failure diagnostics but performs no
+compatibility work-hint analysis. The former `compat.work_hints.corrected` path
+is removed; obsolete prototype revisions report a source-recompilation request.

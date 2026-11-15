@@ -19,6 +19,7 @@ internal static class NativeTailChecks
 
     private static NativeProgram Detached(NativeProgram program)
     {
+        program = Msync.Optimization.NativeOptimizer.PlanStorage(program);
         NativeArtifact.Validate(program);
         using MemoryStream stream = new();
         NativeArtifact.Write(program, stream);

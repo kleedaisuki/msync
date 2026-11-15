@@ -6,9 +6,9 @@ namespace Msync.Runtime.Native;
 internal readonly record struct NativeProjectionField(int Layout, NativeFieldLayout Field);
 
 internal readonly record struct NativeExecutionOperand(NativeType? Type, NativeLayout? Layout,
-    NativeFieldLayout Field, NativeProjectionField[]? Projection, Msync.Core.NativeSignature? Signature)
+    NativeFieldLayout Field, NativeProjectionField[]? Projection, Msync.Core.NativeSignature? Signature, bool NeedsLayoutCheck = true)
 {
-    internal static NativeExecutionOperand Link(NativeImage image, NativeInstruction code)
+    internal static NativeExecutionOperand Link(NativeImage image, NativeFunctionCode function, NativeInstruction code)
     {
         NativeType? type = code.Type >= 0 ? image.Type(code.Type) : null;
         NativeLayout? layout = code.Op switch
@@ -23,7 +23,17 @@ internal readonly record struct NativeExecutionOperand(NativeType? Type, NativeL
         NativeProjectionField[]? projection = code.Op == NativeOp.ProjectAddress
             ? image.Program.Projections[code.B].Cases.Select(item => new NativeProjectionField(item.Layout, image.Layout(item.Layout)[item.Field])).ToArray() : null;
         Msync.Core.NativeSignature? signature = code.Op == NativeOp.CallNative && NativeSignatures.TryGet(code.Symbol!, out Msync.Core.NativeSignature? found) ? found : null;
-        return new(type, layout, field, projection, signature);
+        bool needsLayoutCheck = true;
+        if (code.Op is NativeOp.Narrow or NativeOp.Convert && code.A >= 0 && code.Type >= 0)
+        {
+            NativeCodeType src = image.Program.Types[function.Slots[code.A].Type];
+            NativeCodeType dst = image.Program.Types[code.Type];
+            if (src.Pointee < 0 && dst.Pointee < 0
+                && (dst.Layouts is null || (src.Layouts is { } srcLayouts && dst.Layouts is { } dstLayouts
+                    && srcLayouts.All(layoutId => dstLayouts.Contains(layoutId)))))
+                needsLayoutCheck = false;
+        }
+        return new(type, layout, field, projection, signature, needsLayoutCheck);
     }
 
     internal NativeAddress AddressField(NativeAddress address) => address.OffsetBy(Field.Offset, Field.Type);

@@ -4,7 +4,7 @@ internal static partial class LegacyV6NativeSignatures
 {
     private static void RegisterVectorStorage(IDictionary<string, LegacyV6NativeSignature> result)
     {
-        TypeRef vector = new((TypeKind)LegacyV6Reader.LegacyStorageMask), range = new(TypeKind.Range);
+        TypeRef vector = new((TypeKind)(ushort)TypeKind.Storage), range = new(TypeKind.Range);
         void Vector(string operation, TypeRef output, params TypeRef[] parameters) => Add(result, "storage.vector_" + operation, output, parameters);
         Vector("new", vector, range); Vector("empty", vector, TypeRef.Type); Vector("empty_like", vector, vector);
         Vector("get", TypeRef.Any, vector, TypeRef.Number); Vector("set", TypeRef.Null, vector, TypeRef.Number, TypeRef.Any);

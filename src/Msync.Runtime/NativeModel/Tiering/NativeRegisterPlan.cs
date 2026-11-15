@@ -2,9 +2,10 @@ using Msync.Core.Native;
 
 namespace Msync.Runtime.Native;
 
-internal sealed class NativeRegisterValue(int slot, NativeKind kind, int start)
+internal sealed class NativeRegisterValue(int slot, NativeKind kind, int start, bool unsigned = false)
 {
     internal int Slot { get; } = slot;
+    internal bool Unsigned { get; } = unsigned;
     internal NativeKind Kind { get; } = kind;
     internal int Start { get; } = start;
     internal int End { get; set; } = start;
@@ -12,7 +13,7 @@ internal sealed class NativeRegisterValue(int slot, NativeKind kind, int start)
     internal int Spill { get; set; } = -1;
 }
 
-internal readonly record struct NativeRegisterOperation(int Pc, NativeFastOperation Op, int Result, int A, int B);
+internal readonly record struct NativeRegisterOperation(int Pc, NativeFastOperation Op, int Result, int A, int B, NativeNumberForm Form = NativeNumberForm.Float64);
 
 internal sealed class NativeRegisterRegion
 {
@@ -70,7 +71,8 @@ internal static class NativeRegisterPlan
 
     private static bool Eligible(NativeExecutionFunction function, NativeFastOperation[] operations, int pc) =>
         operations[pc] is not (NativeFastOperation.Bridge or NativeFastOperation.Nop or NativeFastOperation.Jump
-            or NativeFastOperation.Branch or NativeFastOperation.NumberReturn or NativeFastOperation.BoolReturn)
+            or NativeFastOperation.Branch or NativeFastOperation.NumberReturn or NativeFastOperation.BoolReturn
+            or NativeFastOperation.NumberMove or NativeFastOperation.BoolMove or NativeFastOperation.IsNull)
         && function.CanWriteRaw(function.Instructions[pc].Result);
 
     private static NativeKind ResultKind(NativeFastOperation op) =>
@@ -95,12 +97,12 @@ internal static class NativeRegisterPlan
         Dictionary<int, int> current = [];
         HashSet<int> written = [];
         List<int> inputs = [];
-        int Read(int slot, NativeKind kind)
+        int Read(int slot, NativeKind kind, bool unsigned)
         {
             if (!current.TryGetValue(slot, out int value))
             {
                 value = values.Count;
-                values.Add(new(slot, kind, -1));
+                values.Add(new(slot, kind, -1, unsigned));
                 current.Add(slot, value);
                 inputs.Add(value);
             }
@@ -112,14 +114,15 @@ internal static class NativeRegisterPlan
             NativeExecutionInstruction instruction = function.Instructions[pc];
             NativeFastOperation op = operations[pc];
             NativeKind inputKind = op.ExpectsBoolInputs() ? NativeKind.Bool : NativeKind.Number;
+            NativeNumberForm form = function.NumberForm(pc);
             int a = op is NativeFastOperation.NumberConstant or NativeFastOperation.BoolConstant ? -1
-                : Read(instruction.A, inputKind);
-            int b = op.TakesSecondOperand() ? Read(instruction.B, inputKind) : -1;
+                : Read(instruction.A, inputKind, form.HasFlag(NativeNumberForm.UnsignedA));
+            int b = op.TakesSecondOperand() ? Read(instruction.B, inputKind, form.HasFlag(NativeNumberForm.UnsignedB)) : -1;
             int result = values.Count;
-            values.Add(new(instruction.Result, op.IsBoolResult() ? NativeKind.Bool : NativeKind.Number, code.Count));
+            values.Add(new(instruction.Result, op.IsBoolResult() ? NativeKind.Bool : NativeKind.Number, code.Count, form.HasFlag(NativeNumberForm.UnsignedResult)));
             current[instruction.Result] = result;
             written.Add(instruction.Result);
-            code.Add(new(pc, op, result, a, b));
+            code.Add(new(pc, op, result, a, b, form));
         }
         int[] outputs = written.Where(live.Contains).Select(slot => current[slot]).Order().ToArray();
         foreach (int output in outputs) values[output].End = code.Count;

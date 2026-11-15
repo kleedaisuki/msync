@@ -1,36 +1,57 @@
+using System.Runtime.InteropServices;
 using Msync.Core.Native;
 
 namespace Msync.Runtime.Native;
 
 internal readonly struct NativeArguments
 {
-    private readonly IReadOnlyList<NativeDatum>? values;
-    private readonly NativeFrame? frame;
-    private readonly NativeAllocation? storage;
+    // Frame views come only from Snapshot=false call plans; storage views are fully written tail snapshots.
+    private enum Kind : byte { Values, Frame, Storage }
+
+    // Only GC references overlap; the source kind is kept outside the union.
+    [StructLayout(LayoutKind.Explicit)]
+    private readonly struct Source
+    {
+        [FieldOffset(0)] internal readonly IReadOnlyList<NativeDatum>? Values;
+        [FieldOffset(0)] internal readonly NativeFrame? Frame;
+        [FieldOffset(0)] internal readonly NativeAllocation? Storage;
+
+        internal Source(IReadOnlyList<NativeDatum> values) { this = default; Values = values; }
+        internal Source(NativeFrame frame) { this = default; Frame = frame; }
+        internal Source(NativeAllocation storage) { this = default; Storage = storage; }
+    }
+
+    private readonly Source source;
+    private readonly Kind kind;
     private readonly IReadOnlyList<int>? slots;
-    private readonly bool[]? borrowed;
+    private readonly IReadOnlyList<bool>? borrowed;
+    private readonly int count;
+    private readonly bool reusableSnapshot;
 
     internal NativeArguments(IReadOnlyList<NativeDatum> values, bool snapshot = false) =>
-        (this.values, frame, storage, slots, borrowed, IsSnapshot, BorrowedCount) = (values, null, null, null, null, snapshot, 0);
-    internal NativeArguments(NativeFrame frame, IReadOnlyList<int> slots, bool[]? borrowed, int borrowedCount) =>
-        (values, this.frame, storage, this.slots, this.borrowed, IsSnapshot, BorrowedCount) = (null, frame, null, slots, borrowed, false, borrowedCount);
-    internal NativeArguments(NativeAllocation storage, bool[] borrowed, int borrowedCount) =>
-        (values, frame, this.storage, slots, this.borrowed, IsSnapshot, BorrowedCount) = (null, null, storage, null, borrowed, false, borrowedCount);
-    internal int Count => storage?.Layout.Count ?? slots?.Count ?? values?.Count ?? 0;
-    internal bool IsFrameView => frame is not null && Count != 0;
+        (source, kind, count, IsSnapshot) = (new(values), Kind.Values, values.Count, snapshot);
+    internal NativeArguments(NativeDatum[] values, int count, bool allocated) =>
+        (source, kind, this.count, IsSnapshot, SnapshotAllocated, reusableSnapshot) = (new(values), Kind.Values, count, true, allocated, true);
+    internal NativeArguments(NativeFrame frame, IReadOnlyList<int> slots, IReadOnlyList<bool>? borrowed, int borrowedCount) =>
+        (source, kind, count, this.slots, this.borrowed, BorrowedCount) = (new(frame), Kind.Frame, slots.Count, slots, borrowed, borrowedCount);
+    internal NativeArguments(NativeAllocation storage, IReadOnlyList<bool> borrowed, int borrowedCount) =>
+        (source, kind, count, this.borrowed, BorrowedCount) = (new(storage), Kind.Storage, storage.Layout.Count, borrowed, borrowedCount);
+    internal int Count => count;
+    internal NativeAllocation? Storage => kind == Kind.Storage ? source.Storage : null;
+    internal bool IsFrameView => kind == Kind.Frame && count != 0;
     internal bool IsSnapshot { get; }
+    internal bool SnapshotAllocated { get; }
     internal int BorrowedCount { get; }
-    internal NativeDatum Read(int index, NativeMemory memory) => values is not null ? values[index]
-        : memory.Read(Location(index));
-    private NativeAddress Location(int index) => frame is not null ? frame.Location(slots![index]) : storage!.Field(index);
+    internal NativeDatum Read(int index, NativeMemory memory) => kind == Kind.Values ? source.Values![index]
+        : memory.ReadCompiled(Location(index));
+    private NativeAddress Location(int index) => kind == Kind.Frame ? source.Frame!.Location(slots![index]) : source.Storage!.Field(index);
 
     internal void Initialize(NativeFrame destination, int parameter)
     {
         int target = destination.CaptureCount + parameter;
-        if (values is not null) { destination.SetDatum(target, values[parameter]); return; }
-        NativeAddress source = Location(parameter);
-        if (borrowed?[parameter] == true) destination.BorrowParameter(target, source);
-        else destination.CopyArgument(source, target);
+        if (kind == Kind.Values) { destination.SetDatum(target, source.Values![parameter]); return; }
+        if (borrowed?[parameter] == true) destination.BorrowParameter(target, Location(parameter));
+        else destination.CopyArgument(Location(parameter), target);
     }
 
     internal void CopyTo(NativeAllocation destination, NativeMemory memory)
@@ -38,43 +59,17 @@ internal readonly struct NativeArguments
         for (int index = 0; index < Count; index++)
         {
             NativeAddress target = destination.Field(index);
-            if (values is not null) memory.Write(target, values[index]);
-            else memory.Copy(Location(index), target);
+            if (kind == Kind.Values) memory.Write(target, source.Values![index]);
+            else memory.CopyCompiled(Location(index), target);
         }
     }
 
     internal IReadOnlyList<NativeDatum> Materialize(NativeMemory memory)
     {
-        if (values is not null) return values;
+        if (kind == Kind.Values && source.Values is { } values && !reusableSnapshot && values.Count == count) return values;
         if (Count == 0) return [];
         NativeDatum[] snapshot = new NativeDatum[Count];
         for (int index = 0; index < snapshot.Length; index++) snapshot[index] = Read(index, memory);
         return snapshot;
-    }
-}
-
-internal sealed class NativeCallSite(NativeImage image, NativeFunctionCode caller, NativeInstruction call, bool[] privateSlots)
-{
-    private readonly IReadOnlyList<int> inputs = call.Inputs ?? [];
-    private readonly bool stable = (call.Inputs ?? []).All(slot => privateSlots[slot]);
-    private readonly (bool[]? Mask, int Count) borrowing = Borrowed(image, caller, call);
-
-    internal NativeArguments Arguments(NativeFrame frame)
-    {
-        if (stable) return new(frame, inputs, borrowing.Mask, borrowing.Count);
-        NativeDatum[] snapshot = new NativeDatum[inputs.Count];
-        for (int index = 0; index < snapshot.Length; index++) snapshot[index] = frame.GetDatum(inputs[index]);
-        return new(snapshot, snapshot: true);
-    }
-
-    private static (bool[]? Mask, int Count) Borrowed(NativeImage image, NativeFunctionCode caller, NativeInstruction call)
-    {
-        if (call.B < 0 || call.C >= 0) return (null, 0);
-        NativeFunctionCode callee = image.Program.Functions[call.B];
-        FrameAllocation target = image.Frame(call.B);
-        IReadOnlyList<int> inputs = call.Inputs ?? [];
-        bool[] mask = inputs.Select((slot, index) => target.ParameterBorrows[index]
-            && image.Type(caller.Slots[slot].Type).Equals(image.Type(callee.Slots[callee.CaptureCount + index].Type))).ToArray();
-        return (mask, mask.Count(value => value));
     }
 }

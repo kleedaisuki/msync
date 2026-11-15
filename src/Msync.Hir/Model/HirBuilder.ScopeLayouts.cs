@@ -27,6 +27,18 @@ public sealed partial class HirBuilder
 
     public int InternScopeLayout(HirScopeLayout layout)
     {
+        var indexByLayout = EnsureScopeLayoutsIndexed();
+        if (indexByLayout.TryGetValue(layout, out int found)) return found;
+        int result = ScopeLayouts.Count;
+        ScopeLayouts.Add(layout);
+        indexByLayout.Add(layout, result);
+        RecordScopeLayout(layout, result);
+        indexedScopeLayouts++;
+        return result;
+    }
+
+    internal Dictionary<HirScopeLayout, int> EnsureScopeLayoutsIndexed()
+    {
         var indexByLayout = scopeLayoutIndex ??= new(ScopeLayoutComparer.Instance);
         // Binding can append open rows directly. Index each such row once,
         // retaining its original ID and the first canonical structural match.
@@ -37,14 +49,11 @@ public sealed partial class HirBuilder
             var existing = ScopeLayouts[index];
             if (indexByLayout.TryAdd(existing, index)) RecordScopeLayout(existing, index);
         }
-        if (indexByLayout.TryGetValue(layout, out int found)) return found;
-        int result = ScopeLayouts.Count;
-        ScopeLayouts.Add(layout);
-        indexByLayout.Add(layout, result);
-        RecordScopeLayout(layout, result);
-        indexedScopeLayouts++;
-        return result;
+        return indexByLayout;
     }
+
+    internal bool TryFindScopeLayout(HirScopeLayout layout, out int found) =>
+        EnsureScopeLayoutsIndexed().TryGetValue(layout, out found);
 
     private void RecordScopeLayout(HirScopeLayout layout, int index)
     {

@@ -4,10 +4,37 @@ namespace Msync.Runtime.Native;
 
 public sealed partial class NativeInterpreter
 {
-    private sealed record TailPlan(IReadOnlyList<int> Instructions);
+    internal sealed record TailPlan(IReadOnlyList<int> Instructions);
 
-    private sealed record TailInvocation(int Target, NativeEnvironment? Environment,
-        NativeArguments Arguments, int Pc, Activation Caller, NativeInstruction Instruction, TailPlan Plan);
+    internal readonly record struct TailInvocation(int Target, NativeEnvironment? Environment,
+        NativeArguments Arguments, int Pc, NativeFunctionCode Caller, NativeInstruction Instruction, TailPlan Plan);
+
+    private void RunDirectTail(Activation caller, int target, NativeEnvironment? environment,
+        NativeArguments arguments, int pc, TailPlan plan, CancellationToken token)
+    {
+        if (profile is not null) caller.Work.Counters.GuestLoopHandoff();
+        NativeDatum result = RunFunction(target, environment, arguments, token);
+        memory.Write(caller.ReturnDestination, result);
+        if (profile is null) return;
+        caller.Work.Counters.DirectReturn(scalar: false);
+        new TailReturn(caller.Work.Counters, caller.Function, pc, plan).Complete();
+    }
+
+    private TailInvocation? CompleteActivation(NativeImage selected, Activation activation, NativeArguments arguments)
+    {
+        TailInvocation? next = activation.Tail;
+        if (next is { } tail && tail.Arguments.Count != 0)
+        {
+            NativeExecutionFunction target = ExecutionFunction(selected, tail.Target);
+            NativeArguments snapshot = target.CopyTailArguments(tail.Arguments, memory, out bool allocated);
+            activation.Work.Counters.TailArguments(tail.Arguments.Count, allocated);
+            next = tail with { Arguments = snapshot };
+        }
+        // Snapshot all next arguments before releasing either the caller frame
+        // or its incoming tail buffer: self-tail calls may permute borrowed slots.
+        ReleaseActivation(activation, arguments);
+        return next;
+    }
 
     private readonly record struct TailReturn(RuntimeProfile.NativeFrameCounters Counters,
         NativeFunctionCode Function, int Pc, TailPlan Plan)
@@ -30,7 +57,7 @@ public sealed partial class NativeInterpreter
     {
         NativeFunctionCode function = activation.Function;
         if (function.Instructions[pc] is not { Op: NativeOp.Call, Result: >= 0 }) return null;
-        if (activation.Work.HasWork || activation.Regions is { Count: > 0 }
+        if (activation.OwnsWork && activation.Work.HasWork || activation.Regions is { Count: > 0 }
             || activation.HasActiveIterators) return null;
         if (activation.FunctionIndex == image.Program.EntryPoint && image.Program.PreserveLocals) return null;
         Generation selected = activeGeneration.Value ?? generation;

@@ -23,20 +23,7 @@ internal static class NativeCommandPipeline
 
     internal static NativeProgram Read(Stream stream) => Read(stream, null);
 
-    private static NativeProgram Read(Stream stream, CompilationTrace? trace)
-    {
-        long start = stream.Position;
-        Span<byte> magic = stackalloc byte[8];
-        int count = stream.ReadAtLeast(magic, magic.Length, throwOnEndOfStream: false);
-        stream.Position = start;
-        if (count != magic.Length || !LegacyV6Reader.HasMagic(magic)) return NativeArtifact.Read(stream, trace);
-        NativeProgram program = trace?.Detail is { } detail
-            ? detail.MeasureDetailed("compiler.artifact.import_v6", stream,
-                static input => NativeLegacyV6Importer.Import(LegacyV6Reader.Read(input)), size: CompilationSize.Of)
-            : NativeLegacyV6Importer.Import(LegacyV6Reader.Read(stream));
-        NativeArtifact.Validate(program, trace);
-        return program;
-    }
+    private static NativeProgram Read(Stream stream, CompilationTrace? trace) => NativeArtifact.Read(stream, trace);
 
     private static NativeProgram ReadFile(string file, CompilationTrace? trace = null)
     {
@@ -99,7 +86,7 @@ internal static class NativeCommandPipeline
         using IDisposable? owner = prepare is null ? null : timeline?.Attach(prepare.Id);
         if (timeline is not null) options = options with { Timeline = timeline };
         return prepare is null ? NativePreparation.Prepare(program, context, options, token)
-            : prepare.Measure((program, context, options, token), static state => NativePreparation.Prepare(state.program, state.context, state.options, state.token));
+            : prepare.Measure((program, context, options, token, trace: prepare.CompilerTrace), static state => NativePreparation.Prepare(state.program, state.context, state.options, state.token, state.trace));
     }
 
     private static BindingContext CaptureContext(ExecutionOptions options, string? sourceFile) =>

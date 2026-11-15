@@ -5,11 +5,11 @@ namespace Msync.Core.Native;
 public static partial class NativeArtifact
 {
     private const int CompactMarker = unchecked((int)0x80004952);
-    private const byte CompactRevision = 1;
+    private const byte CompactRevision = 4;
 
     private enum CompactSection : byte
     {
-        Header = 1, Types, Layouts, Projections, Statics, Constants, Functions, Debug, Code, Allocations, Plans
+        Header = 1, Types, Layouts, Projections, Statics, Constants, Functions, Debug, Code, Allocations, Plans, Backend
     }
 
     private sealed class CompactPool

@@ -47,12 +47,9 @@ public sealed partial class NativeInterpreter
         Combine(first, second,
             (left, right) => BinaryValue((NativeBinary)instruction.Immediate, left, right, origin), instruction.Source, resultType);
 
-    private NativeDatum ConvertDatum(NativeDatum input, NativeInstruction instruction)
-    {
-        NativeRuntimeContext origin = context.CaptureDirectory();
-        return input.IsReady ? new(image.Convert(input.Value, instruction.Type, instruction.Immediate != 0, origin))
-            : PendingConvert(input, instruction, origin);
-    }
+    private NativeDatum ConvertDatum(NativeDatum input, NativeInstruction instruction) => input.IsReady
+        ? new(image.Convert(input.Value, instruction.Type, instruction.Immediate != 0, context))
+        : PendingConvert(input, instruction, context.CaptureDirectory());
 
     private NativeDatum PendingConvert(NativeDatum input, NativeInstruction instruction, NativeRuntimeContext origin) =>
         Track(input.Map(value => image.Convert(value, instruction.Type, instruction.Immediate != 0, origin), instruction.Source, image.SourceType(instruction.Type), image.Type(instruction.Type)));

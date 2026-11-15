@@ -6,7 +6,7 @@ namespace Msync.Core.Native;
 public static partial class NativeArtifact
 {
     private static ReadOnlySpan<byte> Magic => "MSYNCIR\0"u8;
-    public const ushort FormatVersion = 1;
+    public const ushort FormatVersion = 2;
     public const string LanguageVersion = LanguageContract.Version;
 
     public static bool HasMagic(ReadOnlySpan<byte> bytes) => bytes.StartsWith(Magic);
@@ -44,13 +44,12 @@ public static partial class NativeArtifact
                 throw new MsyncException("Not an msync native IR artifact");
             ushort version = reader.ReadUInt16();
             if (version != FormatVersion)
-                throw new MsyncException($"Unsupported native IR format {version}; expected {FormatVersion}");
+                throw new MsyncException($"Unsupported native IR format {version}; expected {FormatVersion}. Recompile the source with msync 0.9.0");
             int encoding = reader.ReadInt32();
-            NativeProgram program = encoding == CompactMarker ? ReadCompact(reader, trace) : ReadUnpooledCompatible(reader, encoding);
-            Validate(program, trace);
+            if (encoding != CompactMarker) throw new MsyncException("Unsupported native IR encoding; recompile the source with msync 0.9.0");
+            NativeProgram program = ReadCompact(reader, trace);
             trace?.Metric("artifact.bytes", input.Position - start);
-            return trace is null ? NormalizeAllocationHints(program)
-                : trace.MeasureDetailed("compiler.artifact.allocation_hints", program, NormalizeAllocationHints);
+            return program;
         }
         catch (Exception error) when (error is MsyncException or IOException or ArgumentException or OverflowException)
         {
@@ -59,72 +58,9 @@ public static partial class NativeArtifact
         }
     }
 
-    private static NativeProgram ReadUnpooledCompatible(BinaryReader reader, int languageLength)
-    {
-        // Early format 1 added a per-function reflection field without an encoding revision.
-        // Only that old payload needs layout detection; compact encodings are explicitly versioned.
-        if (!reader.BaseStream.CanSeek)
-        {
-            using MemoryStream buffered = new();
-            reader.BaseStream.CopyTo(buffered);
-            buffered.Position = 0;
-            using BinaryReader replay = new(buffered, Encoding.UTF8, leaveOpen: true);
-            return ReadUnpooledCompatible(replay, languageLength);
-        }
-        long start = reader.BaseStream.Position;
-        try { return ReadUnpooled(reader, languageLength, reflection: true); }
-        catch (Exception error) when (error is MsyncException or IOException or ArgumentException or OverflowException)
-        {
-            reader.BaseStream.Position = start;
-            try { return ReadUnpooled(reader, languageLength, reflection: false); }
-            catch (Exception fallback) when (fallback is MsyncException or IOException or ArgumentException or OverflowException)
-            { System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw(); throw; }
-        }
-    }
-
-    private static NativeProgram ReadUnpooled(BinaryReader reader, int languageLength, bool reflection)
-    {
-        string language = ReadText(reader, languageLength);
-        if (language != LanguageVersion)
-            throw new MsyncException($"Unsupported native IR language semantics '{language}'; expected '{LanguageVersion}'");
-        ModuleSemantics semantics = (ModuleSemantics)reader.ReadByte();
-        ArtifactStage stage = (ArtifactStage)reader.ReadByte();
-        int optimization = reader.ReadInt32();
-        int entry = reader.ReadInt32();
-        bool preserveLocals = reader.ReadBoolean();
-        BindingContext? context = reader.ReadBoolean()
-            ? new(ReadText(reader), ReadText(reader), ReadOptional(reader)) : null;
-        NativeCodeType[] types = ReadArray(reader, value => new NativeCodeType(
-            (TypeKind)value.ReadUInt16(), value.ReadInt32(), ReadOptionalArray(value, item => item.ReadInt32()), value.ReadInt32()));
-        NativeCodeLayout[] layouts = ReadArray(reader, value => new NativeCodeLayout(
-            ReadArray(value, field => new NativeCodeField(ReadText(field), field.ReadInt32()))));
-        NativeProjection[] projections = ReadArray(reader, value => new NativeProjection(
-            ReadArray(value, item => new NativeProjectionCase(item.ReadInt32(), item.ReadInt32()))));
-        NativeStatic[] statics = ReadArray(reader, value => new NativeStatic(value.ReadInt32(), value.ReadInt32()));
-        NativeConstant[] constants = ReadArray(reader, ReadConstant);
-        NativeFunctionCode[] functions = ReadArray(reader, value => ReadFunction(value, reflection));
-        NativeAllocationPlan[] allocations = ReadArray(reader, value => new NativeAllocationPlan(
-            value.ReadInt32(), value.ReadInt32(), (NativeAllocationPlacement)value.ReadByte(), value.ReadInt32()));
-        NativeExecutionPlan[] plans = ReadArray(reader, ReadPlan);
-        NativeProgram program = new(constants, functions, types, layouts, entry)
-        {
-            Projections = projections,
-            Statics = statics,
-            Allocations = allocations,
-            Context = context,
-            Stage = stage,
-            Semantics = semantics,
-            OptimizationLevel = optimization,
-            PreserveLocals = preserveLocals,
-            ExecutionPlans = plans.Length == 0 ? null : plans
-        };
-        return program;
-    }
-
     public static void Write(NativeProgram program, string path)
     {
         ValidateExport(program);
-        Validate(program);
         WritePath(program, path);
     }
 
@@ -139,7 +75,6 @@ public static partial class NativeArtifact
     public static void Write(NativeProgram program, Stream stream)
     {
         ValidateExport(program);
-        Validate(program);
         Encode(program, stream);
     }
 
@@ -155,29 +90,6 @@ public static partial class NativeArtifact
     {
         if (program.SessionRoots is { Count: > 0 } || program.SessionDispatches is { Count: > 0 })
             throw new MsyncException("Native IR with live session roots or open session call signatures cannot be exported. Compile a self-contained source instead.");
-    }
-
-    private static NativeProgram NormalizeAllocationHints(NativeProgram program)
-    {
-        if (!program.Allocations.Any(plan => plan.Placement != NativeAllocationPlacement.LogicalHeap)) return program;
-        Dictionary<int, IReadOnlySet<int>> safe = [];
-        NativeAddressAnalysis.ProgramFacts facts = new(program);
-        NativeAllocationPlan[] plans = new NativeAllocationPlan[program.Allocations.Count];
-        for (int index = 0; index < plans.Length; index++)
-        {
-            NativeAllocationPlan plan = program.Allocations[index];
-            if (plan.Placement == NativeAllocationPlacement.Frame)
-            {
-                if (!safe.TryGetValue(plan.Function, out IReadOnlySet<int>? proven))
-                { proven = NativeAllocationSafety.FrameSafe(program, plan.Function, facts); safe.Add(plan.Function, proven); }
-                if (!proven.Contains(plan.Instruction)) plan = plan with { Placement = NativeAllocationPlacement.LogicalHeap };
-            }
-            else if (plan.Placement == NativeAllocationPlacement.Eliminated
-                && program.Functions[plan.Function].Instructions[plan.Instruction].Op == NativeOp.Allocate)
-                plan = plan with { Placement = NativeAllocationPlacement.LogicalHeap };
-            plans[index] = plan;
-        }
-        return program with { Allocations = plans };
     }
 
     private static void WritePath(NativeProgram program, string path, CompilationTrace? trace = null)
@@ -200,26 +112,6 @@ public static partial class NativeArtifact
         trace.Run("compiler.artifact.encode", (program, stream, trace),
             static state => EncodeCompact(state.program, state.stream, state.trace));
     }
-
-    private static NativeFunctionCode ReadFunction(BinaryReader reader, bool includesReflection)
-    {
-        string name = ReadText(reader);
-        int parameters = reader.ReadInt32(), captures = reader.ReadInt32(), iterators = reader.ReadInt32();
-        bool template = reader.ReadBoolean();
-        NativeSlot[] slots = ReadArray(reader, value => new NativeSlot(value.ReadInt32(),
-            (NativeSlotRole)value.ReadByte(), value.ReadBoolean(), ReadOptional(value)));
-        NativeSignature signature = new(ReadArray(reader, value => value.ReadInt32()), reader.ReadInt32(),
-            ReadArray(reader, value => new NativeCaptureContract(value.ReadInt32(), (NativeCaptureMode)value.ReadByte())));
-        NativeInstruction[] instructions = ReadArray(reader, ReadInstruction);
-        NativeFunctionReflectionSignature? reflection = includesReflection && reader.ReadBoolean()
-            ? new(ReadArray(reader, ReadType), ReadType(reader)) : null;
-        return new(name, slots, instructions, signature, parameters, captures, iterators, template)
-        { ReflectionSignature = reflection };
-    }
-
-    private static NativeInstruction ReadInstruction(BinaryReader reader) => new((NativeOp)reader.ReadByte(),
-        reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32(),
-        reader.ReadInt64(), ReadOptional(reader), ReadOptionalArray(reader, value => value.ReadInt32()), ReadSpan(reader));
 
     private static NativeConstant ReadConstant(BinaryReader reader) => ReadConstant(reader, (NativeKind)reader.ReadByte());
 

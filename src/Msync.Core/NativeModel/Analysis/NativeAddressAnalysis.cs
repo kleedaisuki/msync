@@ -67,6 +67,16 @@ internal sealed partial class NativeAddressAnalysis
             return changed;
         }
 
+        public readonly bool SetEquals(IEnumerable<T> other)
+        {
+            if (count == 0) return !other.Any();
+            HashSet<T> expected = new(other);
+            if (expected.Count != count) return false;
+            foreach (T item in expected)
+                if (!Contains(item)) return false;
+            return true;
+        }
+
         public readonly Enumerator GetEnumerator() => new(items, count);
         readonly IEnumerator<T> IEnumerable<T>.GetEnumerator() => count == 0 ? Enumerable.Empty<T>().GetEnumerator() : GetEnumerator();
         readonly System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => ((IEnumerable<T>)this).GetEnumerator();
@@ -148,19 +158,27 @@ internal sealed partial class NativeAddressAnalysis
         internal bool Unknown => Top || HasUnresolvedAddress || foreign.Count > 0;
         internal bool MayAliasCurrentFrame => MayAliasFrame([], allowFormal: true);
         internal bool MayAliasCurrentFrameAllocation => MayAliasFrame([], allowFormal: false);
-        private bool MayAliasFrame(HashSet<Points> active, bool allowFormal)
+        internal bool MayAliasFrameSlot(HashSet<int>? bound, NativeFunctionCode function, bool frameEscaped)
+            => MayAliasFrame([], allowFormal: frameEscaped, allowExternal: frameEscaped, bound, function);
+        private bool MayAliasFrame(HashSet<Points> active, bool allowFormal,
+            bool allowExternal = true, HashSet<int>? bound = null, NativeFunctionCode? function = null)
         {
             if (!active.Add(this)) return false;
             if (Top) return true;
             for (int i = 0; i < targets.Count; i++)
-                if (targets[i].Allocation < 0) return true;
+            {
+                int slot = targets[i].Slot;
+                if (targets[i].Allocation < 0 && (bound is null || (!bound.Contains(slot) && function!.Slots[slot].Role != NativeSlotRole.Capture)))
+                    return true;
+            }
+            if (bound is not null && allowExternal && foreign.Count > 0) return true;
             if (symbolic is { } b)
             {
-                if (b.Applications.Count > 0 || b.Adaptations.Count > 0 || b.Reads.Count > 0
-                    || b.ElementSources.Count > 0 || (allowFormal && b.Formals.Count > 0))
+                if (allowExternal && (b.Applications.Count > 0 || b.Adaptations.Count > 0 || b.Reads.Count > 0
+                    || b.ElementSources.Count > 0 || (allowFormal && b.Formals.Count > 0)))
                     return true;
                 for (int i = 0; i < b.Projections.Count; i++)
-                    if (b.Projections[i].Source.MayAliasFrame(active, allowFormal)) return true;
+                    if (b.Projections[i].Source.MayAliasFrame(active, allowFormal, allowExternal, bound, function)) return true;
             }
             active.Remove(this);
             return false;
@@ -210,6 +228,16 @@ internal sealed partial class NativeAddressAnalysis
         internal bool UnknownAliases() { bool changed = !Top; Top = true; return changed; }
         internal bool UnknownLayout() { bool changed = !LayoutUnknown; LayoutUnknown = true; return changed; }
         internal bool UnknownElements() { bool changed = !ElementsUnknown; ElementsUnknown = true; return changed; }
+        internal long MonotonicStamp()
+        {
+            long stamp = (Top ? 1L : 0L) | (LayoutUnknown ? 2L : 0L) | (ElementsUnknown ? 4L : 0L);
+            stamp += ((long)targets.Count + foreign.Count + callables.Count + elements.Count + retained.Count + layouts.Count) << 3;
+            if (symbolic is { } s)
+                stamp += ((long)s.Formals.Count + s.LayoutFormals.Count + s.Applications.Count + s.LayoutApplications.Count
+                    + s.Adaptations.Count + s.Projections.Count + s.Reads.Count + s.LayoutReads.Count
+                    + s.ElementSources.Count + s.LayoutElements.Count + s.RangeSources.Count) << 3;
+            return stamp;
+        }
         internal bool Merge(Points other, bool layout = true, bool local = true)
         {
             if (ReferenceEquals(this, other)) return false;
@@ -243,7 +271,7 @@ internal sealed partial class NativeAddressAnalysis
         }
     }
 
-    private readonly NativeProgram program;
+    private NativeProgram program => owner.Program;
     private readonly NativeFunctionCode function;
     private readonly ProgramFacts owner;
     private readonly int functionIndex;
@@ -252,11 +280,15 @@ internal sealed partial class NativeAddressAnalysis
     private readonly Points[] values;
     private readonly Points[] bindings;
     private readonly Points[] cellWrites;
+    private readonly bool[] addressSlots;
+    private readonly bool[] hasCellWrite;
     private readonly Points?[] nodes;
     private readonly int[] escapingSlots;
     private readonly int[] sessionRoots;
     private readonly HashSet<NativeAddressAnalysis> callers = [];
     private bool queued;
+    private long stateVersion;
+    private long writeEpoch;
     internal long SummaryVersion { get; private set; }
     private Points Node(int id) => nodes[id] ??= new();
     private Points? NodeIfCreated(int id) => nodes[id];
@@ -275,7 +307,7 @@ internal sealed partial class NativeAddressAnalysis
 
     private NativeAddressAnalysis(NativeProgram program, NativeFunctionCode function, ProgramFacts facts, int? index = null)
     {
-        this.program = program; this.function = function;
+        this.function = function;
         owner = facts;
         functionIndex = index ?? Enumerable.Range(0, program.Functions.Count).First(candidate => ReferenceEquals(program.Functions[candidate], function)
             || program.Functions[candidate] == function);
@@ -287,6 +319,9 @@ internal sealed partial class NativeAddressAnalysis
         values = Enumerable.Range(0, function.Slots.Count).Select(_ => new Points()).ToArray();
         bindings = Enumerable.Range(0, function.Slots.Count).Select(_ => new Points()).ToArray();
         cellWrites = Enumerable.Range(0, function.Slots.Count).Select(_ => new Points()).ToArray();
+        addressSlots = new bool[function.Slots.Count];
+        for (int slot = 0; slot < addressSlots.Length; slot++) addressSlots[slot] = ComputeAddressType(slot);
+        hasCellWrite = new bool[function.Slots.Count];
         nodes = new Points?[2 * function.Slots.Count + function.Instructions.Count];
         for (int slot = 0; slot < values.Length; slot++)
             if (function.Slots[slot].Role == NativeSlotRole.Capture
@@ -295,7 +330,7 @@ internal sealed partial class NativeAddressAnalysis
             else Node(values.Length + slot).Targets.Add(new(-1, slot));
         for (int slot = 0; slot < values.Length; slot++)
         {
-            if (!AddressType(slot) || function.Slots[slot].Role is not (NativeSlotRole.Parameter or NativeSlotRole.Capture)) continue;
+            if (!addressSlots[slot] || function.Slots[slot].Role is not (NativeSlotRole.Parameter or NativeSlotRole.Capture)) continue;
             Node(slot).MutFormals.Add(function.Slots[slot].Role == NativeSlotRole.Parameter
                 ? new(FormalKind.Argument, slot - function.CaptureCount)
                 : new(function.Signature.Captures[slot].Mode == NativeCaptureMode.Location ? FormalKind.CaptureContents : FormalKind.CaptureValue, slot));
@@ -326,19 +361,39 @@ internal sealed partial class NativeAddressAnalysis
         {
             NativeInstruction instruction = function.Instructions[pc];
             if (NativeInstructionFacts.EscapingUse(instruction))
-                foreach (int source in NativeInstructionFacts.ValueReads(instruction))
-                    if (AddressType(source)) changed |= escaped.Merge(Input(pc, source));
-            changed |= Observe(pc, instruction);
+            {
+                NativeOperands fields = NativeInstructionFacts.ValueOperands(instruction);
+                if ((fields & NativeOperands.A) != 0 && instruction.A >= 0 && AddressType(instruction.A))
+                    changed |= escaped.Merge(Input(pc, instruction.A));
+                if ((fields & NativeOperands.B) != 0 && instruction.B >= 0 && AddressType(instruction.B))
+                    changed |= escaped.Merge(Input(pc, instruction.B));
+                if ((fields & NativeOperands.C) != 0 && instruction.C >= 0 && AddressType(instruction.C))
+                    changed |= escaped.Merge(Input(pc, instruction.C));
+                if (instruction.Inputs is { } insInputs)
+                    for (int i = 0; i < insInputs.Count; i++)
+                    {
+                        int source = insInputs[i];
+                        if (source >= 0 && AddressType(source)) changed |= escaped.Merge(Input(pc, source));
+                    }
+            }
+            if (Observe(pc, instruction)) { changed = true; writeEpoch++; }
             int defined = instruction.Result >= 0 ? instruction.Result : instruction.Op == NativeOp.BindLocation ? instruction.A : -1;
             if (defined >= 0 && AddressType(defined))
             {
                 Points defNode = Node(Flow.Definition(pc));
-                changed |= values[defined].Merge(defNode);
-                changed |= Write(Input(pc, defined, location: true), defNode, function.Slots[defined].Type, defined);
+                if (values[defined].Merge(defNode)) { changed = true; writeEpoch++; }
+                IReadOnlyList<int> locs = Flow.Locations(pc, defined);
+                if (locs.Count != 1 || locs[0] != values.Length + defined || !IsPureOwnSlot(NodeIfCreated(locs[0]), defined))
+                {
+                    if (Write(Input(pc, defined, location: true), defNode, function.Slots[defined].Type, defined))
+                    { changed = true; writeEpoch++; }
+                }
             }
             if (instruction.Op == NativeOp.Return) changed |= returns.Merge(Input(pc, instruction.A));
         }
-        for (int slot = 0; slot < values.Length; slot++) changed |= values[slot].Merge(cellWrites[slot]);
+        for (int slot = 0; slot < values.Length; slot++)
+            if (hasCellWrite[slot] && values[slot].Merge(cellWrites[slot]))
+            { changed = true; writeEpoch++; }
         foreach (int slot in escapingSlots) changed |= escaped.Merge(values[slot]);
         foreach (int slot in sessionRoots) changed |= escaped.Merge(values[slot]);
         changed |= writes.Merge(effects);
@@ -349,8 +404,19 @@ internal sealed partial class NativeAddressAnalysis
             if (target.Region.Allocation <= -2) changed |= externalWrites.Foreign.Add(target);
         }
         changed |= ClobberEscaped();
-        return changed | inputChanged;
+        bool any = changed | inputChanged;
+        if (any) stateVersion++;
+        return any;
     }
+
+    private bool IsPureOwnSlot(Points? node, int slot) => node is not null
+        && !node.Top
+        && node.Formals.Count == 0
+        && node.Projections.Count == 0
+        && node.Foreign.Count == 0
+        && node.Targets.Count == 1
+        && node.Targets[0].Allocation < 0
+        && node.Targets[0].Slot == slot;
 
     internal Points this[int register] { get { lock (owner.Gate) { Solve(); return values[register]; } } }
     internal NativeControlFlow ControlFlow { get { lock (owner.Gate) return Flow.ControlFlow; } }
@@ -364,7 +430,7 @@ internal sealed partial class NativeAddressAnalysis
             if (NodeIfCreated(id) is { } node) inputChanged |= result.Merge(node);
         if (!location)
         {
-            inputChanged |= result.Merge(cellWrites[slot]);
+            if (hasCellWrite[slot]) inputChanged |= result.Merge(cellWrites[slot]);
             foreach (int id in Flow.Locations(pc, slot))
                 if (id != values.Length + slot && NodeIfCreated(id) is { } node)
                     inputChanged |= Read(result, node, function.Slots[slot].Type);
@@ -377,7 +443,8 @@ internal sealed partial class NativeAddressAnalysis
         foreach (Target target in this[instruction.A].Targets) yield return Normalize(target, instruction.Type);
     }
 
-    private bool AddressType(int slot)
+    private bool AddressType(int slot) => addressSlots[slot];
+    private bool ComputeAddressType(int slot)
     {
         NativeCodeType type = program.Types[function.Slots[slot].Type];
         return type.Pointee >= 0 || (type.Kind & (TypeKind.Scope | TypeKind.Function | TypeKind.Range)) != 0;
@@ -496,6 +563,7 @@ internal sealed partial class NativeAddressAnalysis
             if (target.Allocation < 0)
             {
                 if (target.Slot == ownSlot) continue;
+                hasCellWrite[target.Slot] = true;
                 changed |= cellWrites[target.Slot].Merge(source);
                 continue;
             }
@@ -624,7 +692,7 @@ internal sealed partial class NativeAddressAnalysis
                 if (target.Allocation < 0)
                 {
                     clobberPending.Enqueue(values[target.Slot]); clobberPending.Enqueue(bindings[target.Slot]);
-                    if (AddressType(target.Slot)) changed |= cellWrites[target.Slot].MakeUnknown();
+                    if (AddressType(target.Slot)) { hasCellWrite[target.Slot] = true; changed |= cellWrites[target.Slot].MakeUnknown(); }
                     continue;
                 }
                 changed |= clobbered.Add(target);

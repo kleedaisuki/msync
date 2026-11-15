@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Msync.Core.Native;
 
@@ -43,6 +44,7 @@ internal unsafe sealed class NativeTierMemory : IDisposable
     private nint pinnedExt1Flags;
     private nuint capacity;
     private long pendingRevision;
+    private int materializedFutures;
 
     internal NativeTierMemory(nint handle)
     {
@@ -59,7 +61,13 @@ internal unsafe sealed class NativeTierMemory : IDisposable
     internal nint Handle { get; }
     internal NativeTierContext* Context { get; private set; }
     internal int PinnedOwners => extraOwners.Count;
-    internal bool HasPendingRevision => pendingRevision != 0;
+    internal bool HasPendingRevision
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => pendingRevision != 0;
+    }
+    internal bool HadGlobalPending { get; private set; }
+    internal bool HasRelevantPending => Context->PendingMask != 0;
     internal double SlotNumber(int slot) => pinnedBytes != 0 && layout.TryFixed(slot, out FixedTierSlot entry)
         ? *(double*)((byte*)pinnedBytes + entry.DataOffset)
         : *(double*)Context->Slots[layout.Scalars[slot]].Data;
@@ -88,6 +96,7 @@ internal unsafe sealed class NativeTierMemory : IDisposable
         this.pinnedExt1Flags = pinnedExt1Flags;
         layout = version?.Layout ?? NativeTierLayout.Identity(function);
         pendingRevision = 0;
+        materializedFutures = 0;
         nuint bytes = layout.Bytes;
         if (bytes > capacity)
         {
@@ -103,8 +112,9 @@ internal unsafe sealed class NativeTierMemory : IDisposable
             Context->Hits = (long*)((byte*)Context->Slots + layout.ScalarCount * 32);
             if (observed) System.Runtime.InteropServices.NativeMemory.Clear(Context->Hits, (nuint)((layout.NativePcs.Length + layout.TrueHits.Count) * 8));
             Context->Fuel = 256;
-            bool hasPending = memory.HasAnyPending;
-            Context->PendingMask = hasPending ? 1U : 0U;
+            bool hasPending = HadGlobalPending = memory.HasAnyPending;
+            bool framePending = hasPending && memory.HasPending(frame.Allocation);
+            Context->PendingMask = 0;
             *(nint*)((byte*)Context + 40) = pinnedBytes;
             *(nint*)((byte*)Context + 48) = pinnedFlags;
             if (pinnedFrame is not null)
@@ -120,28 +130,24 @@ internal unsafe sealed class NativeTierMemory : IDisposable
                         Refresh(entry.Slot);
                         continue;
                     }
-                    slots[entry.Scalar] = entry.ScalarCapable
-                        ? new()
-                        {
-                            Data = raw + entry.DataOffset,
-                            Initialized = flags + entry.ByteOffset,
-                            Tag = entry.IsUnion ? raw + entry.ByteOffset : null,
-                            Flags = 0
-                        }
-                        : default;
-                    if (hasPending) UpdatePending(entry.Slot);
+                    slots[entry.Scalar] = new()
+                    {
+                        Data = entry.ScalarCapable ? raw + entry.DataOffset : null,
+                        Initialized = flags + entry.ByteOffset,
+                        Tag = entry.IsUnion ? raw + entry.ByteOffset : null,
+                        Flags = 0
+                    };
+                    if (framePending) UpdatePending(entry.Slot);
                 }
                 foreach (int slot in layout.DynamicExternalSlots) Refresh(slot);
-                if (hasPending)
-                {
+                if (framePending)
                     foreach (ref readonly FixedTierSlot entry in layout.FixedSlots.AsSpan()) UpdatePending(entry.Slot);
-                    pendingRevision = memory.PendingRevision;
-                }
+                if (hasPending || Context->PendingMask != 0) pendingRevision = memory.PendingRevision;
             }
             else
             {
                 foreach (int slot in layout.RefreshSlots) Refresh(slot);
-                if (hasPending) pendingRevision = memory.PendingRevision;
+                if (hasPending || Context->PendingMask != 0) pendingRevision = memory.PendingRevision;
             }
         }
         catch { ReleasePins(); throw; }
@@ -162,8 +168,10 @@ internal unsafe sealed class NativeTierMemory : IDisposable
         if (scalar < 0) return;
         NativeAddress address = frame.Location(slot);
         NativeType type = address.Type;
-        uint flags = memory.HasAnyPending && memory.IsPending(address) ? 2U : 0U;
-        if ((type.Kinds & ScalarKindsMask) == 0)
+        uint flags = memory.HasAnyPending ? PendingFlag(slot, address) : 0U;
+        if (flags != 0) MarkPending();
+        bool hasScalar = (type.Kinds & ScalarKindsMask) != 0;
+        if (!hasScalar && !type.Accepts(NativeKind.Null) && !type.IsUnion)
         {
             Context->Slots[scalar] = new() { Flags = flags };
             return;
@@ -171,7 +179,7 @@ internal unsafe sealed class NativeTierMemory : IDisposable
         GetPinnedPointers(address.Allocation, out nint bytes, out nint initFlags);
         Context->Slots[scalar] = new()
         {
-            Data = (byte*)bytes + address.Offset.Bytes + type.Representation.PayloadOffset,
+            Data = hasScalar ? (byte*)bytes + address.Offset.Bytes + type.Representation.PayloadOffset : null,
             Initialized = (byte*)initFlags + address.Offset.Bytes,
             Tag = type.IsUnion ? (byte*)bytes + address.Offset.Bytes : null,
             Flags = flags
@@ -217,9 +225,9 @@ internal unsafe sealed class NativeTierMemory : IDisposable
     internal void RefreshPending(int result = -1, int consumed = -1)
     {
         bool hasPending = memory.HasAnyPending;
-        Context->PendingMask = hasPending ? 1U : 0U;
         if (!hasPending)
         {
+            Context->PendingMask = 0;
             if (pendingRevision == 0) return;
             pendingRevision = 0;
             foreach (int slot in layout.RefreshSlots) Context->Slots[layout.Scalars[slot]].Flags &= ~2U;
@@ -243,6 +251,7 @@ internal unsafe sealed class NativeTierMemory : IDisposable
         do
         {
             revision = memory.PendingRevision;
+            Context->PendingMask = 0;
             foreach (int slot in layout.RefreshSlots) UpdatePending(slot);
         } while (revision != memory.PendingRevision);
         pendingRevision = revision;
@@ -251,7 +260,26 @@ internal unsafe sealed class NativeTierMemory : IDisposable
     private void UpdatePending(int slot)
     {
         ref NativeTierSlot descriptor = ref Context->Slots[layout.Scalars[slot]];
-        descriptor.Flags = (descriptor.Flags & ~2U) | (memory.IsPending(frame.Location(slot)) ? 2U : 0U);
+        uint pending = PendingFlag(slot, frame.Location(slot));
+        if (pending != 0) MarkPending();
+        descriptor.Flags = (descriptor.Flags & ~2U) | pending;
+    }
+
+    private uint PendingFlag(int slot, NativeAddress address)
+    {
+        if (!memory.TryPending(address, out NativeFuture? future)) return 0;
+        if (!layout.TryFixed(slot, out _) || !future!.Completion.IsCompletedSuccessfully) return 2;
+        memory.Write(address, new(future.Completion.Result));
+        if (Context->Observed != 0) materializedFutures++;
+        return 0;
+    }
+
+    private void MarkPending()
+    {
+        if (Context->PendingMask != 0) return;
+        foreach (ref readonly FixedTierSlot entry in layout.FixedSlots.AsSpan())
+            Context->Slots[entry.Scalar].Flags &= ~2U;
+        Context->PendingMask = 1;
     }
 
     internal void Flush(RuntimeProfile.NativeFrameCounters profile, NativeTierCounters counters, int exitStatus)
@@ -262,6 +290,11 @@ internal unsafe sealed class NativeTierMemory : IDisposable
             if (direct != 0) counters.DirectBatch(direct);
             if (exitStatus is -8 or -9) counters.BridgeBatch(1, 0);
             return;
+        }
+        if (materializedFutures != 0)
+        {
+            profile.MaterializedFutures(materializedFutures);
+            materializedFutures = 0;
         }
         long* hitsPtr = Context->Hits;
         long total = 0;
@@ -327,7 +360,6 @@ internal unsafe sealed class NativeTierMemory : IDisposable
             memory.RemovePending(frame.Location(slot));
             Context->Slots[layout.Scalars[slot]].Flags &= ~2U;
         }
-        Context->PendingMask = memory.HasAnyPending ? 1U : 0U;
     }
 
     public void Dispose()
@@ -367,8 +399,8 @@ internal unsafe sealed class NativeTierMemory : IDisposable
             bytes = GCHandle.Alloc(allocation.Storage.RawBytes, GCHandleType.Pinned);
             try { initialized = GCHandle.Alloc(allocation.Storage.InitializedFlags, GCHandleType.Pinned); }
             catch { bytes.Free(); throw; }
-            Bytes = bytes.AddrOfPinnedObject();
-            Flags = initialized.AddrOfPinnedObject();
+            Bytes = bytes.AddrOfPinnedObject() + allocation.Storage.RawOffset;
+            Flags = initialized.AddrOfPinnedObject() + allocation.Storage.RawOffset;
         }
 
         public void Dispose() { bytes.Free(); initialized.Free(); }

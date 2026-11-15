@@ -43,7 +43,7 @@ internal static class Program
                 string artifact = options.File ?? throw new ArgumentException("An artifact filename is required; use 'msync disassemble --help'.");
                 byte[] bytes = artifact == "-" ? await ReadArtifactInput() : await File.ReadAllBytesAsync(artifact);
                 string identity = artifact == "-" ? "<stdin>" : new Uri(Path.GetFullPath(artifact)).AbsoluteUri;
-                if (NativeArtifact.HasMagic(bytes) || LegacyV6Reader.HasMagic(bytes))
+                if (NativeArtifact.HasMagic(bytes))
                 {
                     using MemoryStream stream = new(bytes, writable: false);
                     NativeProgram native = NativeCommandPipeline.Read(stream);

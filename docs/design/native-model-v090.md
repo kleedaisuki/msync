@@ -1,5 +1,11 @@
 # Native value and logical-heap model (0.9.0)
 
+> Current v0.9 artifact decision (2026-11-13): Native format 2 and HIR format 4
+> replace the historical compatibility behavior described below. Storage and
+> call plans are compiler output; runtime linking does not repeat alias/escape
+> analysis. Old artifacts must be rebuilt. See the
+> [compiled storage contract](native-execution-lowering-v090.md#v09-compiled-storage-contract-2026-11-13).
+
 ## End state
 
 `scope { ... }` allocates statically described builtin storage on the logical
@@ -224,13 +230,11 @@ product version alone does not silently invalidate old user artifacts.
 
 ### Compact portable encoding
 
-Native format 1 now has an explicit compact-encoding discriminator after the
-format number: signed `0x80004952`, followed by encoding revision 1. The earlier
-unpooled layout started there with a nonnegative UTF-16 language-string length,
-so detection is unambiguous. Earlier unpooled function records both before and
-after the optional reflection-signature field remain readable; the former
-unversioned extension is not a model for future format evolution. Unknown compact
-revisions are rejected rather than guessed.
+Native format 2 uses the signed `0x80004952` compact discriminator followed by
+encoding revision 4. Obsolete prototype revision 3, unpooled encoding and native
+format 1 require source recompilation. The loader does not recompute work hints,
+storage proofs or call contracts. Unknown compact revisions are rejected rather
+than guessed; there is no legacy analysis or execution fallback.
 
 The compact payload contains one exact UTF-16 string pool, one deduplicated source
 span pool, and eleven ordered, length-bounded sections: header, types, layouts,

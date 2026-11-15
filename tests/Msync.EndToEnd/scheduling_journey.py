@@ -95,8 +95,13 @@ def run_case(
     absent: Sequence[str] = (),
     executable: bool = False,
     after_regions: int = 0,
+    inputs: dict[str, str] | None = None,
 ) -> None:
     directory.mkdir()
+    for filename, contents in (inputs or {}).items():
+        target: Path = directory / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(contents, encoding="utf-8")
     source = directory / "schedule.msync"
     source.write_text(
         f"let python: Path = {literal(sys.executable)};\n{body}\n",
@@ -107,13 +112,15 @@ def run_case(
     if after_regions:
         planned = invoke(binary, directory, ["plan", str(source)])
         assert planned.returncode == 0, (name, planned.stderr)
-        markers = [
-            line.split()[2:]
+        markers: list[dict[str, str]] = [
+            dict(token.split("=", 1) for token in line.split()[2:] if "=" in token)
             for line in planned.stdout.splitlines()
             if "Barrier" in line
         ]
-        starts = [marker[2] for marker in markers if marker[:2] == ["2", "1"]]
-        ends = [marker[2] for marker in markers if marker[:2] == ["2", "0"]]
+        starts: list[str] = [marker["symbol"] for marker in markers
+            if marker.get("a") == "2" and marker.get("b") == "1" and "symbol" in marker]
+        ends: list[str] = [marker["symbol"] for marker in markers
+            if marker.get("a") == "2" and marker.get("b") == "0" and "symbol" in marker]
         assert len(starts) == after_regions and len(set(starts)) == after_regions, (
             name,
             "missing or duplicated After region identity",
@@ -165,6 +172,7 @@ def journeys(
         *,
         absent: Sequence[str] = (),
         after_regions: int = 0,
+        inputs: dict[str, str] | None = None,
     ) -> None:
         nonlocal count
         if selected_cases and name not in selected_cases:
@@ -178,8 +186,35 @@ def journeys(
             absent=absent,
             executable=executable,
             after_regions=after_regions,
+            inputs=inputs,
         )
         count += 1
+
+    case(
+        "callback-acquire",
+        'let items = $std::ranges::transform([./input], fn(path) { acquire; path }); items -> ./out;',
+        {"out/input": "payload"},
+        inputs={"input": "payload", "out/.keep": ""},
+    )
+    inherited_child: str = "import pathlib,time; time.sleep(0.2); pathlib.Path('prior.finished').write_text('prior')"
+    case(
+        "callback-inherited-acquire",
+        f'let prior = release python("-c", {literal(inherited_child)});\n'
+        'let items = $std::ranges::transform([./input], fn(path) { acquire; ./prior.finished }); items -> ./out;',
+        {"out/prior.finished": "prior"},
+        inputs={"input": "payload", "out/.keep": ""},
+    )
+    callback_child: str = "import pathlib,time; time.sleep(0.2); pathlib.Path('child.finished').write_text('finished')"
+    case(
+        "returned-callback-owner",
+        'let state = scope { child: python("-c", "pass") };\n'
+        'let items = $std::ranges::transform([./input], fn(path) { '
+        f'state::child = release python("-c", {literal(callback_child)}); path }});\n'
+        'fn submit() { items -> ./out }; let result = submit(); acquire;\n'
+        './child.finished -> ./observed;',
+        {"out/input": "payload", "observed": "finished"},
+        inputs={"input": "payload", "out/.keep": ""},
+    )
 
     ordinary = directory / "ordinary"
     case(
@@ -218,6 +253,23 @@ def journeys(
         'let message = $std::string::concat(background::stdout, " tail"); message -> ./stdout;\n'
         '"open" -> ./background.gate; acquire background;',
         {"stdout": "background tail", "background.finished": "background"},
+    )
+    arguments = directory / "deferred-process-argument"
+    case(
+        "deferred-process-argument",
+        f"let background = release {child_call(arguments, 'background', gated=True)};\n"
+        'let consumer = release python("-c", "import sys; sys.stdout.write(sys.argv[1])", background::stdout);\n'
+        '"open" -> ./background.gate; acquire consumer; consumer::stdout -> ./forwarded;',
+        {"forwarded": "background", "background.finished": "background"},
+    )
+    returned = directory / "returned-process-submission"
+    case(
+        "returned-process-submission",
+        f"let background = release {child_call(returned, 'background', gated=True)};\n"
+        'fn submit(message: String) { release python("-c", "import sys; sys.stdout.write(sys.argv[1])", message) };\n'
+        'let message = background::stdout; let consumer = submit(message); message = "changed";\n'
+        '"open" -> ./background.gate; acquire; consumer::stdout -> ./forwarded;',
+        {"forwarded": "background", "background.finished": "background"},
     )
     native = directory / "native-independent"
     case(

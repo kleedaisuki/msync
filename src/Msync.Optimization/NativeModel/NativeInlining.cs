@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Msync.Core;
 using Msync.Core.Native;
 using NativeSignature = Msync.Core.NativeSignature;
@@ -8,27 +9,40 @@ internal static class NativeInlining
 {
     internal static NativeProgram Run(NativeProgram program, int level, NativeOptimizationProfile? profile, int[] budgets)
     {
+        NativeAddressAnalysis.ProgramFacts? facts = null;
+        return Run(program, level, profile, budgets, ref facts);
+    }
+
+    internal static NativeProgram Run(NativeProgram program, int level, NativeOptimizationProfile? profile, int[] budgets,
+        ref NativeAddressAnalysis.ProgramFacts? sharedFacts)
+    {
         if (level < 2) return program;
         bool changed;
-        do { program = Round(program, level, profile, budgets, out changed); } while (changed);
+        do { program = Round(program, level, profile, budgets, ref sharedFacts, out changed); } while (changed);
         return program;
     }
 
-    private static NativeProgram Round(NativeProgram program, int level, NativeOptimizationProfile? profile, int[] budgets, out bool changed)
+    private static NativeProgram Round(NativeProgram program, int level, NativeOptimizationProfile? profile, int[] budgets,
+        ref NativeAddressAnalysis.ProgramFacts? sharedFacts, out bool changed)
     {
-        Builder builder = new(program, level == 2 ? 48 : 144, budgets, profile is not null);
+        Builder builder = new(program, level == 2 ? 48 : 144, budgets, profile is not null, sharedFacts);
         NativeFunctionCode[] functions = program.Functions.ToArray();
         int[][] positions = new int[functions.Length][];
+        List<int>? modified = null;
         for (int index = 0; index < functions.Length; index++)
         {
             profile?.Function(index);
             var started = profile?.Start(NativeOptimizationProfile.Pass.Inlining, program.Functions[index]) ?? default;
             (functions[index], positions[index]) = builder.Function(index);
+            bool fnChanged = !ReferenceEquals(functions[index], program.Functions[index]);
+            if (fnChanged) (modified ??= []).Add(index);
             profile?.Add(NativeOptimizationProfile.Pass.Inlining, started, program.Functions[index], functions[index],
-                !ReferenceEquals(functions[index], program.Functions[index]), builder.Statistics);
+                fnChanged, builder.Statistics);
         }
         changed = builder.Changed;
-        return program with
+        sharedFacts = builder.FactsIfCreated;
+        if (!changed) return program;
+        NativeProgram next = program with
         {
             Functions = functions,
             Types = builder.Types.ToArray(),
@@ -37,6 +51,12 @@ internal static class NativeInlining
             ExecutionPlans = program.ExecutionPlans?.Select(plan => plan with
             { Start = Boundary(positions[plan.Function], plan.Start), End = Boundary(positions[plan.Function], plan.End) }).ToArray()
         };
+        if (sharedFacts is not null && modified is not null)
+        {
+            sharedFacts.Invalidate(next, CollectionsMarshal.AsSpan(modified));
+            profile?.Trace.Metric("program_facts.inlining_invalidated", modified.Count);
+        }
+        return next;
     }
 
     internal static int Boundary(int[] positions, int pc) => pc < positions.Length
@@ -44,19 +64,22 @@ internal static class NativeInlining
 
     private enum Decision { Allowed, Dynamic, Recursive, Arity, Template, Size, Effects, EscapingLocation, CaptureAbi, Budget, UnknownOrigin }
 
-    private sealed class Builder(NativeProgram program, int bodyBudget, int[] budgets, bool observed)
+    private sealed class Builder(NativeProgram program, int bodyBudget, int[] budgets, bool observed, NativeAddressAnalysis.ProgramFacts? sharedFacts)
     {
         private readonly Dictionary<int, Decision> admitted = [];
         private readonly bool[] transparent = TransparentFunctions(program);
+        private readonly bool?[] usesCaptureCache = new bool?[program.Functions.Count];
         internal bool Changed { get; private set; }
         internal Dictionary<string, ulong>? Statistics { get; private set; }
+        internal NativeAddressAnalysis.ProgramFacts? FactsIfCreated => facts;
+        private NativeAddressAnalysis.ProgramFacts Facts => facts ??= new(program);
+        private NativeAddressAnalysis.ProgramFacts? facts = sharedFacts;
         private void Record(Decision decision)
         {
             if (Statistics is not { } values) return;
             string key = decision == Decision.Allowed ? "inline.expanded" : "inline.rejected." + decision;
             values[key] = values.GetValueOrDefault(key) + 1;
         }
-        private readonly NativeAddressAnalysis.ProgramFacts facts = new(program);
         internal List<NativeCodeType> Types { get; } = program.Types.ToList();
         internal List<NativeCodeLayout> Layouts { get; } = program.Layouts.ToList();
 
@@ -74,7 +97,7 @@ internal static class NativeInlining
                 else Record(decision);
             }
             if (candidates is null) return (function, Enumerable.Range(0, function.Instructions.Count + 1).ToArray());
-            NativeAddressAnalysis provenance = facts.Function(index);
+            NativeAddressAnalysis provenance = Facts.Function(index);
             bool[] privateInputs = NativeCallFacts.PrivateSlots(program, index, provenance);
             Dictionary<int, IReadOnlyList<NativeInstruction>> expansions = [];
             List<NativeSlot> slots = function.Slots.ToList();
@@ -82,18 +105,31 @@ internal static class NativeInlining
             foreach (int pc in candidates)
             {
                 NativeInstruction call = function.Instructions[pc];
-                IReadOnlyCollection<NativeCallableOrigin>? targets = provenance.CallablesAt(pc, call.A);
-                if (targets is not { Count: 1 } || targets.Single() is not { NativeName: null } construction)
-                { Record(Decision.UnknownOrigin); continue; }
                 NativeFunctionCode target = program.Functions[call.B];
-                if (target.CaptureCount != program.Functions[construction.Function].CaptureCount || !CapturesMatch(target, construction))
-                { Record(Decision.CaptureAbi); continue; }
+                bool usesCaptures = UsesAnyCapture(call.B, target);
+                IReadOnlyCollection<NativeCallableOrigin>? targets = provenance.CallablesAt(pc, call.A);
+                NativeCallableOrigin? construction = targets is { Count: 1 } single ? single.First() : null;
+                if (construction is { NativeName: not null })
+                { Record(Decision.UnknownOrigin); continue; }
+                if (usesCaptures)
+                {
+                    if (construction is null) { Record(Decision.UnknownOrigin); continue; }
+                    if (target.CaptureCount != program.Functions[construction.Function].CaptureCount || !CapturesMatch(target, construction))
+                    { Record(Decision.CaptureAbi); continue; }
+                }
+                else
+                {
+                    if (targets is not null && targets.Any(origin => origin.NativeName is not null))
+                    { Record(Decision.UnknownOrigin); continue; }
+                }
                 int cost = target.Instructions.Count(instruction => instruction.Op != NativeOp.Nop)
                     + target.Instructions.Count(instruction => instruction.Op == NativeOp.Return)
-                    + target.ParameterCount + (target.CaptureCount == 0 ? 0 : 1 + target.CaptureCount * 3) - 1;
+                    + target.ParameterCount + (!usesCaptures || target.CaptureCount == 0 ? 0 : 1 + target.CaptureCount * 3) - 1;
                 if (growth + cost > budgets[index]) { Record(Decision.Budget); continue; }
-                expansions.Add(pc, Expand(call, target, construction, slots, privateInputs));
+                expansions.Add(pc, Expand(call, target, construction, usesCaptures, slots, privateInputs));
                 growth += cost;
+                if (!usesCaptures && construction is null && Statistics is not null)
+                    Statistics["inline.captureless_direct"] = Statistics.GetValueOrDefault("inline.captureless_direct") + 1;
                 Record(Decision.Allowed);
             }
             int[] positions = new int[function.Instructions.Count + 1];
@@ -132,7 +168,7 @@ internal static class NativeInlining
                 : function.Instructions.Count(instruction => instruction.Op is not (NativeOp.Nop or NativeOp.FrameAddress
                     or NativeOp.Copy or NativeOp.Move or NativeOp.Drop or NativeOp.Narrow)) > bodyBudget ? Decision.Size
                 : !transparent[instruction.B] ? Decision.Effects
-                : new NativeEscapeAnalysis(program, instruction.B, facts).EscapingLocations.Count != 0 ? Decision.EscapingLocation
+                : new NativeEscapeAnalysis(program, instruction.B, Facts).EscapingLocations.Count != 0 ? Decision.EscapingLocation
                 : Decision.Allowed;
             admitted.Add(instruction.B, result);
             return result;
@@ -197,20 +233,49 @@ internal static class NativeInlining
                 or NativeOp.TestStatic or NativeOp.StaticAddress or NativeOp.PublishStatic);
         }
 
-        private IReadOnlyList<NativeInstruction> Expand(NativeInstruction call, NativeFunctionCode function,
-            NativeCallableOrigin construction, List<NativeSlot> slots, bool[] privateInputs)
+        private bool UsesAnyCapture(int id, NativeFunctionCode function)
         {
-            bool[] readOnly = NativeCallFacts.ReadOnlyParameters(function, facts.Function(call.B));
+            if (usesCaptureCache[id] is { } cached) return cached;
+            bool used = ComputeUsesAnyCapture(function);
+            usesCaptureCache[id] = used;
+            return used;
+        }
+
+        private static bool ComputeUsesAnyCapture(NativeFunctionCode function)
+        {
+            int captures = function.CaptureCount;
+            if (captures <= 0) return false;
+            foreach (NativeInstruction instruction in function.Instructions)
+            {
+                if (instruction.Result >= 0 && instruction.Result < captures) return true;
+                if (instruction.Op is NativeOp.FrameAddress or NativeOp.BindLocation or NativeOp.Move or NativeOp.Drop
+                    && instruction.A >= 0 && instruction.A < captures) return true;
+                NativeOperands fields = NativeInstructionFacts.ValueOperands(instruction);
+                if ((fields & NativeOperands.A) != 0 && instruction.A >= 0 && instruction.A < captures) return true;
+                if ((fields & NativeOperands.B) != 0 && instruction.B >= 0 && instruction.B < captures) return true;
+                if ((fields & NativeOperands.C) != 0 && instruction.C >= 0 && instruction.C < captures) return true;
+                if (instruction.Inputs is { } inputs)
+                    for (int i = 0; i < inputs.Count; i++)
+                        if (inputs[i] >= 0 && inputs[i] < captures) return true;
+            }
+            return false;
+        }
+
+        private IReadOnlyList<NativeInstruction> Expand(NativeInstruction call, NativeFunctionCode function,
+            NativeCallableOrigin? construction, bool usesCaptures, List<NativeSlot> slots, bool[] privateInputs)
+        {
+            bool[] readOnly = NativeCallFacts.ReadOnlyParameters(function, Facts.Function(call.B));
             int[] map = new int[function.Slots.Count];
             for (int index = 0; index < map.Length; index++)
             {
+                if (!usesCaptures && index < function.CaptureCount) { map[index] = -1; continue; }
                 int parameter = index - function.CaptureCount;
                 if (readOnly[index] && privateInputs[call.Inputs![parameter]]
                     && NativeTypeRelations.Same(program.Types, slots[call.Inputs[parameter]].Type, function.Slots[index].Type)) map[index] = call.Inputs[parameter];
                 else { map[index] = slots.Count; slots.Add(function.Slots[index] with { Role = NativeSlotRole.Temporary, Name = null }); }
             }
             List<NativeInstruction> code = [];
-            Capture(call, function, construction, slots, code, map);
+            if (usesCaptures && construction is not null) Capture(call, function, construction, slots, code, map);
             for (int parameter = 0; parameter < function.ParameterCount; parameter++)
                 if (map[function.CaptureCount + parameter] != call.Inputs![parameter])
                     code.Add(new(NativeOp.Copy, map[function.CaptureCount + parameter], call.Inputs[parameter], Source: call.Source));

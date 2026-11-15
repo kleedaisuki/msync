@@ -1,5 +1,10 @@
 namespace Msync.Core.Native;
 
+public class NativeConnectionResource(NativeConnection connection)
+{
+    public NativeConnection Connection { get; } = connection with { Address = connection.Address ?? "" };
+}
+
 public readonly record struct NativeConnection(ConnectionKind Kind, string Address = "")
 {
     public override string ToString() => Kind switch

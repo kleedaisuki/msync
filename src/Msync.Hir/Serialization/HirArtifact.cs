@@ -7,7 +7,7 @@ public static class HirArtifact
 {
     private static ReadOnlySpan<byte> Magic => "MSYNHIR\0"u8;
     internal static readonly UTF8Encoding Utf8 = new(false, true);
-    public const ushort FormatVersion = 3;
+    public const ushort FormatVersion = 4;
     public const string LanguageVersion = LanguageContract.Version;
 
     public static bool IsHir(ReadOnlySpan<byte> bytes) => bytes.StartsWith(Magic);
@@ -25,11 +25,11 @@ public static class HirArtifact
     public static HirModule Read(Stream stream) => Read(stream, null);
 
     public static HirModule Read(Stream stream, CompilationTrace? trace) => trace?.Detail is { } detail
-        ? detail.MeasureDetailed("compiler.hir.decode", (stream, detail), static state => ReadCore(state.stream, state.detail),
+        ? detail.MeasureDetailed("compiler.hir.decode", stream, ReadCore,
             metrics: HirTelemetry.Metrics)
-        : ReadCore(stream, null);
+        : ReadCore(stream);
 
-    private static HirModule ReadCore(Stream stream, CompilationTrace? trace)
+    private static HirModule ReadCore(Stream stream)
     {
         using BinaryReader reader = new(stream, Utf8, leaveOpen: true);
         try
@@ -44,8 +44,6 @@ public static class HirArtifact
             if (language != LanguageVersion)
                 throw new MsyncException($"Unsupported Typed HIR language semantics '{language}'; expected '{LanguageVersion}'.");
             HirModule module = decoder.Module();
-            if (trace is null) HirValidation.Validate(module);
-            else trace.Run("compiler.hir.verify", module, HirValidation.Validate);
             return module;
         }
         catch (Exception error) when (error is IOException or ArgumentException or FormatException or OverflowException)
@@ -54,7 +52,6 @@ public static class HirArtifact
 
     public static void Write(HirModule module, string path)
     {
-        HirValidation.Validate(module);
         WriteProduced(module, path);
     }
 
@@ -75,7 +72,6 @@ public static class HirArtifact
 
     public static void Write(HirModule module, Stream stream)
     {
-        HirValidation.Validate(module);
         WriteProduced(module, stream);
     }
 

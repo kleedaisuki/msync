@@ -160,7 +160,7 @@ public sealed partial class NativeInterpreter
         NativeRange range = new(ResolveDatumItems(items, CancellationToken.None), itemType,
             roots.Where(static value => value.IsReady).Select(static value => value.Value).ToArray(), physicalItemType: physicalItemType);
         rangeRoots.Add(range, new(roots.ToArray()));
-        datumRanges.Add(range, new(items));
+        datumRanges.Add(range, new(items, roots.Any(DatumExecutionMayDefer)));
         return range;
     }
 

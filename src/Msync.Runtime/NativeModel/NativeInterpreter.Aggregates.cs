@@ -29,7 +29,7 @@ public sealed partial class NativeInterpreter
                 NativeAddress address = frame.Pointer(inputs[index]);
                 memory.WriteAddress(environment.CaptureAddress(index), address);
             }
-            else memory.Copy(frame.Location(inputs[index]), environment.CaptureAddress(index));
+            else frame.CopyTo(inputs[index], environment.CaptureAddress(index));
         }
         frame.Set(instruction.Result, NativeValue.FromFunction(new(instruction.A, environment)));
     }
@@ -101,13 +101,13 @@ public sealed partial class NativeInterpreter
             : throw new MsyncException($"Function #{original} has no compiled specialization.", source);
     }
 
-    private ValueTask<NativeStep> CallAsync(Activation activation, NativeInstruction instruction, int pc, CancellationToken token)
+    private NativeStep Call(Activation activation, NativeInstruction instruction, int pc, CancellationToken token, bool bounded = false)
     {
         NativeFrame frame = activation.Frame;
-        NativeDatum calleeDatum = frame.GetDatum(instruction.A);
-        if (!calleeDatum.IsReady) return AwaitCallAsync(activation, instruction, pc, calleeDatum.ResolveAsync(token), token);
+        NativeAddress callee = frame.Location(instruction.A);
         NativeArguments arguments = activation.Execution.Arguments(frame, pc);
-        NativeFunction function = calleeDatum.Value.AsFunction();
+        NativeFunction function = memory.TryPending(callee, out NativeFuture? pendingCallee)
+            ? Demand(pendingCallee!.CompleteAsync(token)).AsFunction() : NativeStorage.LoadFunctionDirect(callee);
         ValueTask<NativeDatum> callTask;
         if (function.NativeName is { } nativeName)
             callTask = InvokeNativeDatumAsync(nativeName, arguments.Materialize(memory), context.CaptureDirectory(), instruction.Source, token, RangeResultPhysical(frame, instruction.Result));
@@ -115,54 +115,42 @@ public sealed partial class NativeInterpreter
         {
             int target = Target(function.Function, instruction.B, instruction.C, instruction.Symbol, instruction.Source);
             activation.Work.Counters.Call(pc, target);
-            if (instruction.B < 0 || instruction.C >= 0) ValidateInvocation(target, arguments.Count);
+            if (!bounded && (instruction.B < 0 || instruction.C >= 0)) ValidateInvocation(target, arguments.Count);
             NativeEnvironment? environment = function.Environment;
-            if (TailCallPlan(activation, pc) is { } tail)
+            if (!bounded && TailCallPlan(activation, pc) is { } tail)
             {
-                activation.Tail = new(target, environment, arguments, pc, activation, instruction, tail);
-                return new(new NativeStep(pc + 1, true));
+                if (!activation.ReturnDestination.IsNull)
+                    RunDirectTail(activation, target, environment, arguments, pc, tail, token);
+                else activation.Tail = new(target, environment, arguments, pc, activation.Function, instruction, tail);
+                return new NativeStep(pc + 1, true);
             }
-            callTask = RunFunctionAsync(target, environment, arguments, token);
+            NativeExecutionFunction executable = ExecutionFunction(image, target);
+            bool direct = bounded || executable.IsContextFree
+                || executable.IsPureSynchronous && RuntimeHelpers.TryEnsureSufficientExecutionStack();
+            if (direct)
+            {
+                if (profile is not null) activation.Work.Counters.GuestDirectCall(executable.IsContextFree);
+                RunDirectFunction(activation, target, environment, arguments, frame.Location(instruction.Result), token);
+                return new NativeStep(pc + 1);
+            }
+            if (profile is not null && executable.IsPureSynchronous) activation.Work.Counters.StackLimitedCall();
+            if (!activation.ReturnDestination.IsNull)
+            {
+                if (profile is not null) activation.Work.Counters.GuestLoopHandoff();
+                frame.SetDatum(instruction.Result, RunFunction(target, environment, arguments, token));
+                return new NativeStep(pc + 1);
+            }
+            activation.Call = new(target, environment, arguments, instruction.Result, pc);
+            return new NativeStep(pc + 1, true);
         }
-        if (!callTask.IsCompleted) return AwaitCallResultAsync(frame, instruction.Result, pc, callTask);
-        frame.SetDatum(instruction.Result, callTask.GetAwaiter().GetResult());
-        return new(new NativeStep(pc + 1));
+        frame.SetDatum(instruction.Result, Demand(callTask));
+        return new NativeStep(pc + 1);
     }
 
-    private async ValueTask<NativeStep> AwaitCallAsync(Activation activation, NativeInstruction instruction, int pc,
-        ValueTask<NativeValue> calleePending, CancellationToken token)
+    private NativeStep CallNative(Activation activation, NativeInstruction instruction, int pc, CancellationToken token, Msync.Core.NativeSignature? signature)
     {
         NativeFrame frame = activation.Frame;
-        NativeFunction function = (await calleePending).AsFunction();
-        NativeArguments arguments = activation.Execution.Arguments(frame, pc);
-        NativeDatum result;
-        if (function.NativeName is { } nativeName)
-            result = await InvokeNativeDatumAsync(nativeName, arguments.Materialize(memory), context.CaptureDirectory(), instruction.Source, token, RangeResultPhysical(frame, instruction.Result));
-        else
-        {
-            int target = Target(function.Function, instruction.B, instruction.C, instruction.Symbol, instruction.Source);
-            activation.Work.Counters.Call(pc, target);
-            if (instruction.B < 0 || instruction.C >= 0) ValidateInvocation(target, arguments.Count);
-            NativeEnvironment? environment = function.Environment;
-            if (TailCallPlan(activation, pc) is { } tail)
-            {
-                activation.Tail = new(target, environment, arguments, pc, activation, instruction, tail);
-                return new(pc + 1, true);
-            }
-            result = await RunFunctionAsync(target, environment, arguments, token);
-        }
-        frame.SetDatum(instruction.Result, result);
-        return new(pc + 1);
-    }
-
-    private static async ValueTask<NativeStep> AwaitCallResultAsync(NativeFrame frame, int destination, int pc, ValueTask<NativeDatum> pending)
-    {
-        frame.SetDatum(destination, await pending);
-        return new(pc + 1);
-    }
-
-    private ValueTask<NativeStep> CallNativeAsync(NativeFrame frame, NativeInstruction instruction, int pc, CancellationToken token, Msync.Core.NativeSignature? signature)
-    {
+        if (TryFastUnaryMath(activation.Work, frame, in instruction)) return new NativeStep(pc + 1);
         NativeDatum[] inputs;
         if (instruction.Inputs is { Count: > 0 } slotInputs)
         {
@@ -173,7 +161,7 @@ public sealed partial class NativeInterpreter
         ValueTask<NativeDatum> pending = InvokeNativeDatumAsync(instruction.Symbol!, inputs, context.CaptureDirectory(), instruction.Source, token, RangeResultPhysical(frame, instruction.Result), signature);
         if (!pending.IsCompleted || instruction.C >= 0) return AwaitCallNativeAsync(frame, instruction, pc, token, pending);
         frame.SetDatum(instruction.Result, pending.GetAwaiter().GetResult());
-        return new(new NativeStep(pc + 1));
+        return new NativeStep(pc + 1);
     }
 
     private async ValueTask<NativeStep> AwaitCallNativeAsync(NativeFrame frame, NativeInstruction instruction, int pc, CancellationToken token, ValueTask<NativeDatum> pending)
@@ -373,13 +361,14 @@ public sealed partial class NativeInterpreter
     private sealed class DeferredRange(NativeInterpreter interpreter, NativeDatum function, TypeRef itemType, NativeRuntimeContext origin) : IAsyncEnumerable<NativeValue>
     {
         private Task<NativeRange>? resolved;
+        internal bool CanResolveInline => !interpreter.DatumExecutionMayDefer(function);
         internal ValueTask<NativeRange> ResolveAsync(CancellationToken token) => new(resolved ??= ResolveCoreAsync(token));
         private async Task<NativeRange> ResolveCoreAsync(CancellationToken token)
         {
             using var directory = interpreter.EnterDeferredDirectory(origin.ForkDirectory());
             NativeValue callable = await function.ResolveAsync(token);
             NativeRange range = (await interpreter.InvokeAsync(callable, [], token)).AsRange();
-            return interpreter.RefineRange(await NativeBuiltins.DemandRangeAsync(range, token), itemType);
+            return interpreter.RefineRange(range, itemType);
         }
         internal async IAsyncEnumerable<NativeDatum> Datums([EnumeratorCancellation] CancellationToken token)
         {
@@ -394,7 +383,7 @@ public sealed partial class NativeInterpreter
         }
     }
 
-    private ValueTask<NativeStep> OpenIteratorAsync(Activation activation, NativeInstruction instruction, int pc, CancellationToken token)
+    private NativeStep OpenIterator(Activation activation, NativeInstruction instruction, int pc, CancellationToken token)
     {
         NativeDatum rangeDatum = activation.Frame.GetDatum(instruction.A);
         if (!rangeDatum.IsReady) return AwaitOpenIteratorAsync(activation, instruction, pc, rangeDatum, token);
@@ -407,7 +396,7 @@ public sealed partial class NativeInterpreter
             if (!dispose.IsCompletedSuccessfully) return AwaitOpenAfterDisposeAsync(activation, instruction, pc, range, dispose, token);
         }
         activation.Iterators[instruction.B] = GetDatumIterator(range, token);
-        return new(new NativeStep(pc + 1));
+        return new NativeStep(pc + 1);
     }
 
     private async ValueTask<NativeStep> AwaitOpenIteratorAsync(Activation activation, NativeInstruction instruction, int pc, NativeDatum rangeDatum, CancellationToken token)
@@ -427,16 +416,16 @@ public sealed partial class NativeInterpreter
         return new(pc + 1);
     }
 
-    private static ValueTask<NativeStep> NextIteratorAsync(Activation activation, NativeInstruction instruction, int pc, CancellationToken token)
+    private static NativeStep NextIterator(Activation activation, NativeInstruction instruction, int pc, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         IAsyncEnumerator<NativeDatum> iterator = activation.Iterators[instruction.A]
             ?? throw new InvalidOperationException("Iterator is not open.");
         ValueTask<bool> next = iterator.MoveNextAsync();
         if (!next.IsCompletedSuccessfully) return AwaitNextIteratorAsync(activation, iterator, instruction, pc, next);
-        if (!next.Result) return new(new NativeStep(instruction.B));
+        if (!next.Result) return new NativeStep(instruction.B);
         activation.Frame.SetDatum(instruction.Result, iterator.Current);
-        return new(new NativeStep(pc + 1));
+        return new NativeStep(pc + 1);
     }
 
     private static async ValueTask<NativeStep> AwaitNextIteratorAsync(Activation activation, IAsyncEnumerator<NativeDatum> iterator,
@@ -447,7 +436,7 @@ public sealed partial class NativeInterpreter
         return new(pc + 1);
     }
 
-    private static ValueTask<NativeStep> CloseIteratorAsync(Activation activation, int index, int pc)
+    private static NativeStep CloseIterator(Activation activation, int index, int pc)
     {
         IAsyncEnumerator<NativeDatum>? iterator = activation.Iterators[index];
         activation.Iterators[index] = null;
@@ -456,7 +445,7 @@ public sealed partial class NativeInterpreter
             ValueTask dispose = iterator.DisposeAsync();
             if (!dispose.IsCompletedSuccessfully) return AwaitCloseIteratorAsync(dispose, pc);
         }
-        return new(new NativeStep(pc + 1));
+        return new NativeStep(pc + 1);
     }
 
     private static async ValueTask<NativeStep> AwaitCloseIteratorAsync(ValueTask dispose, int pc)

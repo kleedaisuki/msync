@@ -35,6 +35,7 @@ public static partial class NativeArtifact
             output.Write((byte)value.Placement); output.Write(value.Function);
         }));
         Add(CompactSection.Plans, writer => WriteArray(writer, program.ExecutionPlans ?? [], WritePlan));
+        Add(CompactSection.Backend, writer => WriteBackend(writer, program.Backend));
 
         trace?.Metric("pool.strings", pool.Strings.Count);
         trace?.Metric("pool.source_spans", pool.Spans.Count);
@@ -94,8 +95,18 @@ public static partial class NativeArtifact
         WriteArray(writer, function.Signature.Captures, static (output, capture) =>
         { output.Write(capture.Type); output.Write((byte)capture.Mode); });
         writer.Write(function.ReflectionSignature is not null);
-        if (function.ReflectionSignature is not { } reflection) return;
-        WriteArray(writer, reflection.Parameters, WriteType); WriteType(writer, reflection.Result);
+        if (function.ReflectionSignature is { } reflection)
+        {
+            WriteArray(writer, reflection.Parameters, WriteType); WriteType(writer, reflection.Result);
+        }
+        NativeStoragePlan storage = function.Storage!;
+        WriteArray(writer, storage.Slots, static (output, value) => output.Write((byte)value));
+        WriteArray(writer, storage.Instructions, static (output, value) => output.Write((byte)value));
+        WriteArray(writer, storage.Calls, static (output, call) =>
+        {
+            output.Write(call.Instruction); output.Write(call.Snapshot);
+            WriteArray(output, call.Borrowed, static (target, value) => target.Write(value));
+        });
     }
 
     private static void WriteCompactDebug(CompactWriter writer, IReadOnlyList<NativeFunctionCode> functions)
@@ -115,7 +126,7 @@ public static partial class NativeArtifact
     private static NativeProgram ReadCompact(BinaryReader input, CompilationTrace? trace = null)
     {
         byte revision = input.ReadByte();
-        if (revision != CompactRevision) throw new MsyncException($"Unsupported native IR compact encoding {revision}; expected {CompactRevision}");
+        if (revision != CompactRevision) throw new MsyncException($"Unsupported native IR compact encoding {revision}; expected {CompactRevision}. Recompile the artifact from source.");
         int stringCount = ReadPoolCount(input, "string", 4);
         List<string> stringValues = [];
         for (int index = 0; index < stringCount; index++) stringValues.Add(ReadText(input));
@@ -133,7 +144,7 @@ public static partial class NativeArtifact
         trace?.Metric("pool.strings", strings.Length);
         trace?.Metric("pool.source_spans", spans.Length);
         uint sections = ReadUnsigned(input);
-        if (sections != (uint)CompactSection.Plans) throw new MsyncException("Native IR compact section set is incomplete or unknown");
+        if (sections != (uint)CompactSection.Backend) throw new MsyncException("Native IR compact section set is incomplete or unknown");
         (ModuleSemantics semantics, ArtifactStage stage, int optimization, int entry, bool preserve, BindingContext? context)
             = ReadSection(CompactSection.Header, ReadCompactHeader);
         NativeCodeType[] types = ReadSection(CompactSection.Types, reader => ReadArray(reader, value => new NativeCodeType(
@@ -145,14 +156,16 @@ public static partial class NativeArtifact
         NativeStatic[] statics = ReadSection(CompactSection.Statics, reader => ReadArray(reader,
             value => new NativeStatic(value.ReadInt32(), value.ReadInt32())));
         NativeConstant[] constants = ReadSection(CompactSection.Constants, reader => ReadArray(reader, ReadConstant));
-        NativeFunctionCode[] functions = ReadSection(CompactSection.Functions, reader => ReadArray(reader, ReadCompactFunction));
+        NativeFunctionCode[] functions = ReadSection(CompactSection.Functions, reader => ReadArray(reader, value => ReadCompactFunction(value)));
         SourceMapping[][] debug = ReadSection(CompactSection.Debug, reader => ReadCompactDebug(reader, functions, spans));
         _ = ReadSection(CompactSection.Code, reader => ReadCompactCode(reader, functions, debug, spans));
         NativeAllocationPlan[] allocations = ReadSection(CompactSection.Allocations, reader => ReadArray(reader, value => new NativeAllocationPlan(
             value.ReadInt32(), value.ReadInt32(), (NativeAllocationPlacement)value.ReadByte(), value.ReadInt32())));
         NativeExecutionPlan[] plans = ReadSection(CompactSection.Plans, reader => ReadArray(reader, ReadPlan));
-        return new(constants, functions, types, layouts, entry)
+        NativeBackendCode? backend = ReadSection(CompactSection.Backend, ReadBackend);
+        NativeProgram program = new(constants, functions, types, layouts, entry)
         {
+            Backend = backend,
             Projections = projections,
             Statics = statics,
             Allocations = allocations,
@@ -163,6 +176,7 @@ public static partial class NativeArtifact
             Context = context,
             ExecutionPlans = plans.Length == 0 ? null : plans
         };
+        return program;
 
         T ReadSection<T>(CompactSection expected, Func<CompactReader, T> read)
         {
@@ -251,8 +265,14 @@ public static partial class NativeArtifact
         NativeSignature signature = new(ReadArray(reader, value => value.ReadInt32()), reader.ReadInt32(),
             ReadArray(reader, value => new NativeCaptureContract(value.ReadInt32(), (NativeCaptureMode)value.ReadByte())));
         NativeFunctionReflectionSignature? reflection = reader.ReadBoolean() ? new(ReadArray(reader, ReadType), ReadType(reader)) : null;
+        NativeStoragePlan storage = new(ReadArray(reader, value => (NativeSlotStorage)value.ReadByte()),
+                ReadArray(reader, value => (NativeInstructionStorage)value.ReadByte()))
+            {
+                Calls = ReadArray(reader, value => new NativeCallStorage(value.ReadInt32(), value.ReadBoolean(),
+                    ReadArray(value, item => item.ReadBoolean())))
+            };
         return new(name, slots, new InstructionCount(instructionCount), signature, parameters, captures, iterators, template)
-        { ReflectionSignature = reflection };
+        { ReflectionSignature = reflection, Storage = storage };
     }
 
     private readonly record struct SourceMapping(int Pc, int Span);

@@ -32,8 +32,7 @@ internal static class ArtifactDisassembly
         using MemoryStream stream = new(bytes, writable: false);
         try
         {
-            NativeProgram program = NativeArtifact.HasMagic(bytes) ? NativeArtifact.Read(stream)
-                : NativeLegacyV6Importer.Import(LegacyV6Reader.Read(stream));
+            NativeProgram program = NativeArtifact.Read(stream);
             cancellationToken.ThrowIfCancellationRequested();
             int version = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(8, 2));
             return new NativeArtifactRenderer(program, version, sourceUri, cancellationToken).Render();

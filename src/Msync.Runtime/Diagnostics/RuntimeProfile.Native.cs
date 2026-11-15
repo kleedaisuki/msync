@@ -60,9 +60,45 @@ public sealed partial class RuntimeProfile
             ["call_arguments_borrowed"] = (ulong)counters.BorrowedArguments,
             ["call_arguments_copied"] = (ulong)counters.CopiedArguments,
             ["call_argument_snapshots"] = (ulong)counters.ArgumentSnapshots,
+            ["call_argument_snapshot_allocations"] = (ulong)counters.ArgumentSnapshotAllocations,
+            ["acquire_descendant_futures"] = (ulong)counters.AcquireDescendantFutures,
+            ["acquire_descendant_processes"] = (ulong)counters.AcquireDescendantProcesses,
+            ["work_forwarded_futures"] = (ulong)counters.WorkForwardedFutures,
+            ["work_forwarded_processes"] = (ulong)counters.WorkForwardedProcesses,
+            ["tier_ready_materializations"] = (ulong)counters.TierReadyMaterializations,
+            ["tier_context_pending"] = (ulong)counters.TierContextPending,
+            ["tier_context_unrelated_pending"] = (ulong)counters.TierContextUnrelatedPending,
+            ["direct_return_slots"] = (ulong)counters.DirectReturnSlots,
+            ["direct_return_scalars"] = (ulong)counters.DirectReturnScalars,
+            ["compiled_reads"] = (ulong)counters.CompiledReads,
+            ["compiled_copies"] = (ulong)counters.CompiledCopies,
+            ["refinement_copies"] = (ulong)counters.RefinementCopies,
+            ["refinement_fallbacks"] = (ulong)counters.RefinementFallbacks,
+            ["tier_copy_fallbacks"] = (ulong)counters.TierCopyFallbacks,
+            ["tier_copy_zero_roots"] = (ulong)counters.TierCopyZeroRoots,
+            ["tier_copy_one_root"] = (ulong)counters.TierCopyOneRoot,
+            ["tier_copy_two_roots"] = (ulong)counters.TierCopyTwoRoots,
+            ["tier_copy_bulk_roots"] = (ulong)counters.TierCopyBulkRoots,
+            ["tier_workspace_leases"] = (ulong)counters.TierWorkspaceLeases,
+            ["tier_workspace_reuses"] = (ulong)counters.TierWorkspaceReuses,
+            ["activation_descriptor_allocations"] = (ulong)counters.ActivationDescriptorAllocations,
+            ["activation_descriptor_reuses"] = (ulong)counters.ActivationDescriptorReuses,
+            ["stack_frames"] = (ulong)counters.StackFrames,
+            ["stack_frame_bytes"] = (ulong)counters.StackFrameBytes,
+            ["stack_frame_roots"] = (ulong)counters.StackFrameRoots,
+            ["stack_segment_allocations"] = (ulong)counters.StackSegmentAllocations,
             ["frame_storage_reuses"] = (ulong)counters.FrameStorageReuses,
+            ["guest_stack_limited_calls"] = (ulong)counters.GuestStackLimitedCalls,
+            ["guest_loop_handoffs"] = (ulong)counters.GuestLoopHandoffs,
+            ["guest_direct_calls"] = (ulong)counters.GuestDirectCalls,
+            ["guest_leaf_calls"] = (ulong)counters.GuestLeafCalls,
+            ["guest_call_pushes"] = (ulong)counters.GuestCallPushes,
+            ["guest_call_resumes"] = (ulong)counters.GuestCallResumes,
+            ["guest_max_call_depth"] = (ulong)counters.GuestMaxCallDepth,
+            ["heap_escaping_locations"] = (ulong)counters.HeapEscapingLocations,
             ["tail_arguments_copied"] = (ulong)counters.TailArguments,
             ["tail_argument_buffers"] = (ulong)counters.TailArgumentBuffers,
+            ["tail_argument_buffer_reuses"] = (ulong)counters.TailArgumentBufferReuses,
             ["copies"] = (ulong)counters.Copies,
             ["moves"] = (ulong)counters.Moves,
             ["drops"] = (ulong)counters.Drops,
@@ -72,6 +108,7 @@ public sealed partial class RuntimeProfile
             ["jit_entries"] = (ulong)counters.TierEntries,
             ["jit_operations"] = (ulong)counters.TierOperations,
             ["jit_direct_operations"] = (ulong)counters.TierDirectOperations,
+            ["jit_readiness_exits"] = (ulong)counters.TierReadinessExits,
             ["jit_guard_misses"] = (ulong)counters.TierGuardMisses,
             ["jit_deoptimizations"] = (ulong)counters.TierDeoptimizations,
             ["jit_suspensions"] = (ulong)counters.TierSuspensions,
@@ -81,6 +118,10 @@ public sealed partial class RuntimeProfile
             ["jit_raw_operations"] = (ulong)counters.TierRawOperations,
             ["jit_register_regions"] = (ulong)counters.TierRegisterRegions,
             ["jit_register_values"] = (ulong)counters.TierRegisterValues,
+            ["jit_u64_values"] = (ulong)counters.TierUnsignedValues,
+            ["jit_initialization_checks_elided"] = (ulong)counters.TierInitializationChecksElided,
+            ["jit_initialization_writes_elided"] = (ulong)counters.TierInitializationWritesElided,
+            ["jit_u64_operations"] = (ulong)counters.TierUnsignedOperations,
             ["jit_register_spills"] = (ulong)counters.TierRegisterSpills,
             ["jit_eliminated_frame_stores"] = (ulong)counters.TierEliminatedStores,
             ["jit_selection_ns"] = (ulong)counters.TierSelectionNs,
@@ -180,12 +221,27 @@ public sealed partial class RuntimeProfile
         internal long Elements;
         internal long StorageBytes;
         internal long FrameAllocations;
-        internal long BorrowedArguments, CopiedArguments, ArgumentSnapshots, FrameStorageReuses;
-        internal long TailArguments, TailArgumentBuffers;
+        internal long AcquireDescendantFutures, AcquireDescendantProcesses;
+        internal long WorkForwardedFutures, WorkForwardedProcesses;
+        internal long GuestStackLimitedCalls, GuestLoopHandoffs;
+        internal long TierReadyMaterializations;
+        internal long TierContextPending, TierContextUnrelatedPending;
+        internal long DirectReturnSlots, DirectReturnScalars;
+        internal long TierWorkspaceLeases, TierWorkspaceReuses;
+        internal long TierCopyFallbacks, TierCopyZeroRoots, TierCopyOneRoot, TierCopyTwoRoots, TierCopyBulkRoots;
+        internal long ActivationDescriptorAllocations, ActivationDescriptorReuses;
+        internal long StackFrames, StackFrameBytes, StackFrameRoots, StackSegmentAllocations;
+        internal long BorrowedArguments, CopiedArguments, ArgumentSnapshots, FrameStorageReuses, HeapEscapingLocations;
+        internal long TailArguments, TailArgumentBuffers, TailArgumentBufferReuses, ArgumentSnapshotAllocations;
+        internal long CompiledCopies, CompiledReads;
+        internal long RefinementCopies, RefinementFallbacks;
         internal long Copies;
         internal long Moves;
         internal long Drops;
+        internal long TierUnsignedValues, TierUnsignedOperations, TierInitializationChecksElided;
+        internal long TierInitializationWritesElided;
         internal long TierCompilations, TierCompileNs, TierCodeBytes, TierEntries, TierOperations;
+        internal long TierReadinessExits, GuestDirectCalls, GuestLeafCalls, GuestCallPushes, GuestCallResumes, GuestMaxCallDepth;
         internal long TierDirectOperations, TierGuardMisses, TierDeoptimizations, TierSuspensions, TierRecompilations;
         internal long LinkedEntries, LinkedOperations;
         internal long TierRawOperations;
@@ -221,6 +277,10 @@ public sealed partial class RuntimeProfile
             if (counters is null) return;
             Interlocked.Add(ref counters.TierRegisterRegions, statistics.Regions);
             Interlocked.Add(ref counters.TierRegisterValues, statistics.Values);
+            Interlocked.Add(ref counters.TierUnsignedValues, statistics.UnsignedValues);
+            Interlocked.Add(ref counters.TierUnsignedOperations, statistics.UnsignedOperations);
+            Interlocked.Add(ref counters.TierInitializationChecksElided, statistics.InitializationChecksElided);
+            Interlocked.Add(ref counters.TierInitializationWritesElided, statistics.InitializationWritesElided);
             Interlocked.Add(ref counters.TierRegisterSpills, statistics.Spills);
             Interlocked.Add(ref counters.TierEliminatedStores, statistics.EliminatedStores);
             Interlocked.Add(ref counters.TierSelectionNs, statistics.SelectionNanoseconds);
@@ -244,6 +304,32 @@ public sealed partial class RuntimeProfile
         internal void TierBridgeBatch(long count)
         {
             if (counters is not null) Interlocked.Add(ref counters.TierOperations, count);
+        }
+        internal void GuestDirectCall(bool leaf)
+        {
+            if (counters is null) return;
+            Interlocked.Increment(ref counters.GuestDirectCalls);
+            if (leaf) Interlocked.Increment(ref counters.GuestLeafCalls);
+        }
+        internal void GuestCall(int depth)
+        {
+            if (counters is null) return;
+            Interlocked.Increment(ref counters.GuestCallPushes);
+            long previous = Volatile.Read(ref counters.GuestMaxCallDepth);
+            while (depth > previous)
+            {
+                long observed = Interlocked.CompareExchange(ref counters.GuestMaxCallDepth, depth, previous);
+                if (observed == previous) break;
+                previous = observed;
+            }
+        }
+        internal void GuestResume()
+        {
+            if (counters is not null) Interlocked.Increment(ref counters.GuestCallResumes);
+        }
+        internal void TierReadinessExit()
+        {
+            if (counters is not null) Interlocked.Increment(ref counters.TierReadinessExits);
         }
         internal void TierGuardMiss()
         {
@@ -293,14 +379,104 @@ public sealed partial class RuntimeProfile
             if (counters is null) return;
             Interlocked.Add(ref counters.TailArguments, count);
             if (allocated) Interlocked.Increment(ref counters.TailArgumentBuffers);
+            else Interlocked.Increment(ref counters.TailArgumentBufferReuses);
         }
-        internal void CallStorage(int borrowed, int copied, bool snapshot, bool reused)
+        internal void AcquireDescendants(int futures, int processes)
+        {
+            if (counters is null) return;
+            Interlocked.Add(ref counters.AcquireDescendantFutures, futures);
+            Interlocked.Add(ref counters.AcquireDescendantProcesses, processes);
+        }
+        internal void ForwardWork(bool process)
+        {
+            if (counters is null) return;
+            if (process) Interlocked.Increment(ref counters.WorkForwardedProcesses);
+            else Interlocked.Increment(ref counters.WorkForwardedFutures);
+        }
+        internal void StackLimitedCall()
+        {
+            if (counters is not null) Interlocked.Increment(ref counters.GuestStackLimitedCalls);
+        }
+        internal void GuestLoopHandoff()
+        {
+            if (counters is not null) Interlocked.Increment(ref counters.GuestLoopHandoffs);
+        }
+        internal void MaterializedFutures(int count)
+        {
+            if (counters is not null) Interlocked.Add(ref counters.TierReadyMaterializations, count);
+        }
+        internal void TierPendingContext(bool global, bool relevant)
+        {
+            if (counters is null) return;
+            if (relevant) Interlocked.Increment(ref counters.TierContextPending);
+            else if (global) Interlocked.Increment(ref counters.TierContextUnrelatedPending);
+        }
+        internal void DirectReturn(bool scalar)
+        {
+            if (counters is null) return;
+            if (scalar) Interlocked.Increment(ref counters.DirectReturnScalars);
+            else Interlocked.Increment(ref counters.DirectReturnSlots);
+        }
+        internal void CompiledRead()
+        {
+            if (counters is not null) Interlocked.Increment(ref counters.CompiledReads);
+        }
+        internal void CompiledCopy()
+        {
+            if (counters is not null) Interlocked.Increment(ref counters.CompiledCopies);
+        }
+        internal void RefinementCopy(bool ready)
+        {
+            if (counters is null) return;
+            if (ready) Interlocked.Increment(ref counters.RefinementCopies);
+            else Interlocked.Increment(ref counters.RefinementFallbacks);
+        }
+        internal void TierCopy(int roots)
+        {
+            if (counters is null) return;
+            switch (roots)
+            {
+                case -1: Interlocked.Increment(ref counters.TierCopyFallbacks); break;
+                case 0: Interlocked.Increment(ref counters.TierCopyZeroRoots); break;
+                case 1: Interlocked.Increment(ref counters.TierCopyOneRoot); break;
+                case 2: Interlocked.Increment(ref counters.TierCopyTwoRoots); break;
+                default: Interlocked.Increment(ref counters.TierCopyBulkRoots); break;
+            }
+        }
+        internal void TierWorkspace(bool reused)
+        {
+            if (counters is null) return;
+            if (reused) Interlocked.Increment(ref counters.TierWorkspaceReuses);
+            else Interlocked.Increment(ref counters.TierWorkspaceLeases);
+        }
+        internal void CallActivation(bool reused)
+        {
+            if (counters is null) return;
+            if (reused) Interlocked.Increment(ref counters.ActivationDescriptorReuses);
+            else Interlocked.Increment(ref counters.ActivationDescriptorAllocations);
+        }
+        internal void StackFrame(int bytes, int roots, bool grew)
+        {
+            if (counters is null) return;
+            Interlocked.Increment(ref counters.StackFrames);
+            Interlocked.Add(ref counters.StackFrameBytes, bytes);
+            Interlocked.Add(ref counters.StackFrameRoots, roots);
+            if (grew) Interlocked.Increment(ref counters.StackSegmentAllocations);
+        }
+        internal void CallStorage(int borrowed, int copied, bool snapshot, bool snapshotAllocated, bool reused)
         {
             if (counters is null) return;
             Interlocked.Add(ref counters.BorrowedArguments, borrowed);
             Interlocked.Add(ref counters.CopiedArguments, copied);
             if (snapshot) Interlocked.Increment(ref counters.ArgumentSnapshots);
+            if (snapshotAllocated) Interlocked.Increment(ref counters.ArgumentSnapshotAllocations);
             if (reused) Interlocked.Increment(ref counters.FrameStorageReuses);
+        }
+        internal void EscapingLocation(NativeLayout layout)
+        {
+            if (counters is null) return;
+            Interlocked.Increment(ref counters.HeapEscapingLocations);
+            Allocation(layout);
         }
         internal void Native(string name)
         {

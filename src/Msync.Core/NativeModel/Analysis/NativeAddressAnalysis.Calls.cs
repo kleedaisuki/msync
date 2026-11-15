@@ -94,6 +94,7 @@ internal sealed partial class NativeAddressAnalysis
         private readonly Stack<NativeAddressAnalysis> newlyRegistered = [];
         private readonly Queue<NativeAddressAnalysis> dirty = [];
         private bool running, complete;
+        internal NativeProgram Program { get; private set; } = program;
         internal object Gate { get; } = new();
         internal void Register(int index, NativeAddressAnalysis facts)
         {
@@ -110,7 +111,53 @@ internal sealed partial class NativeAddressAnalysis
         internal NativeAddressAnalysis Function(int index)
         {
             lock (Gate) return functions.TryGetValue(index, out NativeAddressAnalysis? facts)
-                ? facts : new(program, program.Functions[index], this, index);
+                ? facts : new(Program, Program.Functions[index], this, index);
+        }
+        internal void Invalidate(NativeProgram updated, params ReadOnlySpan<int> changedFunctions)
+        {
+            lock (Gate)
+            {
+                Program = updated;
+                if (changedFunctions.Length == 0 || functions.Count == 0) return;
+                HashSet<int> affected = [];
+                Queue<int> pending = new();
+                foreach (int fn in changedFunctions)
+                    if (functions.ContainsKey(fn) && affected.Add(fn)) pending.Enqueue(fn);
+                while (pending.TryDequeue(out int current))
+                {
+                    if (!functions.TryGetValue(current, out NativeAddressAnalysis? ana)) continue;
+                    foreach (NativeAddressAnalysis caller in ana.callers)
+                        if (affected.Add(caller.functionIndex)) pending.Enqueue(caller.functionIndex);
+                }
+                if (affected.Count == 0) return;
+                foreach (int id in affected)
+                {
+                    if (!functions.Remove(id, out NativeAddressAnalysis? ana)) continue;
+                    foreach (Invocation inv in ana.invocations.Values) inv.Callee.callers.Remove(ana);
+                    ana.frozen = true;
+                    ana.queued = false;
+                }
+                if (newlyRegistered.Count > 0)
+                {
+                    List<NativeAddressAnalysis> kept = new(newlyRegistered.Count);
+                    while (newlyRegistered.Count > 0)
+                    {
+                        NativeAddressAnalysis item = newlyRegistered.Pop();
+                        if (functions.ContainsKey(item.functionIndex)) kept.Add(item);
+                    }
+                    for (int i = kept.Count - 1; i >= 0; i--) newlyRegistered.Push(kept[i]);
+                }
+                if (dirty.Count > 0)
+                {
+                    int count = dirty.Count;
+                    for (int i = 0; i < count; i++)
+                    {
+                        NativeAddressAnalysis item = dirty.Dequeue();
+                        if (functions.ContainsKey(item.functionIndex)) dirty.Enqueue(item);
+                    }
+                }
+                complete = newlyRegistered.Count == 0 && dirty.Count == 0 && functions.Values.All(item => item.frozen);
+            }
         }
         internal void Solve() { lock (Gate) SolveLocked(); }
         private void SolveLocked()
@@ -119,9 +166,26 @@ internal sealed partial class NativeAddressAnalysis
             running = true;
             try
             {
+                int deferrals = 0;
                 while (newlyRegistered.Count > 0 || dirty.Count > 0)
                 {
-                    NativeAddressAnalysis facts = newlyRegistered.Count > 0 ? newlyRegistered.Pop() : dirty.Dequeue();
+                    NativeAddressAnalysis facts;
+                    if (newlyRegistered.Count > 0)
+                    {
+                        facts = newlyRegistered.Pop();
+                        deferrals = 0;
+                    }
+                    else
+                    {
+                        facts = dirty.Dequeue();
+                        if (deferrals < dirty.Count && facts.HasQueuedCallee())
+                        {
+                            dirty.Enqueue(facts);
+                            deferrals++;
+                            continue;
+                        }
+                        deferrals = 0;
+                    }
                     facts.queued = false;
                     if (facts.frozen || !facts.Step()) continue;
                     facts.SummaryVersion++;
@@ -134,6 +198,16 @@ internal sealed partial class NativeAddressAnalysis
             }
             finally { running = false; }
         }
+    }
+
+    private bool HasQueuedCallee()
+    {
+        foreach (Invocation invocation in invocations.Values)
+        {
+            NativeAddressAnalysis callee = invocation.Callee;
+            if (!ReferenceEquals(callee, this) && callee.queued && !callee.frozen) return true;
+        }
+        return false;
     }
 
     private readonly Dictionary<(int Pc, int Creator, int Creation, int Target, int Environment, string? Native), NativeCallableOrigin> callableOrigins = [];
@@ -247,7 +321,7 @@ internal sealed partial class NativeAddressAnalysis
             bool argsChanged = false;
             for (int index = 0; index < arguments.Length; index++) argsChanged |= invocation.Arguments[index].Merge(arguments[index]);
             changed |= argsChanged;
-            if (argsChanged || callable.Captures.Length != 0 || !invocation.IsCurrent(destination, effectSink))
+            if (argsChanged || !invocation.IsCurrent(destination, effectSink))
             {
                 changed |= invocation.Import(invocation.Callee.returns, destination);
                 changed |= invocation.Import(invocation.Callee.externalWrites, effectSink);
@@ -331,7 +405,7 @@ internal sealed partial class NativeAddressAnalysis
     private bool Next(int pc, NativeInstruction instruction, Points destination)
     {
         bool changed = false;
-        foreach (int id in Flow.Iterators(pc, instruction.A)) changed |= ReadElements(Node(id), destination, []);
+        foreach (int id in Flow.Iterators(pc, instruction.A)) changed |= ReadElements(Node(id), destination);
         return changed;
     }
 
@@ -339,15 +413,27 @@ internal sealed partial class NativeAddressAnalysis
     {
         int previous = destination.Elements.Count + destination.RangeSources.Count;
         destination.Elements.UnionWith(in source.Elements);
-        destination.MutRangeSources.UnionWith(in source.RangeSources);
+        if (source.RangeSources.Count != 0) destination.MutRangeSources.UnionWith(in source.RangeSources);
         if (source.Formals.Count != 0 || source.Applications.Count != 0) destination.MutRangeSources.Add(source);
         bool changed = previous != destination.Elements.Count + destination.RangeSources.Count;
         if (source.ElementsUnknown || source.Top) changed |= destination.UnknownElements();
         return changed;
     }
 
-    private static bool ReadElements(Points source, Points destination, HashSet<Points> active)
+    private static bool ReadElements(Points source, Points destination, HashSet<Points>? active = null)
     {
+        if (active is null)
+        {
+            if (source.RangeSources.Count == 0)
+            {
+                bool directChanged = source.Top || source.ElementsUnknown ? destination.MakeUnknown() : false;
+                if (source.Formals.Count != 0 || source.Applications.Count != 0)
+                    directChanged |= destination.MutElementSources.Add(source) | destination.MutLayoutElements.Add(source);
+                for (int i = 0; i < source.Elements.Count; i++) directChanged |= destination.Merge(source.Elements[i]);
+                return directChanged;
+            }
+            active = [];
+        }
         if (!active.Add(source)) return false;
         bool changed = source.Top || source.ElementsUnknown ? destination.MakeUnknown() : false;
         if (source.Formals.Count != 0 || source.Applications.Count != 0)
@@ -370,8 +456,10 @@ internal sealed partial class NativeAddressAnalysis
             Points item = ElementValue(pc, -9), discarded = ElementValue(pc, -10);
             for (int index = 0; index < arguments.Length; index++)
                 if ((signature.Parameters[Math.Min(index, signature.Parameters.Count - 1)].Kind & TypeKind.Range) != 0)
-                    changed |= ReadElements(arguments[index], item, []);
-            changed |= Invoke(pc, arguments[callback.FunctionArgument], Enumerable.Repeat(item, callback.Arity).ToArray(), discarded, effectSink: effectSink, origin: origin, role: 1);
+                    changed |= ReadElements(arguments[index], item);
+            Points[] callbackArgs = callback.Arity == 1 ? [item] : new Points[callback.Arity];
+            if (callback.Arity > 1) Array.Fill(callbackArgs, item);
+            changed |= Invoke(pc, arguments[callback.FunctionArgument], callbackArgs, discarded, effectSink: effectSink, origin: origin, role: 1);
         }
         switch (signature.ResultRule)
         {
@@ -386,16 +474,16 @@ internal sealed partial class NativeAddressAnalysis
                 return CopyElements(arguments[0], destination) | CopyElements(arguments[1], destination);
             case NativeResultRule.RangeMergeLeft: return CopyElements(arguments[0], destination);
             case NativeResultRule.RangeItem:
-                return ReadElements(arguments[0], destination, []) | changed;
+                return ReadElements(arguments[0], destination) | changed;
             case NativeResultRule.Transform:
                 Points input = ElementValue(pc, -2), output = ElementValue(pc, -1);
-                changed |= ReadElements(arguments[0], input, []);
+                changed |= ReadElements(arguments[0], input);
                 changed |= Invoke(pc, arguments[1], [input], output, effectSink: effectSink, origin: origin, role: 2);
                 return destination.Elements.Add(output) | changed;
             case NativeResultRule.RangeScan:
                 Points accumulator = ElementValue(pc, -4), itemInput = ElementValue(pc, -5), scanned = ElementValue(pc, -6);
                 changed |= accumulator.Merge(arguments[1]) | accumulator.Merge(scanned);
-                changed |= ReadElements(arguments[0], itemInput, []);
+                changed |= ReadElements(arguments[0], itemInput);
                 changed |= Invoke(pc, arguments[2], [accumulator, itemInput], scanned, effectSink: effectSink, origin: origin, role: 3);
                 return destination.Elements.Add(scanned) | changed;
             case NativeResultRule.RangeOfType:
@@ -424,19 +512,48 @@ internal sealed partial class NativeAddressAnalysis
         private readonly Dictionary<(int Function, int Allocation, int Slot), ForeignRegion> regions = [];
         private readonly HashSet<(Points, Points)> visited = [];
         private long lastCalleeVersion = -1;
+        private long lastCallerStateVersion = -1;
+        private long lastCallerWriteEpoch = -1;
+        private bool usesCaptures;
+        private long[]? lastCaptureStamps;
+        private Points?[]? captureContentsCache;
+        private readonly List<KeyValuePair<int, Points>> foreignFieldsScratch = [];
         private Points? lastDestination;
         private Points? lastEffectSink;
 
         internal bool IsCurrent(Points destination, Points effectSink)
             => lastCalleeVersion == Callee.SummaryVersion
             && ReferenceEquals(lastDestination, destination)
-            && ReferenceEquals(lastEffectSink, effectSink);
+            && ReferenceEquals(lastEffectSink, effectSink)
+            && (!usesCaptures || (lastCallerStateVersion == caller.stateVersion
+                && lastCallerWriteEpoch == caller.writeEpoch
+                && CapturesUnchanged()));
+
+        private bool CapturesUnchanged()
+        {
+            if (callable.Captures.Length == 0) return true;
+            if (lastCaptureStamps is null) return false;
+            for (int i = 0; i < callable.Captures.Length; i++)
+                if (callable.Captures[i].MonotonicStamp() != lastCaptureStamps[i]) return false;
+            return true;
+        }
 
         internal void MarkCurrent(Points destination, Points effectSink)
         {
             lastCalleeVersion = Callee.SummaryVersion;
             lastDestination = destination;
             lastEffectSink = effectSink;
+            if (usesCaptures)
+            {
+                lastCallerStateVersion = caller.stateVersion;
+                lastCallerWriteEpoch = caller.writeEpoch;
+                if (callable.Captures.Length != 0)
+                {
+                    lastCaptureStamps ??= new long[callable.Captures.Length];
+                    for (int i = 0; i < callable.Captures.Length; i++)
+                        lastCaptureStamps[i] = callable.Captures[i].MonotonicStamp();
+                }
+            }
         }
 
         private bool importing, fieldChanged;
@@ -465,14 +582,15 @@ internal sealed partial class NativeAddressAnalysis
                 Formal formal = source.Formals[i];
                 if (formal.Kind == FormalKind.Argument)
                     changed |= formal.Index < Arguments.Length ? destination.Merge(Arguments[formal.Index], source.LayoutFormals.Contains(formal)) : destination.MakeUnknown();
-                else if (formal.Index >= callable.Captures.Length) changed |= destination.MakeUnknown();
+                else if (formal.Index >= callable.Captures.Length) { usesCaptures = true; changed |= destination.MakeUnknown(); }
                 else if (formal.Kind == FormalKind.CaptureContents)
                 {
-                    Points contents = new();
+                    usesCaptures = true;
+                    Points contents = (captureContentsCache ??= new Points?[callable.Captures.Length])[formal.Index] ??= new();
                     caller.Read(contents, callable.Captures[formal.Index], Callee.function.Signature.Captures[formal.Index].Type);
                     changed |= destination.Merge(contents, source.LayoutFormals.Contains(formal));
                 }
-                else changed |= destination.Merge(callable.Captures[formal.Index], source.LayoutFormals.Contains(formal));
+                else { usesCaptures = true; changed |= destination.Merge(callable.Captures[formal.Index], source.LayoutFormals.Contains(formal)); }
             }
             for (int i = 0; i < source.Projections.Count; i++)
             {
@@ -519,7 +637,7 @@ internal sealed partial class NativeAddressAnalysis
                 Points input = Imported(expression);
                 changed |= Import(expression, input, visited);
                 if (!projected.TryGetValue(expression.Canonical, out Points? result)) projected.Add(expression.Canonical, result = new());
-                changed |= ReadElements(input, result, []) | destination.Merge(result, source.LayoutElements.Contains(expression));
+                changed |= ReadElements(input, result) | destination.Merge(result, source.LayoutElements.Contains(expression));
             }
             for (int i = 0; i < source.RangeSources.Count; i++)
             {
@@ -545,7 +663,10 @@ internal sealed partial class NativeAddressAnalysis
                 changed |= destination.Foreign.Add(new(region, target.Field));
                 if (ReferenceEquals(target.Region, region))
                 {
-                    foreach (var field in target.Region.Fields.ToArray()) changed |= Import(field.Value, Field(region, field.Key), visited);
+                    foreignFieldsScratch.Clear();
+                    foreach (var field in target.Region.Fields) foreignFieldsScratch.Add(field);
+                    for (int j = 0; j < foreignFieldsScratch.Count; j++)
+                        changed |= Import(foreignFieldsScratch[j].Value, Field(region, foreignFieldsScratch[j].Key), visited);
                 }
                 else
                 {

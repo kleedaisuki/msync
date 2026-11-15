@@ -7,22 +7,23 @@ namespace Msync.Runtime.Native;
 public static class NativePreparation
 {
     public static NativeProgram Prepare(NativeProgram program, ExecutionOptions? options = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, CompilationTrace? trace = null)
     {
         if (program.Stage == ArtifactStage.Executable) return program;
         cancellationToken.ThrowIfCancellationRequested();
         NativeRuntimeContext origin = new(options, program.Context);
-        return Prepare(program, new BindingContext(origin.WorkingDirectory, origin.HomeDirectory, origin.SourceFile), options, cancellationToken);
+        return Prepare(program, new BindingContext(origin.WorkingDirectory, origin.HomeDirectory, origin.SourceFile), options, cancellationToken, trace);
     }
 
     public static NativeProgram Prepare(NativeProgram program, BindingContext binding, ExecutionOptions? options = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, CompilationTrace? trace = null)
     {
         if (program.Stage == ArtifactStage.Executable) return program;
         cancellationToken.ThrowIfCancellationRequested();
-        if (!program.Functions.Any(function => function.Instructions.Any(IsContextual)))
-            return program with { Context = binding, Stage = ArtifactStage.Executable, ExecutionPlans = [] };
-        return new NativePreparationState(program, options, cancellationToken, binding: binding).Run();
+        NativeProgram prepared = !program.Functions.Any(function => function.Instructions.Any(IsContextual))
+            ? program with { Context = binding, Stage = ArtifactStage.Executable, ExecutionPlans = [] }
+            : new NativePreparationState(program, options, cancellationToken, binding: binding).Run();
+        return NativeBackendCompiler.Compile(prepared, new(options, binding), trace);
     }
 
     private static bool IsContextual(NativeInstruction instruction) => instruction.Op is NativeOp.Transfer or NativeOp.SelectPath

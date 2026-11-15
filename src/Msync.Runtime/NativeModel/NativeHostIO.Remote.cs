@@ -32,7 +32,7 @@ public static partial class NativeHostIO
         IReadOnlyList<string> arguments, bool input, NativeRuntimeContext? context)
     {
         ProcessStartInfo info = NativeTransferProtocol.CreateShellProcessStartInfo(connection.Kind, connection.Address,
-            script, arguments, redirectInput: true);
+            script, arguments, redirectInput: true, context);
         info.RedirectStandardError = true;
         if (context is not null) info.WorkingDirectory = context.WorkingDirectory;
         Process process = Process.Start(info) ?? throw new IOException($"Cannot start native transport for {connection}.");

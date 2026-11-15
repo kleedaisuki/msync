@@ -125,6 +125,8 @@ def compilation(binary: Path, fixture: Path) -> None:
             "compiler.hir.seal",
             "compiler.lower.layouts",
             "compiler.lower.function",
+            "compiler.storage.function",
+            "compiler.storage.calls",
             "compiler.artifact.encode",
             "compiler.artifact.encode_section",
         } <= names, names
@@ -180,11 +182,9 @@ def compilation(binary: Path, fixture: Path) -> None:
         assert {
             "compiler.artifact.decode",
             "compiler.artifact.decode_section",
-            "compiler.verify",
-            "compiler.verify.function",
-            "compiler.verify.pointers",
-            "compiler.verify.flow",
         } <= replay_names
+        assert not any(name.startswith(("compiler.verify", "compiler.storage")) for name in replay_names)
+        assert "compiler.artifact.allocation_hints" not in replay_names
         assert "compiler.parse" not in replay_names
     print(
         "PASS source O0–O3: unchanged replay, detailed ownership, cache/flow/pass counts and real replay"
@@ -284,10 +284,10 @@ def hir_and_sqlite(binary: Path, fixture: Path) -> None:
         }
         assert {
             "compiler.hir.decode",
-            "compiler.hir.verify",
             "compiler.lower.function",
             "optimizer.function",
         } <= names, names
+        assert "compiler.hir.verify" not in names
         assert "compiler.parse" not in names and "compiler.bind" not in names
         orphans: int = connection.execute("""SELECT count(*) FROM records child
             LEFT JOIN spans parent ON parent.trace_id=child.trace_id

@@ -222,7 +222,20 @@ internal sealed partial class NativePreparationState
             };
         }
         NativeFunctionCode[] functions = program.Functions.ToArray();
-        functions[program.EntryPoint] = function with { Instructions = output, Slots = slots };
+        NativeStoragePlan? storage = function.Storage;
+        if (storage is not null)
+        {
+            NativeInstructionStorage[] instructions = new NativeInstructionStorage[output.Count];
+            for (int index = 0; index < code.Count; index++)
+                if (!replacements.ContainsKey(index)) instructions[positions[index]] = storage.Instructions[index];
+            storage = new(storage.Slots.Concat(Enumerable.Repeat(NativeSlotStorage.PrivateArgument,
+                slots.Count - function.Slots.Count)).ToArray(), instructions)
+            {
+                Calls = storage.Calls.Where(call => !replacements.ContainsKey(call.Instruction))
+                    .Select(call => call with { Instruction = positions[call.Instruction] }).ToArray()
+            };
+        }
+        functions[program.EntryPoint] = function with { Instructions = output, Slots = slots, Storage = storage };
         return program with
         {
             Constants = constants,

@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Msync.Core;
 using Msync.Core.Native;
 
@@ -8,11 +9,22 @@ public static partial class NativeOptimizer
     public static NativeProgram Optimize(NativeProgram program, int level = 2)
         => OptimizeCore(program, level, null);
 
+    public static NativeProgram PlanStorage(NativeProgram program, CompilationTrace? trace = null) =>
+        NativeStoragePlanning.Run(program, trace);
+
     public static NativeProgram Optimize(NativeProgram program, int level, CompilationTrace? trace)
     {
-        if (trace?.IncludeOptimizerPasses != true) return Optimize(program, level);
+        if (trace?.IncludeOptimizerPasses != true)
+        {
+            NativeProgram result = OptimizeCore(program, level, null);
+            return result;
+        }
         NativeOptimizationProfile profile = new(trace);
-        try { return OptimizeCore(program, level, profile); }
+        try
+        {
+            NativeProgram result = OptimizeCore(program, level, profile);
+            return result;
+        }
         catch (Exception error) { profile.Fail(error); throw; }
         finally { profile.Publish(); }
     }
@@ -21,16 +33,17 @@ public static partial class NativeOptimizer
     {
         ArgumentNullException.ThrowIfNull(program);
         if (level is < 0 or > 3) throw new ArgumentOutOfRangeException(nameof(level));
-        if (level == 0) return program with { OptimizationLevel = level };
+        if (level == 0) return NativeStoragePlanning.Run(program with { OptimizationLevel = level }, profile?.Trace);
+        program = program with { Functions = program.Functions.Select(function => function with { Storage = null }).ToArray() };
         int[] inlineBudgets = Enumerable.Repeat(level == 2 ? 384 : 1536, program.Functions.Count).ToArray();
-        program = NativeInlining.Run(program, level, profile, inlineBudgets);
+        NativeAddressAnalysis.ProgramFacts? sharedFacts = null;
+        program = NativeInlining.Run(program, level, profile, inlineBudgets, ref sharedFacts);
         NativeConstantPool constants = new(program.Constants);
         NativeFunctionCode[] functions = program.Functions.ToArray();
         List<NativeAllocationPlan> plans = program.Allocations
             .Where(plan => plan.Placement == NativeAllocationPlacement.Eliminated).ToList();
         NativeProgram workingProgram = program with { Functions = functions };
-        NativeAddressAnalysis.ProgramFacts? sharedFacts = null;
-        for (int function = 0; function < functions.Length; function++)
+        for (int function = functions.Length - 1; function >= 0; function--)
         {
             profile?.Function(function);
             var state = (program: workingProgram, function, constants, plans, profile, level, facts: sharedFacts);
@@ -49,15 +62,19 @@ public static partial class NativeOptimizer
         }
         NativeProgram optimized = program with
         { Functions = functions, Constants = constants.Values.ToArray(), Allocations = plans.ToArray(), OptimizationLevel = level };
-        NativeProgram compact = InlineCleaned(Compact(optimized, profile), level, profile, inlineBudgets);
-        return Compact(NativeRegisterAllocation.Run(compact, profile), profile);
+        NativeProgram compacted = Compact(optimized, profile, sharedFacts);
+        NativeProgram compact = InlineCleaned(compacted, level, profile, inlineBudgets, ref sharedFacts);
+        compact = NativeStoragePlanning.Run(compact, profile?.Trace, sharedFacts);
+        return Compact(NativeRegisterAllocation.Run(compact, profile, sharedFacts), profile);
     }
 
-    private static NativeProgram Compact(NativeProgram program, NativeOptimizationProfile? profile)
+    private static NativeProgram Compact(NativeProgram program, NativeOptimizationProfile? profile,
+        NativeAddressAnalysis.ProgramFacts? sharedFacts = null)
     {
         NativeFunctionCode[] functions = new NativeFunctionCode[program.Functions.Count];
         int[][] positions = new int[functions.Length][];
         bool[][] retained = new bool[functions.Length][];
+        List<int>? changed = sharedFacts is null ? null : [];
         for (int index = 0; index < functions.Length; index++)
         {
             NativeFunctionCode original = program.Functions[index];
@@ -67,14 +84,15 @@ public static partial class NativeOptimizer
             functions[index] = result.Function;
             positions[index] = result.Positions;
             retained[index] = result.Retained;
-            profile?.Add(NativeOptimizationProfile.Pass.Compact, started, original, result.Function,
-                !original.Instructions.SequenceEqual(result.Function.Instructions));
+            bool fnChanged = !original.Instructions.SequenceEqual(result.Function.Instructions);
+            if (fnChanged) changed?.Add(index);
+            profile?.Add(NativeOptimizationProfile.Pass.Compact, started, original, result.Function, fnChanged);
         }
         NativeAllocationPlan[] allocations = program.Allocations
             .Where(plan => plan.Placement != NativeAllocationPlacement.Eliminated
                 && retained[plan.Function][plan.Instruction])
             .Select(plan => plan with { Instruction = positions[plan.Function][plan.Instruction] }).ToArray();
-        return program with
+        NativeProgram compacted = program with
         {
             Functions = functions,
             Allocations = allocations,
@@ -84,6 +102,8 @@ public static partial class NativeOptimizer
                 End = NativeInlining.Boundary(positions[plan.Function], plan.End)
             }).ToArray()
         };
+        sharedFacts?.Invalidate(compacted, changed is { Count: > 0 } ? CollectionsMarshal.AsSpan(changed) : []);
+        return compacted;
     }
 
     private static (NativeFunctionCode Function, NativeAddressAnalysis.ProgramFacts? SharedFacts) OptimizeFunction(
@@ -96,7 +116,8 @@ public static partial class NativeOptimizer
         NativeFunctionCode function = original with { Instructions = code };
         NativeProgram view = FunctionView(program, index, function);
         bool changed;
-        bool anyCodeChanged = false;
+        bool factsDirty = false;
+        int invalidations = 0;
         int iteration = 0;
         NativeEscapeAnalysis finalEscape;
         NativeControlFlow finalFlow;
@@ -106,31 +127,30 @@ public static partial class NativeOptimizer
             var globalStarted = profile?.Start(NativeOptimizationProfile.Pass.GlobalFacts, function) ?? default;
             bool globalChanged = level >= 2 && NativeGlobalFacts.Run(function, code, constants);
             if (level >= 2) profile?.Add(NativeOptimizationProfile.Pass.GlobalFacts, globalStarted, function, globalChanged);
-            if (globalChanged) { sharedFacts = null; anyCodeChanged = true; }
+            if (globalChanged) { factsDirty = true; }
             var started = profile?.Start(NativeOptimizationProfile.Pass.ControlFlow, function) ?? default;
             NativeControlFlow flow = new(code);
             profile?.Add(NativeOptimizationProfile.Pass.ControlFlow, started, function);
             started = profile?.Start(NativeOptimizationProfile.Pass.EscapeAnalysis, function) ?? default;
-            sharedFacts ??= new(view);
+            if (sharedFacts is null) sharedFacts = new(view);
+            else if (factsDirty) { sharedFacts.Invalidate(view, index); invalidations++; factsDirty = false; }
             NativeEscapeAnalysis escape = new(view, index, sharedFacts);
             profile?.Add(NativeOptimizationProfile.Pass.EscapeAnalysis, started, function);
             started = profile?.Start(NativeOptimizationProfile.Pass.GlobalMemory, function) ?? default;
-            bool memoryChanged = level >= 2 && NativeGlobalMemory.Run(view, index, code, flow, escape);
+            bool memoryChanged = level >= 2 && NativeGlobalMemory.Run(view, index, code, flow, escape, profile);
             if (level >= 2) profile?.Add(NativeOptimizationProfile.Pass.GlobalMemory, started, function, memoryChanged);
             started = profile?.Start(NativeOptimizationProfile.Pass.LocalValues, function) ?? default;
-            bool localChanged = new NativeLocalOptimization(view, function, code, constants, escape).Run(flow);
+            NativeFunctionCode tightened = NativeLocalOptimization.TightenSlotTypes(view, function, code, escape, profile);
+            if (!ReferenceEquals(tightened, function)) { function = tightened; changed = true; }
+            bool localChanged = new NativeLocalOptimization(view, function, code, constants, escape).Run(flow, profile);
             changed = globalChanged || memoryChanged || localChanged;
             profile?.Add(NativeOptimizationProfile.Pass.LocalValues, started, function, localChanged);
-            if (memoryChanged || localChanged)
-            {
-                sharedFacts = null;
-                anyCodeChanged = true;
-            }
+            if (memoryChanged || localChanged) { factsDirty = true; }
             started = profile?.Start(NativeOptimizationProfile.Pass.DeadMemory, function) ?? default;
-            bool removedMemory = NativeDeadMemory.Run(view, index, code, escape);
+            bool removedMemory = NativeDeadMemory.Run(view, index, code, escape, profile);
             changed |= removedMemory;
             profile?.Add(NativeOptimizationProfile.Pass.DeadMemory, started, function, removedMemory);
-            if (removedMemory) { sharedFacts = null; anyCodeChanged = true; }
+            if (removedMemory) { factsDirty = true; }
             started = profile?.Start(NativeOptimizationProfile.Pass.ControlFlow, function) ?? default;
             flow = new(code);
             profile?.Add(NativeOptimizationProfile.Pass.ControlFlow, started, function);
@@ -138,7 +158,7 @@ public static partial class NativeOptimizer
             bool removedResults = RemoveDead(view, index, flow, code, plans);
             changed |= removedResults;
             profile?.Add(NativeOptimizationProfile.Pass.DeadResults, started, function, removedResults);
-            if (removedResults) { sharedFacts = null; anyCodeChanged = true; }
+            if (removedResults) { factsDirty = true; }
             finalEscape = escape;
             finalFlow = flow;
         } while (changed);
@@ -157,12 +177,18 @@ public static partial class NativeOptimizer
         {
             function = function with { Slots = updatedSlots };
             view = FunctionView(program, index, function);
-            sharedFacts = null;
+            factsDirty = true;
         }
+        view = FunctionView(program, index, function);
+        // Last-use moves and producer retargeting preserve address/lifetime facts.
+        // Capture the converged analysis here; later coloring/compaction relocates it.
+        function = function with { Storage = NativeStoragePlanning.Capture(view, index, finalEscape, profile?.Trace) };
         var finalStarted = profile?.Start(NativeOptimizationProfile.Pass.LastUseMoves, function) ?? default;
         bool moved = MoveLastUses(view, index, finalFlow, code);
+        if (level >= 2) moved |= CollapseSingleUseMoves(view, index, finalFlow, code, profile);
         profile?.Add(NativeOptimizationProfile.Pass.LastUseMoves, finalStarted, function, moved);
-        if (moved) { sharedFacts = null; anyCodeChanged = true; }
+        if (moved) { factsDirty = true; }
+        if (factsDirty && sharedFacts is not null) { sharedFacts.Invalidate(view, index); invalidations++; }
         finalStarted = profile?.Start(NativeOptimizationProfile.Pass.Placement, function) ?? default;
         bool placed = false;
         foreach (var allocation in finalEscape.Layouts)
@@ -180,10 +206,11 @@ public static partial class NativeOptimizer
         if (profile is not null)
         {
             profile.Trace.Metric("optimizer.iterations", iteration);
+            profile.Trace.Metric("program_facts.invalidations", invalidations);
             foreach (NativeAllocationPlacement placement in Enum.GetValues<NativeAllocationPlacement>())
                 profile.Trace.Metric("allocations." + placement, plans.Count(plan => plan.Function == index && plan.Placement == placement));
         }
-        return (anyCodeChanged || slotsChanged ? function : original, sharedFacts);
+        return (function, sharedFacts);
     }
 
     private static NativeProgram FunctionView(NativeProgram program, int index, NativeFunctionCode function)
@@ -240,9 +267,75 @@ public static partial class NativeOptimizer
         return changed;
     }
 
+    private static bool CollapseSingleUseMoves(NativeProgram program, int index, NativeControlFlow flow,
+        NativeInstruction[] code, NativeOptimizationProfile? profile)
+    {
+        NativeFunctionCode function = program.Functions[index];
+        HashSet<int> addressed = code.Where(item => item.Op is NativeOp.FrameAddress or NativeOp.BindLocation)
+            .Select(item => item.A).ToHashSet();
+        int protectedPrefix = function.CaptureCount + function.ParameterCount;
+        bool preserveEntryLocals = program.PreserveLocals && index == program.EntryPoint;
+        bool anyChanged = false;
+        int collapsed = 0;
+        for (int round = 0; round < 3; round++)
+        {
+            NativeLiveness live = new(program, index, flow);
+            bool roundChanged = false;
+            foreach (NativeControlFlow.Block block in flow.Blocks)
+            {
+                int nextPc = -1;
+                for (int pc = block.End - 1; pc >= block.Start; pc--)
+                {
+                    NativeInstruction ins = code[pc];
+                    if (ins.Op == NativeOp.Nop) continue;
+                    if (nextPc >= 0 && code[nextPc] is { Op: NativeOp.Move } next
+                        && ins.Result >= protectedPrefix && ins.Result == next.A && next.Result != next.A
+                        && !addressed.Contains(ins.Result) && !function.Slots[ins.Result].Escapes
+                        && (!preserveEntryLocals || function.Slots[ins.Result].Role == NativeSlotRole.Temporary)
+                        && !live.After[nextPc].Contains(ins.Result))
+                    {
+                        int dest = next.Result;
+                        if (ins.Op is NativeOp.Move or NativeOp.Copy)
+                        {
+                            if (NativeTypeRelations.Accepts(program.Types, function.Slots[dest].Type, function.Slots[ins.A].Type))
+                            {
+                                code[pc] = dest == ins.A ? NativeLocalOptimization.Nop(ins)
+                                    : next with { Op = ins.Op, A = ins.A };
+                                code[nextPc] = NativeLocalOptimization.Nop(next);
+                                roundChanged = true;
+                                collapsed++;
+                                if (code[pc].Op != NativeOp.Nop) nextPc = pc;
+                                continue;
+                            }
+                        }
+                        else if (ins.Op is NativeOp.Constant or NativeOp.Convert or NativeOp.Narrow or NativeOp.Unary
+                            or NativeOp.Binary or NativeOp.Load or NativeOp.FrameAddress or NativeOp.AddressOffset
+                            or NativeOp.ProjectAddress or NativeOp.Allocate or NativeOp.MakeFunction or NativeOp.MakeType
+                            && NativeTypeRelations.Same(program.Types, function.Slots[dest].Type, function.Slots[ins.Result].Type)
+                            && !addressed.Contains(dest))
+                        {
+                            code[pc] = ins with { Result = dest };
+                            code[nextPc] = NativeLocalOptimization.Nop(next);
+                            roundChanged = true;
+                            collapsed++;
+                            nextPc = pc;
+                            continue;
+                        }
+                    }
+                    nextPc = pc;
+                }
+            }
+            if (!roundChanged) break;
+            anyChanged = true;
+        }
+        if (collapsed > 0) profile?.Trace.Metric("optimizer.collapsed_moves", collapsed);
+        return anyChanged;
+    }
+
     private static bool Discardable(NativeProgram program, NativeFunctionCode function, NativeInstruction instruction)
     {
-        if (instruction.Op is NativeOp.Constant or NativeOp.Copy or NativeOp.FrameAddress) return true;
+        if (instruction.Op is NativeOp.Constant or NativeOp.Copy or NativeOp.FrameAddress or NativeOp.MakeFunction) return true;
+        if (instruction.Op == NativeOp.MakeType) return instruction.A < 0;
         if (instruction.Op == NativeOp.Allocate) return instruction.C < 0;
         if (instruction.Op is NativeOp.AddressOffset or NativeOp.ProjectAddress) return true;
         if (instruction.Op == NativeOp.Unary)

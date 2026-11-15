@@ -23,22 +23,24 @@ internal sealed record NativeSiteShape(NativeKind First, NativeKind Second);
 
 internal enum NativeFastOperation : byte
 {
-    Bridge, Nop, Jump, Branch, NumberReturn, BoolReturn, NumberConstant, BoolConstant, NumberCopy, BoolCopy, NumberNegate, BoolNot,
+    Bridge, Nop, Jump, Branch, NumberReturn, BoolReturn, NumberConstant, BoolConstant,
+    NumberCopy, BoolCopy, NumberMove, BoolMove, IsNull, NumberNegate, BoolNot,
     BoolEqual, BoolNotEqual,
-    NumberAdd, NumberSubtract, NumberMultiply, NumberDivide,
+    NumberAdd, NumberSubtract, NumberMultiply, NumberDivide, NumberRemainder,
     NumberEqual, NumberNotEqual, NumberLess, NumberLessEqual, NumberGreater, NumberGreaterEqual
 }
 
 internal static class NativeFastOperations
 {
     internal static bool IsBoolResult(this NativeFastOperation op) =>
-        op is NativeFastOperation.BoolConstant or NativeFastOperation.BoolCopy or NativeFastOperation.BoolNot
+        op is NativeFastOperation.BoolConstant or NativeFastOperation.BoolCopy or NativeFastOperation.BoolMove
+            or NativeFastOperation.IsNull or NativeFastOperation.BoolNot
             or NativeFastOperation.BoolEqual or NativeFastOperation.BoolNotEqual or >= NativeFastOperation.NumberEqual;
 
     internal static bool TakesSecondOperand(this NativeFastOperation op) =>
         op >= NativeFastOperation.BoolEqual;
 
     internal static bool ExpectsBoolInputs(this NativeFastOperation op) =>
-        op is NativeFastOperation.BoolCopy or NativeFastOperation.BoolNot
+        op is NativeFastOperation.BoolCopy or NativeFastOperation.BoolMove or NativeFastOperation.BoolNot
             or NativeFastOperation.BoolEqual or NativeFastOperation.BoolNotEqual;
 }

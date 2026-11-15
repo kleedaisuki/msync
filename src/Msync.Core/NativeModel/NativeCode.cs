@@ -82,6 +82,21 @@ public sealed record NativeFunctionCode(string Name, IReadOnlyList<NativeSlot> S
     bool IsTemplate = false)
 {
     public NativeFunctionReflectionSignature? ReflectionSignature { get; init; }
+    public NativeStoragePlan? Storage { get; init; }
+}
+
+[Flags]
+public enum NativeSlotStorage : byte { None = 0, Escapes = 1, PrivateArgument = 2, ReadOnlyParameter = 4, UnobservedInitialization = 8 }
+[Flags]
+public enum NativeInstructionStorage : byte { None = 0, FrameAlias = 1, NarrowLayout = 2, FrameAllocation = 4 }
+public sealed record NativeStoragePlan(IReadOnlyList<NativeSlotStorage> Slots,
+    IReadOnlyList<NativeInstructionStorage> Instructions)
+{
+    public IReadOnlyList<NativeCallStorage> Calls { get; init; } = [];
+}
+public sealed record NativeCallStorage(int Instruction, bool Snapshot, IReadOnlyList<bool> Borrowed)
+{
+    public int BorrowedCount { get; } = Borrowed.Count(value => value);
 }
 
 public sealed record NativeFunctionReflectionSignature(IReadOnlyList<TypeRef> Parameters, TypeRef Result);
@@ -118,6 +133,7 @@ public sealed record NativeProgram(IReadOnlyList<NativeConstant> Constants,
     public IReadOnlyList<NativeProjection> Projections { get; init; } = [];
     public IReadOnlyList<NativeStatic> Statics { get; init; } = [];
     public IReadOnlyList<NativeAllocationPlan> Allocations { get; init; } = [];
+    public NativeBackendCode? Backend { get; init; }
     public BindingContext? Context { get; init; }
     public IReadOnlyList<int>? SessionRoots { get; init; }
     public IReadOnlyList<SessionDispatchTable>? SessionDispatches { get; init; }

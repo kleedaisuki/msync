@@ -44,7 +44,7 @@ public sealed class NativeType : IEquatable<NativeType>
         }
         return FromKinds(kinds);
     }
-    private static NativeType FromKinds(ulong kinds) => kinds == 0 ? Never
+    internal static NativeType FromKinds(ulong kinds) => kinds == 0 ? Never
         : BitOperations.IsPow2(kinds) ? Of((NativeKind)BitOperations.TrailingZeroCount(kinds)) : new(kinds);
     public IEnumerable<NativeKind> Alternatives => Enum.GetValues<NativeKind>().Where(Accepts);
     public bool Equals(NativeType? other) => other is not null && Kinds == other.Kinds;
@@ -219,7 +219,7 @@ internal readonly record struct NativeRepresentation(int Bytes, int References, 
         NativeKind.Number => new(8, 0, 8),
         NativeKind.String => new(0, 1, 1),
         NativeKind.Path => new(2, 5, 1),
-        NativeKind.Connection => new(1, 1, 1),
+        NativeKind.Connection => new(0, 1, 1),
         NativeKind.Function => new(4, 2, 4),
         NativeKind.Range or NativeKind.Process or NativeKind.Type => new(0, 1, 1),
         NativeKind.Address => new(8, 2, 4),

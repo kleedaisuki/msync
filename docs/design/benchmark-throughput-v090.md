@@ -1,5 +1,47 @@
 # Concurrent benchmark journeys and detailed SQLite export
 
+## Latest measured runtime (2026-11-15)
+
+Latest frozen image: `artifacts/native/runtime-shared-plans/msync`, SHA-256
+`42e527631aa0fb67df4eb78097d95c7adacb9566ce8b987e2b92ac634952c9c1`.
+This includes synchronous execution, compiler-owned storage plans, segmented
+managed byte/root frames, handshake-free submission, inline storage ownership,
+compact argument descriptors and shared call plans. It does **not** implement
+the subsequently discussed unmanaged guest heap/stack.
+
+The final Native AOT comparison uses twelve alternating pairs pinned to CPU 0,
+one warmup per image/workload, independently compiled/bound artifacts and exact
+stdout checks. Timing covers CLI `run-ir`, excluding compile/bind. Calls use
+`-O0`, B+ uses `-O2`. This is serial latency, **not** a new concurrent throughput
+sweep. November 13 acceptance and Batch 4C figures are historical snapshots.
+
+| Workload | Original median | Latest median | Median paired change | Faster pairs |
+| --- | ---: | ---: | ---: | ---: |
+| calls-100000 | 897.11 ms | 694.29 ms | -20.63% | 12/12 |
+| B+ inventory | 2117.08 ms | 1844.33 ms | -13.10% | 11/12 |
+
+Original: `artifacts/native/evaluator-before/msync`, SHA-256
+`49f47587ad5bf9f58c5e98c16498d9ab0507176d039265428a159cfe79538f6b`.
+Receipt: `artifacts/benchmarks/synchronous-evaluator/final-original-pinned.json`.
+Changes are medians of per-pair ratios, not ratios of aggregate medians. They
+measure the combined implementation, not handshake removal in isolation.
+Against the recent `runtime-direct-step` image, the last storage/loading batch
+approximately preserves throughput: paired -1.94% calls and -0.25% B+, seven
+faster pairs each (`shared-plans-pinned.json`).
+
+Reproduce with retained frozen images and workload payloads:
+
+```sh
+taskset -c 0 python3 tests/CallLowering/benchmark_evaluator.py --candidate artifacts/native/runtime-shared-plans/msync --baseline artifacts/native/evaluator-before/msync --repetitions 12
+```
+
+Final-image acceptance covers stream demand/error ordering, 24 filesystem Future
+journeys, four source/bound O0/O2 descendant-acquire routes and Force-mode
+recursive live strings (output 6000). The [execution handoff](native-execution-lowering-v090.md)
+records mechanisms and receipt locations. This documentation update does not
+claim a new benchmark run. Payloads remain under ignored `artifacts/` and are
+not shipped in the source commit.
+
 ## Measurement contract
 
 The default suite includes the `throughput` group, measuring a population of

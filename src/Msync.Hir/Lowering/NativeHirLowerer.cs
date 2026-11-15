@@ -118,6 +118,8 @@ public static partial class NativeHirLowerer
                     hir.SessionDispatches.Select(dispatch => new SessionDispatchTable(dispatch.Slot,
                         dispatch.Targets.ToDictionary(target => Callable(target.Identity), target => Function(target.Target)))).ToArray()
             };
+            if (!hir.IsSession && options.OptimizationLevel > 0)
+                program = FoldIdenticalFunctions(program);
             return new(program, Locations.Layout);
         }
 

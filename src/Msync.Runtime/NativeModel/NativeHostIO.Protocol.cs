@@ -93,47 +93,19 @@ internal static class NativeTransferProtocol
 
     internal static string Quote(string value) => "'" + value.Replace("'", "'\\''", StringComparison.Ordinal) + "'";
 
-    internal static ProcessStartInfo CreateRemoteProcessStartInfo(ConnectionKind kind, string address, string executable, IReadOnlyList<string> arguments)
+    internal static ProcessStartInfo CreateRemoteProcessStartInfo(ConnectionKind kind, string address, string executable, IReadOnlyList<string> arguments, Native.NativeRuntimeContext? context = null)
     {
         const string launch = ShellLibrary + "\n" + """
             executable=$(expand "$1"; printf .); executable=${executable%.}
             shift
             exec "$executable" "$@"
             """;
-        return CreateShellProcessStartInfo(kind, address, ShellProgram.Source(launch), [executable, .. arguments], redirectInput: false);
+        return CreateShellProcessStartInfo(kind, address, ShellProgram.Source(launch), [executable, .. arguments], redirectInput: false, context);
     }
 
-    internal static ProcessStartInfo CreateShellProcessStartInfo(ConnectionKind kind, string endpoint, string script, IReadOnlyList<string> args, bool redirectInput)
-    {
-        ProcessStartInfo info = new() { UseShellExecute = false, RedirectStandardInput = redirectInput, RedirectStandardOutput = true };
-        if (kind == ConnectionKind.Ssh)
-        {
-            info.FileName = "ssh";
-            info.ArgumentList.Add("-T");
-            if (Environment.GetEnvironmentVariable("MSYNC_SSH_CONFIG") is { Length: > 0 } configuration)
-            {
-                info.ArgumentList.Add("-F"); info.ArgumentList.Add(configuration);
-            }
-            string address = endpoint;
-            if (address.StartsWith("ssh://", StringComparison.Ordinal)) address = address[6..];
-            if (Uri.TryCreate("ssh://" + address, UriKind.Absolute, out Uri? uri) && uri.Port > 0)
-            {
-                info.ArgumentList.Add("-p"); info.ArgumentList.Add(uri.Port.ToString(System.Globalization.CultureInfo.InvariantCulture));
-                address = (uri.UserInfo.Length > 0 ? uri.UserInfo + "@" : "") + uri.Host;
-            }
-            info.ArgumentList.Add("--"); info.ArgumentList.Add(address);
-            info.ArgumentList.Add("sh -c " + Quote(script) + " sh" + string.Concat(args.Select(arg => " " + Quote(arg))));
-        }
-        else if (kind == ConnectionKind.Wsl)
-        {
-            info.FileName = "wsl.exe";
-            if (endpoint.Length > 0) { info.ArgumentList.Add("--distribution"); info.ArgumentList.Add(endpoint); }
-            info.ArgumentList.Add("--exec"); info.ArgumentList.Add("sh"); info.ArgumentList.Add("-c"); info.ArgumentList.Add(script); info.ArgumentList.Add("sh");
-            foreach (string arg in args) info.ArgumentList.Add(arg);
-        }
-        else throw new MsyncException($"Connection {kind} '{endpoint}' does not support a remote shell.");
-        return info;
-    }
+    internal static ProcessStartInfo CreateShellProcessStartInfo(ConnectionKind kind, string endpoint, string script,
+        IReadOnlyList<string> args, bool redirectInput, Native.NativeRuntimeContext? context = null) =>
+        (context?.Connections ?? new Native.NativeConnections()).Get(new(kind, endpoint)).Shell(script, args, redirectInput);
 
     private const string ShellLibrary = """
         set -eu

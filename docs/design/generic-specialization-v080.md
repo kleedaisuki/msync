@@ -241,3 +241,41 @@ views, resource joins, deferred writes, and by-value environments keep
 their normalization. The per-lookup ordinal tables never retain the caller
 across invocations. Actual instance creation and call-specific effects still
 use their separate formal and caller-projection steps.
+
+### Demand-projected Scope fields and native bisimulation folding
+
+Even with demand-projected recursive promises, higher-order stdlib containers
+(such as `_Chain` and B+ tree templates) still fanned out duplicate
+specializations across two layers:
+
+1. **Frontend Scope field over-specification (`SemanticAnalyzer.Keys.cs`, `SemanticAnalyzer.FormalInput.cs`)**:
+   `TemplateInputUsage` walks a template body and nested `TemplateClosure`s
+   (cycle-guarded) to distinguish whole-value uses (`WholeReads`) from member
+   projections (`FieldReads`). When a Scope parameter or capture never escapes as
+   a whole value, `AppendScopeKey` emits only the fields in `usedFields`,
+   tracking already-emitted fields per scope instance in `KeyProvenance`.
+   In parallel, `CodeSchema` copies `caller.Definitions` and
+   `StandardModuleCapture` falls back to `CanonicalDefinition` so captured
+   stdlib modules resolve consistently as compact `M<id>` references rather
+   than serialized full-module structural schemas.
+2. **Mid-end type canonicalization, local slot alpha-normalization, and function ICF (`NativeHirLowerer.Folding.cs`, `Compiler.cs`)**:
+   Distinct `HirType` carrier or provenance histories can lower to identical
+   executable register code once frontend static checks complete. At
+   `OptimizationLevel > 0` for non-session modules (`!PreserveLocals && ExecutionPlans is null`),
+   `FoldIdenticalFunctions` runs both at the end of `NativeHirLowerer.Lower`
+   (before optimization) and after `NativeOptimizer.Optimize` (post-inlining/DCE):
+   - `CanonicalizeTypes` merges structurally equivalent `NativeCodeType`
+     records via partition refinement while preserving distinct
+     `NativeCodeLayout` indices so layout-identity and `HasLayout` semantics are
+     untouched.
+   - `CanonicalizeLocalSlots` keeps capture and parameter ABI slots fixed
+     (`[0 .. CaptureCount + ParameterCount - 1]`) and renumbers live
+     `Local`/`Temporary` slots in instruction-traversal order, shedding dead
+     slots left behind by inlining and DCE.
+   - Partition refinement (`StaticShapeKey`, `DynamicKey`, `SplitConflictingDispatchKeys`)
+     merges bisimilar non-template functions (ignoring non-session
+     `Allocate.B` allocation-site tags) without introducing dispatch-key
+     collisions in `FunctionDispatch` or `SessionDispatches`. Execution phases
+     emit `compiler.lower.fold_functions` telemetry (`fold.types.*`,
+     `fold.slots.*`, `fold.functions.*`, `fold.iterations`) only when
+     `CompilationTrace.Detail` is active.

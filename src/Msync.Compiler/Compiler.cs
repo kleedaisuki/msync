@@ -21,10 +21,11 @@ public static class Compiler
             : trace.MeasureDetailed("compiler.lower", (module, options, trace),
                 static state => NativeHirLowerer.Lower(state.module, state.options, null, state.trace).Program,
                 size: CompilationSize.Of, metrics: CompilationMetrics.Of);
-        return trace is null ? NativeOptimizer.Optimize(lowered, optimization)
+        NativeProgram optimized = trace is null ? NativeOptimizer.Optimize(lowered, optimization)
             : trace.MeasureDetailed("compiler.optimize", (lowered, optimization, trace),
                 static state => NativeOptimizer.Optimize(state.lowered, state.optimization, state.trace),
                 CompilationSize.Of(lowered), CompilationSize.Of, metrics: CompilationMetrics.Of);
+        return optimization > 0 ? NativeHirLowerer.FoldIdenticalFunctions(optimized, trace) : optimized;
     }
 
     public static HirModule Analyze(string source, string? sourceName = null) =>

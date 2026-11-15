@@ -11,7 +11,8 @@ internal sealed partial class SemanticAnalyzer
     private SemanticInputSchema CodeSchema(IReadOnlyList<SemanticValue> arguments,
         IReadOnlyList<SemanticValue> captures, SemanticContext caller)
     {
-        SemanticContext context = new(new(-1));
+        SemanticContext context = new(new(-1)) { ReplacedProgramCells = caller.ReplacedProgramCells };
+        foreach (var pair in caller.Definitions) context.Definitions.Add(pair.Key, pair.Value);
         FormalInput input = new(this, caller, context, keyOnly: true);
         SemanticValue[] parameters = new SemanticValue[arguments.Count];
         SemanticValue[] environment = new SemanticValue[captures.Count];

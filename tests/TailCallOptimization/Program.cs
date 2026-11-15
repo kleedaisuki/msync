@@ -42,6 +42,15 @@ async Task<NativeValue> Run(NativeProgram program, bool detached, string? cwd = 
     return await interpreter.ExecuteAsync(timeout.Token);
 }
 
+if (args.Contains("--storage", StringComparer.Ordinal))
+{
+    await NativeTailChecks.Run(Check);
+    NativeProgram deep = Compiler.Compile(deepSource, "deep-tail.msync", 2);
+    Check((await Run(deep, true)).AsNumber() == 5_000_050_000d, "Tail storage did not survive 100000 calls");
+    Console.WriteLine($"PASS {checks} tail storage, diagnostics and logical telemetry contracts");
+    return;
+}
+
 (string Name, string Source, NativeValue Expected)[] cases =
 [
     ("sum", "fn sum(n, acc) { if n == 0 { acc } else { sum(n - 1, acc + n) } }; sum(80, 0)", NativeValue.FromNumber(3240)),

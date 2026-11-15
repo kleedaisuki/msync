@@ -36,18 +36,37 @@ internal readonly struct NativeDatum
 internal sealed class NativeFuture(Task<NativeValue> completion,
     IReadOnlyList<NativeFuture>? dependencies = null, bool transfer = false, SourceSpan? source = null,
     IReadOnlyList<NativeProcess>? processes = null, NativeFuture? parentAdmission = null,
-    TypeRef? logicalType = null, NativeType? physicalType = null, NativeFuture? identity = null)
+    TypeRef? logicalType = null, NativeType? physicalType = null, NativeFuture? identity = null, NativeSubmission? submission = null, Task? resourceCompletion = null)
 {
     private int failureCounted;
+    private NativeWorkChildren? children;
+    internal NativeWorkFrontier? Children => Volatile.Read(ref children)?.Snapshot();
+    internal void AddChild(NativeFuture child)
+    {
+        if (LazyInitializer.EnsureInitialized(ref children, static () => new NativeWorkChildren()).Add(child))
+            Submission?.RecordEscape(child.Source, child.Completion, process: false);
+    }
+    internal void AddChild(NativeProcess child)
+    {
+        if (LazyInitializer.EnsureInitialized(ref children, static () => new NativeWorkChildren()).Add(child))
+            Submission?.RecordEscape(null, child.Completion, process: true);
+    }
     internal Task<NativeValue> Completion { get; } = completion;
     internal TypeRef LogicalType { get; } = logicalType ?? (transfer ? TypeRef.Bool : TypeRef.Any);
     internal NativeType PhysicalType { get; } = physicalType ?? NativeType.FromTypeRef(logicalType ?? (transfer ? TypeRef.Bool : TypeRef.Any));
     internal NativeFuture Identity => identity ?? this;
     internal IReadOnlyList<NativeFuture> Dependencies { get; } = dependencies ?? [];
     internal bool IsTransfer { get; } = transfer;
+    internal NativeSubmission? Submission { get; } = submission;
     internal SourceSpan? Source { get; } = source;
     internal IReadOnlyList<NativeProcess> Processes { get; } = processes ?? [];
     internal NativeFuture? ParentAdmission { get; } = parentAdmission;
+    internal Task ResourceCompletion => resourceCompletion ?? Completion;
+    internal bool HasProcessDependency => Submission?.Kind == NativeSubmissionKind.Process || Processes.Count != 0
+        || Dependencies.Any(future => future.HasProcessDependency);
+    internal bool DependsOnProcess(NativeProcess process) => Processes.Contains(process, ReferenceEqualityComparer.Instance)
+        || Submission?.Kind == NativeSubmissionKind.Process && Completion.IsCompletedSuccessfully && ReferenceEquals(Completion.Result.AsProcess(), process)
+        || Dependencies.Any(future => future.DependsOnProcess(process));
     internal void CountFailure(Action failedTransfer)
     {
         if (IsTransfer && Completion.IsCompletedSuccessfully
@@ -69,41 +88,65 @@ internal sealed class NativeMemory
     private long pendingRevision;
     private int activePending;
     internal long PendingRevision => Volatile.Read(ref pendingRevision);
-    internal bool HasAnyPending => Volatile.Read(ref activePending) != 0;
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool HasAnyPending
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => Volatile.Read(ref activePending) != 0;
+    }
     internal bool IsPending(NativeAddress address) => TryPending(address, out _);
 
     internal void ResetFrame(NativeAllocation allocation)
     {
-        if (HasAnyPending && pending is { } table
+        if (Volatile.Read(ref allocation.PendingValues) != 0 && pending is { } table
             && table.TryGetValue(allocation, out ConcurrentDictionary<NativeOffset, NativeFuture>? values)
             && table.Remove(allocation))
         {
             int removed = values.Count;
-            if (removed > 0) Interlocked.Add(ref activePending, -removed);
+            if (removed > 0)
+            {
+                Interlocked.Add(ref activePending, -removed);
+                Interlocked.Add(ref allocation.PendingValues, -removed);
+            }
             Interlocked.Increment(ref pendingRevision);
         }
         allocation.Storage.ResetFrame();
     }
 
-    internal NativeDatum Read(NativeAddress address) => TryPending(address, out NativeFuture? future)
-        ? new(future!) : new(NativeStorage.LoadTrusted(address.Type, address));
+    internal NativeDatum Read(NativeAddress address)
+    {
+        return TryPending(address, out NativeFuture? future) ? ReadFuture(address, future!)
+            : new(NativeStorage.LoadTrusted(address.Type, address));
+    }
+
+    internal NativeDatum ReadCompiled(NativeAddress address) => TryPending(address, out NativeFuture? future)
+        ? ReadFuture(address, future!) : new(NativeStorage.LoadInitialized(address.Type, address));
+
+    private NativeDatum ReadFuture(NativeAddress address, NativeFuture future)
+    {
+        if (!future.Completion.IsCompletedSuccessfully) return new(future);
+        NativeDatum ready = new(future.Completion.Result);
+        Write(address, ready);
+        return ready;
+    }
 
     internal bool TryRead(NativeAddress address, out NativeDatum value)
     {
         if (TryPending(address, out NativeFuture? future)) { value = new(future!); return true; }
-        if (address.IsInitialized) { value = new(NativeStorage.LoadTrusted(address.Type, address)); return true; }
+        if (address.IsInitialized) { value = new(NativeStorage.LoadInitialized(address.Type, address)); return true; }
         value = default;
         return false;
     }
 
     internal void Write(NativeAddress address, NativeDatum value)
     {
+        if (value.Future is { Completion.IsCompletedSuccessfully: true } completed)
+            value = new(completed.Completion.Result);
         if (value.Future is { } future)
         {
             NativeStorage.ClearTrusted(address.Type, address);
             ConcurrentDictionary<NativeOffset, NativeFuture> values = Pending().GetValue(address.Allocation, static _ => new());
             // Increment before publishing so readers/removers never observe HasAnyPending == false for a live entry.
+            Interlocked.Increment(ref address.Allocation.PendingValues);
             Interlocked.Increment(ref activePending);
             while (true)
             {
@@ -111,6 +154,7 @@ internal sealed class NativeMemory
                 if (values.TryGetValue(address.Offset, out NativeFuture? existing) && values.TryUpdate(address.Offset, future, existing))
                 {
                     Interlocked.Decrement(ref activePending);
+                    Interlocked.Decrement(ref address.Allocation.PendingValues);
                     break;
                 }
             }
@@ -133,28 +177,94 @@ internal sealed class NativeMemory
         NativeStorage.StoreAddress(destination, value);
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryCopyReady(NativeAddress source, NativeAddress destination)
+        => source.IsInitialized && TryCopyValue(source, destination);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryCopyValue(NativeAddress source, NativeAddress destination)
     {
-        NativeType srcType;
-        if (!source.IsInitialized || IsPending(source) || !(srcType = source.Type).Equals(destination.Type)) return false;
+        if (source.Type.Equals(destination.Type))
+        {
+            RemovePending(destination);
+            NativeStorage.CopyTrusted(source.Type, source, destination);
+            return true;
+        }
+        NativeKind kind = source.Type.IsUnion ? source.Allocation.Storage.ReadKind(source.Offset) : source.Type.Kind;
+        if (!destination.Type.Accepts(kind)) return false;
         RemovePending(destination);
-        NativeStorage.CopyTrustedUnchecked(srcType, source, destination);
+        NativeStorage.CopyKindTrusted(kind, source, destination);
         return true;
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool TryNarrowReady(NativeFrame frame, int sourceSlot, NativeAddress destination, NativeImage image, NativeType storage, int type, bool checkLayout = true)
+    {
+        NativeAddress source = frame.Location(sourceSlot);
+        if (!frame.IsReady(sourceSlot, source)) return false;
+        // Lowering assigns the result carrier; only the source alternative needs admission.
+        NativeType sourceType = source.Type;
+        NativeKind kind = sourceType.IsUnion ? source.Allocation.Storage.ReadKind(source.Offset) : sourceType.Kind;
+        if (!storage.Accepts(kind)) return false;
+        if (checkLayout && kind == NativeKind.Address
+            && (!source.Allocation.Storage.TryReadAddressHeader(sourceType, source.Offset, out NativeAllocation allocation, out NativeOffset offset)
+                || !image.AdmitsLayout(type, allocation, offset)))
+            return false;
+        RemovePending(destination);
+        if (sourceType.Equals(destination.Type)) NativeStorage.CopyTrusted(sourceType, source, destination);
+        else NativeStorage.CopyKindTrusted(kind, source, destination);
+        return true;
+    }
+
+    internal bool TryConvertReady(NativeFrame frame, int sourceSlot, NativeAddress destination, NativeImage image, int targetType, bool checkLayout = true)
+    {
+        NativeAddress source = frame.Location(sourceSlot);
+        if (!frame.IsReady(sourceSlot, source)) return false;
+        NativeCodeType record = image.Program.Types[targetType];
+        if (record.Element >= 0) return false;
+        NativeType sourceType = source.Type;
+        NativeKind kind = sourceType.IsUnion ? source.Allocation.Storage.ReadKind(source.Offset) : sourceType.Kind;
+        if (kind == NativeKind.Range) return false;
+        NativeType targetStorage = image.Type(targetType);
+        if (!targetStorage.Accepts(kind)) return false;
+        if (checkLayout && kind == NativeKind.Address
+            && (!source.Allocation.Storage.TryReadAddressHeader(sourceType, source.Offset, out NativeAllocation allocation, out NativeOffset offset)
+                || !image.AdmitsLayout(targetType, allocation, offset)))
+            return false;
+        RemovePending(destination);
+        if (sourceType.Equals(destination.Type)) NativeStorage.CopyTrusted(sourceType, source, destination);
+        else NativeStorage.CopyKindTrusted(kind, source, destination);
+        return true;
+    }
+
+    internal void CopyCompiled(NativeAddress source, NativeAddress destination)
+    {
+        if (TryPending(source, out NativeFuture? future)) { Write(destination, new(future!)); return; }
+        RemovePending(destination);
+        // Initialization and kind admission are compiled facts; carrier adaptation is still needed.
+        if (source.Type.Equals(destination.Type)) NativeStorage.CopyTrusted(source.Type, source, destination);
+        else
+        {
+            NativeKind kind = source.Type.IsUnion ? source.Allocation.Storage.ReadKind(source.Offset) : source.Type.Kind;
+            NativeStorage.CopyKindTrusted(kind, source, destination);
+        }
+    }
+
     internal void Copy(NativeAddress source, NativeAddress destination)
     {
         if (!TryCopyReady(source, destination)) Write(destination, Read(source));
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void CopyCompiled(NativeType type, NativeAddress source, NativeAddress destination)
+    {
+        if (TryPending(source, out NativeFuture? future)) { Write(destination, new(future!)); return; }
+        RemovePending(destination);
+        NativeStorage.CopyTrusted(type, source, destination);
+    }
+
     internal void Copy(NativeType type, NativeAddress source, NativeAddress destination)
     {
-        if (!source.IsInitialized || IsPending(source)) { Write(destination, Read(source)); return; }
+        if (!source.IsInitialized) { Write(destination, Read(source)); return; }
         RemovePending(destination);
-        NativeStorage.CopyTrustedUnchecked(type, source, destination);
+        NativeStorage.CopyTrusted(type, source, destination);
     }
 
     internal void CopyRegionTrusted(NativeAddress source, NativeAddress destination, NativeLayout layout, int count)
@@ -184,23 +294,16 @@ internal sealed class NativeMemory
                 Clear(address.OffsetBy(layout.Extent * element + field.Offset, field.Type));
     }
 
-    internal bool HasPending(NativeAllocation allocation) => HasAnyPending && pending is { } table
+    internal bool HasPending(NativeAllocation allocation) => Volatile.Read(ref allocation.PendingValues) != 0 && pending is { } table
         && table.TryGetValue(allocation, out ConcurrentDictionary<NativeOffset, NativeFuture>? values) && !values.IsEmpty;
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryPending(NativeAddress address, out NativeFuture? future)
     {
-        if (!HasAnyPending)
+        if (Volatile.Read(ref address.Allocation.PendingValues) == 0)
         {
             future = null;
             return false;
         }
-        return TryPendingSlow(address, out future);
-    }
-
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private bool TryPendingSlow(NativeAddress address, out NativeFuture? future)
-    {
         if (pending is { } table && table.TryGetValue(address.Allocation, out ConcurrentDictionary<NativeOffset, NativeFuture>? values)
             && values.TryGetValue(address.Offset, out future))
             return true;
@@ -208,20 +311,15 @@ internal sealed class NativeMemory
         return false;
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void RemovePending(NativeAddress address)
     {
-        if (!HasAnyPending) return;
-        RemovePendingSlow(address);
-    }
-
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private void RemovePendingSlow(NativeAddress address)
-    {
-        if (pending is { } table
+        if (Volatile.Read(ref address.Allocation.PendingValues) != 0 && pending is { } table
             && table.TryGetValue(address.Allocation, out ConcurrentDictionary<NativeOffset, NativeFuture>? values)
             && values.TryRemove(address.Offset, out _))
+        {
             Interlocked.Decrement(ref activePending);
+            Interlocked.Decrement(ref address.Allocation.PendingValues);
+        }
     }
 
     private ConditionalWeakTable<NativeAllocation, ConcurrentDictionary<NativeOffset, NativeFuture>> Pending()

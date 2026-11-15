@@ -4,21 +4,29 @@ namespace Msync.Optimization;
 
 internal static class NativeDeadMemory
 {
-    internal static bool Run(NativeProgram program, int index, NativeInstruction[] code, NativeEscapeAnalysis escape)
+    internal static bool Run(NativeProgram program, int index, NativeInstruction[] code, NativeEscapeAnalysis escape,
+        NativeOptimizationProfile? profile = null)
     {
         NativeFunctionCode function = program.Functions[index];
         NativeAddressAnalysis addresses = escape.Addresses;
         NativeFrameCells cells = new(program, function, escape, addresses);
+        profile?.Trace.Metric("dead_memory.frame_cells_known", cells.Known ? 1 : 0);
         HashSet<NativeAddressAnalysis.Target> read = Reads(function, code, addresses, escape, program);
         bool changed = false;
+        int stores = 0, bindings = 0;
         for (int pc = 0; pc < code.Length; pc++)
         {
             NativeInstruction instruction = code[pc];
             if (instruction.Op == NativeOp.Store && cells.IsPrivate(instruction.B)
                 && DeadStore(instruction, addresses, read, escape, function))
-            { code[pc] = NativeLocalOptimization.Nop(instruction); changed = true; }
+            { code[pc] = NativeLocalOptimization.Nop(instruction); changed = true; stores++; }
             if (instruction.Op == NativeOp.BindLocation && DeadBinding(instruction, addresses, read, escape, function))
-            { code[pc] = NativeLocalOptimization.Nop(instruction); changed = true; }
+            { code[pc] = NativeLocalOptimization.Nop(instruction); changed = true; bindings++; }
+        }
+        if (profile is not null)
+        {
+            profile.Trace.Metric("dead_memory.eliminated_stores", stores);
+            profile.Trace.Metric("dead_memory.eliminated_bindings", bindings);
         }
         return changed;
     }

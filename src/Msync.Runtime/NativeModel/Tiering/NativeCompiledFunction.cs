@@ -17,8 +17,8 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
     {
         if (!NativeCodePage.IsSupported || !BitConverter.IsLittleEndian || function.Metadata.Length == 0) return null;
         long started = Stopwatch.GetTimestamp();
-        NativeSiteShape?[] guards = function.Profiles.Select(profile => profile?.Snapshot()).ToArray();
-        NativeFastOperation[] operations = function.Instructions.Select((instruction, pc) => Select(image, function, instruction, guards[pc])).ToArray();
+        NativeSiteProfile?[]? observations = function.ObservedProfiles;
+        NativeFastOperation[] operations = function.Instructions.Select((instruction, pc) => Select(image, function, instruction, observations?[pc]?.Snapshot(), executableForm: function.NumberForm(pc))).ToArray();
         if (policy == NativeJitPolicy.Auto && (!NativeMachineCode.HasDirectPaths
             || !IsProfitableForAuto(function, operations))) return null;
         long selection = Stopwatch.GetElapsedTime(started).Ticks * 100;
@@ -28,13 +28,19 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
         started = Stopwatch.GetTimestamp();
         byte[] bytes = NativeMachineCode.Emit(function, operations, RuntimeInformation.ProcessArchitecture,
             OperatingSystem.IsWindows(), NativeInterpreter.TierBridgeAddress, NativeInterpreter.TierNumberAddress,
-            NativeInterpreter.TierBoolAddress, image.Program.Constants, layout, NativeInterpreter.TierCommitAddress);
+            NativeInterpreter.TierBoolAddress, image.Program.Constants, out NativeInitializationElisions initializationElisions, layout, NativeInterpreter.TierCommitAddress);
         long emission = Stopwatch.GetElapsedTime(started).Ticks * 100;
         started = Stopwatch.GetTimestamp();
         NativeCodePage? page = NativeCodePage.Create(bytes);
         NativeCodegenStatistics statistics = new(selection, allocation, emission, Stopwatch.GetElapsedTime(started).Ticks * 100,
             layout.Regions.Length, layout.Regions.Sum(region => region.Values.Length), layout.Regions.Sum(region => region.Spills),
-            layout.Regions.Sum(region => region.Operations.Length - region.Outputs.Length));
+            layout.Regions.Sum(region => region.Operations.Length - region.Outputs.Length))
+        {
+            InitializationChecksElided = initializationElisions.Checks,
+            InitializationWritesElided = initializationElisions.Writes,
+            UnsignedValues = layout.Regions.Sum(region => region.Values.Count(value => value.Unsigned)),
+            UnsignedOperations = layout.Regions.Sum(region => region.Operations.Count(operation => operation.Form != NativeNumberForm.Float64))
+        };
         return page is null ? null : new(page, bytes.Length, operations, layout, statistics);
     }
 
@@ -60,7 +66,8 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
             }
             inDirect = true;
             directTotal++;
-            if (op is NativeFastOperation.Branch or NativeFastOperation.NumberNegate or NativeFastOperation.BoolNot
+            if (op is NativeFastOperation.Branch or NativeFastOperation.IsNull
+                or NativeFastOperation.NumberNegate or NativeFastOperation.BoolNot
                 or NativeFastOperation.BoolEqual or NativeFastOperation.BoolNotEqual
                 or >= NativeFastOperation.NumberAdd)
             {
@@ -83,7 +90,7 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
     }
 
     private static NativeFastOperation Select(NativeImage image, NativeExecutionFunction executable, NativeExecutionInstruction instruction,
-        NativeSiteShape? observed)
+        NativeSiteShape? observed, NativeNumberForm executableForm)
     {
         NativeFunctionCode function = executable.Definition;
         bool Kind(int slot, TypeKind kind) => slot >= 0 && image.Program.Types[function.Slots[slot].Type].Pointee < 0
@@ -105,6 +112,11 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
             };
         if (instruction.Op == NativeOp.Copy && Kind(instruction.A, TypeKind.Number)) return NativeFastOperation.NumberCopy;
         if (instruction.Op == NativeOp.Copy && Kind(instruction.A, TypeKind.Bool)) return NativeFastOperation.BoolCopy;
+        if (instruction.Op == NativeOp.Move)
+        {
+            if (Kind(instruction.A, TypeKind.Number) && Kind(instruction.Result, TypeKind.Number)) return NativeFastOperation.NumberMove;
+            if (Kind(instruction.A, TypeKind.Bool) && Kind(instruction.Result, TypeKind.Bool)) return NativeFastOperation.BoolMove;
+        }
         if (instruction.Op == NativeOp.Store && instruction.Handler == NativeInterpreter.FrameStoreHandler)
         {
             if (Kind(instruction.A, TypeKind.Number) && Kind(instruction.Result, TypeKind.Number)) return NativeFastOperation.NumberCopy;
@@ -117,6 +129,7 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
             {
                 NativeUnary.Negate when Kind(instruction.A, TypeKind.Number) => NativeFastOperation.NumberNegate,
                 NativeUnary.Not when Kind(instruction.A, TypeKind.Bool) => NativeFastOperation.BoolNot,
+                NativeUnary.IsNull when instruction.A >= 0 && image.Program.Types[function.Slots[instruction.A].Type].Pointee < 0 => NativeFastOperation.IsNull,
                 _ => NativeFastOperation.Bridge
             };
         if (instruction.Op != NativeOp.Binary) return NativeFastOperation.Bridge;
@@ -138,6 +151,7 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
             NativeBinary.Subtract => NativeFastOperation.NumberSubtract,
             NativeBinary.Multiply => NativeFastOperation.NumberMultiply,
             NativeBinary.Divide => NativeFastOperation.NumberDivide,
+            NativeBinary.Remainder when executableForm.HasFlag(NativeNumberForm.UnsignedResult) => NativeFastOperation.NumberRemainder,
             NativeBinary.Equal => NativeFastOperation.NumberEqual,
             NativeBinary.NotEqual => NativeFastOperation.NumberNotEqual,
             NativeBinary.Less => NativeFastOperation.NumberLess,
@@ -153,4 +167,10 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
 }
 
 internal readonly record struct NativeCodegenStatistics(long SelectionNanoseconds, long AllocationNanoseconds,
-    long EmissionNanoseconds, long PublicationNanoseconds, int Regions, int Values, int Spills, int EliminatedStores);
+    long EmissionNanoseconds, long PublicationNanoseconds, int Regions, int Values, int Spills, int EliminatedStores)
+{
+    internal int UnsignedValues { get; init; }
+    internal int UnsignedOperations { get; init; }
+    internal int InitializationChecksElided { get; init; }
+    internal int InitializationWritesElided { get; init; }
+}

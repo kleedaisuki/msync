@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.ExceptionServices;
 using Msync.Core;
 using Msync.Core.Native;
 using NativePathValue = Msync.Core.Native.NativePath;
@@ -38,7 +39,7 @@ public sealed partial class NativeInterpreter
         NativeRuntimeContext origin = context.CaptureDirectory();
         NativeReachable roots = new(memory, GetRangeRoots, image);
         roots.Add(source);
-        TaskCompletionSource<NativeValue> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        NativeSubmission submission = new(NativeSubmissionKind.Transfer, token, span, origin.Timeline);
         List<ResourceIndex.Registration> registrations = [];
         HashSet<Task> dependencies;
         lock (resourceGate)
@@ -50,8 +51,8 @@ public sealed partial class NativeInterpreter
             ExcludeAdmissions(dependencies);
             if (!ordering.IsCompletedSuccessfully) dependencies.Add(ordering);
             if (predecessors is not null) dependencies.UnionWith(predecessors);
-            registrations.Add(resources.Add(completion.Task, null, write));
-            foreach (ResourceKey read in reads) registrations.Add(resources.AddRead(completion.Task, read));
+            registrations.Add(resources.Add(submission.Completion, null, write));
+            foreach (ResourceKey read in reads) registrations.Add(resources.AddRead(submission.Completion, read));
             RecordAdmission(plan, dependencies.Count);
             if (admission is not null)
             {
@@ -60,58 +61,95 @@ public sealed partial class NativeInterpreter
                 admission.SetMetric("dependencies.matched", dependencies.Count);
                 for (int index = 0; index < reads.Count; index++) RecordSchedulingResource(admission, "read", index, reads[index]);
                 RecordSchedulingResource(admission, "write", 0, write, true);
-                context.Timeline!.Register(completion.Task, admission);
+                context.Timeline!.Register(submission.Completion, admission);
             }
         }
         List<NativeFuture> inputs = [];
         if (source.Future is { } sourceFuture) inputs.Add(sourceFuture);
         if (destination.Future is { } destinationFuture) inputs.Add(destinationFuture);
-        NativeFuture future = new(completion.Task, inputs, transfer: true, source: span,
-            processes: roots.Processes.ToArray(), parentAdmission: admittedTransfer.Value);
+        NativeFuture future = new(submission.Completion, inputs, transfer: true, source: span,
+            processes: roots.Processes.ToArray(), parentAdmission: admittedTransfer.Value, submission: submission);
+        NativeWorkFrontier frontier = owner.CaptureFrontier();
         owner.Add(future);
         transfers.TryAdd(future, 0);
-        _ = CompleteTransferAsync(future, source, destination, origin, completion, dependencies, registrations, plan, token);
+        submission.Start(cancellation => CompleteTransferAsync(future, source, destination, origin, owner, frontier, dependencies, registrations, plan, cancellation),
+            () => transfers.TryRemove(future, out _));
         return new(future);
     }
 
-    private async Task CompleteTransferAsync(NativeFuture future, NativeDatum source, NativeDatum destination,
-        NativeRuntimeContext origin, TaskCompletionSource<NativeValue> completion, HashSet<Task> dependencies,
+    private async ValueTask<NativeValue> CompleteTransferAsync(NativeFuture future, NativeDatum source, NativeDatum destination,
+        NativeRuntimeContext origin, NativeWorkScope parent, NativeWorkFrontier frontier, HashSet<Task> dependencies,
         IReadOnlyList<ResourceIndex.Registration> registrations, NativePlannedTransfer? plan, CancellationToken token)
     {
+        using RuntimeTimelineScope? operation = origin.Timeline?.Begin("transfer.execute");
+        operation?.SetSource(future.Source);
+        operation?.SetMetric("dependencies", dependencies.Count);
+        operation?.SetMetric("inherited.futures", frontier.Futures.Length);
+        operation?.SetMetric("inherited.processes", frontier.Processes.Length);
+        using DirectoryScope directory = EnterDeferredDirectory(origin);
         NativeFuture? previous = admittedTransfer.Value;
+        NativeWorkScope? previousWork = currentWork.Value;
+        NativeWorkScope work = new(parent, frontier, future);
         admittedTransfer.Value = future;
+        currentWork.Value = work;
         bool entered = false;
+        bool success = false;
+        Exception? failure = null;
         try
         {
+            token.ThrowIfCancellationRequested();
             if (dependencies.Count != 0) await AwaitSchedulingAsync(Task.WhenAll(dependencies), token, "transfer.resources", "relevant", dependencies);
             NativeValue value = await source.ResolveAsync(token);
             NativePathValue target = origin.AsPath(await destination.ResolveAsync(token));
-            if (previous is null)
+            if (!HasTransferAdmission(previous))
             {
                 await AwaitSchedulingAsync(transferSlots.WaitAsync(token), CancellationToken.None, "transfer.capacity", "capacity");
                 entered = true;
             }
-            bool success = await ExecuteScheduledTransferAsync(value, target, origin, plan, token);
-            completion.TrySetResult(NativeValue.FromBool(success));
+            success = await ExecuteScheduledTransferAsync(value, target, origin, plan, token);
         }
-        catch (OperationCanceledException error) { completion.TrySetCanceled(error.CancellationToken); }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or MsyncException or InvalidOperationException)
+        catch (Exception error) { failure = error; }
+        try
         {
-            MsyncException diagnostic = error is MsyncException { Span: not null } selected ? selected
-                : new(error.Message, future.Source, error);
-            if (origin.ReportError is { } report) report(diagnostic);
-            else await origin.Error.WriteLineAsync($"msync: {diagnostic.Message}");
-            completion.TrySetResult(NativeValue.False);
+            NativeReachable reachable = new(memory, GetRangeRoots, image);
+            reachable.Add(source);
+            reachable.Add(destination);
+            await work.FinishAsync(reachable, () => Interlocked.Increment(ref failedTransfers), token).ConfigureAwait(false);
         }
-        catch (Exception error) { completion.TrySetException(error); }
+        catch (Exception cleanup)
+        {
+            if (failure is null) failure = cleanup;
+            else if (!ReferenceEquals(failure, cleanup) && !(failure is OperationCanceledException && cleanup is OperationCanceledException))
+                failure = new AggregateException("Native transfer and callback cleanup failed.", failure, cleanup);
+        }
         finally
         {
             if (entered) transferSlots.Release();
             lock (resourceGate)
-                foreach (ResourceIndex.Registration registration in registrations) resources.Remove(completion.Task, registration);
-            transfers.TryRemove(future, out _);
+                foreach (ResourceIndex.Registration registration in registrations) resources.Remove(future.Completion, registration);
             admittedTransfer.Value = previous;
+            currentWork.Value = previousWork;
         }
+        operation?.SetMetric("callback.work_finished", 1);
+        if (failure is not null) operation?.Fail(failure);
+        return await TransferResultAsync(future, origin, success, failure).ConfigureAwait(false);
+    }
+
+    private static async ValueTask<NativeValue> TransferResultAsync(NativeFuture future,
+        NativeRuntimeContext origin, bool success, Exception? failure)
+    {
+        if (failure is null) return NativeValue.FromBool(success);
+        if (failure is not (IOException or UnauthorizedAccessException or MsyncException or InvalidOperationException))
+            ExceptionDispatchInfo.Capture(failure).Throw();
+        MsyncException diagnostic = failure is MsyncException { Span: not null } selected ? selected
+            : new(failure.Message, future.Source, failure);
+        try
+        {
+            if (origin.ReportError is { } report) report(diagnostic);
+            else await origin.Error.WriteLineAsync($"msync: {diagnostic.Message}");
+        }
+        catch (Exception reporting) { throw new AggregateException("Native transfer and error reporting failed.", failure, reporting); }
+        return NativeValue.False;
     }
 
     private static IReadOnlyList<ResourceKey> TransferReads(NativeDatum source, NativeRuntimeContext origin, TypeKind sourceKind)
@@ -133,13 +171,15 @@ public sealed partial class NativeInterpreter
             : new("local", ResourcePath.Resolve(path.LocalPath(origin.WorkingDirectory, origin.HomeDirectory)));
 
     private async ValueTask<NativeValue> InvokeNativeAsync(string name, IReadOnlyList<NativeValue> arguments,
-        NativeRuntimeContext origin, CancellationToken token)
+        NativeRuntimeContext origin, CancellationToken token, Task? predecessor = null, bool admitted = false)
     {
-        (currentWork.Value ?? executionWork).Counters.Native(name);
+        if (profile is not null) (currentWork.Value ?? executionWork).Counters.Native(name);
         NativeBuiltinOperation operation = NativeBuiltins.Resolve(name);
         Msync.Core.NativeSignature signature = operation.Signature;
+        if (!admitted && signature.Effect == NativeEffect.Write && signature.Parameters.Any(parameter => (parameter.Kind & TypeKind.Path) != 0))
+            return await InvokeNativeWriteAsync(operation, arguments, origin, predecessor ?? ordering, token);
         bool deferredRead = DefersPathRead(signature);
-        if (!deferredRead) await AwaitNativeDependenciesAsync(signature, arguments, origin, token);
+        if (!deferredRead && !admitted) await AwaitNativeDependenciesAsync(signature, arguments, origin, token, predecessor);
         NativeValue result = await NativeBuiltins.InvokeAsync(operation, arguments, origin, InvokeAsync, token);
         if (!deferredRead || result.Kind != NativeKind.Range) return result;
         NativeRange range = result.AsRange();
@@ -167,12 +207,13 @@ public sealed partial class NativeInterpreter
     }
 
     private async ValueTask AwaitNativeDependenciesAsync(Msync.Core.NativeSignature signature, IReadOnlyList<NativeValue> arguments,
-        NativeRuntimeContext origin, CancellationToken token)
+        NativeRuntimeContext origin, CancellationToken token, Task? predecessor = null)
     {
         if (signature.Effect == NativeEffect.Pure && signature.PathAccess is null) return;
         using RuntimeTimelineScope? observation = context.Timeline?.Begin("scheduler.native_dependencies");
         observation?.SetAttribute("native.name", signature.Name);
         observation?.SetMetric("pending.candidates", transfers.Count);
+        Task admissionOrder = predecessor ?? ordering;
         HashSet<Task> dependencies = [];
         lock (resourceGate)
         {
@@ -188,7 +229,7 @@ public sealed partial class NativeInterpreter
                 if (observation is not null) RecordSchedulingResource(observation, "observation", resource++, key, access == NativePathAccess.Write);
             }
             ExcludeAdmissions(dependencies);
-            if (!ordering.IsCompletedSuccessfully) dependencies.Add(ordering);
+            if (!admissionOrder.IsCompletedSuccessfully) dependencies.Add(admissionOrder);
         }
         observation?.SetMetric("dependencies.matched", dependencies.Count);
         if (dependencies.Count != 0)
@@ -200,14 +241,58 @@ public sealed partial class NativeInterpreter
         }
     }
 
-    private async ValueTask<NativeStep> ProcessCallAsync(NativeFrame frame, NativeInstruction instruction, int pc, CancellationToken token)
+    private NativeStep ProcessCall(NativeFrame frame, NativeInstruction instruction, int pc, CancellationToken token)
     {
         NativeRuntimeContext origin = context.CaptureDirectory();
-        NativeValue executable = await frame.GetDatum(instruction.A).ResolveAsync(token);
-        NativeValue[] arguments = await ResolveArguments((instruction.Inputs ?? []).Select(frame.GetDatum).ToArray(), token);
-        await AwaitSchedulingAsync(ordering, token, "process.ordering", "ordering");
-        frame.Set(instruction.Result, await origin.ProcessCallAsync!(origin.AsPath(executable), arguments, origin, token));
-        return new(pc + 1);
+        NativeDatum executable = frame.GetDatum(instruction.A);
+        NativeDatum[] arguments = (instruction.Inputs ?? []).Select(frame.GetDatum).ToArray();
+        Task predecessor = ordering;
+        if ((instruction.B & 1) != 0)
+        {
+            origin = origin.ForProcessSubmission(processCreatedObserver);
+            NativeSubmission submission = new(NativeSubmissionKind.Process, token, instruction.Source, origin.Timeline);
+            NativeFuture[] dependencies = arguments.Prepend(executable).Where(value => value.Future is not null)
+                .Select(value => value.Future!).Distinct().ToArray();
+            NativeFuture future = new(submission.Completion, dependencies, source: instruction.Source,
+                logicalType: TypeRef.Process, submission: submission);
+            (currentWork.Value ?? executionWork).Add(future);
+            using RuntimeTimelineScope? observation = context.Timeline?.Begin("process.submit");
+            observation?.SetSource(instruction.Source);
+            if (observation is not null)
+            {
+                origin.Timeline!.Register(submission.Completion, observation);
+                foreach (NativeFuture dependency in dependencies) observation.Link("argument", dependency.Completion);
+                observation.Link("ordering", predecessor);
+            }
+            observation?.SetMetric("arguments", arguments.Length);
+            observation?.SetMetric("dependencies", dependencies.Length);
+            submission.Start(cancellation => LaunchProcessAsync(executable, arguments, origin, predecessor, cancellation));
+            frame.SetDatum(instruction.Result, new(future));
+            return new NativeStep(pc + 1);
+        }
+        NativeValue result = Demand(LaunchProcessAsync(executable, arguments, origin, predecessor, token));
+        using RuntimeTimelineScope? wait = context.Timeline?.Begin("process.synchronous_wait");
+        result = NativeValue.FromProcess(Demand(result.AsProcess().WaitAsync(token)));
+        wait?.SetMetric("process.exit_code", result.AsProcess().ExitCode);
+        frame.Set(instruction.Result, result);
+        return new NativeStep(pc + 1);
+    }
+
+    private async ValueTask<NativeValue> LaunchProcessAsync(NativeDatum executable, NativeDatum[] arguments,
+        NativeRuntimeContext origin, Task predecessor, CancellationToken token)
+    {
+        using RuntimeTimelineScope? launch = origin.Timeline?.Begin("process.launch");
+        try
+        {
+            token.ThrowIfCancellationRequested();
+            NativeValue path = await executable.ResolveAsync(token).ConfigureAwait(false);
+            launch?.SetAttribute("process.executable", path.ToString());
+            NativeValue[] values = await ResolveArguments(arguments, token).ConfigureAwait(false);
+            await AwaitSchedulingAsync(predecessor, token, "process.ordering", "ordering").ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            return await origin.ProcessCallAsync!(origin.AsPath(path), values, origin, token).ConfigureAwait(false);
+        }
+        catch (Exception error) { launch?.Fail(error); throw; }
     }
 
     private async ValueTask<NativeStep> SelectPathAsync(NativeFrame frame, NativeInstruction instruction, int pc, CancellationToken token)
@@ -226,7 +311,7 @@ public sealed partial class NativeInterpreter
             return new(pc + 1);
         }
         if (instruction.Symbol is null && instruction.A == (int)BarrierDirection.Release) return new(pc + 1);
-        NativeFuture[] finite = transfers.Keys.Where(static future => future.Processes.Count == 0).ToArray();
+        NativeFuture[] finite = transfers.Keys.Where(static future => !future.HasProcessDependency).ToArray();
         if (instruction.A == (int)BarrierDirection.Acquire)
         {
             Task[] dependencies = finite.Select(static future => (Task)future.Completion).Prepend(ordering).ToArray();
@@ -245,13 +330,13 @@ public sealed partial class NativeInterpreter
         if (instruction.A < 0)
         {
             for (NativeWorkScope? owner = activation.Work; owner is not null; owner = owner.Parent)
-                await AwaitSchedulingAsync(owner.JoinAsync(token), token, "acquire.owner", "owner");
+                await AwaitSchedulingAsync(owner.JoinAsync(token, activation.Work.Counters), token, "acquire.owner", "owner");
             return new(pc + 1);
         }
         NativeValue value = await activation.Frame.GetDatum(instruction.A).ResolveAsync(token);
         NativeProcess process = value.AsProcess();
         NativeProcess completed = await process.WaitAsync(token);
-        NativeFuture[] flows = transfers.Keys.Where(future => future.Processes.Contains(process, ReferenceEqualityComparer.Instance)).ToArray();
+        NativeFuture[] flows = transfers.Keys.Where(future => future.DependsOnProcess(process)).ToArray();
         if (flows.Length != 0)
         {
             Task[] dependencies = flows.Select(static future => (Task)future.Completion).ToArray();
@@ -261,9 +346,16 @@ public sealed partial class NativeInterpreter
         return new(pc + 1);
     }
 
+    private static bool HasTransferAdmission(NativeFuture? admission)
+    {
+        for (; admission is not null; admission = admission.ParentAdmission)
+            if (admission.IsTransfer) return true;
+        return false;
+    }
+
     private void ExcludeAdmissions(HashSet<Task> dependencies)
     {
         for (NativeFuture? admission = admittedTransfer.Value; admission is not null; admission = admission.ParentAdmission)
-            dependencies.Remove(admission.Completion);
+            dependencies.Remove(admission.ResourceCompletion);
     }
 }

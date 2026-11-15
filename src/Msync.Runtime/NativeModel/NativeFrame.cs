@@ -5,14 +5,41 @@ namespace Msync.Runtime.Native;
 
 internal sealed class NativeFrame
 {
-    private readonly NativeImage image;
-    private readonly int functionIndex;
-    private readonly NativeFunctionCode function;
+    internal NativeInterpreter.Activation? Activation;
+    private readonly FrameAllocation layout;
     private readonly NativeAllocation storage;
-    private readonly NativeFrameSlot[] slots;
     private readonly NativeAddress[] bindings;
     private readonly NativeMemory memory;
     private readonly Dictionary<int, NativeAddress>? sessionLocations;
+    private NativeDatum[] argumentSnapshot = [];
+    private int argumentCount;
+    private NativeFrameStack.Lease? stackLease;
+    internal NativeFrameStack.Lease? StackLease => stackLease;
+
+    internal void EnterStack() => stackLease = NativeFrameStack.Current.Push(storage);
+
+    internal void LeaveStack()
+    {
+        if (stackLease is not { } lease) return;
+        lease.Stack.Pop(lease, storage);
+        stackLease = null;
+    }
+
+    internal NativeArguments SnapshotArguments(IReadOnlyList<int> inputs)
+    {
+        bool allocated = argumentSnapshot.Length < inputs.Count;
+        if (allocated) argumentSnapshot = new NativeDatum[inputs.Count];
+        else Array.Clear(argumentSnapshot, inputs.Count, Math.Max(0, argumentCount - inputs.Count));
+        argumentCount = inputs.Count;
+        for (int index = 0; index < argumentCount; index++) argumentSnapshot[index] = GetDatum(inputs[index]);
+        return new(argumentSnapshot, argumentCount, allocated);
+    }
+
+    internal void ClearArguments()
+    {
+        Array.Clear(argumentSnapshot, 0, argumentCount);
+        argumentCount = 0;
+    }
 
     internal NativeFrame(NativeImage image, int functionIndex, NativeEnvironment? environment,
         IReadOnlyList<NativeDatum> arguments, NativeMemory memory,
@@ -21,53 +48,79 @@ internal sealed class NativeFrame
 
     internal NativeFrame(NativeImage image, int functionIndex, NativeEnvironment? environment,
         NativeArguments arguments, NativeMemory memory,
-        Dictionary<int, NativeAddress>? sessionLocations = null, NativeAllocation? allocation = null)
+        Dictionary<int, NativeAddress>? sessionLocations = null, NativeAllocation? allocation = null, bool stack = false)
     {
-        this.image = image;
-        this.functionIndex = functionIndex;
         this.memory = memory;
         this.sessionLocations = sessionLocations;
-        function = image.Program.Functions[functionIndex];
-        FrameAllocation layout = image.Frame(functionIndex);
-        slots = layout.Slots;
-        storage = allocation ?? new(layout.Layout);
+        layout = image.Frame(functionIndex);
+        storage = allocation ?? new(layout.Layout, allocate: !stack);
         bindings = layout.BindingSlots.Length == 0 ? [] : new NativeAddress[layout.BindingSlots.Length];
+        if (stack) EnterStack();
+        try { Initialize(environment, arguments, sessionLocations); }
+        catch
+        {
+            if (stack) { memory.ResetFrame(storage); LeaveStack(); }
+            throw;
+        }
+    }
+
+    internal void Reset(NativeEnvironment? environment, NativeArguments arguments,
+        Dictionary<int, NativeAddress>? sessionLocations = null)
+    {
+        Initialize(environment, arguments, sessionLocations);
+    }
+
+    private void Initialize(NativeEnvironment? environment, NativeArguments arguments,
+        Dictionary<int, NativeAddress>? activeSessionLocations)
+    {
         foreach (int index in layout.BindingSlots)
         {
-            NativeFrameSlot slot = slots[index];
+            NativeFrameSlot slot = layout.Slots[index];
             NativeAddress address = storage.AddressAt(slot.Offset, slot.Type);
-            if (slot.Persistent && sessionLocations is not null)
+            if (slot.Persistent && activeSessionLocations is not null)
             {
-                if (!sessionLocations.TryGetValue(index, out address))
+                if (!activeSessionLocations.TryGetValue(index, out address))
                 {
                     address = new NativeAllocation(new(slot.Type)).Field(0);
-                    sessionLocations.Add(index, address);
+                    activeSessionLocations.Add(index, address);
                 }
             }
+            else if (slot.HeapLayout is { } heap) address = new NativeAllocation(heap).Field(0);
             bindings[slot.Binding] = address;
         }
-        for (int index = 0; index < function.CaptureCount; index++)
+        for (int index = 0; index < layout.Code.CaptureCount; index++)
         {
-            if (function.Signature.Captures[index].Mode == NativeCaptureMode.Location)
-                bindings[slots[index].Binding] = NativeStorage.LoadAddress(environment!.CaptureAddress(index));
+            if (layout.Code.Signature.Captures[index].Mode == NativeCaptureMode.Location)
+                bindings[layout.Slots[index].Binding] = NativeStorage.LoadAddress(environment!.CaptureAddress(index));
             else memory.Copy(environment!.CaptureAddress(index), Location(index));
         }
         for (int index = 0; index < arguments.Count; index++) arguments.Initialize(this, index);
     }
 
-    internal int CaptureCount => function.CaptureCount;
+    internal void ClearBindings() => Array.Clear(bindings);
+    internal void RecordHeapLocations(RuntimeProfile.NativeFrameCounters counters)
+    {
+        foreach (int index in layout.BindingSlots)
+            if (layout.Slots[index].HeapLayout is { } heap) counters.EscapingLocation(heap);
+    }
+    internal int CaptureCount => layout.Code.CaptureCount;
     internal void BorrowParameter(int slot, NativeAddress address)
     {
-        bindings[slots[slot].Binding] = address;
+        bindings[layout.Slots[slot].Binding] = address;
     }
-    internal void CopyArgument(NativeAddress source, int slot) => memory.Copy(source, Location(slot));
+    internal void CopyArgument(NativeAddress source, int slot) => memory.CopyCompiled(source, Location(slot));
 
     internal void Set(int index, NativeValue value)
     {
         memory.Write(Location(index), new(value));
     }
 
-    internal NativeDatum GetDatum(int index) => memory.Read(Location(index));
+    internal NativeDatum GetDatum(int index)
+    {
+        if (!IsPrivate(index)) return memory.Read(Location(index));
+        if (Activation?.Work is { } work) work.Counters.CompiledRead();
+        return memory.ReadCompiled(Location(index));
+    }
     internal void SetDatum(int index, NativeDatum value)
     {
         memory.Write(Location(index), value);
@@ -76,24 +129,24 @@ internal sealed class NativeFrame
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal NativeAddress Location(int index)
     {
-        ref readonly NativeFrameSlot slot = ref slots[index];
+        ref readonly NativeFrameSlot slot = ref layout.Slots[index];
         return slot.Binding < 0 ? storage.AddressAt(slot.Offset, slot.Type) : bindings[slot.Binding];
     }
     internal NativeAllocation Allocation => storage;
-    internal int Type(int index) => function.Slots[index].Type;
+    internal int Type(int index) => layout.Code.Slots[index].Type;
     internal void Bind(int index, NativeAddress address)
     {
-        ref readonly NativeFrameSlot slot = ref slots[index];
+        ref readonly NativeFrameSlot slot = ref layout.Slots[index];
         bindings[slot.Binding] = address;
         if (slot.Persistent && sessionLocations is not null) sessionLocations[index] = address;
     }
 
     internal NativeAddress Pointer(int index)
     {
-        ref readonly NativeFrameSlot slot = ref slots[index];
+        ref readonly NativeFrameSlot slot = ref layout.Slots[index];
         NativeAddress location = slot.Binding < 0 ? storage.AddressAt(slot.Offset, slot.Type) : bindings[slot.Binding];
         bool isExactAddress = slot.Binding < 0 ? slot.ExactAddress : location.Type.Kinds == (1UL << (int)NativeKind.Address);
-        NativeAddress address = isExactAddress && location.IsInitialized
+        NativeAddress address = isExactAddress && IsReady(index, location)
             ? NativeStorage.LoadAddressDirect(location) : GetDatum(index).Value.AsAddress();
         return address.StorageType is not null || slot.Pointee is null ? address
             : address.OffsetBy(default, slot.Pointee);
@@ -101,7 +154,7 @@ internal sealed class NativeFrame
 
     internal void SetPointer(int index, NativeAddress address)
     {
-        ref readonly NativeFrameSlot slot = ref slots[index];
+        ref readonly NativeFrameSlot slot = ref layout.Slots[index];
         NativeAddress destination = slot.Binding < 0 ? storage.AddressAt(slot.Offset, slot.Type) : bindings[slot.Binding];
         if (slot.Binding < 0 ? slot.ExactAddress : destination.Type.Kinds == (1UL << (int)NativeKind.Address))
             memory.WriteAddress(destination, address);
@@ -109,10 +162,41 @@ internal sealed class NativeFrame
     }
 
     internal void Copy(int source, int destination)
+        => CopyTo(source, Location(destination));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool IsPrivate(int slot) => layout.Slots[slot].Storage.HasFlag(NativeSlotStorage.PrivateArgument);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool IsReady(int slot, NativeAddress address) =>
+        address.IsInitialized || IsPrivate(slot) && !memory.IsPending(address);
+
+    internal bool TryCopyReady(int source, NativeAddress destination)
     {
-        memory.Copy(Location(source), Location(destination));
+        NativeAddress address = Location(source);
+        return IsReady(source, address) && memory.TryCopyValue(address, destination);
     }
-    internal void Copy(NativeType type, int source, int destination) => memory.Copy(type, Location(source), Location(destination));
+
+    internal void CopyTo(int source, NativeAddress destination)
+    {
+        if (!IsPrivate(source))
+        {
+            memory.Copy(Location(source), destination);
+            return;
+        }
+        if (Activation?.Work is { } work) work.Counters.CompiledCopy();
+        memory.CopyCompiled(Location(source), destination);
+    }
+    internal void Copy(NativeType type, int source, int destination)
+    {
+        if (!IsPrivate(source))
+        {
+            memory.Copy(type, Location(source), Location(destination));
+            return;
+        }
+        if (Activation?.Work is { } work) work.Counters.CompiledCopy();
+        memory.CopyCompiled(type, Location(source), Location(destination));
+    }
 
     internal void Drop(int index)
     {
@@ -121,7 +205,7 @@ internal sealed class NativeFrame
 
     internal bool TryAllocate(int instruction, out NativeAddress address)
     {
-        if (image.FrameAllocation(functionIndex, instruction) is not { } region) { address = default; return false; }
+        if (layout.At(instruction) is not { } region) { address = default; return false; }
         address = storage.AddressAt(region.Offset);
         return true;
     }

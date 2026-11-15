@@ -6,7 +6,9 @@ namespace Msync.Core.Native;
 [StructLayout(LayoutKind.Explicit)]
 internal struct NativeRoot
 {
+    [FieldOffset(0)] internal object? Value;
     [FieldOffset(0)] internal string? Text;
+    [FieldOffset(0)] internal NativeConnectionResource? Connection;
     [FieldOffset(0)] internal NativeAllocation? Allocation;
     [FieldOffset(0)] internal NativeEnvironment? Environment;
     [FieldOffset(0)] internal NativeRange? Range;

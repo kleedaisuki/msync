@@ -1,14 +1,8 @@
 namespace Msync.Core.Native;
 
-/// <summary>Relocates format-6 stack code into the native typed register and logical-memory model.</summary>
+/// <summary>Shared emission helpers for HIR storage adapters.</summary>
 public static partial class NativeLegacyV6Importer
 {
-    public static NativeProgram Import(LegacyV6Module module)
-    {
-        ArgumentNullException.ThrowIfNull(module);
-        return new Importer(module).Run();
-    }
-
     private sealed partial class Importer
     {
         internal readonly LegacyV6Module Module;
@@ -30,7 +24,7 @@ public static partial class NativeLegacyV6Importer
         {
             Module = module;
             Statics.AddRange(module.Statics.Select((layout, declaration) => new NativeStatic(layout, declaration)));
-            Types = module.Types.Select(type => new NativeCodeType((TypeKind)(type.Kinds & ~LegacyV6Reader.LegacyStorageMask),
+            Types = module.Types.Select(type => new NativeCodeType((TypeKind)(type.Kinds & ~(ushort)TypeKind.Storage),
                 type.Element, type.Layouts)).ToList();
             Layouts = module.Layouts.Select(layout => new NativeCodeLayout(layout.Fields.Select(field =>
                 new NativeCodeField(field.Name, field.Type)).ToArray())).ToList();

@@ -4,22 +4,24 @@ namespace Msync.Optimization;
 
 internal static class NativeRegisterAllocation
 {
-    internal static NativeProgram Run(NativeProgram program, NativeOptimizationProfile? profile)
+    internal static NativeProgram Run(NativeProgram program, NativeOptimizationProfile? profile,
+        NativeAddressAnalysis.ProgramFacts? sharedFacts = null)
     {
+        NativeAddressAnalysis.ProgramFacts facts = sharedFacts ?? new(program);
         NativeFunctionCode[] functions = new NativeFunctionCode[program.Functions.Count];
         for (int index = 0; index < functions.Length; index++)
         {
             profile?.Function(index);
             var started = profile?.Start(NativeOptimizationProfile.Pass.Slots, program.Functions[index]) ?? default;
             NativeFunctionCode original = program.Functions[index];
-            functions[index] = Allocate(program, index);
+            functions[index] = Allocate(program, index, facts);
             profile?.Add(NativeOptimizationProfile.Pass.Slots, started, original, functions[index],
                 original.Slots.Count != functions[index].Slots.Count || !original.Instructions.SequenceEqual(functions[index].Instructions));
         }
         return program with { Functions = functions };
     }
 
-    private static NativeFunctionCode Allocate(NativeProgram program, int index)
+    private static NativeFunctionCode Allocate(NativeProgram program, int index, NativeAddressAnalysis.ProgramFacts sharedFacts)
     {
         NativeFunctionCode function = program.Functions[index];
         if (function.IsTemplate || function.Instructions.Count == 0 || ObservesFrame(program, function)) return function;
@@ -29,7 +31,7 @@ internal static class NativeRegisterAllocation
             .Concat(function.Instructions.SelectMany(NativeInstructionFacts.Definitions)).ToHashSet();
         int prefix = ProtectedPrefix(program, function, index, used);
         used.RemoveWhere(slot => slot < prefix);
-        NativeAddressAnalysis facts = new(program, index);
+        NativeAddressAnalysis facts = sharedFacts.Function(index);
         Dictionary<int, (string? Layouts, string Physical)> contracts = used.ToDictionary(slot => slot, slot =>
         {
             NativeCodeType type = program.Types[function.Slots[slot].Type];
@@ -75,7 +77,22 @@ internal static class NativeRegisterAllocation
             return result.Op is NativeOp.Copy or NativeOp.Move && result.Result == result.A
                 ? NativeLocalOptimization.Nop(result) : result;
         }).ToArray();
-        return function with { Slots = slots.ToArray(), Instructions = code };
+        NativeStoragePlan? storage = function.Storage;
+        if (storage is not null)
+        {
+            NativeSlotStorage[] flags = new NativeSlotStorage[slots.Count];
+            for (int slot = 0; slot < prefix; slot++) flags[slot] = storage.Slots[slot];
+            for (int slot = prefix; slot < flags.Length; slot++)
+                flags[slot] = NativeSlotStorage.PrivateArgument | NativeSlotStorage.ReadOnlyParameter;
+            foreach ((int source, int target) in colors)
+            {
+                NativeSlotStorage merged = flags[target] & storage.Slots[source];
+                merged |= (flags[target] | storage.Slots[source]) & NativeSlotStorage.Escapes;
+                flags[target] = merged;
+            }
+            storage = storage with { Slots = flags };
+        }
+        return function with { Slots = slots.ToArray(), Instructions = code, Storage = storage };
 
         void Edge(int first, int second)
         {

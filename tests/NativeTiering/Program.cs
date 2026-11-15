@@ -4,6 +4,24 @@ using Msync.Core.Native;
 using Msync.Runtime;
 using Msync.Runtime.Native;
 
+if (args.Contains("--argument-sources"))
+{
+    ArgumentSourceChecks.Run();
+    return;
+}
+
+if (args.Contains("--private-initialization"))
+{
+    Console.WriteLine($"PASS {await PrivateInitializationChecks.RunAsync()} private initialization properties");
+    return;
+}
+
+if (args.Contains("--materialization"))
+{
+    Console.WriteLine($"PASS {ReadyMaterializationChecks.Run()} private Future materialization properties");
+    return;
+}
+
 int checks = EmissionChecks.Run() + FrameBindingChecks.Run() + RegionCopyChecks.Run();
 checks += await NumberAccessChecks.RunAsync();
 checks += await RegisterRegionChecks.RunAsync();

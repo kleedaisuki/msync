@@ -11,8 +11,13 @@ internal static class Program
         if (!condition) throw new InvalidOperationException(message);
     }
 
-    public static void Main()
+    public static void Main(string[] args)
     {
+        if (args.Contains("--storage-copy"))
+        {
+            Console.WriteLine($"PASS storage copy {StorageCopyChecks.Run()}");
+            return;
+        }
         AllBuiltinStorage();
         ExactConstants();
         ScalarTextConstants();

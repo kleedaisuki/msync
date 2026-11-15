@@ -6,6 +6,7 @@ namespace Msync.Runtime.Native;
 
 public sealed class NativeRuntimeContext
 {
+    internal NativeConnections Connections { get; }
     private readonly TextReader? input;
     private readonly Action<string>? directoryChanged;
     private NativeRuntimeContext? captured;
@@ -28,6 +29,7 @@ public sealed class NativeRuntimeContext
         MemoryLimit = options.MemoryLimit;
         SpoolLimit = options.SpoolLimit;
         Timeline = options.Timeline;
+        Connections = new(Timeline);
         Observe = options.Observe;
         ReportError = options.ReportError;
         directoryChanged = options.WorkingDirectoryChanged;
@@ -35,6 +37,7 @@ public sealed class NativeRuntimeContext
 
     private NativeRuntimeContext(NativeRuntimeContext source, bool snapshot)
     {
+        Connections = source.Connections;
         directoryAuthority = snapshot ? source : null;
         ownsDirectory = true;
         WorkingDirectory = source.WorkingDirectory;
@@ -83,6 +86,8 @@ public sealed class NativeRuntimeContext
     public Func<NativeAddress, int, NativeFieldDescription>? DescribeField { get; set; }
 
     public NativeRuntimeContext CaptureDirectory() => captured ??= new(this, snapshot: true);
+    internal NativeRuntimeContext ForProcessSubmission(Action<NativeProcess>? observer) =>
+        new(this, snapshot: true) { ProcessCreated = observer };
     internal NativeRuntimeContext ForkDirectory() => new(this, snapshot: false);
     public NativePathValue AsPath(NativeValue value) => value.Kind switch
     {

@@ -25,8 +25,6 @@ internal sealed partial class NativeArtifactRenderer(NativeProgram module, int v
         Emit("; msync typed IR — read-only disassembly");
         Emit("; Optimized source cannot be reconstructed from discarded instructions.");
         Emit("; Inspecting this document does not bind, optimize or execute the artifact.");
-        if (version == LegacyV6Reader.FormatVersion)
-            Emit("; Accepted format-6 data is relocated to equivalent native typed IR; source is not replayed.");
         Emit($"artifact {module.Stage.ToString().ToLowerInvariant()} format {version} language {NativeArtifact.LanguageVersion} representation {NativeProgram.Representation}");
         Emit($"optimization O{module.OptimizationLevel} semantics {Quote(module.Semantics.ToString())} entry @f{module.EntryPoint}");
         Emit($"origin {Quote(sourceUri)}");

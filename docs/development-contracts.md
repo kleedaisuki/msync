@@ -9,8 +9,11 @@
   [language](design/language-v080.md),
   [research status](../RESEARCH.md), [benchmarks](../BENCHMARK.md).
 - Preserve observable language behavior, source diagnostics, alias identity and
-  resource lifetimes. Read native IR format 1 and import historical format 6
-  into the same native pipeline; never restore a second VM for compatibility.
+  resource lifetimes. The v0.9 release reads native IR format 2 and HIR format 4 only; old artifacts
+  must be rebuilt from source. Native-2 uses compact revision 4; obsolete prototype
+  revisions require recompilation, not loader-side analysis or migration.
+  Compiled storage/call plans are authoritative;
+  do not reconstruct them in the loader or runtime.
 - Keep compilation, contextual preparation and execution ownership separate.
   Artifacts do not replay source; the VM does not invoke the planner.
 

@@ -4,6 +4,8 @@ using Msync.Core.Native;
 
 namespace Msync.Runtime.Native;
 
+internal readonly record struct NativeInitializationElisions(int Checks, int Writes);
+
 internal static partial class NativeMachineCode
 {
     internal const bool HasDirectPaths = true;
@@ -12,22 +14,41 @@ internal static partial class NativeMachineCode
         Architecture architecture, bool windows, nint bridge, nint number, nint boolean,
         IReadOnlyList<NativeConstant> constants, NativeTierLayout? layout = null, nint commit = 0)
     {
+        return Emit(function, operations, architecture, windows, bridge, number, boolean, constants, out _, layout, commit);
+    }
+
+    internal static byte[] Emit(NativeExecutionFunction function, NativeFastOperation[] operations,
+        Architecture architecture, bool windows, nint bridge, nint number, nint boolean,
+        IReadOnlyList<NativeConstant> constants, out NativeInitializationElisions initializationElisions,
+        NativeTierLayout? layout = null, nint commit = 0)
+    {
         layout ??= NativeTierLayout.Create(function, operations);
-        return architecture switch
+        if (architecture == Architecture.X64)
         {
-            Architecture.X64 => new X64(function, operations, constants, layout, windows, bridge, number, boolean, commit).Emit(),
-            Architecture.Arm64 when !windows => new Arm64(function, operations, constants, layout, bridge, number, boolean, commit).Emit(),
-            _ => throw new PlatformNotSupportedException("Native guest code generation is not available on this platform.")
-        };
+            X64 emitter = new(function, operations, constants, layout, windows, bridge, number, boolean, commit);
+            byte[] bytes = emitter.Emit();
+            initializationElisions = new(emitter.InitializationChecksElided, emitter.InitializationWritesElided);
+            return bytes;
+        }
+        if (architecture == Architecture.Arm64 && !windows)
+        {
+            Arm64 emitter = new(function, operations, constants, layout, bridge, number, boolean, commit);
+            byte[] bytes = emitter.Emit();
+            initializationElisions = new(emitter.InitializationChecksElided, emitter.InitializationWritesElided);
+            return bytes;
+        }
+        throw new PlatformNotSupportedException("Native guest code generation is not available on this platform.");
     }
 
     private sealed partial class X64(NativeExecutionFunction function, NativeFastOperation[] operations,
         IReadOnlyList<NativeConstant> constants, NativeTierLayout layout, bool windows, nint bridge, nint number, nint boolean, nint commit)
     {
+        internal int InitializationChecksElided { get; private set; }
+        internal int InitializationWritesElided { get; private set; }
         private readonly List<byte> code = [];
         private readonly List<(int Offset, int Target)> jumps = [];
-        private readonly List<int> guardPcs = [];
-        private readonly Dictionary<int, int> guardStubs = [];
+        private readonly List<(int Pc, bool Demand)> guardPcs = [];
+        private readonly Dictionary<(int Pc, bool Demand), int> guardStubs = [];
         private readonly int[] labels = Enumerable.Repeat(-1, function.Instructions.Length + 1).ToArray();
         private readonly IReadOnlyDictionary<int, NativeRegisterRegion> regions = layout.RegionsByPc;
         private int tableReference, dispatch, exit, guard;
@@ -85,8 +106,8 @@ internal static partial class NativeMachineCode
             for (int index = 0; index < guardPcs.Count; index++)
             {
                 stubs[index] = code.Count;
-                Bytes(0x41, 0xc7, 0x44, 0x24, 0x10); Int(guardPcs[index]);
-                Jump(0xe9, -4);
+                Bytes(0x41, 0xc7, 0x44, 0x24, 0x10); Int(guardPcs[index].Pc);
+                Bytes(0xb8); Int(guardPcs[index].Demand ? -10 : -3); Jump(0xe9, -1);
             }
             guard = code.Count; Bytes(0xb8); Int(-3);
             exit = code.Count;
@@ -110,13 +131,13 @@ internal static partial class NativeMachineCode
             return result;
         }
 
-        private int GuardTarget(int pc)
+        private int GuardTarget(int pc, bool demand = false)
         {
-            if (!guardStubs.TryGetValue(pc, out int id))
+            if (!guardStubs.TryGetValue((pc, demand), out int id))
             {
                 id = guardPcs.Count;
-                guardPcs.Add(pc);
-                guardStubs[pc] = id;
+                guardPcs.Add((pc, demand));
+                guardStubs[(pc, demand)] = id;
             }
             return -(10 + id);
         }
@@ -136,13 +157,18 @@ internal static partial class NativeMachineCode
 
         private void StoreScalar(NativeExecutionInstruction instruction, NativeFastOperation operation, int pc, nint number, nint boolean)
         {
+            bool isMove = operation is NativeFastOperation.NumberMove or NativeFastOperation.BoolMove;
             bool boolResult = operation.IsBoolResult();
             NativeKind kind = boolResult ? NativeKind.Bool : NativeKind.Number;
             Calculate(instruction, operation, pc);
             int pending;
             if (layout.TryFixed(instruction.Result, out FixedTierSlot fixedSlot))
             {
-                Bytes(0x41, 0xf6, 0x44, 0x24, 0x24, 0x01, 0x0f, 0x85); pending = code.Count; Int(0);
+                Bytes(0x41, 0xf6, 0x44, 0x24, 0x24, 0x01, 0x74); int noPending = code.Count; Bytes(0);
+                Bytes(0x4d, 0x8b, 0x54, 0x24, 0x08);
+                Bytes(0x41, 0xf6, 0x82); Int(checked(fixedSlot.Scalar * 32 + 24)); Bytes(0x02);
+                Bytes(0x0f, 0x85); pending = code.Count; Int(0);
+                code[noPending] = (byte)(code.Count - noPending - 1);
                 Bytes(0x4d, 0x8b, 0x54, 0x24, 0x28);
                 if (boolResult) Bytes(0x41, 0x88, 0x82);
                 else Bytes(0xf2, 0x41, 0x0f, 0x11, 0x82);
@@ -151,8 +177,8 @@ internal static partial class NativeMachineCode
                 {
                     Bytes(0x41, 0xc6, 0x82); Int(fixedSlot.ByteOffset); Bytes((byte)kind);
                 }
-                Bytes(0x4d, 0x8b, 0x54, 0x24, 0x30);
-                Bytes(0x41, 0xc6, 0x82); Int(fixedSlot.ByteOffset); Bytes(0x01);
+                bool flagsLoaded = StoreInitialized(instruction.Result, fixedSlot);
+                if (isMove && instruction.A != instruction.Result) ClearSourceInitialized(instruction.A, haveFlagsInR10: flagsLoaded);
                 Advance(pc, pc + instruction.Span, instruction.Span, layout.Hits[pc]);
             }
             else
@@ -171,10 +197,19 @@ internal static partial class NativeMachineCode
                     Bytes(0x4d, 0x8b, 0x9a); Int(offset + 16);
                     Bytes(0x41, 0xc6, 0x03, (byte)kind);
                 }
+                if (isMove && instruction.A != instruction.Result) ClearSourceInitialized(instruction.A, haveFlagsInR10: false);
                 Advance(pc, pc + instruction.Span, instruction.Span, layout.Hits[pc]);
                 PatchLocal(noData);
             }
             PatchLocal(pending);
+            if (isMove)
+            {
+                Arguments(pc);
+                Bytes(0x48, 0xb8); Long(bridge); Bytes(0xff, 0xd0, 0x85, 0xc0);
+                Jump(0x0f, 0x88, -1);
+                Jump(0xe9, -3);
+                return;
+            }
             if (boolResult)
             {
                 if (windows) Bytes(0x41, 0x89, 0xc0);
@@ -185,6 +220,21 @@ internal static partial class NativeMachineCode
             Bytes(0x48, 0xb8); Long(boolResult ? boolean : number); Bytes(0xff, 0xd0, 0x85, 0xc0);
             Jump(0x0f, 0x88, -1);
             if (instruction.Span > 1) Jump(0xe9, pc + instruction.Span);
+        }
+
+        private void ClearSourceInitialized(int slot, bool haveFlagsInR10)
+        {
+            if (layout.TryFixed(slot, out FixedTierSlot fixedSlot))
+            {
+                if (function.InitializationUnobserved(slot)) { InitializationWritesElided++; return; }
+                if (!haveFlagsInR10) Bytes(0x4d, 0x8b, 0x54, 0x24, 0x30);
+                Bytes(0x41, 0xc6, 0x82); Int(fixedSlot.ByteOffset); Bytes(0x00);
+                return;
+            }
+            int scalarOffset = checked(layout.Scalars[slot] * 32);
+            Bytes(0x4d, 0x8b, 0x54, 0x24, 0x08);
+            Bytes(0x4d, 0x8b, 0x9a); Int(scalarOffset + 8);
+            Bytes(0x41, 0xc6, 0x03, 0x00);
         }
 
         private void Arguments(int pc)
@@ -210,6 +260,8 @@ internal static partial class NativeMachineCode
         private void Calculate(NativeExecutionInstruction instruction, NativeFastOperation operation, int pc,
             NativeRegisterRegion? region = null, NativeRegisterOperation selected = default)
         {
+            if (UnsignedOperation(operation, region, selected))
+            { Unsigned(instruction, operation, pc, region, selected); return; }
             void Operand(int slot, int value, NativeKind kind, bool second)
             {
                 if (region is null) Scalar(slot, kind, second, pc);
@@ -223,6 +275,7 @@ internal static partial class NativeMachineCode
             }
             else if (operation == NativeFastOperation.BoolConstant)
             { Bytes(0xb8); Int(constants[instruction.A].Boolean ? 1 : 0); }
+            else if (operation == NativeFastOperation.IsNull) EmitIsNull(instruction.A, pc);
             else
             {
                 Operand(instruction.A, selected.A, operation.ExpectsBoolInputs() ? NativeKind.Bool : NativeKind.Number, false);
@@ -254,15 +307,20 @@ internal static partial class NativeMachineCode
         private void Scalar(int slot, NativeKind kind, bool second, int pc)
         {
             int guardTarget = GuardTarget(pc);
+            int readyTarget = GuardTarget(pc, demand: true);
             if (!function.AdmitsKind(slot, kind)) { Jump(0xe9, guardTarget); return; }
             if (layout.TryFixed(slot, out FixedTierSlot fixedSlot))
             {
-                Bytes(0x4d, 0x8b, 0x54, 0x24, 0x30);
-                Bytes(0x41, 0x80, 0xba); Int(fixedSlot.ByteOffset); Bytes(0x00); Jump(0x0f, 0x84, guardTarget);
+                if (!function.IsPrivateTemporary(slot))
+                {
+                    Bytes(0x4d, 0x8b, 0x54, 0x24, 0x30);
+                    Bytes(0x41, 0x80, 0xba); Int(fixedSlot.ByteOffset); Bytes(0x00); Jump(0x0f, 0x84, readyTarget);
+                }
+                else InitializationChecksElided++;
                 Bytes(0x41, 0xf6, 0x44, 0x24, 0x24, 0x01, 0x74); int noPending = code.Count; Bytes(0);
                 int offset = checked(fixedSlot.Scalar * 32);
                 Bytes(0x4d, 0x8b, 0x54, 0x24, 0x08);
-                Bytes(0x41, 0xf7, 0x82); Int(offset + 24); Int(2); Jump(0x0f, 0x85, guardTarget);
+                Bytes(0x41, 0xf7, 0x82); Int(offset + 24); Int(2); Jump(0x0f, 0x85, readyTarget);
                 code[noPending] = (byte)(code.Count - noPending - 1);
                 Bytes(0x4d, 0x8b, 0x54, 0x24, 0x28);
                 if (!function.HasKind(slot, kind))
@@ -279,9 +337,9 @@ internal static partial class NativeMachineCode
             }
             int scalarOffset = checked(layout.Scalars[slot] * 32);
             Bytes(0x4d, 0x8b, 0x54, 0x24, (byte)0x08);
-            Bytes(0x41, 0xf7, 0x82); Int(scalarOffset + 24); Int(2); Jump(0x0f, 0x85, guardTarget);
+            Bytes(0x41, 0xf7, 0x82); Int(scalarOffset + 24); Int(2); Jump(0x0f, 0x85, readyTarget);
             Bytes(0x4d, 0x8b, 0x9a); Int(scalarOffset + 8);
-            Bytes(0x41, 0x80, 0x3b, 0x00); Jump(0x0f, 0x84, guardTarget);
+            Bytes(0x41, 0x80, 0x3b, 0x00); Jump(0x0f, 0x84, readyTarget);
             if (!function.HasKind(slot, kind))
             {
                 if (function.IsUnion(slot))
@@ -294,6 +352,43 @@ internal static partial class NativeMachineCode
             Bytes(0x4d, 0x8b, 0x9a); Int(scalarOffset);
             if (kind == NativeKind.Bool) Bytes(0x41, 0x0f, 0xb6, 0x03);
             else Bytes(0xf2, 0x41, 0x0f, 0x10, second ? (byte)0x0b : (byte)0x03);
+        }
+
+        private void EmitIsNull(int slot, int pc)
+        {
+            int guardTarget = GuardTarget(pc, demand: true);
+            if (layout.TryFixed(slot, out FixedTierSlot fixedSlot))
+            {
+                if (!function.IsPrivateTemporary(slot))
+                {
+                    Bytes(0x4d, 0x8b, 0x54, 0x24, 0x30);
+                    Bytes(0x41, 0x80, 0xba); Int(fixedSlot.ByteOffset); Bytes(0x00); Jump(0x0f, 0x84, guardTarget);
+                }
+                else InitializationChecksElided++;
+                Bytes(0x41, 0xf6, 0x44, 0x24, 0x24, 0x01, 0x74); int noPending = code.Count; Bytes(0);
+                int offset = checked(fixedSlot.Scalar * 32);
+                Bytes(0x4d, 0x8b, 0x54, 0x24, 0x08);
+                Bytes(0x41, 0xf7, 0x82); Int(offset + 24); Int(2); Jump(0x0f, 0x85, guardTarget);
+                code[noPending] = (byte)(code.Count - noPending - 1);
+                if (!function.AdmitsKind(slot, NativeKind.Null)) { Bytes(0x31, 0xc0); return; }
+                if (function.HasKind(slot, NativeKind.Null)) { Bytes(0xb8); Int(1); return; }
+                Bytes(0x4d, 0x8b, 0x54, 0x24, 0x28);
+                Bytes(0x41, 0x80, 0xba); Int(fixedSlot.ByteOffset); Bytes((byte)NativeKind.Null);
+                Bytes(0x0f, 0x94, 0xc0, 0x0f, 0xb6, 0xc0);
+                return;
+            }
+            int scalarOffset = checked(layout.Scalars[slot] * 32);
+            Bytes(0x4d, 0x8b, 0x54, 0x24, 0x08);
+            Bytes(0x41, 0xf7, 0x82); Int(scalarOffset + 24); Int(2); Jump(0x0f, 0x85, guardTarget);
+            Bytes(0x4d, 0x8b, 0x9a); Int(scalarOffset + 8);
+            Bytes(0x4d, 0x85, 0xdb); Jump(0x0f, 0x84, guardTarget);
+            Bytes(0x41, 0x80, 0x3b, 0x00); Jump(0x0f, 0x84, guardTarget);
+            if (!function.AdmitsKind(slot, NativeKind.Null)) { Bytes(0x31, 0xc0); return; }
+            if (function.HasKind(slot, NativeKind.Null)) { Bytes(0xb8); Int(1); return; }
+            Bytes(0x4d, 0x8b, 0x9a); Int(scalarOffset + 16);
+            Bytes(0x4d, 0x85, 0xdb); Jump(0x0f, 0x84, guardTarget);
+            Bytes(0x41, 0x80, 0x3b, (byte)NativeKind.Null);
+            Bytes(0x0f, 0x94, 0xc0, 0x0f, 0xb6, 0xc0);
         }
 
         private void Compare(NativeFastOperation operation)
@@ -331,10 +426,12 @@ internal static partial class NativeMachineCode
     private sealed partial class Arm64(NativeExecutionFunction function, NativeFastOperation[] operations,
         IReadOnlyList<NativeConstant> constants, NativeTierLayout layout, nint bridge, nint number, nint boolean, nint commit)
     {
+        internal int InitializationChecksElided { get; private set; }
+        internal int InitializationWritesElided { get; private set; }
         private readonly List<uint> code = [];
         private readonly List<(int At, int Target, int Kind)> jumps = [];
-        private readonly List<int> guardPcs = [];
-        private readonly Dictionary<int, int> guardStubs = [];
+        private readonly List<(int Pc, bool Demand)> guardPcs = [];
+        private readonly Dictionary<(int Pc, bool Demand), int> guardStubs = [];
         private readonly int[] labels = Enumerable.Repeat(-1, function.Instructions.Length + 1).ToArray();
         private readonly IReadOnlyDictionary<int, NativeRegisterRegion> regions = layout.RegionsByPc;
         private int tableAdr, exit, guard, dispatch;
@@ -389,8 +486,8 @@ internal static partial class NativeMachineCode
             for (int index = 0; index < guardPcs.Count; index++)
             {
                 stubs[index] = code.Count;
-                Load(17, (ulong)guardPcs[index]); Word(0xb9001271);
-                Branch(-4, 0);
+                Load(17, (ulong)guardPcs[index].Pc); Word(0xb9001271);
+                Word(guardPcs[index].Demand ? 0x12800120u : 0x12800040u); Branch(-1, 0);
             }
             guard = code.Count; Word(0x12800040);
             exit = code.Count;
@@ -425,13 +522,13 @@ internal static partial class NativeMachineCode
             return result;
         }
 
-        private int GuardTarget(int pc)
+        private int GuardTarget(int pc, bool demand = false)
         {
-            if (!guardStubs.TryGetValue(pc, out int id))
+            if (!guardStubs.TryGetValue((pc, demand), out int id))
             {
                 id = guardPcs.Count;
-                guardPcs.Add(pc);
-                guardStubs[pc] = id;
+                guardPcs.Add((pc, demand));
+                guardStubs[(pc, demand)] = id;
             }
             return -(10 + id);
         }
@@ -455,12 +552,16 @@ internal static partial class NativeMachineCode
 
         private void StoreScalar(NativeExecutionInstruction instruction, NativeFastOperation operation, int pc, nint number, nint boolean)
         {
+            bool isMove = operation is NativeFastOperation.NumberMove or NativeFastOperation.BoolMove;
             bool boolResult = operation.IsBoolResult();
             NativeKind kind = boolResult ? NativeKind.Bool : NativeKind.Number;
             Calculate(instruction, operation, pc);
             if (layout.TryFixed(instruction.Result, out FixedTierSlot fixedSlot))
             {
-                Word(0xb940266e); int pending = code.Count; Word(0);
+                Word(0xb940266e); int noPending = code.Count; Word(0);
+                Word(0xf9400670); Load(15, (ulong)checked(fixedSlot.Scalar * 32)); Word(0x8b0f0210);
+                Word(0xb9401a0e); int pending = code.Count; Word(0);
+                code[noPending] = 0x3600000eu | (((uint)(code.Count - noPending) & 0x3fffu) << 5);
                 Word(0xf9401671);
                 if (boolResult) StoreFrameByte(2, fixedSlot.DataOffset);
                 else StoreFrameDouble(fixedSlot.DataOffset);
@@ -471,9 +572,10 @@ internal static partial class NativeMachineCode
                     Load(14, (ulong)kind);
                     StoreFrameByte(14, fixedSlot.ByteOffset);
                 }
-                Word(0xf9401a71); Load(14, 1); StoreFrameByte(14, fixedSlot.ByteOffset);
+                bool flagsLoaded = StoreInitialized(instruction.Result, fixedSlot);
+                if (isMove && instruction.A != instruction.Result) ClearSourceInitialized(instruction.A, haveFlagsInX17: flagsLoaded);
                 Advance(pc + instruction.Span, instruction.Span, layout.Hits[pc]);
-                code[pending] = 0x3700000eu | (((uint)(code.Count - pending) & 0x3fffu) << 5);
+                code[pending] = 0x3708000eu | (((uint)(code.Count - pending) & 0x3fffu) << 5);
             }
             else
             {
@@ -490,12 +592,38 @@ internal static partial class NativeMachineCode
                 {
                     Word(0xf9400a11); Load(14, (ulong)kind); Word(0x3900022e);
                 }
+                if (isMove && instruction.A != instruction.Result) ClearSourceInitialized(instruction.A, haveFlagsInX17: false);
                 Advance(pc + instruction.Span, instruction.Span, layout.Hits[pc]);
                 code[noData] = 0xb4000000u | 17u | (((uint)(code.Count - noData) & 0x7ffffu) << 5);
                 code[pending] = 0x37080000u | 14u | (((uint)(code.Count - pending) & 0x3fffu) << 5);
             }
+            if (isMove)
+            {
+                Word(0xaa1303e0); Load(1, (ulong)pc); Load(16, (ulong)bridge); Word(0xd63f0200); Word(0x7100001f);
+                Branch(-1, 3);
+                Branch(-3, 0);
+                return;
+            }
             Word(0xaa1303e0); Load(1, (ulong)pc); Load(16, (ulong)(boolResult ? boolean : number)); Word(0xd63f0200); Word(0x7100001f);
             Branch(-1, 3);
+        }
+
+        private void ClearSourceInitialized(int slot, bool haveFlagsInX17)
+        {
+            if (layout.TryFixed(slot, out FixedTierSlot fixedSlot))
+            {
+                if (function.InitializationUnobserved(slot)) { InitializationWritesElided++; return; }
+                if (!haveFlagsInX17) Word(0xf9401a71);
+                Load(14, 0);
+                StoreFrameByte(14, fixedSlot.ByteOffset);
+                return;
+            }
+            Word(0xf9400670u);
+            Load(15, (ulong)checked(layout.Scalars[slot] * 32));
+            Word(0x8b0f020f);
+            Word(0xf94005f1);
+            Load(14, 0);
+            Word(0x3900022e);
         }
 
         private bool Fast(NativeExecutionInstruction instruction, NativeFastOperation operation, int pc)
@@ -508,6 +636,8 @@ internal static partial class NativeMachineCode
         private void Calculate(NativeExecutionInstruction instruction, NativeFastOperation operation, int pc,
             NativeRegisterRegion? region = null, NativeRegisterOperation selected = default)
         {
+            if (UnsignedOperation(operation, region, selected))
+            { Unsigned(instruction, operation, pc, region, selected); return; }
             void Operand(int slot, int value, NativeKind kind, bool second)
             {
                 if (region is null) Scalar(slot, kind, second, pc);
@@ -516,6 +646,7 @@ internal static partial class NativeMachineCode
             if (operation == NativeFastOperation.NumberConstant)
             { Load(17, BitConverter.DoubleToUInt64Bits(constants[instruction.A].Number)); Word(0x9e670220); }
             else if (operation == NativeFastOperation.BoolConstant) Load(2, constants[instruction.A].Boolean ? 1UL : 0UL);
+            else if (operation == NativeFastOperation.IsNull) EmitIsNull(instruction.A, pc);
             else
             {
                 Operand(instruction.A, selected.A, operation.ExpectsBoolInputs() ? NativeKind.Bool : NativeKind.Number, false);
@@ -559,13 +690,18 @@ internal static partial class NativeMachineCode
         private void Scalar(int slot, NativeKind kind, bool second, int pc)
         {
             int guardTarget = GuardTarget(pc);
+            int readyTarget = GuardTarget(pc, demand: true);
             if (!function.AdmitsKind(slot, kind)) { Branch(guardTarget, 0); return; }
             if (layout.TryFixed(slot, out FixedTierSlot fixedSlot))
             {
-                Word(0xf9401a71); LoadFrameByte(17, fixedSlot.ByteOffset); Word(0x7100023f); Branch(guardTarget, 1);
+                if (!function.IsPrivateTemporary(slot))
+                {
+                    Word(0xf9401a71); LoadFrameByte(17, fixedSlot.ByteOffset); Word(0x7100023f); Branch(readyTarget, 1);
+                }
+                else InitializationChecksElided++;
                 Word(0xb940266e); int noPending = code.Count; Word(0);
                 Word(0xf9400670u); Load(15, (ulong)checked(fixedSlot.Scalar * 32)); Word(0x8b0f020f);
-                Word(0xb94019f1); Word(0x721f023f); Branch(guardTarget, 4);
+                Word(0xb94019f1); Word(0x721f023f); Branch(readyTarget, 4);
                 code[noPending] = 0x3600000eu | (((uint)(code.Count - noPending) & 0x3fffu) << 5);
                 Word(0xf9401671);
                 if (!function.HasKind(slot, kind))
@@ -583,9 +719,9 @@ internal static partial class NativeMachineCode
                 return;
             }
             Word(0xf9400670u); Load(15, (ulong)checked(layout.Scalars[slot] * 32)); Word(0x8b0f020f);
-            Word(0xb94019f1); Word(0x721f023f); Branch(guardTarget, 4);
+            Word(0xb94019f1); Word(0x721f023f); Branch(readyTarget, 4);
             Word(0xf94005f1);
-            Word(0x39400231); Word(0x7100023f); Branch(guardTarget, 1);
+            Word(0x39400231); Word(0x7100023f); Branch(readyTarget, 1);
             if (!function.HasKind(slot, kind))
             {
                 if (function.IsUnion(slot))
@@ -598,6 +734,40 @@ internal static partial class NativeMachineCode
             Word(0xf94001f1);
             if (kind == NativeKind.Bool) Word(0x39400222);
             else Word(second ? 0xfd400221u : 0xfd400220u);
+        }
+
+        private void EmitIsNull(int slot, int pc)
+        {
+            int guardTarget = GuardTarget(pc, demand: true);
+            if (layout.TryFixed(slot, out FixedTierSlot fixedSlot))
+            {
+                if (!function.IsPrivateTemporary(slot))
+                {
+                    Word(0xf9401a71); LoadFrameByte(17, fixedSlot.ByteOffset); Word(0x7100023f); Branch(guardTarget, 1);
+                }
+                else InitializationChecksElided++;
+                Word(0xb940266e); int noPending = code.Count; Word(0);
+                Word(0xf9400670u); Load(15, (ulong)checked(fixedSlot.Scalar * 32)); Word(0x8b0f020f);
+                Word(0xb94019f1); Word(0x721f023f); Branch(guardTarget, 4);
+                code[noPending] = 0x3600000eu | (((uint)(code.Count - noPending) & 0x3fffu) << 5);
+                if (!function.AdmitsKind(slot, NativeKind.Null)) { Load(2, 0); return; }
+                if (function.HasKind(slot, NativeKind.Null)) { Load(2, 1); return; }
+                Word(0xf9401671); LoadFrameByte(17, fixedSlot.ByteOffset);
+                Word(0x7100023f);
+                Word(0x1a9f17e2u);
+                return;
+            }
+            Word(0xf9400670u); Load(15, (ulong)checked(layout.Scalars[slot] * 32)); Word(0x8b0f020f);
+            Word(0xb94019f1); Word(0x721f023f); Branch(guardTarget, 4);
+            Word(0xf94005f1);
+            Word(0xf100023f); Branch(guardTarget, 1);
+            Word(0x39400231); Word(0x7100023f); Branch(guardTarget, 1);
+            if (!function.AdmitsKind(slot, NativeKind.Null)) { Load(2, 0); return; }
+            if (function.HasKind(slot, NativeKind.Null)) { Load(2, 1); return; }
+            Word(0xf94009f1);
+            Word(0xf100023f); Branch(guardTarget, 1);
+            Word(0x39400231); Word(0x7100023f);
+            Word(0x1a9f17e2u);
         }
 
         private void LoadFrameByte(uint register, int offset)

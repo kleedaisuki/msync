@@ -30,7 +30,15 @@ internal static class NativeControlOptimization
         NativeInstruction[] compact = new NativeInstruction[count];
         for (int pc = 0; pc < code.Length; pc++)
             if (retained[pc]) compact[positions[pc]] = NativeCodeRelocation.Targets(code[pc], target => positions[target]);
-        return new(function with { Instructions = compact }, positions, retained);
+        NativeStoragePlan? storage = function.Storage;
+        if (storage is not null)
+            storage = storage with
+            {
+                Instructions = storage.Instructions.Where((_, pc) => retained[pc]).ToArray(),
+                Calls = storage.Calls.Where(call => retained[call.Instruction])
+                    .Select(call => call with { Instruction = positions[call.Instruction] }).ToArray()
+            };
+        return new(function with { Instructions = compact, Storage = storage }, positions, retained);
     }
 
     private static int Follow(IReadOnlyList<NativeInstruction> code, int target)

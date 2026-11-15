@@ -12,6 +12,7 @@ internal sealed class NativeImage
     private readonly NativeLayout[] layouts;
     private readonly FrameAllocation[] frames;
     private readonly NativeValue[] constants;
+    private readonly TypeRef[] sourceTypes;
     private readonly ConditionalWeakTable<NativeRuntimeContext, NativeValue[]> contextualConstants = new();
     private readonly int[] layoutLinkOrder;
     private readonly ConcurrentDictionary<NativeLayout, int> linkedLayouts = new(ReferenceEqualityComparer.Instance);
@@ -22,17 +23,19 @@ internal sealed class NativeImage
         Dictionary<(int OriginId, int OriginOffset), NativeValue>? retainedLiterals = null)
     {
         Program = program;
-        Provenance = new(program);
+        Connections = program.Backend?.Connections.Select(context.Connections.Get).ToArray() ?? [];
         layoutLinkOrder = program.Types.Where(type => (type.Kind & TypeKind.Scope) != 0)
             .SelectMany(type => type.Layouts ?? []).Concat(Enumerable.Range(0, program.Layouts.Count)).Distinct().ToArray();
         types = program.Types.Select(StorageType).ToArray();
+        sourceTypes = new TypeRef[program.Types.Count];
+        for (int index = 0; index < sourceTypes.Length; index++) sourceTypes[index] = BuildSourceType(index);
         layouts = program.Layouts.Select(layout => new NativeLayout(layout.Fields.Select(
             field => new NativeField(field.Name, types[field.Type])))).ToArray();
         ILookup<int, NativeAllocationPlan> framePlans = program.Allocations
             .Where(plan => plan.Placement == NativeAllocationPlacement.Frame).ToLookup(plan => plan.Function);
         frames = program.Functions.Select((function, number) => new FrameAllocation(program, number,
             new NativeLayout(function.Slots.Select((slot, index) =>
-                new NativeField(slot.Name ?? $"%{index}", types[slot.Type]))), types, framePlans[number].ToArray(), Layout, Provenance)).ToArray();
+                new NativeField(slot.Name ?? $"%{index}", types[slot.Type]))), types, framePlans[number].ToArray(), Layout)).ToArray();
         foreach (FrameAllocation frame in frames)
         {
             if (ReferenceEquals(frame.Layout, frame.Registers)) continue;
@@ -46,12 +49,11 @@ internal sealed class NativeImage
         for (int index = 0; index < layouts.Length; index++) linkedLayouts.TryAdd(layouts[index], index);
     }
 
+    internal NativeConnections.NativeEndpoint[] Connections { get; }
     internal NativeProgram Program { get; }
-    internal NativeAddressAnalysis.ProgramFacts Provenance { get; }
     internal NativeType Type(int index) => types[index];
     internal NativeLayout Layout(int index) => layouts[index];
     internal FrameAllocation Frame(int function) => frames[function];
-    internal NativeFrameAllocation? FrameAllocation(int function, int instruction) => frames[function].At(instruction);
     internal bool TryRegionLayout(NativeAddress address, out NativeLayout layout)
     {
         if (frameLayouts.TryGetValue((address.Allocation.Layout, address.Offset), out int identity))
@@ -97,10 +99,12 @@ internal sealed class NativeImage
         throw new ArgumentOutOfRangeException(nameof(offset), "Native address is outside its logical allocation.");
     }
 
-    internal TypeRef SourceType(int index)
+    internal TypeRef SourceType(int index) => sourceTypes[index];
+
+    private TypeRef BuildSourceType(int index)
     {
         NativeCodeType type = Program.Types[index];
-        return new(type.Kind, type.Element >= 0 ? SourceType(type.Element) : null);
+        return new(type.Kind, type.Element >= 0 ? BuildSourceType(type.Element) : null);
     }
 
     internal NativeCallableDescription? DescribeFunction(NativeFunction function)
@@ -168,7 +172,7 @@ internal sealed class NativeImage
         NativeKind.Number => NativeValue.FromNumber(literal.Number),
         NativeKind.String => NativeValue.FromString(literal.Text ?? ""),
         NativeKind.Path => NativeValue.FromPath(literal.Path ?? context.Capture(new NativePathValue(literal.Text ?? ""))),
-        NativeKind.Connection => NativeValue.FromConnection(new(literal.ConnectionKind, literal.Text ?? "")),
+        NativeKind.Connection => NativeValue.FromConnectionResource(context.Connections.Get(new(literal.ConnectionKind, literal.Text ?? ""))),
         NativeKind.Type => NativeValue.FromType(literal.Type ?? throw new InvalidOperationException("Missing Type literal.")),
         _ => throw new InvalidOperationException($"{literal.Kind} is not a portable literal.")
     };
@@ -198,19 +202,20 @@ internal sealed class NativeImage
         throw new InvalidOperationException($"Allocation layout {layout} is outside its compiled address projection.");
     }
 
-    internal bool AdmitsLayout(int type, NativeAddress address)
-    {
-        IReadOnlyList<int>? admitted = Program.Types[type].Layouts;
-        return admitted is null || admitted.Contains(LayoutIdentity(address));
-    }
+    internal bool AdmitsLayout(int type, NativeAddress address) =>
+        Program.Types[type].Layouts is not { } admitted || admitted.Contains(LayoutIdentity(address.Allocation, address.Offset));
+
+    internal bool AdmitsLayout(int type, NativeAllocation allocation, NativeOffset offset) =>
+        Program.Types[type].Layouts is not { } admitted || admitted.Contains(LayoutIdentity(allocation, offset));
 
     internal bool HasLayout(int layout, NativeAddress address) => LayoutIdentity(address) == layout;
 
-    internal int LayoutIdentity(NativeAddress address)
+    internal int LayoutIdentity(NativeAddress address) => LayoutIdentity(address.Allocation, address.Offset);
+
+    internal int LayoutIdentity(NativeAllocation allocation, NativeOffset offset)
     {
-        NativeAllocation allocation = address.Allocation;
         if (allocation.LayoutId >= 0) return allocation.LayoutId;
-        if (frameLayouts.TryGetValue((allocation.Layout, address.Offset), out int region)) return region;
+        if (frameLayouts.TryGetValue((allocation.Layout, offset), out int region)) return region;
         if (linkedLayouts.TryGetValue(allocation.Layout, out int identity)) return identity;
         foreach (int index in layoutLinkOrder)
         {

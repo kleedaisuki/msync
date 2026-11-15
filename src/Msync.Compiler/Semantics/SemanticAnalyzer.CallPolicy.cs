@@ -55,11 +55,12 @@ internal sealed partial class SemanticAnalyzer
                 stable, InitialType: hir.Types[initial.Value].RuntimeType,
                 StorageSemanticType: storage, InitialSemanticType: initial, DeferredSemanticType: storage);
         }
-        FlowFacts facts = FlowFacts.Create(domains.ToImmutable(), new HirFlowTypeAlgebra(hir));
+        FlowFacts facts = FlowFacts.CreateMutable(domains, new HirFlowTypeAlgebra(hir));
         foreach (HirLocationId location in domains.Keys)
             if (context.Values.TryGetValue(location, out SemanticValue? value))
                 facts = facts.Assign(location, new(hir.Types[value.Type.Value].RuntimeType, Boolean: value.KnownBool,
                     SemanticType: value.Type, Denotations: value.DenotedType is { } denoted ? new([denoted]) : null, Eager: value.EagerRange));
+        facts = facts.Freeze();
         List<ReturnShape> returns = [];
         ReturnShape[] arguments = new ReturnShape[children.Length - 1];
         for (int index = 0; index < arguments.Length; index++)

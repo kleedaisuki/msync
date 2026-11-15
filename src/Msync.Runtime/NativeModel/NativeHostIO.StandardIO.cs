@@ -40,15 +40,32 @@ public static partial class NativeBuiltins
     {
         SemaphoreSlim turn = InputTurn(reader);
         await turn.WaitAsync(token);
-        try { return NativeValue.FromString(await reader.ReadToEndAsync(token)); }
-        finally { turn.Release(); }
+        Task<string> read = StartInputRead(async () =>
+        {
+            try { token.ThrowIfCancellationRequested(); return await reader.ReadToEndAsync(token).ConfigureAwait(false); }
+            finally { turn.Release(); }
+        });
+        return NativeValue.FromString(await read.WaitAsync(token).ConfigureAwait(false));
     }
 
     private static async ValueTask<string?> ReadLine(TextReader reader, SemaphoreSlim turn, CancellationToken token)
     {
         await turn.WaitAsync(token);
-        try { return await reader.ReadLineAsync(token); }
-        finally { turn.Release(); }
+        // Console and custom readers may implement Async by blocking synchronously.
+        // Reserve the reader turn before submission so queued reads retain order.
+        Task<string?> read = StartInputRead(async () =>
+        {
+            try { token.ThrowIfCancellationRequested(); return await reader.ReadLineAsync(token).ConfigureAwait(false); }
+            finally { turn.Release(); }
+        });
+        return await read.WaitAsync(token).ConfigureAwait(false);
+    }
+
+    private static Task<T> StartInputRead<T>(Func<Task<T>> read)
+    {
+        if (ExecutionContext.IsFlowSuppressed()) return Task.Run(read);
+        using AsyncFlowControl flow = ExecutionContext.SuppressFlow();
+        return Task.Run(read);
     }
 
     private static async IAsyncEnumerable<NativeValue> StandardLines(TextReader reader,

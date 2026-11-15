@@ -39,8 +39,9 @@ public readonly struct NativeValue : IEquatable<NativeValue>
             new() { Text = value.HomeDirectory }, new() { Text = value.LocalSpelling },
             new() { Text = value.Connection?.Address });
     }
-    public static NativeValue FromConnection(NativeConnection value) => new(NativeKind.Connection,
-        (ulong)value.Kind, root0: new() { Text = value.Address ?? "" });
+    public static NativeValue FromConnection(NativeConnection value) => FromConnectionResource(new(value));
+    public static NativeValue FromConnectionResource(NativeConnectionResource value) =>
+        new(NativeKind.Connection, root0: new() { Connection = value });
     public static NativeValue FromFunction(NativeFunction value) => new(NativeKind.Function,
         unchecked((uint)value.Function), root0: new() { Environment = value.Environment }, root1: new() { Text = value.NativeName });
     public static NativeValue FromRange(NativeRange value)
@@ -68,7 +69,7 @@ public readonly struct NativeValue : IEquatable<NativeValue>
     public bool AsBool() { Require(NativeKind.Bool); return bits != 0; }
     public double AsNumber() { Require(NativeKind.Number); return BitConverter.UInt64BitsToDouble(bits); }
     public string AsString() { Require(NativeKind.String); return root0.Text!; }
-    public NativeConnection AsConnection() { Require(NativeKind.Connection); return new((ConnectionKind)bits, root0.Text!); }
+    public NativeConnection AsConnection() { Require(NativeKind.Connection); return root0.Connection!.Connection; }
     public NativePath AsPath()
     {
         Require(NativeKind.Path);

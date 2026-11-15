@@ -42,14 +42,22 @@ internal sealed partial class SemanticAnalyzer
         for (int index = 0; index < arguments.Count && provenance.Supported; index++)
         {
             SemanticValue argument = arguments[index];
+            var usage = Usage(template);
+            var target = program.Original(hir.Templates[template.Value].Parameters[index]);
+            HashSet<string>? usedFields = usage.WholeReads.Contains(target)
+                ? null : usage.FieldReads.GetValueOrDefault(target) ?? [];
             AppendValueKey(key, IsScalarSchema(argument) ? argument with { StorageConstraint = null } : argument,
-                context, active, provenance);
+                context, active, provenance, usedFields);
             key.Append(';');
         }
         key.Append('|');
         for (int index = 0; index < captures.Count && provenance.Supported; index++)
         {
-            if (!provenance.Recursive || ReadsCapture(template, index)) AppendValueKey(key, captures[index], context, active, provenance);
+            var templateCaptures = hir.Templates[template.Value].Captures;
+            if (index < templateCaptures.Length && StandardModuleCapture(templateCaptures[index].SourceLocation, context) is { } stdModule)
+                key.Append('M').Append(stdModule.Value);
+            else if (ReadsCapture(template, index, out var usedFields))
+                AppendValueKey(key, captures[index], context, active, provenance, usedFields);
             else
             {
                 provenance.Skip(captures[index]);
@@ -61,39 +69,97 @@ internal sealed partial class SemanticAnalyzer
         return provenance.Supported && provenance.HasCompleteDetachedCells;
     }
 
-    private readonly Dictionary<HirTemplateId, HashSet<HirLocationId>> captureReads = [];
+    private sealed record TemplateInputUsage(
+        HashSet<HirLocationId> WholeReads,
+        Dictionary<HirLocationId, HashSet<string>> FieldReads);
 
-    private bool ReadsCapture(HirTemplateId template, int index)
+    private readonly Dictionary<HirTemplateId, TemplateInputUsage> templateUsages = [];
+
+    private bool ReadsCapture(HirTemplateId template, int index, out HashSet<string>? usedFields)
     {
-        if (!captureReads.TryGetValue(template, out var reads))
+        var target = program.Original(hir.Templates[template.Value].Captures[index].Target);
+        var usage = Usage(template);
+        if (usage.WholeReads.Contains(target))
         {
-            reads = [];
-            HashSet<HirTemplateId> visited = [];
-            VisitTemplate(template);
-            captureReads.Add(template, reads);
-
-            void VisitTemplate(HirTemplateId current)
-            {
-                if (!visited.Add(current)) return;
-                foreach (var witness in program.TypeWitnesses.Values)
-                    if (hir.Locations[witness.Location.Value].TemplateOwner == current)
-                        reads.Add(program.Original(witness.Location));
-                Visit(hir.Templates[current.Value].Body);
-            }
-
-            void Visit(HirNodeId id)
-            {
-                var node = program.Node(id);
-                if (node.Kind is HirKind.ReadLocation or HirKind.ReadStorage)
-                    reads.Add(program.Original(new(node.Data)));
-                if (node.Kind == HirKind.TemplateClosure)
-                    VisitTemplate(hir.TemplateClosures[node.Data].Template);
-                if (node.Kind == HirKind.Match)
-                    foreach (var arm in hir.Matches[node.Data].Arms) Visit(arm.Value);
-                foreach (var child in program.Children(id)) Visit(child);
-            }
+            usedFields = null;
+            return true;
         }
-        return reads.Contains(program.Original(hir.Templates[template.Value].Captures[index].Target));
+        if (usage.FieldReads.TryGetValue(target, out usedFields))
+            return true;
+        usedFields = null;
+        return false;
+    }
+
+    private TemplateInputUsage Usage(HirTemplateId template) => Usage(template, []);
+
+    private TemplateInputUsage Usage(HirTemplateId template, HashSet<HirTemplateId> stack)
+    {
+        if (templateUsages.TryGetValue(template, out var cached)) return cached;
+        HashSet<HirLocationId> wholeReads = [];
+        Dictionary<HirLocationId, HashSet<string>> fieldReads = [];
+        if (!stack.Add(template)) return new(wholeReads, fieldReads);
+
+        foreach (var witness in program.TypeWitnesses.Values)
+            if (hir.Locations[witness.Location.Value].TemplateOwner == template)
+                wholeReads.Add(program.Original(witness.Location));
+
+        Visit(hir.Templates[template.Value].Body);
+        stack.Remove(template);
+        var computed = new TemplateInputUsage(wholeReads, fieldReads);
+        // Only cache non-cyclic roots so recursive templates don't poison incomplete results.
+        if (stack.Count == 0) templateUsages[template] = computed;
+        return computed;
+
+        void AddFieldRead(HirLocationId loc, string field)
+        {
+            if (wholeReads.Contains(loc)) return;
+            if (!fieldReads.TryGetValue(loc, out var set)) fieldReads[loc] = set = new(StringComparer.Ordinal);
+            set.Add(field);
+        }
+
+        void Visit(HirNodeId id)
+        {
+            var node = program.Node(id);
+            if (node.Kind == HirKind.MemberRead && node.Text is { } fieldName)
+            {
+                var children = program.Children(id);
+                if (children.Length > 0)
+                {
+                    var receiver = program.Node(children[0]);
+                    if (receiver.Kind is HirKind.ReadLocation or HirKind.ReadStorage)
+                    {
+                        AddFieldRead(program.Original(new(receiver.Data)), fieldName);
+                        for (int i = 1; i < children.Length; i++) Visit(children[i]);
+                        return;
+                    }
+                }
+            }
+            if (node.Kind is HirKind.ReadLocation or HirKind.ReadStorage or HirKind.Assign)
+                wholeReads.Add(program.Original(new(node.Data)));
+            if (node.Kind == HirKind.TemplateClosure)
+            {
+                var closure = hir.TemplateClosures[node.Data];
+                var innerUsage = Usage(closure.Template, stack);
+                bool cyclic = !templateUsages.ContainsKey(closure.Template) && stack.Contains(closure.Template);
+                foreach (var cap in closure.Captures)
+                {
+                    var outer = program.Original(cap.SourceLocation);
+                    if (cyclic || cap.Mode != HirCaptureMode.Location)
+                    {
+                        wholeReads.Add(outer);
+                        continue;
+                    }
+                    var inner = program.Original(cap.Target);
+                    if (innerUsage.WholeReads.Contains(inner))
+                        wholeReads.Add(outer);
+                    else if (innerUsage.FieldReads.TryGetValue(inner, out var innerFields))
+                        foreach (var f in innerFields) AddFieldRead(outer, f);
+                }
+            }
+            if (node.Kind == HirKind.Match)
+                foreach (var arm in hir.Matches[node.Data].Arms) Visit(arm.Value);
+            foreach (var child in program.Children(id)) Visit(child);
+        }
     }
 
     private static bool IsScalarSchema(SemanticValue value) => value.Scope is null
@@ -111,7 +177,7 @@ internal sealed partial class SemanticAnalyzer
     }
 
     private void AppendValueKey(StringBuilder key, SemanticValue value, SemanticContext? context,
-        HashSet<SemanticValue>? active, KeyProvenance provenance)
+        HashSet<SemanticValue>? active, KeyProvenance provenance, HashSet<string>? usedScopeFields = null)
     {
         if (!provenance.Supported) return;
         SemanticIndexed? indexed = value.IndexedRegion is { } resource ? context?.Indexed.GetValueOrDefault(resource) : null;
@@ -135,7 +201,7 @@ internal sealed partial class SemanticAnalyzer
             AppendCallableKey(key, Choices(value), context, active, provenance);
         }
         if (!provenance.Supported) return;
-        if (value.FutureCallableDomain is { } future)
+        if (value.FutureCallableDomain is { } future && !RedundantFutureDomain(value, future))
         {
             key.Append("U(");
             AppendCallableKey(key, future.Choices, context, active, provenance);
@@ -146,7 +212,7 @@ internal sealed partial class SemanticAnalyzer
         }
         if (!provenance.Supported) return;
         if (value.Scope is { } scope)
-            AppendScopeKey(key, context?.Objects.GetValueOrDefault(scope.Region, scope) ?? scope, context, active, provenance);
+            AppendScopeKey(key, context?.Objects.GetValueOrDefault(scope.Region, scope) ?? scope, context, active, provenance, usedScopeFields);
         if (!provenance.Supported) return;
         if (value.Element is { } element) { key.Append('['); AppendValueKey(key, element, context, active, provenance); key.Append(']'); }
         if (value.IndexedRegion is { } region && indexed is not null)
@@ -191,6 +257,11 @@ internal sealed partial class SemanticAnalyzer
                 for (int index = 0; index < callable.Captures.Length; index++)
                 {
                     var capture = callable.Captures[index];
+                    if (capture.Mode == HirCaptureMode.Location && StandardModuleCapture(capture.Source, context) is { } stdModule)
+                    {
+                        key.Append('M').Append(stdModule.Value);
+                        continue;
+                    }
                     SemanticValue? live = context?.Values.GetValueOrDefault(capture.Source);
                     if (provenance.ReadOnlyInput && (capture.Mode != HirCaptureMode.Location
                         || (live is null && !provenance.RecordUnbound(capture.Source, capture.Value))))
@@ -199,26 +270,65 @@ internal sealed partial class SemanticAnalyzer
                         return;
                     }
                     key.Append('C').Append(provenance.Location(capture.Source));
-                    if (provenance.Recursive && callable.Template is { } template && !ReadsCapture(template, index))
+                    HashSet<string>? usedFields = null;
+                    if (callable.Template is { } template)
                     {
-                        provenance.Skip(live ?? capture.Value);
-                        key.Append(':').Append(capture.Value.Type.Value);
-                        continue;
+                        if (!ReadsCapture(template, index, out usedFields))
+                        {
+                            provenance.Skip(live ?? capture.Value);
+                            key.Append(':').Append(capture.Value.Type.Value);
+                            continue;
+                        }
                     }
                     if (live is not null || provenance.ReadOnlyInput)
                     {
-                        if (provenance.DefineLocation(capture.Source)) AppendValueKey(key, live ?? capture.Value, context, active, provenance);
+                        if (provenance.DefineLocation(capture.Source)) AppendValueKey(key, live ?? capture.Value, context, active, provenance, usedFields);
                         else key.Append('^');
                     }
-                    else AppendValueKey(key, capture.Value, context, active, provenance);
+                    else AppendValueKey(key, capture.Value, context, active, provenance, usedFields);
                     if (!provenance.Supported) return;
                 }
             key.Append(')');
         }
     }
 
+    private HirLocationId? StandardModuleCapture(HirLocationId location, SemanticContext? context)
+    {
+        HirLocationId definition = context is not null && context.Definitions.TryGetValue(location, out var mapped)
+            ? mapped
+            : CanonicalDefinition(location) ?? location;
+        var declaration = StandardDeclaration(definition)
+            ?? (CanonicalDefinition(location) is { } canonical ? StandardDeclaration(canonical) : null);
+        if (declaration is not { Kind: DeclarationKind.StandardModule or DeclarationKind.StandardRoot })
+            return null;
+        return context?.ReplacedProgramCells.Contains(declaration.Location) == true ? null : declaration.Location;
+    }
+
+    private static bool RedundantFutureDomain(SemanticValue value, SemanticCallableDomain future)
+    {
+        if (value.Callables.IsDefaultOrEmpty || future.Choices.IsDefaultOrEmpty) return false;
+        var choices = Choices(value).ToArray();
+        if (future.Choices.Length != choices.Length) return false;
+        foreach (var candidate in future.Choices)
+            if (!ContainsCallableIdentity(choices, candidate)) return false;
+        if (!future.Current.IsDefaultOrEmpty)
+        {
+            if (future.Current.Length != choices.Length) return false;
+            foreach (var candidate in future.Current)
+                if (!ContainsCallableIdentity(choices, candidate)) return false;
+        }
+        return true;
+
+        static bool ContainsCallableIdentity(SemanticCallable[] items, SemanticCallable target)
+        {
+            foreach (var item in items)
+                if (SemanticCallableIdentity.Instance.Equals(item, target)) return true;
+            return false;
+        }
+    }
+
     private void AppendScopeKey(StringBuilder key, SemanticScope scope, SemanticContext? context,
-        HashSet<SemanticValue>? active, KeyProvenance provenance)
+        HashSet<SemanticValue>? active, KeyProvenance provenance, HashSet<string>? usedFields = null)
     {
         if (provenance.ReadOnlyInput && (scope.Region < 0 || !scope.Aliases.IsDefaultOrEmpty))
         {
@@ -227,20 +337,33 @@ internal sealed partial class SemanticAnalyzer
         }
         key.Append('{').Append(scope.Region >= 0 ? 'S' : 'V')
             .Append(scope.Region >= 0 ? provenance.Region(scope.Region) : provenance.Structural(scope));
-        if (!provenance.DefineScope(scope))
+        var plan = provenance.BeginScope(scope, usedFields);
+        if (!plan.ShouldEmit)
         {
             key.Append("^}");
             return;
         }
-        if (!scope.Aliases.IsDefaultOrEmpty)
+        if (plan.IsFirst && !scope.Aliases.IsDefaultOrEmpty)
             provenance.Alias(scope, 'A', scope.Aliases);
-        if (context?.AliasViews.TryGetValue(scope.Region, out var views) == true)
+        if (plan.IsFirst && context?.AliasViews.TryGetValue(scope.Region, out var views) == true)
             provenance.Alias(scope, 'V', views);
         foreach (var field in scope.Fields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
         {
+            if (!plan.Include(field.Key))
+            {
+                if (plan.Skipped(field.Key)) provenance.Skip(field.Value);
+                continue;
+            }
             key.Append(field.Key).Append(':');
-            var member = scope.Locations.TryGetValue(field.Key, out var location)
+            bool hasLocation = scope.Locations.TryGetValue(field.Key, out var location);
+            var member = hasLocation
                 ? context?.Values.GetValueOrDefault(location, field.Value) ?? field.Value : field.Value;
+            if (provenance.ReadOnlyInput && Runtime(member) == TypeRef.Null)
+            {
+                HirTypeId? carrier = hasLocation && context is not null ? StorageType(location, context) : member.StorageConstraint;
+                if (carrier is { } storage && hir.Types[storage.Value].TypeParameter < 0)
+                    member = member with { Type = storage };
+            }
             AppendValueKey(key, member, context, active, provenance);
             if (!provenance.Supported) return;
             if (context?.MemberContracts.TryGetValue((scope.Region, field.Key), out var contracts) == true)
@@ -260,6 +383,12 @@ internal sealed partial class SemanticAnalyzer
     // cannot share flow proofs after writes to nullable fields or captured cells.
     private sealed class KeyProvenance(bool readOnlyInput = false, bool recursive = false)
     {
+        public readonly record struct ScopeEmitPlan(bool ShouldEmit, bool IsFirst, HashSet<string>? Filter, HashSet<string>? AlreadyEmitted)
+        {
+            public bool Include(string field) => (Filter is null || Filter.Contains(field)) && AlreadyEmitted?.Contains(field) != true;
+            public bool Skipped(string field) => Filter is not null && !Filter.Contains(field) && AlreadyEmitted?.Contains(field) != true;
+        }
+
         public bool ReadOnlyInput { get; } = readOnlyInput;
         public bool Recursive { get; } = recursive;
         public bool Supported { get; set; } = true;
@@ -268,11 +397,11 @@ internal sealed partial class SemanticAnalyzer
         private Dictionary<HirLocationId, SemanticValue>? unbound;
         private Dictionary<int, int>? regions;
         private Dictionary<HirLocationId, int>? locations;
-        private HashSet<int>? definedScopes;
+        private Dictionary<int, HashSet<string>?>? definedScopeFields;
         private HashSet<int>? definedIndexed;
         private HashSet<HirLocationId>? definedLocations;
         private Dictionary<SemanticScope, int>? structural;
-        private HashSet<SemanticScope>? definedStructural;
+        private Dictionary<SemanticScope, HashSet<string>?>? definedStructuralFields;
 
         // Distinct callable alternatives and write-only captures can omit
         // nested occurrences which still contribute to formal cell fallback.
@@ -324,9 +453,30 @@ internal sealed partial class SemanticAnalyzer
             key.Append(']');
         }
 
-        public bool DefineScope(SemanticScope scope) => scope.Region >= 0
-            ? (definedScopes ??= []).Add(scope.Region)
-            : (definedStructural ??= new(ReferenceEqualityComparer.Instance)).Add(scope);
+        public ScopeEmitPlan BeginScope(SemanticScope scope, HashSet<string>? usedFields) =>
+            scope.Region >= 0
+                ? PlanFields(definedScopeFields ??= [], scope.Region, usedFields)
+                : PlanFields(definedStructuralFields ??= new(ReferenceEqualityComparer.Instance), scope, usedFields);
+
+        private static ScopeEmitPlan PlanFields<TKey>(Dictionary<TKey, HashSet<string>?> table, TKey id,
+            HashSet<string>? usedFields) where TKey : notnull
+        {
+            if (!table.TryGetValue(id, out var existing))
+            {
+                table[id] = usedFields is null ? null : new HashSet<string>(usedFields, StringComparer.Ordinal);
+                return new(true, true, usedFields, null);
+            }
+            if (existing is null) return default;
+            if (usedFields is null)
+            {
+                table[id] = null;
+                return new(true, false, null, existing);
+            }
+            if (usedFields.IsSubsetOf(existing)) return default;
+            var snapshot = new HashSet<string>(existing, StringComparer.Ordinal);
+            existing.UnionWith(usedFields);
+            return new(true, false, usedFields, snapshot);
+        }
         public bool DefineIndexed(int region) => (definedIndexed ??= []).Add(region);
         public bool DefineLocation(HirLocationId location) => (definedLocations ??= []).Add(location);
         public int Structural(SemanticScope scope)

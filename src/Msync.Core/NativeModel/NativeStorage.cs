@@ -5,7 +5,8 @@ namespace Msync.Core.Native;
 
 public sealed class NativeAllocation
 {
-    private readonly NativeStorage storage;
+    private NativeStorage.Data storage;
+    internal int PendingValues;
     public NativeAllocation(NativeLayout layout, int layoutId = -1, int elementCount = 1)
     {
         ArgumentNullException.ThrowIfNull(layout);
@@ -14,6 +15,13 @@ public sealed class NativeAllocation
         LayoutId = layoutId;
         ElementCount = elementCount;
         storage = new(elementCount == 1 ? layout : NativeLayout.Repeat(layout, elementCount));
+    }
+    internal NativeAllocation(NativeLayout layout, bool allocate)
+    {
+        Layout = layout;
+        LayoutId = -1;
+        ElementCount = 1;
+        storage = new(layout, allocate);
     }
     public NativeLayout Layout { get; }
     public int LayoutId { get; }
@@ -26,34 +34,37 @@ public sealed class NativeAllocation
         NativeFieldLayout slot = Layout[index];
         return new(this, slot.Offset, slot.Type);
     }
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public NativeAddress AddressAt(NativeOffset offset, NativeType? type = null) => new(this, offset, type);
-    public IEnumerable<NativeValue> InitializedValues => storage.InitializedValues;
-    internal NativeStorage Storage => storage;
+    public IEnumerable<NativeValue> InitializedValues
+    {
+        get
+        {
+            foreach (NativeFieldLayout slot in storage.layout.Fields)
+                if (storage.IsInitialized(slot.Offset)) yield return storage.ReadInitialized(slot.Type, slot.Offset);
+        }
+    }
+    internal ref NativeStorage.Data Storage => ref storage;
 }
 
 public readonly struct NativeAddress : IEquatable<NativeAddress>
 {
     private readonly NativeAllocation? allocation;
     private readonly NativeType? type;
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal NativeAddress(NativeAllocation allocation, NativeOffset offset, NativeType? type = null) =>
         (this.allocation, Offset, this.type) = (allocation, offset, type);
     public bool IsNull => allocation is null;
     public NativeAllocation Allocation
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get => allocation ?? ThrowUninitialized();
+        get => allocation ?? throw new InvalidOperationException("Uninitialized native address.");
     }
     public NativeOffset Offset { get; }
-    public bool IsInitialized
+    public bool IsInitialized => !IsNull && Allocation.Storage.IsInitialized(Offset);
+    public NativeType Type
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get => !IsNull && Allocation.Storage.IsInitialized(Offset);
+        get => type ?? throw new InvalidOperationException("This address requires a statically supplied storage type.");
     }
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private static NativeAllocation ThrowUninitialized() => throw new InvalidOperationException("Uninitialized native address.");
-    public NativeType Type => type ?? throw new InvalidOperationException("This address requires a statically supplied storage type.");
     internal NativeType? StorageType => type;
     public NativeAddress Field(int index)
     {
@@ -68,7 +79,6 @@ public readonly struct NativeAddress : IEquatable<NativeAddress>
         NativeStorage.ValidateRegion(result, stride, 1);
         return result;
     }
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public NativeAddress OffsetBy(NativeOffset offset, NativeType? type = null) => new(Allocation, Offset + offset, type);
     public NativeValue Load() => NativeStorage.Load(Type, this);
     public void Store(NativeValue value) => NativeStorage.Store(Type, this, value);
@@ -80,28 +90,9 @@ public readonly struct NativeAddress : IEquatable<NativeAddress>
     public static bool operator !=(NativeAddress left, NativeAddress right) => !left.Equals(right);
 }
 
-public sealed class NativeStorage
+public sealed partial class NativeStorage
 {
-    private readonly NativeLayout layout;
-    private readonly byte[] bytes;
-    private readonly NativeRoot[] roots;
-    private readonly bool[] initialized;
-    internal void ResetFrame()
-    {
-        roots.AsSpan().Clear();
-        initialized.AsSpan().Clear();
-    }
-
-    internal byte[] RawBytes => bytes;
-    internal bool[] InitializedFlags => initialized;
-
-    internal NativeStorage(NativeLayout layout)
-    {
-        this.layout = layout;
-        bytes = layout.RawSize == 0 ? [] : new byte[layout.RawSize];
-        roots = layout.ReferenceCount == 0 ? [] : new NativeRoot[layout.ReferenceCount];
-        initialized = layout.RawSize == 0 ? [] : new bool[layout.RawSize];
-    }
+    private NativeStorage() { }
 
     public static NativeValue Load(NativeType type, NativeAddress address)
     {
@@ -144,25 +135,26 @@ public sealed class NativeStorage
     internal static void CopyRegionTrusted(NativeAddress source, NativeAddress destination, NativeLayout layout, int count)
     {
         NativeOffset size = layout.Extent * count;
-        NativeStorage input = source.Allocation.Storage, output = destination.Allocation.Storage;
-        input.bytes.AsSpan(source.Offset.Bytes, size.Bytes).CopyTo(output.bytes.AsSpan(destination.Offset.Bytes, size.Bytes));
-        input.roots.AsSpan(source.Offset.References, size.References).CopyTo(output.roots.AsSpan(destination.Offset.References, size.References));
-        input.initialized.AsSpan(source.Offset.Bytes, size.Bytes).CopyTo(output.initialized.AsSpan(destination.Offset.Bytes, size.Bytes));
+        ref Data input = ref source.Allocation.Storage;
+        ref Data output = ref destination.Allocation.Storage;
+        input.bytes.Slice(source.Offset.Bytes, size.Bytes).CopyTo(output.bytes.Slice(destination.Offset.Bytes, size.Bytes));
+        input.roots.Slice(source.Offset.References, size.References).CopyTo(output.roots.Slice(destination.Offset.References, size.References));
+        input.initialized.Slice(source.Offset.Bytes, size.Bytes).CopyTo(output.initialized.Slice(destination.Offset.Bytes, size.Bytes));
     }
     public static void ClearRegion(NativeAddress address, NativeLayout layout, int count)
     {
         ValidateRegion(address, layout, count);
         NativeOffset size = layout.Extent * count;
-        NativeStorage storage = address.Allocation.Storage;
-        storage.bytes.AsSpan(address.Offset.Bytes, size.Bytes).Clear();
-        storage.roots.AsSpan(address.Offset.References, size.References).Clear();
-        storage.initialized.AsSpan(address.Offset.Bytes, size.Bytes).Clear();
+        ref Data storage = ref address.Allocation.Storage;
+        storage.bytes.Slice(address.Offset.Bytes, size.Bytes).Clear();
+        storage.roots.Slice(address.Offset.References, size.References).Clear();
+        storage.initialized.Slice(address.Offset.Bytes, size.Bytes).Clear();
     }
     public static void ValidateRegion(NativeAddress address, NativeLayout layout, int count)
     {
         ArgumentNullException.ThrowIfNull(layout);
         CheckRegionBounds(address, layout, count);
-        NativeStorage storage = address.Allocation.Storage;
+        ref Data storage = ref address.Allocation.Storage;
         if (ReferenceEquals(address.Allocation.Layout, layout) && layout.RawSize > 0
             && address.Offset.Bytes % layout.RawSize == 0
             && address.Offset.References == checked(address.Offset.Bytes / layout.RawSize * layout.ReferenceCount)) return;
@@ -174,7 +166,7 @@ public sealed class NativeStorage
     internal static void CheckRegionBounds(NativeAddress address, NativeLayout layout, int count)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(count);
-        NativeStorage storage = address.Allocation.Storage;
+        ref Data storage = ref address.Allocation.Storage;
         NativeOffset end = address.Offset + layout.Extent * count;
         if (address.Offset.Bytes < 0 || address.Offset.References < 0
             || end.Bytes > storage.bytes.Length || end.References > storage.roots.Length)
@@ -190,6 +182,8 @@ public sealed class NativeStorage
     internal static void ValidateAddress(NativeType type, NativeAddress address) => Validate(type, address);
     internal static NativeValue LoadTrusted(NativeType type, NativeAddress address) =>
         address.Allocation.Storage.Read(type, address.Offset);
+    internal static NativeValue LoadInitialized(NativeType type, NativeAddress address) =>
+        address.Allocation.Storage.ReadInitialized(type, address.Offset);
     internal static void StoreTrusted(NativeType type, NativeAddress address, NativeValue value) =>
         address.Allocation.Storage.Write(type, address.Offset, value);
     internal static void ClearTrusted(NativeType type, NativeAddress address) =>
@@ -197,119 +191,50 @@ public sealed class NativeStorage
 
     internal static void CopyTrusted(NativeType type, NativeAddress source, NativeAddress destination)
     {
-        source.Allocation.Storage.RequireInitialized(source.Offset);
-        CopyTrustedUnchecked(type, source, destination);
+        ref Data input = ref source.Allocation.Storage;
+        ref Data output = ref destination.Allocation.Storage;
+        NativeRepresentation format = type.Representation;
+        if (format.Bytes > 0)
+            input.bytes.Slice(source.Offset.Bytes, format.Bytes)
+                .CopyTo(output.bytes.Slice(destination.Offset.Bytes, format.Bytes));
+        if (format.References > 0)
+            CopyRoots(ref input, source.Offset.References, ref output, destination.Offset.References, format.References);
+        output.initialized[destination.Offset.Bytes] = true;
     }
 
-    internal static void CopyTrustedUnchecked(NativeType type, NativeAddress source, NativeAddress destination)
+    internal static void CopyKindTrusted(NativeKind actualKind, NativeAddress source, NativeAddress destination)
     {
-        NativeStorage input = source.Allocation.Storage, output = destination.Allocation.Storage;
-        NativeRepresentation format = type.Representation;
-        int srcByte = source.Offset.Bytes, dstByte = destination.Offset.Bytes;
-        if (format.References == 0 && format.Bytes == 8)
-        {
-            if (BitConverter.IsLittleEndian)
-                Unsafe.WriteUnaligned(ref output.bytes[dstByte], Unsafe.ReadUnaligned<ulong>(ref input.bytes[srcByte]));
-            else
-                input.bytes.AsSpan(srcByte, 8).CopyTo(output.bytes.AsSpan(dstByte, 8));
-            output.initialized[dstByte] = true;
-            return;
-        }
-        switch (format.Bytes)
-        {
-            case 0: break;
-            case 1: output.bytes[dstByte] = input.bytes[srcByte]; break;
-            case 2: Unsafe.WriteUnaligned(ref output.bytes[dstByte], Unsafe.ReadUnaligned<ushort>(ref input.bytes[srcByte])); break;
-            case 4: Unsafe.WriteUnaligned(ref output.bytes[dstByte], Unsafe.ReadUnaligned<uint>(ref input.bytes[srcByte])); break;
-            case 8: Unsafe.WriteUnaligned(ref output.bytes[dstByte], Unsafe.ReadUnaligned<ulong>(ref input.bytes[srcByte])); break;
-            case 16:
-                Unsafe.WriteUnaligned(ref output.bytes[dstByte], Unsafe.ReadUnaligned<ulong>(ref input.bytes[srcByte]));
-                Unsafe.WriteUnaligned(ref output.bytes[dstByte + 8], Unsafe.ReadUnaligned<ulong>(ref input.bytes[srcByte + 8]));
-                break;
-            default:
-                input.bytes.AsSpan(srcByte, format.Bytes)
-                    .CopyTo(output.bytes.AsSpan(dstByte, format.Bytes));
-                break;
-        }
-        int srcRef = source.Offset.References, dstRef = destination.Offset.References;
-        switch (format.References)
-        {
-            case 0: break;
-            case 1: output.roots[dstRef] = input.roots[srcRef]; break;
-            case 2:
-                output.roots[dstRef] = input.roots[srcRef];
-                output.roots[dstRef + 1] = input.roots[srcRef + 1];
-                break;
-            default:
-                input.roots.AsSpan(srcRef, format.References)
-                    .CopyTo(output.roots.AsSpan(dstRef, format.References));
-                break;
-        }
-        output.initialized[dstByte] = true;
+        ref Data input = ref source.Allocation.Storage;
+        ref Data output = ref destination.Allocation.Storage;
+        NativeRepresentation srcFormat = source.Type.Representation;
+        NativeRepresentation dstFormat = destination.Type.Representation;
+        NativeRepresentation actualFormat = NativeRepresentation.Of(actualKind);
+        int srcStart = checked(source.Offset.Bytes + srcFormat.PayloadOffset);
+        int dstStart = checked(destination.Offset.Bytes + dstFormat.PayloadOffset);
+        if (actualFormat.Bytes > 0)
+            input.bytes.Slice(srcStart, actualFormat.Bytes).CopyTo(output.bytes.Slice(dstStart, actualFormat.Bytes));
+        if (actualFormat.References > 0)
+            CopyRoots(ref input, source.Offset.References, ref output, destination.Offset.References, actualFormat.References);
+        if (dstFormat.References > actualFormat.References)
+            output.roots.Slice(destination.Offset.References + actualFormat.References,
+                dstFormat.References - actualFormat.References).Clear();
+        if (destination.Type.IsUnion) output.bytes[destination.Offset.Bytes] = (byte)actualKind;
+        output.initialized[destination.Offset.Bytes] = true;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal bool IsInitialized(NativeOffset offset) => initialized[offset.Bytes];
-    private void RequireInitialized(NativeOffset offset)
+    private static void CopyRoots(ref Data input, int source, ref Data output, int destination, int count)
     {
-        if (!IsInitialized(offset)) throw new InvalidOperationException($"Native storage at {offset} is uninitialized.");
-    }
-    private NativeValue Read(NativeType type, NativeOffset offset)
-    {
-        RequireInitialized(offset);
-        NativeRepresentation format = NativeRepresentation.Of(type);
-        bool union = type.IsUnion;
-        NativeKind kind = union ? (NativeKind)bytes[offset.Bytes] : type.Kind;
-        NativeRepresentation actual = union ? NativeRepresentation.Of(kind) : format;
-        int start = checked(offset.Bytes + format.PayloadOffset);
-        ulong bits = 0;
-        byte flags = 0;
-        if (kind == NativeKind.Path)
+        if (count > 2)
         {
-            bits = bytes[start];
-            flags = bytes[start + 1];
+            input.roots.Slice(source, count).CopyTo(output.roots.Slice(destination, count));
+            return;
         }
-        else if (actual.Bytes == 8) bits = BinaryPrimitives.ReadUInt64LittleEndian(bytes.AsSpan(start, 8));
-        else if (actual.Bytes == 4) bits = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(start, 4));
-        else if (actual.Bytes == 1) bits = bytes[start];
-        return NativeValue.Restore(kind, bits, flags, roots.AsSpan(offset.References, actual.References));
-    }
-    private void Write(NativeType type, NativeOffset offset, NativeValue value)
-    {
-        NativeRepresentation format = NativeRepresentation.Of(type);
-        NativeRepresentation actual = NativeRepresentation.Of(value.Kind);
-        bool fullBytesWritten = !type.IsUnion && format.PayloadOffset == 0 && actual.Bytes == format.Bytes
-            && (actual.Bytes is 1 or 4 or 8 || (value.Kind == NativeKind.Path && format.Bytes == 2));
-        if (!fullBytesWritten && format.Bytes > 0) bytes.AsSpan(offset.Bytes, format.Bytes).Clear();
-        int start = checked(offset.Bytes + format.PayloadOffset);
-        if (value.Kind == NativeKind.Path)
-        {
-            bytes[start] = (byte)value.Bits;
-            bytes[start + 1] = value.Flags;
-        }
-        else if (actual.Bytes == 8) BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(start, 8), value.Bits);
-        else if (actual.Bytes == 4) BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(start, 4), (uint)value.Bits);
-        else if (actual.Bytes == 1) bytes[start] = (byte)value.Bits;
-        for (int root = 0; root < actual.References; root++) roots[offset.References + root] = value.Root(root);
-        if (format.References > actual.References)
-            roots.AsSpan(offset.References + actual.References, format.References - actual.References).Clear();
-        if (type.IsUnion) bytes[offset.Bytes] = (byte)value.Kind;
-        initialized[offset.Bytes] = true;
-    }
-    private void Erase(NativeType type, NativeOffset offset)
-    {
-        NativeRepresentation format = NativeRepresentation.Of(type);
-        bytes.AsSpan(offset.Bytes, format.Bytes).Clear();
-        roots.AsSpan(offset.References, format.References).Clear();
-        initialized[offset.Bytes] = false;
-    }
-    internal IEnumerable<NativeValue> InitializedValues
-    {
-        get
-        {
-            foreach (NativeFieldLayout slot in layout.Fields)
-                if (initialized[slot.Offset.Bytes]) yield return Read(slot.Type, slot.Offset);
-        }
+        // Snapshot both references before storing: adjacent address carriers may overlap.
+        object? first = input.roots[source].Value;
+        object? second = count == 2 ? input.roots[source + 1].Value : null;
+        output.roots[destination].Value = first;
+        if (count == 2) output.roots[destination + 1].Value = second;
     }
 
     public static double ReadNumber(NativeAddress address)
@@ -335,35 +260,44 @@ public sealed class NativeStorage
     public static void WriteConnection(NativeAddress address, NativeConnection value)
     { Validate(NativeType.Of(NativeKind.Connection), address); StoreConnection(address, value); }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static double LoadReadyNumber(NativeAddress address, int payloadOffset = 0) =>
+        BitConverter.UInt64BitsToDouble(BinaryPrimitives.ReadUInt64LittleEndian(address.Allocation.Storage.bytes.Slice(address.Offset.Bytes + payloadOffset, 8)));
+
     public static double LoadNumber(NativeAddress address)
     {
-        NativeStorage storage = Readable(address);
-        if (BitConverter.IsLittleEndian)
-            return BitConverter.UInt64BitsToDouble(Unsafe.ReadUnaligned<ulong>(ref storage.bytes[address.Offset.Bytes]));
-        return BitConverter.UInt64BitsToDouble(BinaryPrimitives.ReadUInt64LittleEndian(storage.bytes.AsSpan(address.Offset.Bytes, 8)));
+        ref Data storage = ref Readable(address);
+        return BitConverter.UInt64BitsToDouble(BinaryPrimitives.ReadUInt64LittleEndian(storage.bytes.Slice(address.Offset.Bytes, 8)));
     }
     public static bool LoadBool(NativeAddress address) => Readable(address).bytes[address.Offset.Bytes] != 0;
     public static string LoadString(NativeAddress address) => Readable(address).roots[address.Offset.References].Text!;
     public static NativeConnection LoadConnection(NativeAddress address)
     {
-        NativeStorage storage = Readable(address);
-        return new((ConnectionKind)storage.bytes[address.Offset.Bytes], storage.roots[address.Offset.References].Text!);
+        ref Data storage = ref Readable(address);
+        return storage.roots[address.Offset.References].Connection!.Connection;
     }
     public static NativePath LoadPath(NativeAddress address)
     {
-        NativeStorage storage = Readable(address);
+        ref Data storage = ref Readable(address);
         int raw = address.Offset.Bytes, root = address.Offset.References;
         NativeConnection? connection = storage.bytes[raw + 1] == 0 ? null
             : new NativeConnection((ConnectionKind)storage.bytes[raw], storage.roots[root + 4].Text ?? "");
         return new(storage.roots[root].Text!, storage.roots[root + 1].Text, connection,
             storage.roots[root + 2].Text, storage.roots[root + 3].Text);
     }
+    internal static NativeFunction LoadFunctionDirect(NativeAddress address)
+    {
+        ref Data storage = ref address.Allocation.Storage;
+        int raw = address.Offset.Bytes + address.Type.Representation.PayloadOffset;
+        int root = address.Offset.References;
+        return new(BinaryPrimitives.ReadInt32LittleEndian(storage.bytes.Slice(raw, 4)),
+            storage.roots[root].Environment, storage.roots[root + 1].Text);
+    }
+
     public static NativeFunction LoadFunction(NativeAddress address)
     {
-        NativeStorage storage = Readable(address);
+        ref Data storage = ref Readable(address);
         int root = address.Offset.References;
-        return new(BinaryPrimitives.ReadInt32LittleEndian(storage.bytes.AsSpan(address.Offset.Bytes, 4)),
+        return new(BinaryPrimitives.ReadInt32LittleEndian(storage.bytes.Slice(address.Offset.Bytes, 4)),
             storage.roots[root].Environment, storage.roots[root + 1].Text);
     }
     public static NativeRange LoadRange(NativeAddress address) => Readable(address).roots[address.Offset.References].Range!;
@@ -371,64 +305,69 @@ public sealed class NativeStorage
     public static TypeRef LoadType(NativeAddress address) => Readable(address).roots[address.Offset.References].Type!;
     public static NativeAddress LoadAddress(NativeAddress address)
     {
-        NativeStorage storage = Readable(address);
-        ulong bits = BitConverter.IsLittleEndian
-            ? Unsafe.ReadUnaligned<ulong>(ref storage.bytes[address.Offset.Bytes])
-            : BinaryPrimitives.ReadUInt64LittleEndian(storage.bytes.AsSpan(address.Offset.Bytes, 8));
+        ref Data storage = ref Readable(address);
+        ulong bits = BinaryPrimitives.ReadUInt64LittleEndian(storage.bytes.Slice(address.Offset.Bytes, 8));
         return storage.roots[address.Offset.References].Allocation!.AddressAt(NativeValue.Unpack(bits),
             storage.roots[address.Offset.References + 1].StorageType);
     }
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static NativeAddress LoadAddressDirect(NativeAddress address)
     {
-        NativeStorage storage = address.Allocation.Storage;
-        ulong bits = BitConverter.IsLittleEndian
-            ? Unsafe.ReadUnaligned<ulong>(ref storage.bytes[address.Offset.Bytes])
-            : BinaryPrimitives.ReadUInt64LittleEndian(storage.bytes.AsSpan(address.Offset.Bytes, 8));
+        ref Data storage = ref address.Allocation.Storage;
+        ulong bits = BinaryPrimitives.ReadUInt64LittleEndian(storage.bytes.Slice(address.Offset.Bytes, 8));
         return storage.roots[address.Offset.References].Allocation!.AddressAt(NativeValue.Unpack(bits),
             storage.roots[address.Offset.References + 1].StorageType);
     }
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static NativeStorage Readable(NativeAddress address)
+    private static ref Data Readable(NativeAddress address)
     {
-        NativeStorage storage = address.Allocation.Storage;
+        ref Data storage = ref address.Allocation.Storage;
         storage.RequireInitialized(address.Offset);
-        return storage;
+        return ref storage;
     }
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static void StoreScalarTrusted(NativeAddress address, NativeKind kind, ulong bits)
+    {
+        ref Data storage = ref address.Allocation.Storage;
+        NativeRepresentation format = address.Type.Representation;
+        int offset = address.Offset.Bytes;
+        if (format.PayloadOffset != 0)
+        {
+            storage.bytes[offset] = (byte)kind;
+        }
+        int payload = offset + format.PayloadOffset;
+        if (kind == NativeKind.Number) BinaryPrimitives.WriteUInt64LittleEndian(storage.bytes.Slice(payload, 8), bits);
+        else storage.bytes[payload] = (byte)bits;
+        if (format.References != 0) storage.roots.Slice(address.Offset.References, format.References).Clear();
+        storage.initialized[offset] = true;
+    }
+
     public static void StoreNumber(NativeAddress address, double value)
     {
-        NativeStorage storage = address.Allocation.Storage;
-        if (BitConverter.IsLittleEndian)
-            Unsafe.WriteUnaligned(ref storage.bytes[address.Offset.Bytes], BitConverter.DoubleToUInt64Bits(value));
-        else BinaryPrimitives.WriteUInt64LittleEndian(storage.bytes.AsSpan(address.Offset.Bytes, 8), BitConverter.DoubleToUInt64Bits(value));
+        ref Data storage = ref address.Allocation.Storage;
+        BinaryPrimitives.WriteUInt64LittleEndian(storage.bytes.Slice(address.Offset.Bytes, 8), BitConverter.DoubleToUInt64Bits(value));
         storage.initialized[address.Offset.Bytes] = true;
     }
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void StoreBool(NativeAddress address, bool value)
     {
-        NativeStorage storage = address.Allocation.Storage;
+        ref Data storage = ref address.Allocation.Storage;
         storage.bytes[address.Offset.Bytes] = value ? (byte)1 : (byte)0;
         storage.initialized[address.Offset.Bytes] = true;
     }
     public static void StoreString(NativeAddress address, string value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        NativeStorage storage = address.Allocation.Storage;
+        ref Data storage = ref address.Allocation.Storage;
         storage.roots[address.Offset.References] = new() { Text = value };
         storage.initialized[address.Offset.Bytes] = true;
     }
     public static void StoreConnection(NativeAddress address, NativeConnection value)
     {
-        NativeStorage storage = address.Allocation.Storage;
-        storage.bytes[address.Offset.Bytes] = (byte)value.Kind;
-        storage.roots[address.Offset.References] = new() { Text = value.Address ?? "" };
+        ref Data storage = ref address.Allocation.Storage;
+        storage.roots[address.Offset.References] = new() { Connection = new(value) };
         storage.initialized[address.Offset.Bytes] = true;
     }
     public static void StorePath(NativeAddress address, NativePath value)
     {
         ArgumentNullException.ThrowIfNull(value.Raw);
-        NativeStorage storage = address.Allocation.Storage;
+        ref Data storage = ref address.Allocation.Storage;
         int raw = address.Offset.Bytes, root = address.Offset.References;
         storage.bytes[raw] = (byte)(value.Connection?.Kind ?? ConnectionKind.Local);
         storage.bytes[raw + 1] = value.Connection.HasValue ? (byte)1 : (byte)0;
@@ -441,9 +380,9 @@ public sealed class NativeStorage
     }
     public static void StoreFunction(NativeAddress address, NativeFunction value)
     {
-        NativeStorage storage = address.Allocation.Storage;
+        ref Data storage = ref address.Allocation.Storage;
         int root = address.Offset.References;
-        BinaryPrimitives.WriteInt32LittleEndian(storage.bytes.AsSpan(address.Offset.Bytes, 4), value.Function);
+        BinaryPrimitives.WriteInt32LittleEndian(storage.bytes.Slice(address.Offset.Bytes, 4), value.Function);
         storage.roots[root] = new() { Environment = value.Environment };
         storage.roots[root + 1] = new() { Text = value.NativeName };
         storage.initialized[address.Offset.Bytes] = true;
@@ -451,31 +390,29 @@ public sealed class NativeStorage
     public static void StoreRange(NativeAddress address, NativeRange value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        NativeStorage storage = address.Allocation.Storage;
+        ref Data storage = ref address.Allocation.Storage;
         storage.roots[address.Offset.References] = new() { Range = value };
         storage.initialized[address.Offset.Bytes] = true;
     }
     public static void StoreProcess(NativeAddress address, NativeProcess value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        NativeStorage storage = address.Allocation.Storage;
+        ref Data storage = ref address.Allocation.Storage;
         storage.roots[address.Offset.References] = new() { Process = value };
         storage.initialized[address.Offset.Bytes] = true;
     }
     public static void StoreType(NativeAddress address, TypeRef value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        NativeStorage storage = address.Allocation.Storage;
+        ref Data storage = ref address.Allocation.Storage;
         storage.roots[address.Offset.References] = new() { Type = value };
         storage.initialized[address.Offset.Bytes] = true;
     }
     public static void StoreAddress(NativeAddress address, NativeAddress value)
     {
         if (value.IsNull) throw new ArgumentException("Null pointers are not namespace values.", nameof(value));
-        NativeStorage storage = address.Allocation.Storage;
-        ulong packed = NativeValue.Pack(value.Offset);
-        if (BitConverter.IsLittleEndian) Unsafe.WriteUnaligned(ref storage.bytes[address.Offset.Bytes], packed);
-        else BinaryPrimitives.WriteUInt64LittleEndian(storage.bytes.AsSpan(address.Offset.Bytes, 8), packed);
+        ref Data storage = ref address.Allocation.Storage;
+        BinaryPrimitives.WriteUInt64LittleEndian(storage.bytes.Slice(address.Offset.Bytes, 8), NativeValue.Pack(value.Offset));
         storage.roots[address.Offset.References] = new() { Allocation = value.Allocation };
         storage.roots[address.Offset.References + 1] = new() { StorageType = value.StorageType };
         storage.initialized[address.Offset.Bytes] = true;

@@ -102,8 +102,13 @@ public static partial class NativeBuiltins
     {
         token.ThrowIfCancellationRequested();
         if (path.Connection is not { Kind: ConnectionKind.Ssh or ConnectionKind.Wsl })
-            return new(new FileStream(context.LocalPath(path), FileMode.Open, FileAccess.Read,
+        {
+            string local = context.LocalPath(path);
+            if (!OperatingSystem.IsWindows() && NativeFileIdentity.Kind(local, false) is "fifo" or "character")
+                return new(new NativePosixInputStream(local));
+            return new(new FileStream(local, FileMode.Open, FileAccess.Read,
                 FileShare.ReadWrite | FileShare.Delete, context.BufferSize, FileOptions.Asynchronous | FileOptions.SequentialScan));
+        }
         ProcessStartInfo info = IOStart(path, "exec cat -- \"$p\"", false, context);
         return new(Process.Start(info) ?? throw new IOException($"Cannot start reader for '{path}'."), path);
     }
@@ -111,7 +116,7 @@ public static partial class NativeBuiltins
     private static ProcessStartInfo IOStart(NativePathValue path, string body, bool input, NativeRuntimeContext context)
     {
         ProcessStartInfo info = NativeTransferProtocol.CreateRemoteProcessStartInfo(path.Connection!.Value.Kind, path.Connection.Value.Address, "/bin/sh",
-            ["-c", ShellProgram.Source(IOPrelude + "\n" + body), "msync-io", path.Raw]);
+            ["-c", ShellProgram.Source(IOPrelude + "\n" + body), "msync-io", path.Raw], context);
         info.UseShellExecute = false;
         info.WorkingDirectory = context.WorkingDirectory;
         info.RedirectStandardInput = input;

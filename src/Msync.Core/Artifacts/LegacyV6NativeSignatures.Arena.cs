@@ -4,7 +4,7 @@ internal static partial class LegacyV6NativeSignatures
 {
     private static void RegisterArena(IDictionary<string, LegacyV6NativeSignature> result)
     {
-        TypeRef owner = new((TypeKind)LegacyV6Reader.LegacyStorageMask), index = TypeRef.Number;
+        TypeRef owner = new((TypeKind)(ushort)TypeKind.Storage), index = TypeRef.Number;
         void Arena(string operation, TypeRef output, params TypeRef[] parameters) => Add(result, "arena." + operation, output, parameters);
         Arena("new", owner, TypeRef.Type); Arena("root", index, owner); Arena("size", index, owner);
         Arena("key", TypeRef.Any, owner, index); Arena("child", index, owner, index, TypeRef.Bool);

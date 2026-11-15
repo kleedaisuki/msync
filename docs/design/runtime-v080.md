@@ -152,7 +152,10 @@ joining unrelated background captures. Standalone release is
 not a sticky background mode. An unmarked external call starts and waits;
 `release executable(...)` returns a live Process, `acquire process` joins only
 that process and its connected flows, and bare acquire joins the interpreter
-session's pending frontier (including inherited caller work). A lexical function
+session's pending frontier (including inherited caller work). A background
+transfer captures its inherited frontier at admission, before adding its own
+Future; callback acquire joins that frontier and task-local descendants, not
+later work that may depend on the callback. A lexical function
 joins its own admitted work on return, never the caller's unrelated released processes. Optimizer inlining must
 preserve that boundary; job-owning callees cannot be flattened as pure values.
 

@@ -91,7 +91,7 @@ internal sealed partial class SemanticAnalyzer
         Visit(root);
         context.ReturnPlaces = returnPlaces;
         var algebra = new HirFlowTypeAlgebra(hir);
-        FlowFacts facts = FlowFacts.Create(domains.ToImmutable(), algebra);
+        FlowFacts facts = FlowFacts.CreateMutable(domains, algebra);
         foreach (var pair in domains)
             if (pair.Value.InitiallyAssigned && context.Values.TryGetValue(pair.Key, out var value))
                 facts = facts.Assign(pair.Key, new(Runtime(value), Boolean: value.KnownBool, SemanticType: initialType?.Invoke(value) ?? FlowType(value, context),
@@ -99,6 +99,7 @@ internal sealed partial class SemanticAnalyzer
                         new FlowCallableIdentity(choice.Template, choice.NativeName))),
                     Denotations: value.DenotedType is { } denoted ? new([denoted]) : null,
                     Eager: value.EagerRange));
+        facts = facts.Freeze();
         var projection = new HirTypeProjection(program, hir, context, algebra,
             (callable, arguments) => SourceFlowReturn(callable, arguments, context), Place,
             id => BoundCallables(id, context),

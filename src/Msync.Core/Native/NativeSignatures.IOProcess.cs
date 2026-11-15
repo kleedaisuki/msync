@@ -17,6 +17,8 @@ public static partial class NativeSignatures
         Add("io.file_size", TypeRef.Number, NativeEffect.Read, path);
         Add("io.read_line", TypeRef.String.WithNull, NativeEffect.Read);
         Add("io.read_stdin", TypeRef.String, NativeEffect.Read);
+        foreach (string name in new[] { "io.read_line", "io.read_stdin" })
+            result[name] = result[name] with { Behavior = NativeBehavior.DeferredScalar | NativeBehavior.MayFail };
         // The range borrows a live input reader and must not become a planner constant.
         result.Add("io.stdin_lines", new("io.stdin_lines", [], new(TypeKind.Range, TypeRef.String),
             NativeEffect.Read, Behavior: NativeBehavior.Deferred));
@@ -25,6 +27,7 @@ public static partial class NativeSignatures
         Add("io.flush", TypeRef.Null, NativeEffect.Write);
         Add("io.flush_error", TypeRef.Null, NativeEffect.Write);
         Add("process.spawn", TypeRef.Process, NativeEffect.Write, path, new(TypeKind.Range));
+        result["process.spawn"] = result["process.spawn"] with { PathAccess = [NativePathAccess.Read, NativePathAccess.None] };
         Add("process.pid", TypeRef.Number, NativeEffect.Read, TypeRef.Process);
         Add("process.running", TypeRef.Bool, NativeEffect.Read, TypeRef.Process);
         Add("process.wait", TypeRef.Process, NativeEffect.Read, TypeRef.Process);
