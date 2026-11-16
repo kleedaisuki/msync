@@ -30,6 +30,12 @@ internal static class Program
 
     public static async Task Main(string[] args)
     {
+        if (args.Length == 1 && args[0] == "--o2-address-cost-only")
+        {
+            Console.WriteLine(JsonSerializer.Serialize(new { status = "passed",
+                declaredStorage = await DeclaredStorageUseJourney.RunAsync() }));
+            return;
+        }
         if (args.Length > 0 && args[0] == "--freeze-lowering")
         {
             Console.WriteLine(JsonSerializer.Serialize(new { status = "passed",

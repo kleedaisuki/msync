@@ -31,6 +31,7 @@ public static partial class LlvmInstCombine
                     Builder.SetInsertPoint(load);
                     LlvmValue address = Builder.CreateInBoundsGep(load.Type, load.PointerOperand, indices);
                     LlvmLoadInstruction replacement = Builder.CreateLoad(extract.Type, address);
+                    PreserveMemoryStorageView(load.GetOperandUse(0), replacement.GetOperandUse(0));
                     replacement.LogicalType = extract.LogicalType;
                     Count("aggregate.extract.load-narrowed");
                     return ReplaceInstUsesWith(extract, replacement);

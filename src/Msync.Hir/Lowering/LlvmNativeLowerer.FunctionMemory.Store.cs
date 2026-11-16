@@ -11,13 +11,17 @@ public static partial class LlvmNativeLowerer
         private readonly record struct FunctionMemoryLocation(LlvmValue Root, int Layout, int Field, int Type);
         private sealed record FunctionMemoryAssignment(FunctionMemoryLocation Location, LlvmStoreInstruction[] Stores);
         private readonly Dictionary<LlvmStoreInstruction, FunctionMemoryAssignment> functionMemoryAssignments = [];
-        private int functionMemoryAssignmentsPacked, functionMemoryComponentStores;
+        private int functionMemoryAssignmentsPacked, functionMemoryComponentStores, functionMemoryPhysicalUses;
 
-        private bool FunctionMemoryComponent(LlvmValue pointer, LlvmType componentType,
+        private bool FunctionMemoryComponent(LlvmUse memory, LlvmType componentType,
             out FunctionMemoryLocation location, out int component)
         {
-            var position = LlvmGepOperator.TryGet(pointer, out _) ? PointerPositionOf(pointer)
-                : PointerRoot(pointer, owner.Input.Module.DataLayout.GetIndexTypeSizeInBits(pointer.Type));
+            LlvmValue pointer = memory.Value!;
+            bool relocated = LlvmGepOperator.TryGet(pointer, out _);
+            var position = relocated ? PointerPositionOf(pointer)
+                : PointerRoot(pointer, owner.Input.Module.DataLayout.GetIndexTypeSizeInBits(pointer.Type), memory.TargetStorageType);
+            if (!relocated && memory.TargetStorageType is not null)
+                trace?.Metric("functions.memory_component.physical_use", ++functionMemoryPhysicalUses);
             location = default;
             component = -1;
             ulong offset = position.Offset.GetZExtValue();
@@ -66,7 +70,7 @@ public static partial class LlvmNativeLowerer
         {
             if (!functionMemoryAssignments.TryGetValue(store, out var assignment))
             {
-                if (!store.IsSimple || !FunctionMemoryComponent(store.PointerOperand, store.ValueOperand.Type,
+                if (!store.IsSimple || !FunctionMemoryComponent(store.GetOperandUse(1), store.ValueOperand.Type,
                     out var location, out _)) return false;
                 assignment = CollectFunctionMemoryAssignment(store, location);
                 if (assignment is null) return false;
@@ -79,7 +83,7 @@ public static partial class LlvmNativeLowerer
             int[] components = new int[3];
             foreach (var member in assignment.Stores)
             {
-                _ = FunctionMemoryComponent(member.PointerOperand, member.ValueOperand.Type, out _, out int component);
+                _ = FunctionMemoryComponent(member.GetOperandUse(1), member.ValueOperand.Type, out _, out int component);
                 components[component] = AggregateComponentSlot(shape, component, member.ValueOperand);
             }
             int whole = Register(assignment.Location.Type);
@@ -101,7 +105,7 @@ public static partial class LlvmNativeLowerer
             {
                 if (instruction is LlvmGetElementPtrInstruction or LlvmCastInstruction or LlvmExtractValueInstruction) continue;
                 if (instruction is not LlvmStoreInstruction { IsSimple: true } store ||
-                    !FunctionMemoryComponent(store.PointerOperand, store.ValueOperand.Type, out var target, out int component) ||
+                    !FunctionMemoryComponent(store.GetOperandUse(1), store.ValueOperand.Type, out var target, out int component) ||
                     target != location || (written & (1 << component)) != 0) return null;
                 stores.Add(store);
                 written |= 1 << component;

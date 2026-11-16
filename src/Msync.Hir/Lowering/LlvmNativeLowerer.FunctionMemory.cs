@@ -28,7 +28,7 @@ public static partial class LlvmNativeLowerer
         private bool FunctionComponentLoad(LlvmLoadInstruction load)
         {
             if (load.Type is not LlvmPointerType) return false;
-            if (!FunctionMemoryComponent(load.PointerOperand, load.Type, out var location, out int index)) return false;
+            if (!FunctionMemoryComponent(load.GetOperandUse(0), load.Type, out var location, out int index)) return false;
             if (TryFunctionMemoryLoadGroup(load, location, index)) return true;
             var structure = LlvmStructType.GetTypeByName(function.Context, "msync.function")!;
             var shape = AggregateShapeFor(structure);

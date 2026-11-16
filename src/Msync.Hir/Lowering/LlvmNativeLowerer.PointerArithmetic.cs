@@ -75,6 +75,8 @@ public static partial class LlvmNativeLowerer
         private readonly record struct PointerPosition(LlvmValue Root, LlvmStructType? Structure, int Layout, LlvmAPInt Offset);
         private readonly Dictionary<LlvmValue, PointerPosition> pointerRelocations = [];
         private int constantGepRelocations, constantGepMaterializations, zeroGepAliases, constantGepExpressionUses;
+        private int memoryStoragePointerAbi, memoryStoragePhysicalUse, memoryStorageGepField;
+        private int memoryStorageRootAbi, memoryStorageRootLayout, memoryStoragePayloadAbi;
 
         private bool StructuredFieldAddress(LlvmGetElementPtrInstruction address)
         {
@@ -218,7 +220,17 @@ public static partial class LlvmNativeLowerer
         private int MemoryStorageType(LlvmUse pointer, LlvmValue? payload = null)
         {
             int logical = pointer.LogicalType >= 0 ? pointer.LogicalType : pointer.Value!.LogicalType;
-            if (logical >= 0 && owner.Types[logical].Pointee >= 0) return owner.Types[logical].Pointee;
+            if (logical >= 0 && owner.Types[logical].Pointee >= 0)
+            {
+                trace?.Metric("addresses.memory_storage.pointer_abi", ++memoryStoragePointerAbi);
+                return owner.Types[logical].Pointee;
+            }
+            if (pointer.TargetStorageType is { } declared)
+            {
+                int layout = owner.Input.StructLayouts[declared];
+                trace?.Metric("addresses.memory_storage.physical_use", ++memoryStoragePhysicalUse);
+                return owner.StorageField(declared, layout, 0, PayloadTypeHint(payload), payload?.Type)!.Value.Type;
+            }
             int storage;
             if (LlvmGepOperator.TryGet(pointer.Value!, out _))
             {
@@ -226,6 +238,7 @@ public static partial class LlvmNativeLowerer
                 if (position.Structure is not null)
                 {
                     int preferred = PayloadTypeHint(payload);
+                    trace?.Metric("addresses.memory_storage.gep_field", ++memoryStorageGepField);
                     storage = PointerField(pointer.Value!, position, preferred, payload?.Type).Type;
                 }
                 else storage = StorageFromRoot(position.Root, payload);
@@ -273,9 +286,22 @@ public static partial class LlvmNativeLowerer
         {
             int logical = root.LogicalType >= 0 ? root.LogicalType
                 : values.TryGetValue(root, out int slot) ? slots[slot].Type : -1;
-            if (logical >= 0 && owner.Types[logical].Pointee >= 0) return owner.Types[logical].Pointee;
+            if (logical >= 0 && owner.Types[logical].Pointee >= 0)
+            {
+                trace?.Metric("addresses.memory_storage.root_abi", ++memoryStorageRootAbi);
+                return owner.Types[logical].Pointee;
+            }
             var origin = PointerRoot(root, owner.Input.Module.DataLayout.GetIndexTypeSizeInBits(root.Type));
-            if (origin.Structure is not null) return owner.Layouts[origin.Layout].Fields[0].Type;
+            if (origin.Structure is not null)
+            {
+                trace?.Metric("addresses.memory_storage.root_layout", ++memoryStorageRootLayout);
+                return owner.Layouts[origin.Layout].Fields[0].Type;
+            }
+            if (payload is { LogicalType: < 0 } && payload.Type.IsPointerTy())
+                throw Unsupported(payload, $"pointer load/store storage in '{function.Name}', " +
+                    $"root '{root.Name}' ({root.GetType().Name}, logical #{root.LogicalType}, emitted #{logical}), " +
+                    $"payload '{payload.Name}' ({payload.GetType().Name}, logical #{payload.LogicalType}) without a declared storage view");
+            trace?.Metric("addresses.memory_storage.payload_abi", ++memoryStoragePayloadAbi);
             return owner.Type(payload!);
         }
 
@@ -284,6 +310,8 @@ public static partial class LlvmNativeLowerer
             if (load.LogicalType >= 0 || values.ContainsKey(load)) return SelectedValueType(load);
             if (load.Type.IsPointerTy() || load.Type.IsStructTy())
             {
+                if (load.GetOperandUse(0).TargetStorageType is not null)
+                    return SetSelectedValueType(load, storage);
                 if (LlvmGepOperator.TryGet(load.PointerOperand, out _))
                 {
                     var position = PointerPositionOf(load.PointerOperand);

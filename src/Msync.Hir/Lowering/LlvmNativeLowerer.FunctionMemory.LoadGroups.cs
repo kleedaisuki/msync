@@ -82,7 +82,7 @@ public static partial class LlvmNativeLowerer
                 if (instruction is LlvmLoadInstruction { IsSimple: true } member)
                 {
                     if (loaded != assembled || loaded == 3 ||
-                        !FunctionMemoryComponent(member.PointerOperand, member.Type, out var target, out int component) ||
+                        !FunctionMemoryComponent(member.GetOperandUse(0), member.Type, out var target, out int component) ||
                         target != location || component != loaded)
                     {
                         trace?.Metric("functions.memory_load_group_reject.member", 1);

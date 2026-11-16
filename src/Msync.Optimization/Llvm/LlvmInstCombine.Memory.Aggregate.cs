@@ -19,6 +19,7 @@ public static partial class LlvmInstCombine
             var replacement = new LlvmLoadInstruction(type, load.PointerOperand, load.Alignment,
                 load.IsVolatile, load.Ordering, load.SyncScopeId) { IsElementwise = load.IsElementwise };
             replacement.GetOperandUse(0).LogicalType = load.GetOperandUse(0).LogicalType;
+            PreserveMemoryStorageView(load.GetOperandUse(0), replacement.GetOperandUse(0));
             if (type == load.Type) replacement.LogicalType = load.LogicalType;
             return Builder.Insert(replacement, load.Name + suffix);
         }
@@ -29,12 +30,30 @@ public static partial class LlvmInstCombine
             var replacement = new LlvmStoreInstruction(value, store.PointerOperand, store.Alignment,
                 store.IsVolatile, store.Ordering, store.SyncScopeId) { IsElementwise = store.IsElementwise };
             replacement.GetOperandUse(1).LogicalType = store.GetOperandUse(1).LogicalType;
+            PreserveMemoryStorageView(store.GetOperandUse(1), replacement.GetOperandUse(1));
             if (value.Type == store.ValueOperand.Type) replacement.GetOperandUse(0).LogicalType = store.GetOperandUse(0).LogicalType;
             return Builder.Insert(replacement);
         }
 
         private static LlvmAlign MemoryCommonAlignment(LlvmAlign alignment, ulong offset) => offset == 0
             ? alignment : new(Math.Min(alignment.Value, 1UL << BitOperations.TrailingZeroCount(offset)));
+
+        private void PreserveMemoryStorageView(LlvmUse source, LlvmUse target)
+        {
+            if (ReferenceEquals(source.Value, target.Value))
+            {
+                target.TargetStorageType = source.TargetStorageType;
+                if (target.TargetStorageType is not null) Count("instcombine.memory.storage_view.use");
+                return;
+            }
+            if (target.Value is not LlvmGetElementPtrInstruction address) return;
+            var storage = source.TargetStorageType ?? (source.Value as LlvmGetElementPtrInstruction)?.GetTargetStorageType();
+            if (storage is null) return;
+            // The declaration describes the source root, not the scalar leaf.
+            // Keep it on the GEP so byte offsets continue to select the field.
+            address.TargetStorageType ??= storage;
+            Count("instcombine.memory.storage_view.gep");
+        }
 
         private LlvmInstruction? UnpackLoadToAggregate(LlvmLoadInstruction load)
         {
@@ -58,6 +77,7 @@ public static partial class LlvmInstCombine
                         load.Name + ".elt", LlvmGepNoWrapFlags.InBounds);
                     var element = Builder.CreateAlignedLoad(structure.Elements[i], pointer,
                         MemoryCommonAlignment(load.Alignment, offset), load.Name + ".unpack");
+                    PreserveMemoryStorageView(load.GetOperandUse(0), element.GetOperandUse(0));
                     result = Builder.CreateInsertValue(result, element, (uint)i);
                     Count("instcombine.memory.unpack.load.elements");
                 }
@@ -79,6 +99,7 @@ public static partial class LlvmInstCombine
                         [zero, LlvmConstantInt.Get(indexType, i)], load.Name + ".elt");
                     var element = Builder.CreateAlignedLoad(array.ElementType, pointer,
                         MemoryCommonAlignment(load.Alignment, offset), load.Name + ".unpack");
+                    PreserveMemoryStorageView(load.GetOperandUse(0), element.GetOperandUse(0));
                     result = Builder.CreateInsertValue(result, element, (uint)i);
                     offset += elementSize.GetKnownMinValue();
                     Count("instcombine.memory.unpack.load.elements");
@@ -110,7 +131,8 @@ public static partial class LlvmInstCombine
                     var pointer = Builder.CreatePtrAdd(store.PointerOperand, Builder.CreateTypeSize(indexType, elementOffset),
                         store.PointerOperand.Name + ".repack", LlvmGepNoWrapFlags.InBounds);
                     var element = Builder.CreateExtractValue(value, (uint)i, value.Name + ".elt");
-                    Builder.CreateAlignedStore(element, pointer, MemoryCommonAlignment(store.Alignment, offset));
+                    var member = Builder.CreateAlignedStore(element, pointer, MemoryCommonAlignment(store.Alignment, offset));
+                    PreserveMemoryStorageView(store.GetOperandUse(1), member.GetOperandUse(1));
                     Count("instcombine.memory.unpack.store.elements");
                 }
             }
@@ -129,7 +151,8 @@ public static partial class LlvmInstCombine
                     var pointer = Builder.CreateInBoundsGep(array, store.PointerOperand,
                         [zero, LlvmConstantInt.Get(indexType, i)], store.PointerOperand.Name + ".repack");
                     var element = Builder.CreateExtractValue(value, (uint)i, value.Name + ".elt");
-                    Builder.CreateAlignedStore(element, pointer, MemoryCommonAlignment(store.Alignment, offset));
+                    var member = Builder.CreateAlignedStore(element, pointer, MemoryCommonAlignment(store.Alignment, offset));
+                    PreserveMemoryStorageView(store.GetOperandUse(1), member.GetOperandUse(1));
                     offset += elementSize.GetKnownMinValue();
                     Count("instcombine.memory.unpack.store.elements");
                 }
