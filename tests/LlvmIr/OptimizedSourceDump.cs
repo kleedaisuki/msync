@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text.Json;
 using Msync.Compiler;
+using Msync.Core;
 using Msync.Core.Llvm;
 using Msync.Core.Native;
 using Msync.Hir;
@@ -12,8 +13,13 @@ internal static class OptimizedSourceDump
         Directory.CreateDirectory(output);
         var graph = LlvmHirLowerer.Lower(Compiler.Analyze(File.ReadAllText(sourcePath), sourcePath));
         File.WriteAllText(Path.Combine(output, "before.ll"), LlvmIrWriter.Write(graph.Module));
+        List<CompilationObservation> records = [];
+        CompilationTrace trace = new(records.Add, includeOptimizerPasses: true);
         typeof(Compiler).GetMethod("OptimizeLlvm", BindingFlags.Static | BindingFlags.NonPublic)!
-            .Invoke(null, [graph, 2, null]);
+            .Invoke(null, [graph, 2, trace]);
+        File.WriteAllLines(Path.Combine(output, "optimizer.trace.jsonl"), records.Select(record =>
+            JsonSerializer.Serialize(new { record.Name, record.Attributes, record.Metrics,
+                record.Outcome, error = record.Error?.Message })));
         File.WriteAllText(Path.Combine(output, "after.ll"), LlvmIrWriter.Write(graph.Module));
         var facts = new
         {

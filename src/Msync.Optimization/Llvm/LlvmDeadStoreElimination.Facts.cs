@@ -56,9 +56,9 @@ public static partial class LlvmDeadStoreElimination
         }
         private bool IsLoopInvariant(LlvmValue pointer)
         {
-            pointer = LlvmValueTracking.StripPointerCasts(pointer, Metrics);
+            pointer = StripCasts(pointer);
             if (pointer is LlvmGetElementPtrInstruction gep && gep.Indices.All(index => index is LlvmConstantInt))
-                pointer = LlvmValueTracking.StripPointerCasts(gep.PointerOperand, Metrics);
+                pointer = StripCasts(gep.PointerOperand);
             return pointer is not LlvmInstruction instruction || ReferenceEquals(instruction.Parent, function.BasicBlocks[0])
                 || cycles.GetCycle(instruction.Parent!) is null;
         }
@@ -97,6 +97,5 @@ public static partial class LlvmDeadStoreElimination
             foreach (var use in access.Uses)
                 if (visited.Add((LlvmMemoryAccess)use.User)) work.Add((LlvmMemoryAccess)use.User);
         }
-        private LlvmValue Underlying(LlvmValue value) => LlvmValueTracking.GetUnderlyingObject(value, metrics: Metrics);
     }
 }

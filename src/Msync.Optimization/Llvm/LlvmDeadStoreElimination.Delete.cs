@@ -50,6 +50,7 @@ public static partial class LlvmDeadStoreElimination
                     updater.RemoveMemoryAccess(access);
                 }
                 RemoveIntervals(dead);
+                InvalidateAddressFacts();
                 foreach (var operand in dead.OperandUses)
                 {
                     if (operand.Value is not LlvmInstruction producer) continue;

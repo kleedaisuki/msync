@@ -17,8 +17,8 @@ public static partial class LlvmDeadStoreElimination
             killingOffset = deadOffset = 0;
             Count("overwrite.queries");
             if (!IsLoopIndependent(dead, killing, deadLoc)) return Overwrite.Unknown;
-            var deadPointer = LlvmValueTracking.StripPointerCasts(deadLoc.Ptr!, Metrics);
-            var killingPointer = LlvmValueTracking.StripPointerCasts(killingLoc.Ptr!, Metrics);
+            var deadPointer = StripCasts(deadLoc.Ptr!);
+            var killingPointer = StripCasts(killingLoc.Ptr!);
             var deadObject = Underlying(deadPointer);
             var killingObject = Underlying(killingPointer);
             if (ReferenceEquals(deadObject, killingObject) && killingLoc.Size.IsPrecise && LlvmBasicAliasAnalysis.IsIdentifiedObject(killingObject))
@@ -42,10 +42,8 @@ public static partial class LlvmDeadStoreElimination
             if (!ReferenceEquals(deadObject, killingObject)) return CheckAlias();
             uint width = layout.GetIndexTypeSizeInBits(deadPointer.Type);
             if (width != layout.GetIndexTypeSizeInBits(killingPointer.Type)) return CheckAlias();
-            var deadBaseOffset = LlvmAPInt.GetZero(width);
-            var killingBaseOffset = LlvmAPInt.GetZero(width);
-            var deadBase = LlvmValueTracking.StripAndAccumulateConstantOffsets(deadPointer, layout, ref deadBaseOffset, metrics: Metrics);
-            var killingBase = LlvmValueTracking.StripAndAccumulateConstantOffsets(killingPointer, layout, ref killingBaseOffset, metrics: Metrics);
+            var deadBase = ConstantOffset(deadPointer, out var deadBaseOffset);
+            var killingBase = ConstantOffset(killingPointer, out var killingBaseOffset);
             if (!ReferenceEquals(deadBase, killingBase)) return CheckAlias();
             if (killingSize == 0) return Overwrite.None;
             var delta = deadBaseOffset - killingBaseOffset;

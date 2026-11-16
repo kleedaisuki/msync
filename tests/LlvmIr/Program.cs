@@ -33,7 +33,7 @@ internal static class Program
         if (args.Length == 1 && args[0] == "--o2-address-cost-only")
         {
             Console.WriteLine(JsonSerializer.Serialize(new { status = "passed",
-                pointerWalks = PointerWalkSmallSetProperties.Run(),
+                pointerWalks = PointerWalkSmallSetProperties.Run(), addresses = DseAddressReuseProperties.Run(),
                 declaredStorage = await DeclaredStorageUseJourney.RunAsync() }));
             return;
         }

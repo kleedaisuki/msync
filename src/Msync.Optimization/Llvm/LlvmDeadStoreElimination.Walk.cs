@@ -12,7 +12,7 @@ public static partial class LlvmDeadStoreElimination
             LlvmMemoryLocation killingLocation, LlvmValue underlying, ref uint scanLimit, ref uint walkLimit, ref uint partialLimit)
         {
             if (scanLimit == 0 || walkLimit == 0) { Count("walk.initial_limit"); return null; }
-            var current = start;
+            var current = IndexedCandidateStart(killing, start);
             var killingInstruction = killing.MemoryInstruction!;
             bool optimize = options.OptimizeMemorySsa && ReferenceEquals(killing.DefiningAccess, start) && !killingInstruction.MayReadFromMemory();
             LlvmMemoryLocation? currentLocation;

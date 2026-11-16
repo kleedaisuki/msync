@@ -17,6 +17,7 @@ public static partial class LlvmDeadStoreElimination
                 if (skipped.Contains(killing)) continue;
                 var location = GetWriteLocation(killing.MemoryInstruction!);
                 if (location is null) continue;
+                PrepareStoreCandidates(killing, location.Value);
                 var underlying = Underlying(location.Value.Ptr!);
                 var (removed, killedKilling) = EliminateKilledDefinitions(killing, location.Value, underlying);
                 changed |= removed;
@@ -68,6 +69,7 @@ public static partial class LlvmDeadStoreElimination
                 {
                     if (TryMergeStores(killingStore, deadStore, killingOffset, deadOffset) is { } merged)
                     {
+                        InvalidateAddressFacts(storeMerge: true);
                         deadStore.ValueOperand = merged;
                         changed = killingDeleted = true;
                         Count("stores.merged");

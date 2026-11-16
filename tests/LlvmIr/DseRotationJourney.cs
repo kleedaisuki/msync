@@ -99,8 +99,7 @@ internal static class DseRotationJourney
             string sourceFile = Path.Combine(work, "source.msync");
             File.WriteAllText(sourceFile, source);
             NativeProgram program = Compiler.Compile(source, sourceFile, level, publicTrace);
-            File.WriteAllText(Path.Combine(work, "native-code.json"), JsonSerializer.Serialize(new
-            { program.Functions, program.Types, program.Layouts }));
+            File.WriteAllText(Path.Combine(work, "native-code.txt"), NativeArtifact.Disassemble(program));
             IReadOnlyList<RuntimeProfileSample> runtime = await Execute(program, work, expected, name == "rotation");
             executions++;
             if (name == "overwrite")
