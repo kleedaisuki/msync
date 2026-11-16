@@ -25,7 +25,7 @@ public static partial class LlvmValueTracking
     {
         Count(metrics, "value_tracking.pointer_casts.queries");
         if (!value.Type.IsPointerTy()) return value;
-        HashSet<LlvmValue> visited = new(ReferenceEqualityComparer.Instance) { value };
+        LlvmPointerVisitedSet visited = new(value, metrics);
         do
         {
             Count(metrics, "value_tracking.pointer_casts.steps");
@@ -55,7 +55,7 @@ public static partial class LlvmValueTracking
                 // GlobalAlias and returned-argument/invariant-group call identities are absent.
                 return value;
             }
-        } while (visited.Add(value));
+        } while (visited.Add(value, metrics));
         Count(metrics, "value_tracking.pointer_casts.cycle");
         return value;
     }

@@ -16,7 +16,7 @@ public static partial class LlvmValueTracking
         if (!value.Type.IsPtrOrPtrVectorTy()) return value;
         uint width = offset.BitWidth;
         Debug.Assert(width == layout.GetIndexTypeSizeInBits(value.Type));
-        HashSet<LlvmValue> visited = new(ReferenceEqualityComparer.Instance) { value };
+        LlvmPointerVisitedSet visited = new(value, metrics);
         do
         {
             Count(metrics, "value_tracking.pointer_offsets.steps");
@@ -78,7 +78,7 @@ public static partial class LlvmValueTracking
                 value = pointer.Operand;
             }
             else return value;
-        } while (visited.Add(value));
+        } while (visited.Add(value, metrics));
         Count(metrics, "value_tracking.pointer_offsets.cycle");
         return value;
     }
