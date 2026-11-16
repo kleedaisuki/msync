@@ -258,3 +258,57 @@ The final AOT midend journey covers O0/O2 source, detached HIR/object and bound
 execution; the Range journey covers six routes and 33 files per route, including
 four generated indices `0123`. LLVM/native opcode contracts and Native2 compact
 revision 4 remain unchanged. There is no CI timing threshold or new safety gate.
+
+The subsequent [O2 compile-cost inquiry](../reviews/llvm-performance/o2-compile-cost.md)
+separates pass time from recorder overhead and uses a diagnostic-only Native AOT
+four-cell ablation. It identifies the extra DSE work induced by aggregate-store
+expansion as the majority of the measured compiler increment, rather than
+attributing the whole increment to InstCombine itself. Product policy is not
+changed by that diagnostic experiment.
+
+## Folded pointer-load physical storage follow-up
+
+The address-cost repair exposed a production target-lowering failure during a
+fresh compile of the same midend source: `MemoryStorageType` reached
+`StorageFromRoot` and tried to select a native carrier from opaque LLVM
+`PointerTyID`. This is a target-layout selection path, not a DSE decision.
+
+A folded zero GEP already retains its physical storage declaration on
+`LlvmUse.TargetStorageType`. Address emission consumed this declaration, but
+storage-type selection ran first and ignored it. An abstract Scope base has no
+unique physical layout, and an optimization-created pointer load need not carry
+a source `LogicalType`; deriving its representation from either value discards
+the declaration that is already present. Storage selection now uses the same
+existing offset-zero `StorageField` lookup as address emission. The load's
+selected result carrier follows that resolved physical field. No generic
+pointer inference, extra analysis, fallback or opcode is introduced.
+
+`addresses.memory_storage.*` records the actual selection path (pointer ABI,
+retained physical use, GEP field, root ABI/layout or scalar payload ABI).
+Unresolved opaque-pointer errors identify the function, root and payload rather
+than only the LLVM type ID. `DeclaredStorageUseJourney` deterministically models
+the folded-GEP state with an abstract Scope argument and an unannotated
+pointer-valued field load, then exercises actual execution and Native2 artifact
+roundtrip. The delivery owner's focused journey and matched compiler results
+establish the integrated outcome.
+
+A longer balanced comparison subsequently caught the same class of failure in
+`zero_trip` at the `R::iota` Function load. Consuming an existing Use hint was
+necessary but not sufficient: InstCombine's aggregate unpacking constructed new
+scalar pointer operands from `load.PointerOperand` without transferring the
+old memory Use's physical declaration. If the namespace's zero GEP had already
+folded, that Use was the only remaining declaration. The first `.unpack` load
+therefore lost the geometry even though no source layout had changed.
+
+Retyped memory operations now copy the retained Use declaration. Newly derived
+scalar byte GEPs inherit the original root geometry on the GEP, preserving their
+real displacement; they do not get an incorrect offset-zero declaration on each
+leaf Use. The same helper covers struct/array load/store unpacking and narrowed
+aggregate loads. Function component selection now accepts the actual memory
+Use, consuming its explicit declaration when a zero component GEP folds to its
+base. There is no generic pointer reconstruction or reduction in scalarization.
+`instcombine.memory.storage_view.{use,gep}` counts propagation, and
+`functions.memory_component.physical_use` counts actual component selection
+through retained declarations. The focused journey includes real three-leaf
+Function scalarization with the zero GEP folded both before InstCombine and by
+InstCombine, followed by actual execution and Native2 roundtrip in both orders.
