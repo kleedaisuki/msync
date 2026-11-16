@@ -1,0 +1,23 @@
+{
+  "revision": "90857bf3e40f28b4d99014aa06bf2609fbfdd6d6",
+  "purpose": "Diagnostic-only source overlay; real production pipeline/calls, no shipped flags or fallbacks.",
+  "archive_sha256": "65b0e9bae82b2cf5ac759a83170a917ce455bb7fae6d0928dc83f755f332a4ac",
+  "overlay_files": {
+    "src/Msync.Core/Diagnostics/CompilerCostProbe.cs": "432c3f865f5fcc36ce05eb9c3b8cd29845dd7102c58dcdfa0763fbc066602e38",
+    "src/Msync.Compiler/Compiler.Llvm.cs": "00c03a7787fa091be0f7db05395faeaff83f1b18c193744776c7d855ca5adff1",
+    "src/Msync.Compiler/Compiler.cs": "1a397357990473f1fad743bca8f18c38ccedae8ab5597dfa738140ad2bb879c5",
+    "src/Msync.Optimization/Llvm/LlvmInstCombine.Run.cs": "25a4778e855edd0578e2911a5c13268c19d06fdb637467d3109bd88821dcb969"
+  },
+  "working_tree_overlay": {
+    "src/Msync.Hir/Lowering/LlvmNativeLowerer.PointerArithmetic.cs": "ffe455244f41c3fc158821be0393d1704556d7e4b19d78f5abaf6a59ad59bb67",
+    "src/Msync.Optimization/Llvm/LlvmDeadStoreElimination.Delete.cs": "ff8a9902098336ba7793dd2ca751a0f9e61881043c9d119fe1bb5e9eaf4c872f",
+    "src/Msync.Optimization/Llvm/LlvmDeadStoreElimination.Eliminate.cs": "ff6f42266f60bade3fb420320caa0f3417e720d8092dce716ed03aded823349c",
+    "src/Msync.Optimization/Llvm/LlvmDeadStoreElimination.Facts.cs": "afcdab258f0a671350d5abc9cf462772f75b4ef1c61a9c78ce21ee9c6fd43ead",
+    "src/Msync.Optimization/Llvm/LlvmDeadStoreElimination.Overwrite.cs": "1809a11581450386c043b0c97a8bb68cd0e9fe09b7c41857bfabbb8b73ded2f6",
+    "src/Msync.Optimization/Llvm/LlvmValueTracking.PointerCasts.cs": "0f83bac0d537e13c9d095da416908bd406f55dcbc146707dd12e850541c99bda",
+    "src/Msync.Optimization/Llvm/LlvmValueTracking.PointerOffsets.cs": "1028f14612b719bbaf43610d48812877d748d870e5904016d6d546ecdec94799",
+    "src/Msync.Optimization/Llvm/LlvmDeadStoreElimination.AddressFacts.cs": "03a72e9872017f7b89af4bc4f369961b8c96ccab2373d412d13edaf8b3ee49bc",
+    "src/Msync.Optimization/Llvm/LlvmPointerVisitedSet.cs": "a7d2ce45f885dc3314ebcfd395f981da56aed1d8a0f45658eee1e5063a4cebf3"
+  },
+  "production_image_before_probe": "6c49d967008f6efd251c1c50d4ccb0046f71dd42041ad016e70160a536f18ef2"
+}

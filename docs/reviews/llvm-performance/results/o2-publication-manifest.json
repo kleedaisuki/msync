@@ -1,0 +1,113 @@
+{
+  "path_policy": "Repository-root and user-home prefixes in these published JSON files are normalized to <repo> and <home>. All timing values, work counts, source and compiler image digests are unchanged. Receipt/file digests embedded in records identify raw run files, whose original and published hashes are mapped below.",
+  "files": {
+    "o2-cost-90857bf3/ablation-balanced.json": {
+      "raw_sha256": "7e199e05bae76a0afccb0afba75811b0a4f6fd37dee9b90f79289bbacffbc9b6",
+      "published_sha256": "26364ec0a8ddf19f7168c562b50eee05c64131a931743040264974cf5ebc8f97"
+    },
+    "o2-cost-90857bf3/ablation-first.json": {
+      "raw_sha256": "b40a7bc9d650736eb13452228da0e2dafc7c257741ffcbb4e5704bac64171faf",
+      "published_sha256": "5095075a56819ed99643357048e637e071e1627fd15962cfceb2904880d8b0ff"
+    },
+    "o2-cost-90857bf3/copy-phase-profiles.json": {
+      "raw_sha256": "5adca6adedbd9cf183baaeadd1ef785026b57a3e56f11f4cf61789def2b5fe7a",
+      "published_sha256": "5adca6adedbd9cf183baaeadd1ef785026b57a3e56f11f4cf61789def2b5fe7a"
+    },
+    "o2-cost-90857bf3/journey-full.json": {
+      "raw_sha256": "7cccbb77742aa4632a45ddc81a3c81ee0085567e3414c8f5310d258d1e5a1f5f",
+      "published_sha256": "825d477137b9938c0a9891880f5da6d652ce5fed3d77f26cca7137d4e5c1455b"
+    },
+    "o2-cost-90857bf3/journey-simplify.json": {
+      "raw_sha256": "626f4406849108e8461c0463f427022f55f3ec1bf2b97b4c0d20a3846e7fcc63",
+      "published_sha256": "fda38ede9ed66644864975c5611de0333cafeda7b4df1df768f6e068cb3c15df"
+    },
+    "o2-cost-90857bf3/overlay.json": {
+      "raw_sha256": "735fde252f800d3c7b1658f3f508e28aef802514db3de8a385642d32e3b71aa0",
+      "published_sha256": "735fde252f800d3c7b1658f3f508e28aef802514db3de8a385642d32e3b71aa0"
+    },
+    "o2-cost-90857bf3/summary.json": {
+      "raw_sha256": "745b5eaba8e1efa406cf3b674b8ee6bbfa1c2fc7fe011457d51be68ef515669b",
+      "published_sha256": "745b5eaba8e1efa406cf3b674b8ee6bbfa1c2fc7fe011457d51be68ef515669b"
+    },
+    "o2-address-repair/address-properties-final.json": {
+      "raw_sha256": "dfacff16e37068d62e615d66d59da80fbacd4e212d656fc3c18db241fd948825",
+      "published_sha256": "dfacff16e37068d62e615d66d59da80fbacd4e212d656fc3c18db241fd948825"
+    },
+    "o2-address-repair/aot-delivery-receipt.json": {
+      "raw_sha256": "7c880b8cf250f42bf68015076d4f29758e4e947bff4eb3a944fca64bbdeef0d5",
+      "published_sha256": "dc17c19cdec9aa9a585def47ab2e9cf389ab288ff7cf31fc458cc0a240d21831"
+    },
+    "o2-address-repair/compile-after-current.json": {
+      "raw_sha256": "e30fecccfe5873864c9151697b0a318ff36c7ca4129195fb07fd2d900bbd774a",
+      "published_sha256": "eb5bbad7535051b0eb4d02f08442d2789a970b4b4d9e950cdc0867259dbdf07f"
+    },
+    "o2-address-repair/compile-after-original.json": {
+      "raw_sha256": "cd5e5301f215f16e682df5529de81dcea5a663ed807a0b20145eacc9215faa88",
+      "published_sha256": "1d8249a0bc04426bcc1016775112ec49b494772c3ac9dc54f05f9374f3f2944a"
+    },
+    "o2-address-repair/compile-balanced-60.json": {
+      "raw_sha256": "85e10ae92679eb6e875af7905df6bb1b08f82c0d91712aa8e8f95f69a9c4f63c",
+      "published_sha256": "ca6ddbbd7773d0f147ff5988fee94e0353c91997addc1c77d52a95c0f68c3388"
+    },
+    "o2-address-repair/compile-balanced.json": {
+      "raw_sha256": "5d197b690494289c5069d6507dad8fef2ac8bba32d1a58427991f3e85908314f",
+      "published_sha256": "d6b0d9b73a5e5c7423d59b2fd2bc74bbdc19b04451ec1b048840708e2eddfe53"
+    },
+    "o2-address-repair/compile-before.json": {
+      "raw_sha256": "7637f9b910d6def6cfbd5e41c48d6ad6de04691e62fd3506987a8ab5c2623e13",
+      "published_sha256": "85fa34c53ee7aba8dd7ba137394f3f05cdd017b4303d4896084471fd917c2a36"
+    },
+    "o2-address-repair/compile-delivery-balanced-60.json": {
+      "raw_sha256": "871640f1ed7abdc5251166f225cb05e41fa8a91ccce48dee67a9139b8f3dfc41",
+      "published_sha256": "5a2b88927a25752765225aac67777e3e91ef3b859bc1ef4fb1754d620d7aec32"
+    },
+    "o2-address-repair/dse-rotation-receipt.json": {
+      "raw_sha256": "58d791ded5ad7cb9975a8da6f395b0d7d677ca4f9b171525936c3a6d04a0625c",
+      "published_sha256": "58d791ded5ad7cb9975a8da6f395b0d7d677ca4f9b171525936c3a6d04a0625c"
+    },
+    "o2-address-repair/function-ssa-final.json": {
+      "raw_sha256": "a73706790eb763aedd7df6c512e91f34469ed32d63f28c5f8d5824ee9db2f356",
+      "published_sha256": "a73706790eb763aedd7df6c512e91f34469ed32d63f28c5f8d5824ee9db2f356"
+    },
+    "o2-address-repair/summary.json": {
+      "raw_sha256": "b61840c0c3349bdfa60049b859805214c01c736ffd3e42c63ebe17beed6cf007",
+      "published_sha256": "344888c08a950f251a33ab2246a7a3236333083c72004a9b46f332a2f997b077"
+    },
+    "o2-address-repair/target-reproduction.json": {
+      "raw_sha256": "4240abc60af5e8bf7ec9129d85aaab31ab119bf38e8f32977e36d65506434966",
+      "published_sha256": "4240abc60af5e8bf7ec9129d85aaab31ab119bf38e8f32977e36d65506434966"
+    },
+    "o2-store-partitions/aborted-single-root-comparison.json": {
+      "raw_sha256": "69f3f8273854a7b6bef407d541246061b9d8a5440a621bf559f067367b9d9aa8",
+      "published_sha256": "5c307670a40963b88d95e46e7d4b863213376c6d11d931fe8924e46686ce427e"
+    },
+    "o2-store-partitions/aot-receipt.json": {
+      "raw_sha256": "b35e6bdb626525b55877be940f6bd5f97891e361e8b5d1cea100695a843572b3",
+      "published_sha256": "25f58e88ea58818a9d77ce9066c0a7119568b538ee0361ef906268ea4198f3d7"
+    },
+    "o2-store-partitions/compile-original-paired-60.json": {
+      "raw_sha256": "6f5e1e4e4f000b0fb2299e9caf3284018609a46b2bbe1c569bbe9009a4870eb8",
+      "published_sha256": "40c8905a5b5a7f270112f97e7fed90dbd4d5d78a307ebb9d9d87bda2e6d8da33"
+    },
+    "o2-store-partitions/dse-journey.json": {
+      "raw_sha256": "58d791ded5ad7cb9975a8da6f395b0d7d677ca4f9b171525936c3a6d04a0625c",
+      "published_sha256": "58d791ded5ad7cb9975a8da6f395b0d7d677ca4f9b171525936c3a6d04a0625c"
+    },
+    "o2-store-partitions/pre-index-phase-profiles.json": {
+      "raw_sha256": "601490c8da04c99fb0034e1bbd2ef3e720cf407e9e95c85b93666b9eb15a058f",
+      "published_sha256": "601490c8da04c99fb0034e1bbd2ef3e720cf407e9e95c85b93666b9eb15a058f"
+    },
+    "o2-store-partitions/pre-index-probe-overlay.json": {
+      "raw_sha256": "75229cafb564eccbc9b3f11ceafe2c6fd71b5ab8eaf535646b1433adff56ebef",
+      "published_sha256": "75229cafb564eccbc9b3f11ceafe2c6fd71b5ab8eaf535646b1433adff56ebef"
+    },
+    "o2-store-partitions/properties.json": {
+      "raw_sha256": "1260809391a3e7ae54f7630948d170ce52759baab8e1883326f40295ef8cbbbd",
+      "published_sha256": "1260809391a3e7ae54f7630948d170ce52759baab8e1883326f40295ef8cbbbd"
+    },
+    "o2-store-partitions/summary.json": {
+      "raw_sha256": "8f9309888eb3c9121ee6d805204d925489eadc0a8c08d0a69bf70ec68fcbf6a3",
+      "published_sha256": "8f9309888eb3c9121ee6d805204d925489eadc0a8c08d0a69bf70ec68fcbf6a3"
+    }
+  }
+}

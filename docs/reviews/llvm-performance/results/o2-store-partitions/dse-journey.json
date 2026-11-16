@@ -1,0 +1,1 @@
+{"status":"passed","dseRotation":{"SourceCases":4,"Executions":8,"ArtifactExecutions":8,"ComponentStoresBefore":5,"ComponentStoresAfter":1,"OverwrittenArmStoresRemoved":2,"FieldStoreHitsBefore":4,"FieldStoreHitsAfter":0,"PublicDseOverwrites":2,"PublicLoopsRotated":4}}

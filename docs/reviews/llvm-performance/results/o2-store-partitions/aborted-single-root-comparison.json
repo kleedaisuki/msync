@@ -1,0 +1,1216 @@
+{
+  "status": "failed",
+  "source_sha256": "7331a08a68bd76c9f90affe5214de630ea0cd693468607e78860a215881ceafd",
+  "images": {
+    "original": {
+      "sha256": "3c821875c8c954db6f2e1c70c7eb47bc69228e32ad0c572c1453b58f8dceb410",
+      "path": "<repo>/artifacts/native/llvm-sroa/msync"
+    },
+    "before": {
+      "sha256": "6c49d967008f6efd251c1c50d4ccb0046f71dd42041ad016e70160a536f18ef2",
+      "path": "<repo>/artifacts/native/o2-cost-delivery/msync"
+    },
+    "after": {
+      "sha256": "112a89ce4c81dfabfa955867845f493769692102f7cf7addce6e5e9b2518919b",
+      "path": "<repo>/artifacts/native/o2-store-candidates/msync"
+    }
+  },
+  "receipt_sha256": "fb296d5261d946f922e0f40c8125da8ce5b71b652caf06d79f990230d84cb0e9",
+  "environment_overrides": {
+    "NO_COLOR": "1"
+  },
+  "method": "all six image permutations per round; fresh process; telemetry off; warm OS cache; one overwritten output; hashes outside timer",
+  "command": [
+    "BINARY",
+    "--no-config",
+    "--no-telemetry",
+    "compile",
+    "<repo>/.temp/llvm-instcombine-compile/midend.msync",
+    "-O2",
+    "-o",
+    "<repo>/.temp/o2-store-candidates-balanced/output.mso"
+  ],
+  "warmups": {
+    "original": {
+      "wall_ms": 94.142995,
+      "cpu_ms": 93.528,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "artifact_sha256": "6e4e0d095f2a928d88c671f2bacedd8215f80289764e14d0e8bab38a84c8cfd9"
+    },
+    "before": {
+      "wall_ms": 115.462364,
+      "cpu_ms": 114.96800000000002,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "artifact_sha256": "8f5985665960570d453c4e6b2ae86fb96ad065f9deac9b659bde579a60c74ee3"
+    },
+    "after": {
+      "wall_ms": 118.138274,
+      "cpu_ms": 117.63099999999999,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "artifact_sha256": "7af15c0d1232d67956e7d12ad03e47d6cd2151dab774e4a6078484de206af423"
+    }
+  },
+  "blocks": [
+    {
+      "order": [
+        "original",
+        "before",
+        "after"
+      ],
+      "observations": {
+        "original": {
+          "wall_ms": 105.978341,
+          "cpu_ms": 105.58000000000001,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "8cd8f51cbc702038b0f612f0b481939da80e50fbe0a7ea5b0cdf151abc1b4ceb"
+        },
+        "before": {
+          "wall_ms": 138.436814,
+          "cpu_ms": 137.80299999999994,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "32b42c72fe5b8b7f880caab1f347fe60cc01c67d1d6d77f9470e576ee35e77c6"
+        },
+        "after": {
+          "wall_ms": 134.06334,
+          "cpu_ms": 133.00900000000004,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "2186096233a1ac0c0cb8253d553109de5ab8bb91b89e0137ccc4b9209f3d3e32"
+        }
+      }
+    },
+    {
+      "order": [
+        "original",
+        "after",
+        "before"
+      ],
+      "observations": {
+        "original": {
+          "wall_ms": 99.863604,
+          "cpu_ms": 99.10599999999991,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "4c9a717bba8250a39398178cdf72e8d8264fcf1053d9eb68529604ce88bbd6d0"
+        },
+        "after": {
+          "wall_ms": 144.888928,
+          "cpu_ms": 144.247,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "ba7ddb65b007156c0cb23c2c1a82a9977fd0cf5ae072a80043c1a10fbf5adc4b"
+        },
+        "before": {
+          "wall_ms": 120.643258,
+          "cpu_ms": 120.11499999999987,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "34b5f662eb25b22132b08b23b5ff2c523079952eea75a574108b280c226e4c63"
+        }
+      }
+    },
+    {
+      "order": [
+        "before",
+        "original",
+        "after"
+      ],
+      "observations": {
+        "before": {
+          "wall_ms": 132.822372,
+          "cpu_ms": 132.27200000000016,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "49f32e4274ae532ac370b6e7e14b33460291d35759d8b045be181d85f87abf8e"
+        },
+        "original": {
+          "wall_ms": 139.892951,
+          "cpu_ms": 139.3230000000001,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "bc206e70d71c5d1806cf189ec6578678695375eb29d2e6de0e231a2f5194db91"
+        },
+        "after": {
+          "wall_ms": 134.453346,
+          "cpu_ms": 133.72799999999984,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "20205518296de5919538712ea632a50d087d161c45add1c1b34739d7fa55922d"
+        }
+      }
+    },
+    {
+      "order": [
+        "before",
+        "after",
+        "original"
+      ],
+      "observations": {
+        "before": {
+          "wall_ms": 106.628122,
+          "cpu_ms": 106.16500000000006,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "73fc313dd33952a02ee8ce12ec1a777e82227178c8c1bf68d3eac9918a6ae621"
+        },
+        "after": {
+          "wall_ms": 116.602502,
+          "cpu_ms": 115.71300000000018,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "231c2c1296981595d677cfb128ef43b7736354f9f81df09d21fb4b55ddbe1738"
+        },
+        "original": {
+          "wall_ms": 100.345163,
+          "cpu_ms": 99.82699999999988,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "5eeb0b793940c96db28f6e1ec629ca54a752458728af28426cf0787bb37fdf10"
+        }
+      }
+    },
+    {
+      "order": [
+        "after",
+        "original",
+        "before"
+      ],
+      "observations": {
+        "after": {
+          "wall_ms": 132.554497,
+          "cpu_ms": 130.83299999999997,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "dc990d403311f1649626004fab2a557acc8a9787a4ad2d59a05f1e44383713f1"
+        },
+        "original": {
+          "wall_ms": 102.852013,
+          "cpu_ms": 102.5450000000001,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "3653e6d304603975158b83236570d526afd6d7a5a045127dd039babf9c503452"
+        },
+        "before": {
+          "wall_ms": 125.294382,
+          "cpu_ms": 123.29199999999973,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "0d273638abda98de04e5e5628cdc58dbfe295b730f0a140591d5484572802752"
+        }
+      }
+    },
+    {
+      "order": [
+        "after",
+        "before",
+        "original"
+      ],
+      "observations": {
+        "after": {
+          "wall_ms": 123.035476,
+          "cpu_ms": 122.33699999999992,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "81e0ae61c3cf24a66c4d05d0567bc809b4f8790983f42694e5c341ca9ce9f3c3"
+        },
+        "before": {
+          "wall_ms": 119.560015,
+          "cpu_ms": 118.84300000000003,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "4dd23857baa5265e9af1e098b5ff94ff3717c5a1958dc2afaa3b80fa6aa59263"
+        },
+        "original": {
+          "wall_ms": 94.353663,
+          "cpu_ms": 93.84400000000026,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "047af051e68df41ef57d154d5a21da2f269e6d5f8aeb11250eae65db787f43f7"
+        }
+      }
+    },
+    {
+      "order": [
+        "original",
+        "before",
+        "after"
+      ],
+      "observations": {
+        "original": {
+          "wall_ms": 102.872912,
+          "cpu_ms": 102.37799999999986,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "6e0c0b92e4ce3342b8a1521f7bcbe62e09f0d6905ad997bb3abdfda38215749a"
+        },
+        "before": {
+          "wall_ms": 144.265055,
+          "cpu_ms": 143.351,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "647cadd2e774d0c1434d404d66225e9b4ffc3118e4993c517cbfcfe7a6b7d622"
+        },
+        "after": {
+          "wall_ms": 128.186582,
+          "cpu_ms": 127.68800000000002,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "811b30e5c119acc4fbecaa765c678476e36dd503154fad679075b1dcefc8a5c2"
+        }
+      }
+    },
+    {
+      "order": [
+        "original",
+        "after",
+        "before"
+      ],
+      "observations": {
+        "original": {
+          "wall_ms": 108.807226,
+          "cpu_ms": 108.37500000000011,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "a6d4ffc7f500a52c48e1ba95dcea4aed6cdf3e1d6202f18cd7567ec0478fdcae"
+        },
+        "after": {
+          "wall_ms": 118.977008,
+          "cpu_ms": 118.48499999999973,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "c6f0a2df9ccebd9056dad41e50fc5df8caa50229e13e1cded6289390ceb97719"
+        },
+        "before": {
+          "wall_ms": 124.455498,
+          "cpu_ms": 123.78800000000024,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "34383badd9db7bb7d594abbe58cb9c64dda73b01446973492c38aa6071243af8"
+        }
+      }
+    },
+    {
+      "order": [
+        "before",
+        "original",
+        "after"
+      ],
+      "observations": {
+        "before": {
+          "wall_ms": 123.728582,
+          "cpu_ms": 122.66599999999971,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "a4f0b75ca854f5d0322b046fc56c1d35fc50db4f6650141ea3b2ed8ebfdce333"
+        },
+        "original": {
+          "wall_ms": 100.067874,
+          "cpu_ms": 99.61500000000001,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "2d3edf66432fdf7d6d43718126dae770c75230b72dbf7936f039b34aa98c7eb2"
+        },
+        "after": {
+          "wall_ms": 109.349905,
+          "cpu_ms": 108.46500000000026,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "494da8eb5962dd15711f8c77b7772555c53cba11e5d9891cdacd87e27133437a"
+        }
+      }
+    },
+    {
+      "order": [
+        "before",
+        "after",
+        "original"
+      ],
+      "observations": {
+        "before": {
+          "wall_ms": 124.459617,
+          "cpu_ms": 123.96699999999994,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "0cb6e9772ae3ad3c9708c39639c85b35133957c7349639d98532b99f3cd947f5"
+        },
+        "after": {
+          "wall_ms": 117.510409,
+          "cpu_ms": 116.99599999999988,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "4ee6a87b479fcd4b6da752de69ab4436476066466323d832fb0b6d85b9132672"
+        },
+        "original": {
+          "wall_ms": 90.21747,
+          "cpu_ms": 89.50300000000011,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "f76d5638d100342da6e74541ab7ef90740b4d56affd296a0b3f1a250eff33159"
+        }
+      }
+    },
+    {
+      "order": [
+        "after",
+        "original",
+        "before"
+      ],
+      "observations": {
+        "after": {
+          "wall_ms": 121.263893,
+          "cpu_ms": 120.75899999999962,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "29a925c3d8f169ecae93b685a8304f41f98fc8479b48206272f538bdc7909286"
+        },
+        "original": {
+          "wall_ms": 100.509453,
+          "cpu_ms": 99.42000000000029,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "25d4380deded385d7a92ed3f7e7becc7938f48fd42f76839b06877405b9e3bf7"
+        },
+        "before": {
+          "wall_ms": 113.525966,
+          "cpu_ms": 113.00199999999982,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "6a3cb1875547c17d482a12ba22d167dd8307a22261113b02bdf1d9e1251b5240"
+        }
+      }
+    },
+    {
+      "order": [
+        "after",
+        "before",
+        "original"
+      ],
+      "observations": {
+        "after": {
+          "wall_ms": 124.927602,
+          "cpu_ms": 124.52200000000069,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "95e1cf0da601295a92015f2ca3c3742ab79592f777af60487d43c7ee0e7de67e"
+        },
+        "before": {
+          "wall_ms": 122.376769,
+          "cpu_ms": 121.61699999999965,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "b0fbea0ff4281f5809695373cc8af24aead05a00c6521ffdf811466c0596f040"
+        },
+        "original": {
+          "wall_ms": 108.188342,
+          "cpu_ms": 107.49299999999984,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "5ddd22fb760b98822b8d3e3cc46f3b399efb89c6b12d418d76f4b7da51ff1681"
+        }
+      }
+    },
+    {
+      "order": [
+        "original",
+        "before",
+        "after"
+      ],
+      "observations": {
+        "original": {
+          "wall_ms": 96.306188,
+          "cpu_ms": 95.57400000000004,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "1e38c5d7cc7132669b3c6947efcb25fe23dd6d031c481e1c9630707859bb2bfc"
+        },
+        "before": {
+          "wall_ms": 126.435007,
+          "cpu_ms": 122.15000000000043,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "d7642e499d63e468ace14c0a6502db35b785b896915767d211a45d08d2252b17"
+        },
+        "after": {
+          "wall_ms": 113.37515,
+          "cpu_ms": 112.66299999999951,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "b75d7829a737e67b783cb3a2d55e2c0d318304cac99b70c548f23c0e85433d78"
+        }
+      }
+    },
+    {
+      "order": [
+        "original",
+        "after",
+        "before"
+      ],
+      "observations": {
+        "original": {
+          "wall_ms": 90.817439,
+          "cpu_ms": 90.1310000000004,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "471c17af4a9641e919eaf6c67a12c1e181cb2c16fe2eba3e2da4d5f9186309cd"
+        },
+        "after": {
+          "wall_ms": 139.441997,
+          "cpu_ms": 138.5860000000001,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "2ac4f0fa4cc8f4a2b50334f422f5110f4d88b43eac6b4ecb376c2b711400fa5e"
+        },
+        "before": {
+          "wall_ms": 139.572955,
+          "cpu_ms": 139.06299999999928,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "555b3813afc141e37a16a8306c1ab1dae98a1c31d8c379c7773aa07875c9183a"
+        }
+      }
+    },
+    {
+      "order": [
+        "before",
+        "original",
+        "after"
+      ],
+      "observations": {
+        "before": {
+          "wall_ms": 136.461175,
+          "cpu_ms": 135.95100000000036,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "520a04048fa4a7884fa07ef5cf9be43c01b389baa835b35430c725af4fe2653e"
+        },
+        "original": {
+          "wall_ms": 104.285624,
+          "cpu_ms": 103.61200000000004,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "fff337188e13040c2df62bbc26bc9704269189ade8b51bf38f759303b491196c"
+        },
+        "after": {
+          "wall_ms": 124.420693,
+          "cpu_ms": 123.80900000000051,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "5ac30fec8c1bc9af8bb7cfafa064a6c01d6f208823315d0c70435ddce69b0e9d"
+        }
+      }
+    },
+    {
+      "order": [
+        "before",
+        "after",
+        "original"
+      ],
+      "observations": {
+        "before": {
+          "wall_ms": 124.733682,
+          "cpu_ms": 124.17499999999926,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "13ae2e37c8ef4c0c0b8f7545b768dd3882839430989877aef0cea761302713bb"
+        },
+        "after": {
+          "wall_ms": 138.99688,
+          "cpu_ms": 138.42900000000037,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "756e1add3c35d0aadf0e5769f130bc207bbb90a92597b34b0f3a0553e637be0b"
+        },
+        "original": {
+          "wall_ms": 99.451323,
+          "cpu_ms": 98.71800000000076,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "85193e5acb2f302f309de1bfb8f5b08bc07050663fe1120eb3ad0c52e4057247"
+        }
+      }
+    },
+    {
+      "order": [
+        "after",
+        "original",
+        "before"
+      ],
+      "observations": {
+        "after": {
+          "wall_ms": 133.899579,
+          "cpu_ms": 131.26499999999908,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "ca0e111da76595e873c8c27c79c92988da7f2a4da7a14fab188866fccff08a91"
+        },
+        "original": {
+          "wall_ms": 114.462518,
+          "cpu_ms": 113.84400000000028,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "72e927f21a2e1915367c10bcb35332298e82ae92e8deff8ad8d2c902fe5ccd9a"
+        },
+        "before": {
+          "wall_ms": 154.400667,
+          "cpu_ms": 153.5820000000001,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "2ab28a3af8d6de86dcb4786fe15b182260ea83adbcd7abbba5821a6db2b3d2d9"
+        }
+      }
+    },
+    {
+      "order": [
+        "after",
+        "before",
+        "original"
+      ],
+      "observations": {
+        "after": {
+          "wall_ms": 108.216805,
+          "cpu_ms": 107.68399999999988,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "4b5299d0bebfd9b73df28072ebbe2b77fc3358c6203db398bf8aad8fd141f950"
+        },
+        "before": {
+          "wall_ms": 133.864521,
+          "cpu_ms": 133.10400000000033,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "b49eca60927f77c02bec7d6f58fad601d1202aed7b8375473eb2516631b4a345"
+        },
+        "original": {
+          "wall_ms": 120.445114,
+          "cpu_ms": 119.90099999999958,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "d93bf88e163afa3a53c16cc377a968ebad374344a294a8f8fb063e0f28ecb441"
+        }
+      }
+    },
+    {
+      "order": [
+        "original",
+        "before",
+        "after"
+      ],
+      "observations": {
+        "original": {
+          "wall_ms": 91.453431,
+          "cpu_ms": 90.85500000000036,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "3bcfbe6d1195484461fb620d0d2f42861c788cf50def6bab08a603b3ae9f1063"
+        },
+        "before": {
+          "wall_ms": 138.630701,
+          "cpu_ms": 136.88899999999916,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "a6b4cf3e85581028b0c3b2d83906a9d5bc67ac705196d2ba037bf5f9d226bca1"
+        },
+        "after": {
+          "wall_ms": 118.016765,
+          "cpu_ms": 117.375,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "398a3d7f170d6ec2d3a3e730afc1fe839a3e7c9c9b6afaec501bfe0a5999ac70"
+        }
+      }
+    },
+    {
+      "order": [
+        "original",
+        "after",
+        "before"
+      ],
+      "observations": {
+        "original": {
+          "wall_ms": 93.53226,
+          "cpu_ms": 92.8880000000003,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "15d7a5601e42b29e95dc6dcb74da857cfcfb547879b8b22cb901e284ebd98b83"
+        },
+        "after": {
+          "wall_ms": 130.13177,
+          "cpu_ms": 129.31999999999988,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "37709db7ae04f6b101e2518e9868da7af990226b9a554805fb1f9350a29195f2"
+        },
+        "before": {
+          "wall_ms": 137.807494,
+          "cpu_ms": 137.17300000000066,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "555db0f9ccb8d2d03013194d08233a5a0b509d80c8c3cb9c54b28a489c35202d"
+        }
+      }
+    },
+    {
+      "order": [
+        "before",
+        "original",
+        "after"
+      ],
+      "observations": {
+        "before": {
+          "wall_ms": 120.386107,
+          "cpu_ms": 119.72399999999882,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "6b467d23a33bda44710d1b28f5ab973da5b3a782fa88d38f22916332ebe93f7e"
+        },
+        "original": {
+          "wall_ms": 100.561299,
+          "cpu_ms": 99.94200000000042,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "4147b99913572f35f01d2efa437978f9ae7472402b3bef6dc862c774591259e2"
+        },
+        "after": {
+          "wall_ms": 115.96563,
+          "cpu_ms": 115.39100000000069,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "bdad0e228a1f2bc7d147fdcb12203fea4ccaf8fb48c8e1d52eebc2a1a4bdbae5"
+        }
+      }
+    },
+    {
+      "order": [
+        "before",
+        "after",
+        "original"
+      ],
+      "observations": {
+        "before": {
+          "wall_ms": 143.23826,
+          "cpu_ms": 142.83599999999907,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "bfd66528892dcd788b1ccf41e3f4f334c8b27bc6c0ff293926cfbe5ca5b79a37"
+        },
+        "after": {
+          "wall_ms": 129.802597,
+          "cpu_ms": 129.38000000000028,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "d405b33d90810f334b96e8ff7e32cd77031b5a72733adaff8797826664c4514e"
+        },
+        "original": {
+          "wall_ms": 96.957817,
+          "cpu_ms": 96.20799999999896,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "43ff5a8bb35023270e6d95ba8510d7e6d1c137a16eb7cae8e46407e0542cc0b3"
+        }
+      }
+    },
+    {
+      "order": [
+        "after",
+        "original",
+        "before"
+      ],
+      "observations": {
+        "after": {
+          "wall_ms": 113.000019,
+          "cpu_ms": 112.1180000000006,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "47ac7a066966d30f772e30df7fe6608b0290e2143288a353ac9a6f90441214c5"
+        },
+        "original": {
+          "wall_ms": 110.397859,
+          "cpu_ms": 109.82300000000045,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "3f582a190563bf0c5a6842910cf757f7fa1d2bd48ae0ca315480d307e7bb8bdd"
+        },
+        "before": {
+          "wall_ms": 117.269037,
+          "cpu_ms": 116.60099999999929,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "a5e08b51e3ed9e9474fb50420f8447eef3d8f215e32293e22329a9bc393143fa"
+        }
+      }
+    },
+    {
+      "order": [
+        "after",
+        "before",
+        "original"
+      ],
+      "observations": {
+        "after": {
+          "wall_ms": 118.097018,
+          "cpu_ms": 117.42100000000022,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "5ef2a870524e7513258950f19e581cce38274bc0602c3efe2f2e670938afb6f6"
+        },
+        "before": {
+          "wall_ms": 104.644139,
+          "cpu_ms": 103.9500000000011,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "d8232e11018c84c52fdda04eb9c9ee0aac30837a109c5aa5b92f40952afdb228"
+        },
+        "original": {
+          "wall_ms": 117.521508,
+          "cpu_ms": 115.02699999999955,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "b319849f864873ad7c12044142a0a145a35d205644f0b31528c1119bd90b0313"
+        }
+      }
+    },
+    {
+      "order": [
+        "original",
+        "before",
+        "after"
+      ],
+      "observations": {
+        "original": {
+          "wall_ms": 96.243551,
+          "cpu_ms": 95.6709999999994,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "82beab5271782f3e8a6d2f746c3a508981f45aa46420269d90f2987e8293d878"
+        },
+        "before": {
+          "wall_ms": 108.70159,
+          "cpu_ms": 107.94000000000104,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "5638a3bea28cbbedbcc63baced912fda68279ad710efbe51d677fb99362a3285"
+        },
+        "after": {
+          "wall_ms": 113.639526,
+          "cpu_ms": 112.85399999999868,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "e5c03e9cb2c868f0dfa420d681593e7d6d8225fc9a4b823435128c43764f0c4f"
+        }
+      }
+    },
+    {
+      "order": [
+        "original",
+        "after",
+        "before"
+      ],
+      "observations": {
+        "original": {
+          "wall_ms": 87.598764,
+          "cpu_ms": 87.0280000000001,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "dc3f2a4fdb5614f4597fc6e93b80be27f0739ec89894802ed750ec8f0176ca2f"
+        },
+        "after": {
+          "wall_ms": 116.575494,
+          "cpu_ms": 114.4670000000012,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "4091430af9f0fc5e48e78a365e803973c4d99e513e6a79e21117f55d13baf930"
+        },
+        "before": {
+          "wall_ms": 126.413502,
+          "cpu_ms": 125.65099999999951,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "d7086ce9208a3856623f1b245ed8db927acfe76039156e1d290e0df6dcbd2eea"
+        }
+      }
+    },
+    {
+      "order": [
+        "before",
+        "original",
+        "after"
+      ],
+      "observations": {
+        "before": {
+          "wall_ms": 113.429278,
+          "cpu_ms": 112.72899999999986,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "e08ca54ffd419aef0d53f31cafc27ebc301ec35c2f60fe00bae3222f3f8de3cb"
+        },
+        "original": {
+          "wall_ms": 106.690229,
+          "cpu_ms": 106.12500000000047,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "65d15e6eb6fbbe5e8955657613e1becd5bbd65554fab642993a137e7a8b082c9"
+        },
+        "after": {
+          "wall_ms": 111.874098,
+          "cpu_ms": 111.14599999999975,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "d9d15ed4d7b7519019cd611e59760c1b6a870c73fbb1a0dc87918d38b928874b"
+        }
+      }
+    },
+    {
+      "order": [
+        "before",
+        "after",
+        "original"
+      ],
+      "observations": {
+        "before": {
+          "wall_ms": 137.151835,
+          "cpu_ms": 136.42800000000045,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "5232f0f278fd5961a8e0cafd38321714eea7af3e16900910bfa9bd1243f78bda"
+        },
+        "after": {
+          "wall_ms": 133.470651,
+          "cpu_ms": 132.81899999999956,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "78c5194c3ac4d5a6b9bc951b3e6fa2e888fc194337510ff16dd389e036fd90f2"
+        },
+        "original": {
+          "wall_ms": 85.004028,
+          "cpu_ms": 84.44899999999933,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "944deeb42451382189cabe5fb3325d444e9853744eec175a637cd71216ff4bf6"
+        }
+      }
+    },
+    {
+      "order": [
+        "after",
+        "original",
+        "before"
+      ],
+      "observations": {
+        "after": {
+          "wall_ms": 129.140509,
+          "cpu_ms": 128.53899999999996,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "9063a5b086c161686d8a28cb62c5a97cce15378e3e59af85fcdf6cd1c525a866"
+        },
+        "original": {
+          "wall_ms": 98.805174,
+          "cpu_ms": 98.03100000000065,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "64f5a3c4a8cbf930c9b175d8409e5577d7d7f00f31479c1cb86b8fc33da1f8c8"
+        },
+        "before": {
+          "wall_ms": 127.421714,
+          "cpu_ms": 126.71399999999977,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "a2659ebf2fdc21ae868a5bbe9e8b93703b0ff4ff3017d5dfebf602493d8d9ada"
+        }
+      }
+    },
+    {
+      "order": [
+        "after",
+        "before",
+        "original"
+      ],
+      "observations": {
+        "after": {
+          "wall_ms": 123.205436,
+          "cpu_ms": 122.65200000000043,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "d52718e102559f7093a55e0a1f56a523a575a992a8ed9e131d722d3166cb3be3"
+        },
+        "before": {
+          "wall_ms": 109.398059,
+          "cpu_ms": 109.00400000000054,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "b9e6a359f909fba1ae59a991fea3139810922b0724752de6d506e33e31344840"
+        },
+        "original": {
+          "wall_ms": 107.916672,
+          "cpu_ms": 105.0589999999989,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "863060f87c596124a032415e5d1f23ad7c134f3b73e95f92f73a22b76be829d9"
+        }
+      }
+    },
+    {
+      "order": [
+        "original",
+        "before",
+        "after"
+      ],
+      "observations": {
+        "original": {
+          "wall_ms": 105.627655,
+          "cpu_ms": 105.11100000000084,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "9747d4c88eec77fa9aeaef7d04006a786ede822dec41272ef9c54abaeb203d22"
+        },
+        "before": {
+          "wall_ms": 119.628443,
+          "cpu_ms": 118.95600000000073,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "236cedf2176aa296379aa5292a312803bc4402858310f69b38add698d1c151f5"
+        },
+        "after": {
+          "wall_ms": 139.42326,
+          "cpu_ms": 138.7660000000004,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "3bf270fa15f80f0d3cb9bfae53116c857aacb87128348976ce32a8c433c508bf"
+        }
+      }
+    },
+    {
+      "order": [
+        "original",
+        "after",
+        "before"
+      ],
+      "observations": {
+        "original": {
+          "wall_ms": 102.71048,
+          "cpu_ms": 102.02199999999806,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "0849ebecfe1291b8bb909bd445f2332b08bd6027b99fdf226f9aac8168fb1725"
+        },
+        "after": {
+          "wall_ms": 138.988577,
+          "cpu_ms": 138.42599999999905,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "5daecbe8747beab58c3e66a61cbbf3b8339ae4088473d5a927f27c549770911c"
+        },
+        "before": {
+          "wall_ms": 111.589864,
+          "cpu_ms": 110.88200000000015,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "05637ca617d9c825dbb45e668bcf4169b6d6fc7e7912ee6caae902116b4368eb"
+        }
+      }
+    },
+    {
+      "order": [
+        "before",
+        "original",
+        "after"
+      ],
+      "observations": {
+        "before": {
+          "wall_ms": 112.378724,
+          "cpu_ms": 111.87200000000175,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "88711331df222e99463640ced4405b50d0e15ed4f23f673d4a03be3f75b58f83"
+        },
+        "original": {
+          "wall_ms": 111.605967,
+          "cpu_ms": 111.04999999999876,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "2ff9d9e9f09af85f6ec9fe91b544cf931e991ee97a2ae32b40f18567c6db5d9b"
+        },
+        "after": {
+          "wall_ms": 147.091612,
+          "cpu_ms": 146.71300000000008,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "58efede573e0b3eee5db39fcf0a1a25b95f4a82d3c7291d36e292410f3ead20b"
+        }
+      }
+    },
+    {
+      "order": [
+        "before",
+        "after",
+        "original"
+      ],
+      "observations": {
+        "before": {
+          "wall_ms": 119.340234,
+          "cpu_ms": 118.92300000000056,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "9c2993b432c84db2bfae496641cbfa0ce9b8cd0d9f89e6aa036a54ddfba87a66"
+        },
+        "after": {
+          "wall_ms": 115.791549,
+          "cpu_ms": 115.22900000000114,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "cd4b3199d8a2a57e068d3309f84de6ede8fe5a0450cc40fa8b9b4af3f9fb5b59"
+        },
+        "original": {
+          "wall_ms": 102.679897,
+          "cpu_ms": 102.21499999999928,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "5b89839b2b1b914727d63d0a0c618f7785e40d757fb0620f8c1aad005eaeaae0"
+        }
+      }
+    },
+    {
+      "order": [
+        "after",
+        "original",
+        "before"
+      ],
+      "observations": {
+        "after": {
+          "wall_ms": 146.030422,
+          "cpu_ms": 145.44799999999825,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "d4a0df11413d884ace978e12419a169c00aaead8a66c9ce1ab6075829226472d"
+        },
+        "original": {
+          "wall_ms": 92.408199,
+          "cpu_ms": 91.89200000000142,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "6faf33e7d955820f34a57a8b1b1ded3a855bfd39983971d4483337ad34152661"
+        },
+        "before": {
+          "wall_ms": 119.846543,
+          "cpu_ms": 119.11199999999944,
+          "exit_code": -6,
+          "stdout": "",
+          "stderr": "Unhandled exception. System.NotSupportedException: LLVM target emission does not implement pointer load/store storage in 'zero_trip', root '' (LlvmLoadInstruction, logical #109, emitted #109), payload '.unpack' (LlvmLoadInstruction, logical #-1) without a declared storage view at SourceSpan { Source = <repo>/.temp/llvm-instcombine-compile/midend.msync, Start = 4105, Length = 7 }.\n   at Msync.Hir.LlvmNativeLowerer.Body.StorageFromRoot(LlvmValue, LlvmValue) + 0x6c4\n   at Msync.Hir.LlvmNativeLowerer.Body.MemoryStorageType(LlvmUse, LlvmValue) + 0xc5\n   at Msync.Hir.LlvmNativeLowerer.Body.Load(LlvmLoadInstruction) + 0xa0\n   at Msync.Hir.LlvmNativeLowerer.Body.Emit(LlvmInstruction, LlvmBasicBlock) + 0x1d3\n   at Msync.Hir.LlvmNativeLowerer.Body.Run() + 0xef\n   at Msync.Hir.LlvmNativeLowerer.Lowering.Run() + 0x26f\n   at Msync.Compiler.Compiler.LowerInstructions(HirModule, Int32, CompilationTrace) + 0x12c\n   at Msync.Cli.NativeCommandPipeline.Compile(String, String, HirModule, Int32, TelemetrySession) + 0xcc\n   at Msync.Cli.Program.<Main>d__0.MoveNext() + 0xe6d\n--- End of stack trace from previous location ---\n   at Msync.Cli.Program.<Main>(String[] args) + 0x2b\n",
+          "artifact_sha256": null
+        }
+      }
+    }
+  ]
+}

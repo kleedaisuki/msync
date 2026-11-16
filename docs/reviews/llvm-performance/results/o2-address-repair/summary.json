@@ -1,0 +1,177 @@
+{
+  "source_sha256": "7331a08a68bd76c9f90affe5214de630ea0cd693468607e78860a215881ceafd",
+  "images": {
+    "original": {
+      "sha256": "3c821875c8c954db6f2e1c70c7eb47bc69228e32ad0c572c1453b58f8dceb410",
+      "path": "<repo>/artifacts/native/llvm-sroa/msync"
+    },
+    "before": {
+      "sha256": "ba275ad35b0c65b2ed9c6d22bf7f15608b77abca759908228d5377760c4b0324",
+      "path": "<repo>/artifacts/native/llvm-reviewed-final/msync"
+    },
+    "after": {
+      "sha256": "6c49d967008f6efd251c1c50d4ccb0046f71dd42041ad016e70160a536f18ef2",
+      "path": "<repo>/artifacts/native/o2-cost-delivery/msync"
+    }
+  },
+  "blocks": 60,
+  "successful_measured_compilations": 180,
+  "failed_measured_compilations": 0,
+  "contrasts": {
+    "before_minus_original": {
+      "wall_ms": {
+        "mean": 43.771825050000004,
+        "median": 43.15267599999999,
+        "standard_error": 2.223677060345444
+      },
+      "cpu_ms": {
+        "mean": 43.68158333333324,
+        "median": 42.916500000001356,
+        "standard_error": 2.2032211367826813
+      }
+    },
+    "after_minus_original": {
+      "wall_ms": {
+        "mean": 22.7509384,
+        "median": 22.204186,
+        "standard_error": 1.8862140903372786
+      },
+      "cpu_ms": {
+        "mean": 22.710083333333372,
+        "median": 22.30299999999996,
+        "standard_error": 1.8783143380987424
+      }
+    },
+    "after_minus_before": {
+      "wall_ms": {
+        "mean": -21.02088665,
+        "median": -19.156168500000014,
+        "standard_error": 2.566482077505316
+      },
+      "cpu_ms": {
+        "mean": -20.97149999999987,
+        "median": -19.022499999999823,
+        "standard_error": 2.537778104712264
+      }
+    }
+  },
+  "image_means": {
+    "original": {
+      "wall_ms": 99.56277641666667,
+      "cpu_ms": 98.9384166666667
+    },
+    "before": {
+      "wall_ms": 143.33460146666667,
+      "cpu_ms": 142.61999999999995
+    },
+    "after": {
+      "wall_ms": 122.31371481666666,
+      "cpu_ms": 121.64850000000007
+    }
+  },
+  "main_dse_before": {
+    "managed.allocated_bytes": 15510976,
+    "invocations": 1,
+    "dse.instructions.collected": 1395,
+    "dse.definitions.collected": 507,
+    "value_tracking.underlying_object.queries": 23268,
+    "value_tracking.underlying_object.lookups": 45892,
+    "value_tracking.underlying_object.base": 23268,
+    "dse.walk.definitions.visited": 11637,
+    "licm.object.unwind_queries": 23643,
+    "licm.object.unwind_heap_fresh": 23060,
+    "capture.queries": 79,
+    "capture.uses_examined": 279,
+    "capture.classify_use": 279,
+    "capture.candidate": 78,
+    "capture.early_stop": 78,
+    "capture.captured": 79,
+    "dse.walk.barrier": 436,
+    "capture.default_use": 9,
+    "licm.object.unwind_no_attribute_fact": 583,
+    "dse.overwrite.queries": 11128,
+    "value_tracking.pointer_casts.queries": 22256,
+    "value_tracking.pointer_casts.steps": 22256,
+    "object_size.base.queries": 10645,
+    "object_size.base.heap": 10570,
+    "value_tracking.pointer_offsets.queries": 21290,
+    "value_tracking.pointer_offsets.steps": 42403,
+    "value_tracking.gep_offset.queries": 21113,
+    "value_tracking.gep_offset.byte_fast_path": 21113,
+    "capture.revisited_use": 8,
+    "capture.use_budget_exhausted": 1,
+    "object_size.base.global": 75,
+    "dse.walk.step_limit": 72,
+    "dse.end_of_function.iterations": 1,
+    "input.functions": 1,
+    "input.instructions": 1395,
+    "input.locals": 0,
+    "output.functions": 1,
+    "output.instructions": 1395,
+    "output.locals": 0
+  },
+  "main_dse_after": {
+    "managed.allocated_bytes": 4889392,
+    "invocations": 1,
+    "dse.instructions.collected": 1395,
+    "dse.definitions.collected": 507,
+    "dse.address.underlying.requests": 23268,
+    "dse.address.underlying.misses": 505,
+    "value_tracking.underlying_object.queries": 505,
+    "value_tracking.underlying_object.lookups": 929,
+    "value_tracking.underlying_object.base": 505,
+    "dse.walk.definitions.visited": 11637,
+    "licm.object.unwind_queries": 23643,
+    "licm.object.unwind_heap_fresh": 23060,
+    "capture.queries": 79,
+    "capture.uses_examined": 279,
+    "capture.classify_use": 279,
+    "capture.candidate": 78,
+    "capture.early_stop": 78,
+    "capture.captured": 79,
+    "dse.walk.barrier": 436,
+    "capture.default_use": 9,
+    "licm.object.unwind_no_attribute_fact": 583,
+    "dse.overwrite.queries": 11128,
+    "dse.address.casts.requests": 22256,
+    "dse.address.casts.misses": 491,
+    "value_tracking.pointer_casts.queries": 491,
+    "value_tracking.pointer_visited.inline_inserts": 1372,
+    "value_tracking.pointer_casts.steps": 491,
+    "dse.address.underlying.hits": 22763,
+    "dse.address.casts.hits": 21765,
+    "object_size.base.queries": 10645,
+    "object_size.base.heap": 10570,
+    "dse.address.offsets.requests": 21290,
+    "dse.address.offsets.misses": 460,
+    "value_tracking.pointer_offsets.queries": 460,
+    "value_tracking.pointer_offsets.steps": 881,
+    "value_tracking.gep_offset.queries": 421,
+    "value_tracking.gep_offset.byte_fast_path": 421,
+    "value_tracking.pointer_visited.inline_probes": 421,
+    "dse.address.offsets.hits": 20830,
+    "capture.revisited_use": 8,
+    "capture.use_budget_exhausted": 1,
+    "object_size.base.global": 75,
+    "dse.walk.step_limit": 72,
+    "dse.end_of_function.iterations": 1,
+    "input.functions": 1,
+    "input.instructions": 1395,
+    "input.locals": 0,
+    "output.functions": 1,
+    "output.instructions": 1395,
+    "output.locals": 0
+  },
+  "initial_warmup_failure": {
+    "image_sha256": "4d47db37b585ca988f49d01482db9408d2cde4b3a7df495d604990857790ca5e",
+    "phase": "untimed warmup; no failed compile included as a latency sample",
+    "cause": "MemoryStorageType ignored retained physical Use storage; PointerTyID via StorageFromRoot",
+    "later_probes": "15 per image (first repair, before, original), all passed; target-reproduction.json",
+    "repair": "physical Use metadata consumed consistently; deterministic direct/Native2 journey passes"
+  },
+  "boundaries": [
+    "Detailed trace timings/allocations include observer overhead; latency contrasts use recording-disabled commands.",
+    "Historical37.39ms and current same-round contrasts are different observations; do not subtract unrelated medians.",
+    "DSE budgets, candidates, phase order and optimization rules unchanged."
+  ]
+}

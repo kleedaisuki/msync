@@ -1,0 +1,573 @@
+{
+  "status": "passed",
+  "source_sha256": "7331a08a68bd76c9f90affe5214de630ea0cd693468607e78860a215881ceafd",
+  "images": {
+    "original": {
+      "sha256": "3c821875c8c954db6f2e1c70c7eb47bc69228e32ad0c572c1453b58f8dceb410",
+      "path": "<repo>/artifacts/native/llvm-sroa/msync"
+    },
+    "before": {
+      "sha256": "ba275ad35b0c65b2ed9c6d22bf7f15608b77abca759908228d5377760c4b0324",
+      "path": "<repo>/artifacts/native/llvm-reviewed-final/msync"
+    },
+    "after": {
+      "sha256": "1c2a47deef7974b28ad067f9911cf0cd62749aea1ffb1c71cde02683db9c9b45",
+      "path": "<repo>/artifacts/native/o2-cost-fixed/msync"
+    }
+  },
+  "receipt_sha256": "d420dca54775971ce0eb4b9e43aa6319972faa6661ce861049bc5653bb36e865",
+  "environment_overrides": {
+    "NO_COLOR": "1"
+  },
+  "method": "all six image permutations per round; fresh process; telemetry off; warm OS cache; one overwritten output; hashes outside timer",
+  "command": [
+    "BINARY",
+    "--no-config",
+    "--no-telemetry",
+    "compile",
+    "<repo>/.temp/llvm-instcombine-compile/midend.msync",
+    "-O2",
+    "-o",
+    "<repo>/.temp/o2-cost-fix-balanced/output.mso"
+  ],
+  "warmups": {
+    "original": {
+      "wall_ms": 97.235054,
+      "cpu_ms": 96.598,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "artifact_sha256": "b4ac7715f9df6ef341c2abb74ede62e8ebfa71f2dae74bdd608b57532d5039c6"
+    },
+    "before": {
+      "wall_ms": 147.721528,
+      "cpu_ms": 147.17999999999998,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "artifact_sha256": "696149001e1b35e271f0ff081d7fbee03b79071b04235a3125ab19275fcb1ebf"
+    },
+    "after": {
+      "wall_ms": 121.873025,
+      "cpu_ms": 121.50299999999997,
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "artifact_sha256": "81e33ff32ca39e5be908aadc42072a5e8820e084ba6fdcc6584f785ee1941dc2"
+    }
+  },
+  "blocks": [
+    {
+      "order": [
+        "original",
+        "before",
+        "after"
+      ],
+      "observations": {
+        "original": {
+          "wall_ms": 99.479866,
+          "cpu_ms": 99.03499999999998,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "c02851caf620057af9513e61b8f6cf4d1cf52cdd8addda9b8e0dc53c58bc3b63"
+        },
+        "before": {
+          "wall_ms": 133.008384,
+          "cpu_ms": 132.52600000000004,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "a56d43256f8d739a699541bc6adb44ea9f77ff20aee21f3520100e3f1a23cbab"
+        },
+        "after": {
+          "wall_ms": 122.160745,
+          "cpu_ms": 121.42699999999995,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "28c2fbbbed83923366bbd2049b1ba17712f17037120673d46fb02f1299dc189c"
+        }
+      }
+    },
+    {
+      "order": [
+        "original",
+        "after",
+        "before"
+      ],
+      "observations": {
+        "original": {
+          "wall_ms": 112.750699,
+          "cpu_ms": 111.52399999999996,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "de4d00c47986488daa1add9c2618ce69e2faa983530e7226494feb4184d8c8b1"
+        },
+        "after": {
+          "wall_ms": 125.038237,
+          "cpu_ms": 124.35600000000002,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "084c69e137f06902a43e9d84bf07af5d0bd15ec2a70b61dfed4b8f869fb16dea"
+        },
+        "before": {
+          "wall_ms": 153.368468,
+          "cpu_ms": 152.36099999999996,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "885f54911db80d4f6f223f76ee588d620a74413a43947d0923276501bdc8e981"
+        }
+      }
+    },
+    {
+      "order": [
+        "before",
+        "original",
+        "after"
+      ],
+      "observations": {
+        "before": {
+          "wall_ms": 150.085131,
+          "cpu_ms": 149.5150000000003,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "3045ac44ebe50d0188d2a2d717283297643c637bed14f3284f1bbc04d9617179"
+        },
+        "original": {
+          "wall_ms": 102.185178,
+          "cpu_ms": 101.51699999999964,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "7112d2299c6d3c9e7cbd24af57ec8a810faa2a2c309482cbfe6d6cea5b1a0f18"
+        },
+        "after": {
+          "wall_ms": 110.385627,
+          "cpu_ms": 109.85600000000018,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "e522c181435cabdc775c744e0eb28263c3a076cdabf38c1c112282ea780bfc39"
+        }
+      }
+    },
+    {
+      "order": [
+        "before",
+        "after",
+        "original"
+      ],
+      "observations": {
+        "before": {
+          "wall_ms": 163.226131,
+          "cpu_ms": 162.61700000000002,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "bc6dccc315f39cab56313ba6742519e41f56ebd888395b03db2e9e7de0d7b6fa"
+        },
+        "after": {
+          "wall_ms": 122.740257,
+          "cpu_ms": 122.03300000000006,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "729adeb3e34c1642ad1f39d33f5b8bb1f4a9e080896b86b60e93a7865363ed8b"
+        },
+        "original": {
+          "wall_ms": 116.44735,
+          "cpu_ms": 115.34,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "80ff9ca302758f1b0a5d96753bd5b540e3a2600bf4a8deddb696e79b76969a72"
+        }
+      }
+    },
+    {
+      "order": [
+        "after",
+        "original",
+        "before"
+      ],
+      "observations": {
+        "after": {
+          "wall_ms": 117.326743,
+          "cpu_ms": 116.82999999999998,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "ef85d360f963b82b63eb90311b6a2d13899c450ebaba6c1e68c10886abfcf8c1"
+        },
+        "original": {
+          "wall_ms": 116.149948,
+          "cpu_ms": 115.2559999999998,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "33d074309929173c718024e826eb312a83dfd201025c0342b2ccebe26a5dc3bf"
+        },
+        "before": {
+          "wall_ms": 185.277921,
+          "cpu_ms": 184.361,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "1e3e74969e5666b6cdabfd6eb3e915c6fdff19adbf448e7be40f546ba707e7a7"
+        }
+      }
+    },
+    {
+      "order": [
+        "after",
+        "before",
+        "original"
+      ],
+      "observations": {
+        "after": {
+          "wall_ms": 140.907918,
+          "cpu_ms": 140.40500000000034,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "e1d229e00aa6ff46809b4f4874c5b9da43a61fad44bc9cf8f992ee84414299db"
+        },
+        "before": {
+          "wall_ms": 134.417697,
+          "cpu_ms": 133.8379999999999,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "1c066c78a5458dd211a9eeac3fd5a6cb3bd1b35891f861aaa3b8b5f61d6439c1"
+        },
+        "original": {
+          "wall_ms": 95.231682,
+          "cpu_ms": 94.66899999999967,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "d00e5ecbe5ca72adb87218f8229f23240db10ee2a0a612047c63e03aae1b1ed3"
+        }
+      }
+    },
+    {
+      "order": [
+        "original",
+        "before",
+        "after"
+      ],
+      "observations": {
+        "original": {
+          "wall_ms": 101.013447,
+          "cpu_ms": 100.11900000000028,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "c0431010bbf1095c501edb63b269db8afc9c46d96f2b8f8855d68a4f16dddcb6"
+        },
+        "before": {
+          "wall_ms": 161.273385,
+          "cpu_ms": 160.9499999999997,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "9ca4661663bf3085ad3aabdc9f469224b9e5e9936a28fb5edd09fa2327f539be"
+        },
+        "after": {
+          "wall_ms": 115.399307,
+          "cpu_ms": 114.94700000000036,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "22849a9d32957d1a3f9ebfec21a4315e15f5522e6912d31e9058c963051282a8"
+        }
+      }
+    },
+    {
+      "order": [
+        "original",
+        "after",
+        "before"
+      ],
+      "observations": {
+        "original": {
+          "wall_ms": 120.237419,
+          "cpu_ms": 119.8809999999999,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "08690f446e979fa23ce95b643227d0830abf42c5d3a52ba8fc2f4907fe09aa5f"
+        },
+        "after": {
+          "wall_ms": 123.00719,
+          "cpu_ms": 122.49700000000007,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "015da51096b52b5db5001e5a722a011dce797c4c1f00ff36a765a785ed5cecf1"
+        },
+        "before": {
+          "wall_ms": 141.460629,
+          "cpu_ms": 140.8109999999998,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "c613e4804012bae4f3fda9aedbadfdf842abeb10a5bd324b8ddf9f38d658df4e"
+        }
+      }
+    },
+    {
+      "order": [
+        "before",
+        "original",
+        "after"
+      ],
+      "observations": {
+        "before": {
+          "wall_ms": 126.536735,
+          "cpu_ms": 125.72299999999981,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "3e6a3be1d3dafa3a13a85269c6c8f12e14c952d984dc48f4ae91b8510ad8e88e"
+        },
+        "original": {
+          "wall_ms": 82.291922,
+          "cpu_ms": 81.69600000000044,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "f32c9f570c59015da8f1f6b05272a6f1e4ca444f752a8b78fc864b151e34ef64"
+        },
+        "after": {
+          "wall_ms": 120.477061,
+          "cpu_ms": 119.977,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "e9f63fd93c250266c64a06f77a73600c650d3fc634a4c23533ff1a2d410bf765"
+        }
+      }
+    },
+    {
+      "order": [
+        "before",
+        "after",
+        "original"
+      ],
+      "observations": {
+        "before": {
+          "wall_ms": 121.760094,
+          "cpu_ms": 121.12699999999998,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "66af5fcdb0954111ec06a69b1cef72193abfe1de5eae5a709922b58e968b2f49"
+        },
+        "after": {
+          "wall_ms": 109.918029,
+          "cpu_ms": 109.22199999999992,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "0d97a3ca898177f41dd9c4787d5d3d0cdad9c3eb75089482e7198e46b5de5727"
+        },
+        "original": {
+          "wall_ms": 93.456524,
+          "cpu_ms": 92.99400000000003,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "54624c5364e27784630cfa4588a30f82a84645c8d5f2b4bfa71e19e9f9bebd8b"
+        }
+      }
+    },
+    {
+      "order": [
+        "after",
+        "original",
+        "before"
+      ],
+      "observations": {
+        "after": {
+          "wall_ms": 113.972293,
+          "cpu_ms": 113.27399999999966,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "c6beb86b239bae9d9acc7336ea9c0c5cde95527ef2c4f9abe72df8e200b33833"
+        },
+        "original": {
+          "wall_ms": 120.011552,
+          "cpu_ms": 119.51,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "bceae476900ba31c47155598ed235845f07ac9776b61add491d491698fe79978"
+        },
+        "before": {
+          "wall_ms": 160.729366,
+          "cpu_ms": 160.1650000000001,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "616b1fce719bfaba3ff0ff667e3c28fb49e36a55f67fedeb9125fd11442b34f6"
+        }
+      }
+    },
+    {
+      "order": [
+        "after",
+        "before",
+        "original"
+      ],
+      "observations": {
+        "after": {
+          "wall_ms": 102.930218,
+          "cpu_ms": 102.41100000000003,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "4c8261f51b58bc10b770ea40411b75153a0cbba8a1f019e7a4b262208db0db17"
+        },
+        "before": {
+          "wall_ms": 149.058911,
+          "cpu_ms": 148.3869999999996,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "26535569498c53a573d5eb151232aa898e2b6f9c98c85e9f83340ceacbb487a3"
+        },
+        "original": {
+          "wall_ms": 103.015498,
+          "cpu_ms": 102.73700000000031,
+          "exit_code": 0,
+          "stdout": "",
+          "stderr": "",
+          "artifact_sha256": "909b45070c6968b90d85ea4c74cc53c1e1003e393ef650d40876b40be60eaecc"
+        }
+      }
+    }
+  ],
+  "contrasts": {
+    "before_minus_original": {
+      "wall_ms": {
+        "mean": 43.160980583333334,
+        "median": 42.4813135,
+        "raw": [
+          33.528518000000005,
+          40.61776900000001,
+          47.899953,
+          46.77878100000001,
+          69.127973,
+          39.186015,
+          60.25993799999999,
+          21.22321000000001,
+          44.24481299999999,
+          28.303569999999993,
+          40.717814000000004,
+          46.043413
+        ]
+      },
+      "cpu_ms": {
+        "mean": 43.175249999999934,
+        "median": 42.43199999999969,
+        "raw": [
+          33.49100000000006,
+          40.837,
+          47.99800000000066,
+          47.277000000000015,
+          69.10500000000019,
+          39.16900000000024,
+          60.83099999999942,
+          20.929999999999907,
+          44.026999999999376,
+          28.132999999999953,
+          40.6550000000001,
+          45.649999999999295
+        ]
+      }
+    },
+    "after_minus_original": {
+      "wall_ms": {
+        "mean": 13.499378333333333,
+        "median": 10.243993500000002,
+        "raw": [
+          22.680879000000004,
+          12.287537999999998,
+          8.200449000000006,
+          6.292907,
+          1.1767949999999985,
+          45.67623599999999,
+          14.385859999999994,
+          2.7697709999999915,
+          38.18513900000001,
+          16.461505000000002,
+          -6.039259000000001,
+          -0.08527999999999736
+        ]
+      },
+      "cpu_ms": {
+        "mean": 13.579750000000047,
+        "median": 10.585500000000302,
+        "raw": [
+          22.391999999999967,
+          12.832000000000065,
+          8.339000000000539,
+          6.693000000000055,
+          1.5740000000001828,
+          45.73600000000067,
+          14.828000000000074,
+          2.61600000000017,
+          38.280999999999565,
+          16.227999999999895,
+          -6.236000000000345,
+          -0.3260000000002776
+        ]
+      }
+    },
+    "after_minus_before": {
+      "wall_ms": {
+        "mean": -29.66160225,
+        "median": -34.0148675,
+        "raw": [
+          -10.847639000000001,
+          -28.330231000000012,
+          -39.69950399999999,
+          -40.48587400000001,
+          -67.951178,
+          6.490220999999991,
+          -45.874078,
+          -18.453439000000017,
+          -6.059673999999987,
+          -11.842064999999991,
+          -46.757073000000005,
+          -46.128693
+        ]
+      },
+      "cpu_ms": {
+        "mean": -29.595499999999888,
+        "median": -33.83200000000003,
+        "raw": [
+          -11.099000000000089,
+          -28.00499999999994,
+          -39.65900000000012,
+          -40.58399999999996,
+          -67.531,
+          6.567000000000434,
+          -46.002999999999346,
+          -18.313999999999737,
+          -5.74599999999981,
+          -11.905000000000058,
+          -46.891000000000446,
+          -45.97599999999957
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,2906 @@
+{
+  "local-manifest-copy": {
+    "full": [
+      {
+        "status": "passed",
+        "returncode": 0,
+        "milliseconds": 106.89262,
+        "cpu_milliseconds": 106.58199999999998,
+        "phases": [
+          {
+            "phase": "pipeline.lower",
+            "function": "<module>",
+            "nanoseconds": 2564500,
+            "allocated_bytes": 665176,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<main>",
+            "nanoseconds": 61900,
+            "allocated_bytes": 4984,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<main>",
+            "nanoseconds": 1468200,
+            "allocated_bytes": 283096,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<main>",
+            "nanoseconds": 2975100,
+            "allocated_bytes": 471568,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<main>",
+            "nanoseconds": 19400,
+            "allocated_bytes": 1712,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<main>",
+            "nanoseconds": 64600,
+            "allocated_bytes": 2616,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<main>",
+            "nanoseconds": 72300,
+            "allocated_bytes": 4848,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<main>",
+            "nanoseconds": 1886100,
+            "allocated_bytes": 271840,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<main>",
+            "nanoseconds": 1580600,
+            "allocated_bytes": 244000,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<main>",
+            "nanoseconds": 29100,
+            "allocated_bytes": 224,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<main>",
+            "nanoseconds": 29700,
+            "allocated_bytes": 5352,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<main>",
+            "nanoseconds": 19111400,
+            "allocated_bytes": 3106280,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<main>",
+            "nanoseconds": 110000,
+            "allocated_bytes": 10688,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<main>",
+            "nanoseconds": 921300,
+            "allocated_bytes": 76040,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<main>",
+            "nanoseconds": 37601300,
+            "allocated_bytes": 16872416,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<main>",
+            "nanoseconds": 242700,
+            "allocated_bytes": 40112,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.optimize",
+            "function": "<module>",
+            "nanoseconds": 66263400,
+            "allocated_bytes": 21398712,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.target",
+            "function": "<module>",
+            "nanoseconds": 3163100,
+            "allocated_bytes": 558880,
+            "calls": 1
+          }
+        ],
+        "stderr": null,
+        "artifact_sha256": "0382cc36fd65191c77069734d4379167efa57aeceb8b45485924a0e4ff7dd0f3"
+      },
+      {
+        "status": "passed",
+        "returncode": 0,
+        "milliseconds": 123.929716,
+        "cpu_milliseconds": 115.329,
+        "phases": [
+          {
+            "phase": "pipeline.lower",
+            "function": "<module>",
+            "nanoseconds": 3804300,
+            "allocated_bytes": 665112,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<main>",
+            "nanoseconds": 51100,
+            "allocated_bytes": 4984,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<main>",
+            "nanoseconds": 2242400,
+            "allocated_bytes": 283096,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<main>",
+            "nanoseconds": 3321000,
+            "allocated_bytes": 471568,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<main>",
+            "nanoseconds": 18300,
+            "allocated_bytes": 1712,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<main>",
+            "nanoseconds": 109500,
+            "allocated_bytes": 2616,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<main>",
+            "nanoseconds": 47700,
+            "allocated_bytes": 4848,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<main>",
+            "nanoseconds": 2026600,
+            "allocated_bytes": 284176,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<main>",
+            "nanoseconds": 1487500,
+            "allocated_bytes": 231664,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<main>",
+            "nanoseconds": 27900,
+            "allocated_bytes": 224,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<main>",
+            "nanoseconds": 37500,
+            "allocated_bytes": 5352,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<main>",
+            "nanoseconds": 19169500,
+            "allocated_bytes": 3106552,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<main>",
+            "nanoseconds": 45900,
+            "allocated_bytes": 10688,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<main>",
+            "nanoseconds": 1136400,
+            "allocated_bytes": 76040,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<main>",
+            "nanoseconds": 47650500,
+            "allocated_bytes": 16872008,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<main>",
+            "nanoseconds": 265400,
+            "allocated_bytes": 40112,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.optimize",
+            "function": "<module>",
+            "nanoseconds": 77730900,
+            "allocated_bytes": 21398576,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.target",
+            "function": "<module>",
+            "nanoseconds": 4485200,
+            "allocated_bytes": 558880,
+            "calls": 1
+          }
+        ],
+        "stderr": null,
+        "artifact_sha256": "214c92ddad11bebfb8b31367cd8f20da9f66d1d04642d97ecd9e8b11a12cdfcd"
+      },
+      {
+        "status": "passed",
+        "returncode": 0,
+        "milliseconds": 113.684531,
+        "cpu_milliseconds": 113.308,
+        "phases": [
+          {
+            "phase": "pipeline.lower",
+            "function": "<module>",
+            "nanoseconds": 2727500,
+            "allocated_bytes": 665112,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<main>",
+            "nanoseconds": 51900,
+            "allocated_bytes": 4984,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<main>",
+            "nanoseconds": 1466800,
+            "allocated_bytes": 283096,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<main>",
+            "nanoseconds": 2235000,
+            "allocated_bytes": 471568,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<main>",
+            "nanoseconds": 12900,
+            "allocated_bytes": 1712,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<main>",
+            "nanoseconds": 44200,
+            "allocated_bytes": 2616,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<main>",
+            "nanoseconds": 36700,
+            "allocated_bytes": 4848,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<main>",
+            "nanoseconds": 1356700,
+            "allocated_bytes": 271840,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<main>",
+            "nanoseconds": 1295200,
+            "allocated_bytes": 231664,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<main>",
+            "nanoseconds": 23400,
+            "allocated_bytes": 224,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<main>",
+            "nanoseconds": 31100,
+            "allocated_bytes": 5352,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<main>",
+            "nanoseconds": 17695400,
+            "allocated_bytes": 3118888,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<main>",
+            "nanoseconds": 57100,
+            "allocated_bytes": 10688,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<main>",
+            "nanoseconds": 901700,
+            "allocated_bytes": 76040,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<main>",
+            "nanoseconds": 51319500,
+            "allocated_bytes": 16873232,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<main>",
+            "nanoseconds": 304900,
+            "allocated_bytes": 40112,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.optimize",
+            "function": "<module>",
+            "nanoseconds": 76901300,
+            "allocated_bytes": 21399800,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.target",
+            "function": "<module>",
+            "nanoseconds": 4669000,
+            "allocated_bytes": 558880,
+            "calls": 1
+          }
+        ],
+        "stderr": null,
+        "artifact_sha256": "7eff0e7e576b791cd417bbe33df0cd13f7376179f1c680a5133d9893a66e4c3f"
+      }
+    ],
+    "simplify": [
+      {
+        "status": "passed",
+        "returncode": 0,
+        "milliseconds": 51.747316,
+        "cpu_milliseconds": 51.32799999999997,
+        "phases": [
+          {
+            "phase": "pipeline.lower",
+            "function": "<module>",
+            "nanoseconds": 2333300,
+            "allocated_bytes": 665120,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<main>",
+            "nanoseconds": 47200,
+            "allocated_bytes": 4984,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<main>",
+            "nanoseconds": 1426800,
+            "allocated_bytes": 283096,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<main>",
+            "nanoseconds": 2022100,
+            "allocated_bytes": 471568,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<main>",
+            "nanoseconds": 11700,
+            "allocated_bytes": 1712,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<main>",
+            "nanoseconds": 38500,
+            "allocated_bytes": 2616,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<main>",
+            "nanoseconds": 35600,
+            "allocated_bytes": 4848,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<main>",
+            "nanoseconds": 1190900,
+            "allocated_bytes": 284176,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<main>",
+            "nanoseconds": 1133300,
+            "allocated_bytes": 231664,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<main>",
+            "nanoseconds": 16400,
+            "allocated_bytes": 224,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<main>",
+            "nanoseconds": 23900,
+            "allocated_bytes": 5352,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<main>",
+            "nanoseconds": 397000,
+            "allocated_bytes": 78864,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<main>",
+            "nanoseconds": 26700,
+            "allocated_bytes": 10688,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<main>",
+            "nanoseconds": 285000,
+            "allocated_bytes": 50752,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<main>",
+            "nanoseconds": 10050900,
+            "allocated_bytes": 2884976,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<main>",
+            "nanoseconds": 341400,
+            "allocated_bytes": 40112,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.optimize",
+            "function": "<module>",
+            "nanoseconds": 17111600,
+            "allocated_bytes": 4358568,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.target",
+            "function": "<module>",
+            "nanoseconds": 2034100,
+            "allocated_bytes": 460288,
+            "calls": 1
+          }
+        ],
+        "stderr": null,
+        "artifact_sha256": "fdb5eef0f50d2f39dac4111a7aec4e7d2475ae7f5a9785aeb4c9a6cf62ae3369"
+      },
+      {
+        "status": "passed",
+        "returncode": 0,
+        "milliseconds": 49.307389,
+        "cpu_milliseconds": 48.72699999999999,
+        "phases": [
+          {
+            "phase": "pipeline.lower",
+            "function": "<module>",
+            "nanoseconds": 2163300,
+            "allocated_bytes": 665088,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<main>",
+            "nanoseconds": 46200,
+            "allocated_bytes": 4984,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<main>",
+            "nanoseconds": 1056600,
+            "allocated_bytes": 283096,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<main>",
+            "nanoseconds": 1580800,
+            "allocated_bytes": 471568,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<main>",
+            "nanoseconds": 11000,
+            "allocated_bytes": 1712,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<main>",
+            "nanoseconds": 32500,
+            "allocated_bytes": 2616,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<main>",
+            "nanoseconds": 47500,
+            "allocated_bytes": 4848,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<main>",
+            "nanoseconds": 938300,
+            "allocated_bytes": 271840,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<main>",
+            "nanoseconds": 951300,
+            "allocated_bytes": 231664,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<main>",
+            "nanoseconds": 18700,
+            "allocated_bytes": 224,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<main>",
+            "nanoseconds": 27000,
+            "allocated_bytes": 5352,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<main>",
+            "nanoseconds": 445300,
+            "allocated_bytes": 78864,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<main>",
+            "nanoseconds": 22100,
+            "allocated_bytes": 10688,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<main>",
+            "nanoseconds": 217100,
+            "allocated_bytes": 50752,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<main>",
+            "nanoseconds": 9307200,
+            "allocated_bytes": 2888696,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<main>",
+            "nanoseconds": 299800,
+            "allocated_bytes": 52448,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.optimize",
+            "function": "<module>",
+            "nanoseconds": 15058900,
+            "allocated_bytes": 4362288,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.target",
+            "function": "<module>",
+            "nanoseconds": 1919000,
+            "allocated_bytes": 460496,
+            "calls": 1
+          }
+        ],
+        "stderr": null,
+        "artifact_sha256": "cd83ec6ec661f790c32d63bb4f259a1f71e9b8d50cdf5361052047a1dc55f851"
+      },
+      {
+        "status": "passed",
+        "returncode": 0,
+        "milliseconds": 51.926244,
+        "cpu_milliseconds": 51.53599999999997,
+        "phases": [
+          {
+            "phase": "pipeline.lower",
+            "function": "<module>",
+            "nanoseconds": 2356100,
+            "allocated_bytes": 665176,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<main>",
+            "nanoseconds": 49100,
+            "allocated_bytes": 4984,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<main>",
+            "nanoseconds": 1436800,
+            "allocated_bytes": 283096,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<main>",
+            "nanoseconds": 2102800,
+            "allocated_bytes": 471568,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<main>",
+            "nanoseconds": 13400,
+            "allocated_bytes": 1712,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<main>",
+            "nanoseconds": 41700,
+            "allocated_bytes": 2616,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<main>",
+            "nanoseconds": 36000,
+            "allocated_bytes": 4848,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<main>",
+            "nanoseconds": 1390600,
+            "allocated_bytes": 271840,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<main>",
+            "nanoseconds": 969500,
+            "allocated_bytes": 231664,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<main>",
+            "nanoseconds": 16800,
+            "allocated_bytes": 224,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<main>",
+            "nanoseconds": 22800,
+            "allocated_bytes": 5352,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<main>",
+            "nanoseconds": 411100,
+            "allocated_bytes": 78864,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<main>",
+            "nanoseconds": 27500,
+            "allocated_bytes": 10688,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<main>",
+            "nanoseconds": 270600,
+            "allocated_bytes": 50752,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<main>",
+            "nanoseconds": 9122800,
+            "allocated_bytes": 2889496,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<main>",
+            "nanoseconds": 284100,
+            "allocated_bytes": 40112,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.optimize",
+            "function": "<module>",
+            "nanoseconds": 16257200,
+            "allocated_bytes": 4350752,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.target",
+            "function": "<module>",
+            "nanoseconds": 1833400,
+            "allocated_bytes": 472624,
+            "calls": 1
+          }
+        ],
+        "stderr": null,
+        "artifact_sha256": "1bd75d364ec801665f1341a9474ec7af351bfe2f73048c6edf51729fcb337e3a"
+      }
+    ]
+  },
+  "local-range-copy": {
+    "full": [
+      {
+        "status": "passed",
+        "returncode": 0,
+        "milliseconds": 157.093602,
+        "cpu_milliseconds": 156.74099999999999,
+        "phases": [
+          {
+            "phase": "pipeline.lower",
+            "function": "<module>",
+            "nanoseconds": 4768800,
+            "allocated_bytes": 1399272,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<main>",
+            "nanoseconds": 47600,
+            "allocated_bytes": 1968,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<main>",
+            "nanoseconds": 400400,
+            "allocated_bytes": 43008,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<main>",
+            "nanoseconds": 4601400,
+            "allocated_bytes": 1113552,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<main>",
+            "nanoseconds": 25300,
+            "allocated_bytes": 592,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<main>",
+            "nanoseconds": 2000,
+            "allocated_bytes": 0,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<main>",
+            "nanoseconds": 4500,
+            "allocated_bytes": 160,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<main>",
+            "nanoseconds": 600,
+            "allocated_bytes": 24,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<main>",
+            "nanoseconds": 11412500,
+            "allocated_bytes": 460984,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<main>",
+            "nanoseconds": 41500,
+            "allocated_bytes": 224,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<main>",
+            "nanoseconds": 14800,
+            "allocated_bytes": 1968,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<main>",
+            "nanoseconds": 15731300,
+            "allocated_bytes": 6342704,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<main>",
+            "nanoseconds": 19000,
+            "allocated_bytes": 3936,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<main>",
+            "nanoseconds": 1451200,
+            "allocated_bytes": 146192,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<main>",
+            "nanoseconds": 64943200,
+            "allocated_bytes": 28899696,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<main>",
+            "nanoseconds": 138500,
+            "allocated_bytes": 6872,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<lambda>",
+            "nanoseconds": 6700,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<lambda>",
+            "nanoseconds": 92100,
+            "allocated_bytes": 11576,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<lambda>",
+            "nanoseconds": 38800,
+            "allocated_bytes": 7704,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<lambda>",
+            "nanoseconds": 3000,
+            "allocated_bytes": 576,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<lambda>",
+            "nanoseconds": 700,
+            "allocated_bytes": 0,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<lambda>",
+            "nanoseconds": 1400,
+            "allocated_bytes": 160,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<lambda>",
+            "nanoseconds": 100,
+            "allocated_bytes": 24,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<lambda>",
+            "nanoseconds": 25200,
+            "allocated_bytes": 8544,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<lambda>",
+            "nanoseconds": 1200,
+            "allocated_bytes": 224,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<lambda>",
+            "nanoseconds": 2000,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<lambda>",
+            "nanoseconds": 32000,
+            "allocated_bytes": 6128,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<lambda>",
+            "nanoseconds": 3600,
+            "allocated_bytes": 2800,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<lambda>",
+            "nanoseconds": 9300,
+            "allocated_bytes": 1616,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<lambda>",
+            "nanoseconds": 17400,
+            "allocated_bytes": 8424,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<lambda>",
+            "nanoseconds": 6300,
+            "allocated_bytes": 2512,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<lambda>.1",
+            "nanoseconds": 1500,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<lambda>.1",
+            "nanoseconds": 299300,
+            "allocated_bytes": 95144,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<lambda>.1",
+            "nanoseconds": 29800,
+            "allocated_bytes": 11408,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<lambda>.1",
+            "nanoseconds": 1400,
+            "allocated_bytes": 576,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<lambda>.1",
+            "nanoseconds": 300,
+            "allocated_bytes": 0,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<lambda>.1",
+            "nanoseconds": 400,
+            "allocated_bytes": 160,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<lambda>.1",
+            "nanoseconds": 100,
+            "allocated_bytes": 24,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<lambda>.1",
+            "nanoseconds": 15700,
+            "allocated_bytes": 5072,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<lambda>.1",
+            "nanoseconds": 3900,
+            "allocated_bytes": 784,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<lambda>.1",
+            "nanoseconds": 1900,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<lambda>.1",
+            "nanoseconds": 7300,
+            "allocated_bytes": 3184,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<lambda>.1",
+            "nanoseconds": 3900,
+            "allocated_bytes": 2800,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<lambda>.1",
+            "nanoseconds": 5100,
+            "allocated_bytes": 1376,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<lambda>.1",
+            "nanoseconds": 10400,
+            "allocated_bytes": 6864,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<lambda>.1",
+            "nanoseconds": 6300,
+            "allocated_bytes": 2512,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.optimize",
+            "function": "<module>",
+            "nanoseconds": 99572700,
+            "allocated_bytes": 37221096,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.target",
+            "function": "<module>",
+            "nanoseconds": 7687300,
+            "allocated_bytes": 1230112,
+            "calls": 1
+          }
+        ],
+        "stderr": null,
+        "artifact_sha256": "d20a87f3c6766eaca16f418d3c21ffa6e6a8ce1a0c54552df1d727bcf4567269"
+      },
+      {
+        "status": "passed",
+        "returncode": 0,
+        "milliseconds": 166.692167,
+        "cpu_milliseconds": 166.2119999999999,
+        "phases": [
+          {
+            "phase": "pipeline.lower",
+            "function": "<module>",
+            "nanoseconds": 5228400,
+            "allocated_bytes": 1399272,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<main>",
+            "nanoseconds": 57300,
+            "allocated_bytes": 1968,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<main>",
+            "nanoseconds": 540600,
+            "allocated_bytes": 43008,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<main>",
+            "nanoseconds": 5735700,
+            "allocated_bytes": 1113552,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<main>",
+            "nanoseconds": 21100,
+            "allocated_bytes": 592,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<main>",
+            "nanoseconds": 2000,
+            "allocated_bytes": 0,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<main>",
+            "nanoseconds": 3900,
+            "allocated_bytes": 160,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<main>",
+            "nanoseconds": 700,
+            "allocated_bytes": 24,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<main>",
+            "nanoseconds": 15856000,
+            "allocated_bytes": 448648,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<main>",
+            "nanoseconds": 32500,
+            "allocated_bytes": 224,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<main>",
+            "nanoseconds": 11700,
+            "allocated_bytes": 1968,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<main>",
+            "nanoseconds": 13627400,
+            "allocated_bytes": 6354912,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<main>",
+            "nanoseconds": 18200,
+            "allocated_bytes": 3936,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<main>",
+            "nanoseconds": 912300,
+            "allocated_bytes": 146192,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<main>",
+            "nanoseconds": 71581900,
+            "allocated_bytes": 28917784,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<main>",
+            "nanoseconds": 144000,
+            "allocated_bytes": 6872,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<lambda>",
+            "nanoseconds": 6500,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<lambda>",
+            "nanoseconds": 93800,
+            "allocated_bytes": 11576,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<lambda>",
+            "nanoseconds": 36400,
+            "allocated_bytes": 7704,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<lambda>",
+            "nanoseconds": 2700,
+            "allocated_bytes": 576,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<lambda>",
+            "nanoseconds": 600,
+            "allocated_bytes": 0,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<lambda>",
+            "nanoseconds": 1300,
+            "allocated_bytes": 160,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<lambda>",
+            "nanoseconds": 200,
+            "allocated_bytes": 24,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<lambda>",
+            "nanoseconds": 26100,
+            "allocated_bytes": 8544,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<lambda>",
+            "nanoseconds": 1700,
+            "allocated_bytes": 224,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<lambda>",
+            "nanoseconds": 3300,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<lambda>",
+            "nanoseconds": 32900,
+            "allocated_bytes": 6128,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<lambda>",
+            "nanoseconds": 5000,
+            "allocated_bytes": 2800,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<lambda>",
+            "nanoseconds": 8400,
+            "allocated_bytes": 1616,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<lambda>",
+            "nanoseconds": 17100,
+            "allocated_bytes": 8424,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<lambda>",
+            "nanoseconds": 6000,
+            "allocated_bytes": 2512,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<lambda>.1",
+            "nanoseconds": 1300,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<lambda>.1",
+            "nanoseconds": 299000,
+            "allocated_bytes": 95144,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<lambda>.1",
+            "nanoseconds": 32400,
+            "allocated_bytes": 11408,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<lambda>.1",
+            "nanoseconds": 2900,
+            "allocated_bytes": 576,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<lambda>.1",
+            "nanoseconds": 200,
+            "allocated_bytes": 0,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<lambda>.1",
+            "nanoseconds": 700,
+            "allocated_bytes": 160,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<lambda>.1",
+            "nanoseconds": 100,
+            "allocated_bytes": 24,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<lambda>.1",
+            "nanoseconds": 16700,
+            "allocated_bytes": 5072,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<lambda>.1",
+            "nanoseconds": 3900,
+            "allocated_bytes": 784,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<lambda>.1",
+            "nanoseconds": 1900,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<lambda>.1",
+            "nanoseconds": 8000,
+            "allocated_bytes": 3184,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<lambda>.1",
+            "nanoseconds": 4400,
+            "allocated_bytes": 2800,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<lambda>.1",
+            "nanoseconds": 4400,
+            "allocated_bytes": 1376,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<lambda>.1",
+            "nanoseconds": 14800,
+            "allocated_bytes": 6864,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<lambda>.1",
+            "nanoseconds": 5700,
+            "allocated_bytes": 2512,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.optimize",
+            "function": "<module>",
+            "nanoseconds": 109285700,
+            "allocated_bytes": 37239056,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.target",
+            "function": "<module>",
+            "nanoseconds": 8022500,
+            "allocated_bytes": 1230272,
+            "calls": 1
+          }
+        ],
+        "stderr": null,
+        "artifact_sha256": "dafb73f6b5a6843f9113207abf67d494ef7dbb5bdd454b842640e58bea15c124"
+      },
+      {
+        "status": "passed",
+        "returncode": 0,
+        "milliseconds": 165.250336,
+        "cpu_milliseconds": 164.63899999999995,
+        "phases": [
+          {
+            "phase": "pipeline.lower",
+            "function": "<module>",
+            "nanoseconds": 5045800,
+            "allocated_bytes": 1396320,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<main>",
+            "nanoseconds": 56700,
+            "allocated_bytes": 1968,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<main>",
+            "nanoseconds": 428000,
+            "allocated_bytes": 43008,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<main>",
+            "nanoseconds": 5135600,
+            "allocated_bytes": 1113552,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<main>",
+            "nanoseconds": 18600,
+            "allocated_bytes": 592,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<main>",
+            "nanoseconds": 1900,
+            "allocated_bytes": 0,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<main>",
+            "nanoseconds": 3700,
+            "allocated_bytes": 160,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<main>",
+            "nanoseconds": 600,
+            "allocated_bytes": 24,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<main>",
+            "nanoseconds": 12138200,
+            "allocated_bytes": 448648,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<main>",
+            "nanoseconds": 40500,
+            "allocated_bytes": 224,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<main>",
+            "nanoseconds": 10400,
+            "allocated_bytes": 1968,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<main>",
+            "nanoseconds": 14000900,
+            "allocated_bytes": 6342560,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<main>",
+            "nanoseconds": 19200,
+            "allocated_bytes": 3936,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<main>",
+            "nanoseconds": 1018500,
+            "allocated_bytes": 146192,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<main>",
+            "nanoseconds": 68641600,
+            "allocated_bytes": 28908632,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<main>",
+            "nanoseconds": 144700,
+            "allocated_bytes": 6872,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<lambda>",
+            "nanoseconds": 5800,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<lambda>",
+            "nanoseconds": 106000,
+            "allocated_bytes": 11576,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<lambda>",
+            "nanoseconds": 39900,
+            "allocated_bytes": 7704,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<lambda>",
+            "nanoseconds": 2700,
+            "allocated_bytes": 576,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<lambda>",
+            "nanoseconds": 800,
+            "allocated_bytes": 0,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<lambda>",
+            "nanoseconds": 1600,
+            "allocated_bytes": 160,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<lambda>",
+            "nanoseconds": 100,
+            "allocated_bytes": 24,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<lambda>",
+            "nanoseconds": 25700,
+            "allocated_bytes": 8544,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<lambda>",
+            "nanoseconds": 1200,
+            "allocated_bytes": 224,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<lambda>",
+            "nanoseconds": 2000,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<lambda>",
+            "nanoseconds": 31400,
+            "allocated_bytes": 6128,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<lambda>",
+            "nanoseconds": 3100,
+            "allocated_bytes": 2800,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<lambda>",
+            "nanoseconds": 9900,
+            "allocated_bytes": 1616,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<lambda>",
+            "nanoseconds": 17500,
+            "allocated_bytes": 8424,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<lambda>",
+            "nanoseconds": 6700,
+            "allocated_bytes": 2512,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<lambda>.1",
+            "nanoseconds": 1500,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<lambda>.1",
+            "nanoseconds": 302900,
+            "allocated_bytes": 95144,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<lambda>.1",
+            "nanoseconds": 45900,
+            "allocated_bytes": 11408,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<lambda>.1",
+            "nanoseconds": 1800,
+            "allocated_bytes": 576,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<lambda>.1",
+            "nanoseconds": 600,
+            "allocated_bytes": 0,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<lambda>.1",
+            "nanoseconds": 800,
+            "allocated_bytes": 160,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<lambda>.1",
+            "nanoseconds": 200,
+            "allocated_bytes": 24,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<lambda>.1",
+            "nanoseconds": 24500,
+            "allocated_bytes": 5072,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<lambda>.1",
+            "nanoseconds": 6800,
+            "allocated_bytes": 784,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<lambda>.1",
+            "nanoseconds": 4600,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<lambda>.1",
+            "nanoseconds": 14200,
+            "allocated_bytes": 3184,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<lambda>.1",
+            "nanoseconds": 5500,
+            "allocated_bytes": 2800,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<lambda>.1",
+            "nanoseconds": 7500,
+            "allocated_bytes": 1376,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<lambda>.1",
+            "nanoseconds": 16200,
+            "allocated_bytes": 6864,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<lambda>.1",
+            "nanoseconds": 10500,
+            "allocated_bytes": 2512,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.optimize",
+            "function": "<module>",
+            "nanoseconds": 102475200,
+            "allocated_bytes": 37217552,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.target",
+            "function": "<module>",
+            "nanoseconds": 16158800,
+            "allocated_bytes": 1230272,
+            "calls": 1
+          }
+        ],
+        "stderr": null,
+        "artifact_sha256": "dc17e3054b39988ba85426788c76c0c4fa46b675f9ee74468285409191a24f0c"
+      }
+    ],
+    "simplify": [
+      {
+        "status": "passed",
+        "returncode": 0,
+        "milliseconds": 81.783289,
+        "cpu_milliseconds": 81.37700000000011,
+        "phases": [
+          {
+            "phase": "pipeline.lower",
+            "function": "<module>",
+            "nanoseconds": 5662100,
+            "allocated_bytes": 1396288,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<main>",
+            "nanoseconds": 64000,
+            "allocated_bytes": 1968,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<main>",
+            "nanoseconds": 479600,
+            "allocated_bytes": 43008,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<main>",
+            "nanoseconds": 5809000,
+            "allocated_bytes": 1113552,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<main>",
+            "nanoseconds": 20200,
+            "allocated_bytes": 592,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<main>",
+            "nanoseconds": 2000,
+            "allocated_bytes": 0,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<main>",
+            "nanoseconds": 3800,
+            "allocated_bytes": 160,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<main>",
+            "nanoseconds": 600,
+            "allocated_bytes": 24,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<main>",
+            "nanoseconds": 12445800,
+            "allocated_bytes": 460984,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<main>",
+            "nanoseconds": 30800,
+            "allocated_bytes": 224,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<main>",
+            "nanoseconds": 12500,
+            "allocated_bytes": 1968,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<main>",
+            "nanoseconds": 455300,
+            "allocated_bytes": 159200,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<main>",
+            "nanoseconds": 11900,
+            "allocated_bytes": 3936,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<main>",
+            "nanoseconds": 311000,
+            "allocated_bytes": 96760,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<main>",
+            "nanoseconds": 8258600,
+            "allocated_bytes": 5034280,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<main>",
+            "nanoseconds": 122400,
+            "allocated_bytes": 6872,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<lambda>",
+            "nanoseconds": 6500,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<lambda>",
+            "nanoseconds": 92400,
+            "allocated_bytes": 11576,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<lambda>",
+            "nanoseconds": 51400,
+            "allocated_bytes": 7704,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<lambda>",
+            "nanoseconds": 2700,
+            "allocated_bytes": 576,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<lambda>",
+            "nanoseconds": 700,
+            "allocated_bytes": 0,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<lambda>",
+            "nanoseconds": 2400,
+            "allocated_bytes": 160,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<lambda>",
+            "nanoseconds": 100,
+            "allocated_bytes": 24,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<lambda>",
+            "nanoseconds": 26600,
+            "allocated_bytes": 8544,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<lambda>",
+            "nanoseconds": 900,
+            "allocated_bytes": 224,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<lambda>",
+            "nanoseconds": 2000,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<lambda>",
+            "nanoseconds": 4400,
+            "allocated_bytes": 2480,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<lambda>",
+            "nanoseconds": 5000,
+            "allocated_bytes": 2800,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<lambda>",
+            "nanoseconds": 9500,
+            "allocated_bytes": 1616,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<lambda>",
+            "nanoseconds": 16200,
+            "allocated_bytes": 8424,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<lambda>",
+            "nanoseconds": 6200,
+            "allocated_bytes": 2512,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<lambda>.1",
+            "nanoseconds": 1300,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<lambda>.1",
+            "nanoseconds": 230400,
+            "allocated_bytes": 95480,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<lambda>.1",
+            "nanoseconds": 53300,
+            "allocated_bytes": 11408,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<lambda>.1",
+            "nanoseconds": 1200,
+            "allocated_bytes": 576,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<lambda>.1",
+            "nanoseconds": 200,
+            "allocated_bytes": 0,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<lambda>.1",
+            "nanoseconds": 400,
+            "allocated_bytes": 160,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<lambda>.1",
+            "nanoseconds": 100,
+            "allocated_bytes": 24,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<lambda>.1",
+            "nanoseconds": 15700,
+            "allocated_bytes": 5072,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<lambda>.1",
+            "nanoseconds": 3800,
+            "allocated_bytes": 784,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<lambda>.1",
+            "nanoseconds": 1700,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<lambda>.1",
+            "nanoseconds": 2600,
+            "allocated_bytes": 2048,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<lambda>.1",
+            "nanoseconds": 4200,
+            "allocated_bytes": 2800,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<lambda>.1",
+            "nanoseconds": 4200,
+            "allocated_bytes": 1376,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<lambda>.1",
+            "nanoseconds": 9800,
+            "allocated_bytes": 6864,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<lambda>.1",
+            "nanoseconds": 5200,
+            "allocated_bytes": 2512,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.optimize",
+            "function": "<module>",
+            "nanoseconds": 28704700,
+            "allocated_bytes": 7118296,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.target",
+            "function": "<module>",
+            "nanoseconds": 2631600,
+            "allocated_bytes": 1044336,
+            "calls": 1
+          }
+        ],
+        "stderr": null,
+        "artifact_sha256": "0862c651cc4b3ed18844d969c131d8d6287ae315405d5f6a5877c703217f56d1"
+      },
+      {
+        "status": "passed",
+        "returncode": 0,
+        "milliseconds": 72.516075,
+        "cpu_milliseconds": 72.14200000000001,
+        "phases": [
+          {
+            "phase": "pipeline.lower",
+            "function": "<module>",
+            "nanoseconds": 3960400,
+            "allocated_bytes": 1396320,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<main>",
+            "nanoseconds": 54600,
+            "allocated_bytes": 1968,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<main>",
+            "nanoseconds": 458100,
+            "allocated_bytes": 43008,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<main>",
+            "nanoseconds": 4030500,
+            "allocated_bytes": 1113416,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<main>",
+            "nanoseconds": 8500,
+            "allocated_bytes": 592,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<main>",
+            "nanoseconds": 1700,
+            "allocated_bytes": 0,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<main>",
+            "nanoseconds": 10400,
+            "allocated_bytes": 160,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<main>",
+            "nanoseconds": 400,
+            "allocated_bytes": 24,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<main>",
+            "nanoseconds": 12129000,
+            "allocated_bytes": 448648,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<main>",
+            "nanoseconds": 34800,
+            "allocated_bytes": 224,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<main>",
+            "nanoseconds": 10500,
+            "allocated_bytes": 1968,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<main>",
+            "nanoseconds": 483500,
+            "allocated_bytes": 159200,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<main>",
+            "nanoseconds": 19000,
+            "allocated_bytes": 3936,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<main>",
+            "nanoseconds": 504200,
+            "allocated_bytes": 109096,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<main>",
+            "nanoseconds": 9520300,
+            "allocated_bytes": 5035080,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<main>",
+            "nanoseconds": 131100,
+            "allocated_bytes": 6872,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<lambda>",
+            "nanoseconds": 6300,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<lambda>",
+            "nanoseconds": 96000,
+            "allocated_bytes": 11576,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<lambda>",
+            "nanoseconds": 51300,
+            "allocated_bytes": 7704,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<lambda>",
+            "nanoseconds": 3900,
+            "allocated_bytes": 576,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<lambda>",
+            "nanoseconds": 900,
+            "allocated_bytes": 0,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<lambda>",
+            "nanoseconds": 1600,
+            "allocated_bytes": 160,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<lambda>",
+            "nanoseconds": 400,
+            "allocated_bytes": 24,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<lambda>",
+            "nanoseconds": 36300,
+            "allocated_bytes": 8544,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<lambda>",
+            "nanoseconds": 1800,
+            "allocated_bytes": 224,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<lambda>",
+            "nanoseconds": 3000,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<lambda>",
+            "nanoseconds": 6600,
+            "allocated_bytes": 2480,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<lambda>",
+            "nanoseconds": 5900,
+            "allocated_bytes": 2800,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<lambda>",
+            "nanoseconds": 12700,
+            "allocated_bytes": 1616,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<lambda>",
+            "nanoseconds": 23000,
+            "allocated_bytes": 8424,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<lambda>",
+            "nanoseconds": 10500,
+            "allocated_bytes": 2512,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<lambda>.1",
+            "nanoseconds": 4100,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<lambda>.1",
+            "nanoseconds": 348800,
+            "allocated_bytes": 95480,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<lambda>.1",
+            "nanoseconds": 58900,
+            "allocated_bytes": 11408,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<lambda>.1",
+            "nanoseconds": 2800,
+            "allocated_bytes": 576,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<lambda>.1",
+            "nanoseconds": 300,
+            "allocated_bytes": 0,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<lambda>.1",
+            "nanoseconds": 1600,
+            "allocated_bytes": 160,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<lambda>.1",
+            "nanoseconds": 100,
+            "allocated_bytes": 24,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<lambda>.1",
+            "nanoseconds": 23700,
+            "allocated_bytes": 5072,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<lambda>.1",
+            "nanoseconds": 7000,
+            "allocated_bytes": 784,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<lambda>.1",
+            "nanoseconds": 3900,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<lambda>.1",
+            "nanoseconds": 5600,
+            "allocated_bytes": 2048,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<lambda>.1",
+            "nanoseconds": 3800,
+            "allocated_bytes": 2800,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<lambda>.1",
+            "nanoseconds": 7600,
+            "allocated_bytes": 1376,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<lambda>.1",
+            "nanoseconds": 15900,
+            "allocated_bytes": 6864,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<lambda>.1",
+            "nanoseconds": 11300,
+            "allocated_bytes": 2512,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.optimize",
+            "function": "<module>",
+            "nanoseconds": 28264300,
+            "allocated_bytes": 7118960,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.target",
+            "function": "<module>",
+            "nanoseconds": 3659600,
+            "allocated_bytes": 1043272,
+            "calls": 1
+          }
+        ],
+        "stderr": null,
+        "artifact_sha256": "1253bba5ba923b468e2c8ecbda4621757f8c57a3e377e92a9ee4c8fa6916d893"
+      },
+      {
+        "status": "passed",
+        "returncode": 0,
+        "milliseconds": 85.729228,
+        "cpu_milliseconds": 85.14300000000003,
+        "phases": [
+          {
+            "phase": "pipeline.lower",
+            "function": "<module>",
+            "nanoseconds": 4154700,
+            "allocated_bytes": 1399272,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<main>",
+            "nanoseconds": 58200,
+            "allocated_bytes": 1968,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<main>",
+            "nanoseconds": 419900,
+            "allocated_bytes": 43008,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<main>",
+            "nanoseconds": 4232300,
+            "allocated_bytes": 1125888,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<main>",
+            "nanoseconds": 17400,
+            "allocated_bytes": 592,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<main>",
+            "nanoseconds": 1600,
+            "allocated_bytes": 0,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<main>",
+            "nanoseconds": 3700,
+            "allocated_bytes": 160,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<main>",
+            "nanoseconds": 500,
+            "allocated_bytes": 24,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<main>",
+            "nanoseconds": 11754900,
+            "allocated_bytes": 448648,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<main>",
+            "nanoseconds": 52200,
+            "allocated_bytes": 224,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<main>",
+            "nanoseconds": 12100,
+            "allocated_bytes": 1968,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<main>",
+            "nanoseconds": 462200,
+            "allocated_bytes": 159200,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<main>",
+            "nanoseconds": 14400,
+            "allocated_bytes": 3936,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<main>",
+            "nanoseconds": 345600,
+            "allocated_bytes": 96760,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<main>",
+            "nanoseconds": 9337000,
+            "allocated_bytes": 5036416,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<main>",
+            "nanoseconds": 144400,
+            "allocated_bytes": 6872,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<lambda>",
+            "nanoseconds": 6200,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<lambda>",
+            "nanoseconds": 108400,
+            "allocated_bytes": 11576,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<lambda>",
+            "nanoseconds": 37600,
+            "allocated_bytes": 7704,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<lambda>",
+            "nanoseconds": 2400,
+            "allocated_bytes": 576,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<lambda>",
+            "nanoseconds": 800,
+            "allocated_bytes": 0,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<lambda>",
+            "nanoseconds": 1700,
+            "allocated_bytes": 160,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<lambda>",
+            "nanoseconds": 100,
+            "allocated_bytes": 24,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<lambda>",
+            "nanoseconds": 26400,
+            "allocated_bytes": 8544,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<lambda>",
+            "nanoseconds": 1200,
+            "allocated_bytes": 224,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<lambda>",
+            "nanoseconds": 1900,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<lambda>",
+            "nanoseconds": 6400,
+            "allocated_bytes": 2480,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<lambda>",
+            "nanoseconds": 3300,
+            "allocated_bytes": 2800,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<lambda>",
+            "nanoseconds": 9900,
+            "allocated_bytes": 1616,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<lambda>",
+            "nanoseconds": 16500,
+            "allocated_bytes": 8424,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<lambda>",
+            "nanoseconds": 10100,
+            "allocated_bytes": 2512,
+            "calls": 1
+          },
+          {
+            "phase": "dom.front",
+            "function": "<lambda>.1",
+            "nanoseconds": 2200,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "sroa",
+            "function": "<lambda>.1",
+            "nanoseconds": 291000,
+            "allocated_bytes": 95480,
+            "calls": 1
+          },
+          {
+            "phase": "early-cse",
+            "function": "<lambda>.1",
+            "nanoseconds": 39500,
+            "allocated_bytes": 11408,
+            "calls": 1
+          },
+          {
+            "phase": "loop-info",
+            "function": "<lambda>.1",
+            "nanoseconds": 1900,
+            "allocated_bytes": 576,
+            "calls": 1
+          },
+          {
+            "phase": "loop-simplify",
+            "function": "<lambda>.1",
+            "nanoseconds": 400,
+            "allocated_bytes": 0,
+            "calls": 1
+          },
+          {
+            "phase": "lcssa",
+            "function": "<lambda>.1",
+            "nanoseconds": 400,
+            "allocated_bytes": 160,
+            "calls": 1
+          },
+          {
+            "phase": "loop-motion",
+            "function": "<lambda>.1",
+            "nanoseconds": 100,
+            "allocated_bytes": 24,
+            "calls": 1
+          },
+          {
+            "phase": "sccp",
+            "function": "<lambda>.1",
+            "nanoseconds": 15100,
+            "allocated_bytes": 5072,
+            "calls": 1
+          },
+          {
+            "phase": "dce",
+            "function": "<lambda>.1",
+            "nanoseconds": 3900,
+            "allocated_bytes": 784,
+            "calls": 1
+          },
+          {
+            "phase": "dom.cleanup",
+            "function": "<lambda>.1",
+            "nanoseconds": 4200,
+            "allocated_bytes": 1536,
+            "calls": 1
+          },
+          {
+            "phase": "combine",
+            "function": "<lambda>.1",
+            "nanoseconds": 2700,
+            "allocated_bytes": 2048,
+            "calls": 1
+          },
+          {
+            "phase": "postdom",
+            "function": "<lambda>.1",
+            "nanoseconds": 2500,
+            "allocated_bytes": 2800,
+            "calls": 1
+          },
+          {
+            "phase": "adce",
+            "function": "<lambda>.1",
+            "nanoseconds": 6100,
+            "allocated_bytes": 1376,
+            "calls": 1
+          },
+          {
+            "phase": "memory-cleanup",
+            "function": "<lambda>.1",
+            "nanoseconds": 12400,
+            "allocated_bytes": 6864,
+            "calls": 1
+          },
+          {
+            "phase": "simplifycfg",
+            "function": "<lambda>.1",
+            "nanoseconds": 9400,
+            "allocated_bytes": 2512,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.optimize",
+            "function": "<module>",
+            "nanoseconds": 27603300,
+            "allocated_bytes": 7120432,
+            "calls": 1
+          },
+          {
+            "phase": "pipeline.target",
+            "function": "<module>",
+            "nanoseconds": 2725600,
+            "allocated_bytes": 1042856,
+            "calls": 1
+          }
+        ],
+        "stderr": null,
+        "artifact_sha256": "79d82d98b81d65ec310fc3033d8e7c4651ee1ff22062c648aa68bf9433095351"
+      }
+    ]
+  }
+}

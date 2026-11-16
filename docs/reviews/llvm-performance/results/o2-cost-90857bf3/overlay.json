@@ -1,0 +1,11 @@
+{
+  "revision": "90857bf3e40f28b4d99014aa06bf2609fbfdd6d6",
+  "purpose": "Diagnostic-only source overlay; real production pipeline/calls, no shipped flags or fallbacks.",
+  "archive_sha256": "65b0e9bae82b2cf5ac759a83170a917ce455bb7fae6d0928dc83f755f332a4ac",
+  "overlay_files": {
+    "src/Msync.Core/Diagnostics/CompilerCostProbe.cs": "432c3f865f5fcc36ce05eb9c3b8cd29845dd7102c58dcdfa0763fbc066602e38",
+    "src/Msync.Compiler/Compiler.Llvm.cs": "00c03a7787fa091be0f7db05395faeaff83f1b18c193744776c7d855ca5adff1",
+    "src/Msync.Compiler/Compiler.cs": "1a397357990473f1fad743bca8f18c38ccedae8ab5597dfa738140ad2bb879c5",
+    "src/Msync.Optimization/Llvm/LlvmInstCombine.Run.cs": "25a4778e855edd0578e2911a5c13268c19d06fdb637467d3109bd88821dcb969"
+  }
+}
