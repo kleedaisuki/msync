@@ -73,9 +73,15 @@ their timings are not representative.
 
 ## Latest local snapshot
 
+[9703b23: current latency, throughput and telemetry analysis](docs/design/benchmark-telemetry-9703b23.md)
+records ten successful standard-scale applications, a Set compilation crash,
+all other serial groups, 1,152 checked concurrent requests and a same-artifact
+Auto/Off tiering experiment. It is a partial application baseline, not a clean
+full-suite pass or a paired comparison with the older image.
+
 [04465c4: full product suite and detailed compiler telemetry](docs/design/benchmark-telemetry-04465c4.md)
 records all six groups, standard-scale application routes, editor/session results
-and the separate single-vCPU LSP startup diagnosis.
+and the separate single-vCPU LSP startup diagnosis for that historical image.
 
 ## Interpretation and evolution
 

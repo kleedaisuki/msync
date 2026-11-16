@@ -189,7 +189,7 @@ JOURNEYS: tuple[Journey, ...] = (
     ),
     Journey(
         "regex_remote_path_keeps_raw_home_without_auth",
-        "let remote = ssh://invalid-acceptance-host; let file = remote::~/input.txt; "
+        "let remote = ssh://invalid-acceptance-host; let file = remote @ ~/input.txt; "
         'let text = match file { <^~/input[.]txt$> => { "remote raw" }, '
         '_ => { "wrong" } }; text -> result.txt;',
         {"result.txt": b"remote raw"},
