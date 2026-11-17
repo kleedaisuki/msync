@@ -56,6 +56,8 @@ public static partial class LlvmNativeLowerer
 
         private int Slot(LlvmValue value, int expectedType)
         {
+            if (value is LlvmPhiInstruction phi && layoutPointerAliases?.TryGetValue(phi, out var address) == true)
+                return Slot(address, expectedType);
             if (value is LlvmGlobalVariable lexical && owner.SessionCells.TryGetValue(lexical, out var cell))
                 return SessionCellSlot(lexical, cell);
             if (value is LlvmGlobalVariable global && owner.StaticObjects.TryGetValue(global, out int declaration))

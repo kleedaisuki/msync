@@ -7,6 +7,7 @@ namespace Msync.Runtime.Native;
 public sealed partial class NativeInterpreter
 {
     internal static unsafe nint FrameStoreHandler => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteFrameStore;
+    internal static unsafe nint FrameLoadHandler => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteFrameLoad;
     internal static unsafe nint OffsetLoadHandler => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteOffsetLoad;
     internal static unsafe nint ProjectLoadHandler => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteProjectLoad;
     internal static unsafe nint OffsetStoreHandler => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteOffsetStore;
@@ -26,6 +27,13 @@ public sealed partial class NativeInterpreter
 
     private static NativeStep ExecuteFrameStore(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token) =>
         StoreToAddress(owner, activation.Frame, instruction.A, activation.Frame.Location(instruction.Result), pc + instruction.Span);
+
+    private static NativeStep ExecuteFrameLoad(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
+    {
+        NativeFrame frame = activation.Frame;
+        owner.memory.Copy(frame.Location(instruction.A), frame.Location(instruction.Result));
+        return new NativeStep(pc + instruction.Span);
+    }
 
     private static NativeStep ExecuteOffsetLoad(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
     {
@@ -206,7 +214,9 @@ public sealed partial class NativeInterpreter
     private static NativeStep ExecuteUnary(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
     {
         NativeFrame frame = activation.Frame;
-        frame.SetDatum(instruction.Result, owner.Unary(frame, activation.Execution.Metadata[pc])); return new NativeStep(pc + instruction.Span);
+        if (instruction.Immediate != (long)NativeUnary.HasLayout || !owner.TryGuestLayout(frame, instruction))
+            frame.SetDatum(instruction.Result, owner.Unary(frame, activation.Execution.Metadata[pc]));
+        return new NativeStep(pc + instruction.Span);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -312,8 +322,8 @@ public sealed partial class NativeInterpreter
         NativeAllocation? stored = Volatile.Read(ref state.Allocation);
         if (stored is null)
         {
-            NativeAllocation allocated = new(owner.image.Layout(declaration.Layout), declaration.Layout)
-            { AllocationSite = declaration.Declaration };
+            NativeAllocation allocated = owner.AllocateLogical(owner.image.Layout(declaration.Layout),
+                declaration.Layout, 1, declaration.Declaration, activation.Work.Counters);
             stored = Interlocked.CompareExchange(ref state.Allocation, allocated, null);
             if (stored is null) activation.Work.Counters.Allocation(allocated);
             stored ??= allocated;
@@ -329,6 +339,12 @@ public sealed partial class NativeInterpreter
         return new NativeStep(pc + 1, true);
     }
 
+    private NativeAllocation AllocateLogical(NativeLayout layout, int id, int count, int site,
+        RuntimeProfile.NativeFrameCounters counters)
+    {
+        return guestHeap.NewObject(layout, id, count, site, counters);
+    }
+
     private static NativeStep ExecuteAllocate(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
     {
         if (instruction.C >= 0) return ExecuteAllocateAsync(owner, activation, instruction, pc, token);
@@ -340,7 +356,7 @@ public sealed partial class NativeInterpreter
         }
         else
         {
-            NativeAllocation allocation = new(layout, instruction.A, 1) { AllocationSite = Math.Max(0, instruction.B) };
+            NativeAllocation allocation = owner.AllocateLogical(layout, instruction.A, 1, Math.Max(0, instruction.B), activation.Work.Counters);
             activation.Work.Counters.Allocation(allocation);
             activation.Frame.SetPointer(instruction.Result, allocation.Address);
         }
@@ -358,7 +374,7 @@ public sealed partial class NativeInterpreter
         }
         else
         {
-            NativeAllocation allocation = new(layout, instruction.A, count) { AllocationSite = Math.Max(0, instruction.B) };
+            NativeAllocation allocation = owner.AllocateLogical(layout, instruction.A, count, Math.Max(0, instruction.B), activation.Work.Counters);
             activation.Work.Counters.Allocation(allocation);
             activation.Frame.SetPointer(instruction.Result, allocation.Address);
         }

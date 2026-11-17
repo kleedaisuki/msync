@@ -155,13 +155,15 @@ internal sealed class ReplSession
             }
             using TelemetrySpan? execute = submission?.Begin("execute");
             using IDisposable? owner = execute is null ? null : telemetry?.Timeline?.Attach(execute.Id);
+            execute?.SetAttribute("vm.driver", "inline");
             ProcessCounters? before = execute?.MeasureProcess();
             NativeTierStatistics tiersBefore = execution.TierStatistics;
             try
             {
-                NativeValue result = await execution.ExecuteAsync(module, cancellationToken: cancellation.Token);
+                NativeValue result = execution.ExecuteEntry(module, cancellation.Token);
                 if (result.Kind != NativeKind.Null) await DisplayAsync(result, cancellation.Token);
                 compiler.AcceptSubmission(execution.GetLocalValue);
+                execution.CollectGuestHeap();
                 execute?.Complete();
                 submission?.Complete();
             }

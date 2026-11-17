@@ -26,6 +26,14 @@ internal static class Program
             Console.WriteLine("PASS direct workspace journey and live parent context");
             return;
         }
+        if (args.Contains("--guest-stack"))
+        {
+            await DeepCalls();
+            await StackRoots();
+            await TailStorage();
+            Console.WriteLine("PASS segmented guest calls, retained frames and native tail storage");
+            return;
+        }
         await Inlining();
         await Journeys();
         await BorrowAndReuse();
@@ -178,6 +186,8 @@ internal static class Program
         Check((await interpreter.ExecuteAsync()).AsNumber() == 131328, "Typed tail handoff changed the result");
         var samples = profile.Drain().Where(sample => sample.Name == "vm.function").ToArray();
         Check(samples.Sum(sample => (long)sample.Metrics["tail_argument_buffers"]) == 2, "Tail argument transfer must reuse two nonoverlapping buffers");
+        Check(samples.Sum(sample => (long)sample.Metrics["native_heap_objects"]) >= 2,
+            "Tail buffers did not use the native heap.");
         Check(samples.Sum(sample => (long)sample.Metrics["call_argument_snapshots"]) == 0, "Tail calls packed argument arrays");
         Check(samples.Sum(sample => (long)sample.Metrics["frame_storage_reuses"]) >= 510, "Tail handoff retained old private activations");
     }

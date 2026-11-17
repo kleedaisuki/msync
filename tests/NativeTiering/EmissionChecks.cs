@@ -12,8 +12,10 @@ internal static class EmissionChecks
             throw new InvalidOperationException("Linked execution instructions must not carry managed roots.");
         if (IntPtr.Size == 8 && Marshal.SizeOf<NativeExecutionInstruction>() != 40)
             throw new InvalidOperationException("Linked instructions retained redundant metadata or padding.");
-        if (Marshal.SizeOf<NativeTierContext>() != 40
-            || Marshal.SizeOf<NativeTierSlot>() != 32)
+        if (IntPtr.Size == 8 && (Marshal.SizeOf<NativeTierContext>() != NativeTierLayout.HeaderBytes
+            || Marshal.OffsetOf<NativeTierContext>(nameof(NativeTierContext.GuestEdges)) != NativeTierLayout.GuestEdgesOffset
+            || Marshal.OffsetOf<NativeTierContext>(nameof(NativeTierContext.GuestHostRoots)) != NativeTierLayout.GuestHostRootsOffset
+            || Marshal.SizeOf<NativeTierSlot>() != 32))
             throw new InvalidOperationException("Native descriptor ABI disagrees with the machine emitter.");
         int checks = 1;
         foreach (NativeOp op in Enum.GetValues<NativeOp>())
@@ -30,10 +32,12 @@ internal static class EmissionChecks
                  new(NativeOp.Binary, 3, 2, 1, Immediate: (long)NativeBinary.Less),
                  new(NativeOp.Unary, 3, 3, Immediate: (long)NativeUnary.Not),
                  new(NativeOp.Branch, A: 3, B: 7, C: 8), new(NativeOp.Jump, A: 9),
-                 new(NativeOp.Copy, 2, 1), new(NativeOp.Return, A: 2)], new([], 0, []))],
+                 new(NativeOp.Copy, 2, 1), new(NativeOp.Return, A: 2)], new([], 0, []))
+                { Storage = new(new NativeSlotStorage[4], new NativeInstructionStorage[10]) }],
             [new(TypeKind.Number), new(TypeKind.Bool)], []);
         NativeArtifact.Validate(program);
-        NativeExecutionFunction function = new(new(program, new()), 0, new(NativeJitPolicy.Force));
+        NativeProgram compiled = NativeBackendCompiler.Compile(program, new());
+        using NativeExecutionFunction function = new(new(compiled, new()), 0, new(NativeJitPolicy.Force));
         NativeFastOperation[] operations = [NativeFastOperation.NumberConstant, NativeFastOperation.NumberConstant,
             NativeFastOperation.NumberAdd, NativeFastOperation.NumberNegate, NativeFastOperation.NumberLess,
             NativeFastOperation.BoolNot, NativeFastOperation.Branch, NativeFastOperation.Jump,
@@ -44,7 +48,9 @@ internal static class EmissionChecks
             (nint)0x11111111, (nint)0x22222222, (nint)0x33333333, program.Constants);
         if ((arm.Length & 3) != 0 || BitConverter.ToUInt32(arm) != 0xa9bf7bf3)
             throw new InvalidOperationException("ARM64 native code did not preserve its ABI frame.");
-        if (!windows.AsSpan(0, 6).SequenceEqual(new byte[] { 0x41, 0x54, 0x48, 0x83, 0xec, 0x20 }))
+        if (!windows.AsSpan(0, 2).SequenceEqual(new byte[] { 0x41, 0x54 })
+            || !windows.AsSpan(7, 3).SequenceEqual(new byte[] { 0x48, 0x81, 0xec })
+            || BitConverter.ToInt32(windows, 10) < 32 || BitConverter.ToInt32(windows, 10) % 16 != 0)
             throw new InvalidOperationException("Windows x64 native entry is missing its shadow space.");
         Directory.CreateDirectory(".temp/native-tiering");
         File.WriteAllBytes(".temp/native-tiering/arm64-native.bin", arm);

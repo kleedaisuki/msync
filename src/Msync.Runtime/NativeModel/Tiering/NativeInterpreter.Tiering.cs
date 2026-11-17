@@ -44,7 +44,7 @@ public sealed partial class NativeInterpreter
         NativeExecutionImage? cached = Volatile.Read(ref lastExecutionImage);
         if (cached is null || !ReferenceEquals(cached.Image, selected))
         {
-            cached = executableImages.GetValue(selected, image => new(image, tierOptions));
+            cached = executableImages.GetValue(selected, image => new(image, tierOptions, scopedGuestValues));
             Volatile.Write(ref lastExecutionImage, cached);
         }
         return cached.Function(index);
@@ -81,7 +81,15 @@ public sealed partial class NativeInterpreter
                 ReturnScalar(activation, NativeKind.Bool, invocation.ReturnBool ? 1UL : 0UL);
                 return new TierOutcome(executable.Metadata.Length, true);
             }
+            if (status == TierInvocation.ReturnNullExit)
+            {
+                ReturnSlot(activation, -1);
+                return new TierOutcome(executable.Metadata.Length, true);
+            }
             if (status == TierInvocation.TailExit) return new TierOutcome(invocation.Pc, false, true);
+            if (status == TierInvocation.MachineCallExit)
+                ThrowTierFailure(activation, executable.Diagnostic(invocation.Pc), invocation.Pc,
+                    new InvalidOperationException("A native closure left its synchronous call frame without returning."));
             if (invocation.Failure is { } failure) ThrowTierFailure(activation, executable.Diagnostic(invocation.Pc), invocation.Pc, failure);
             if (status == TierInvocation.DemandExit)
             {
@@ -124,6 +132,11 @@ public sealed partial class NativeInterpreter
     private unsafe int RunTierSync(TierInvocation invocation, Activation activation, NativeExecutionFunction executable,
         NativeCompiledFunction version, int pc, CancellationToken token)
     {
+        Msync.Runtime.NativeCodePage.Entry entry;
+        try { entry = version.OpenEntry(); }
+        catch (ObjectDisposedException) { return TierInvocation.DisposedExit; }
+        using var code = entry;
+        var jump = (delegate* unmanaged[Cdecl]<nint, int, int>)entry.Address;
         NativeAllocation frameAllocation = activation.Frame.Allocation;
         ref NativeStorage.Data storage = ref frameAllocation.Storage;
         NativeAllocation? ext0 = null, ext1 = null;
@@ -139,25 +152,27 @@ public sealed partial class NativeInterpreter
                 if (!ReferenceEquals(alloc, ext1)) { ext1 = alloc; break; }
             }
         }
-        fixed (byte* frameBytes = storage.RawBytes)
-        fixed (bool* frameInit = storage.InitializedFlags)
-        fixed (byte* ext0Bytes = ext0?.Storage.RawBytes)
-        fixed (bool* ext0Init = ext0?.Storage.InitializedFlags)
-        fixed (byte* ext1Bytes = ext1?.Storage.RawBytes)
-        fixed (bool* ext1Init = ext1?.Storage.InitializedFlags)
+        ref NativeRoot hostRoots = ref (version.Layout.GuestCopies
+            ? ref MemoryMarshal.GetReference(storage.roots.HostRoots) : ref Unsafe.NullRef<NativeRoot>());
+        fixed (nint* frameHostRoots = &Unsafe.As<NativeRoot, nint>(ref hostRoots))
+        fixed (byte* frameBytes = storage.RawSpan)
+        fixed (bool* frameInit = storage.InitializationSpan)
+        fixed (byte* ext0Bytes = ext0 is null ? default : ext0.Storage.RawSpan)
+        fixed (bool* ext0Init = ext0 is null ? default : ext0.Storage.InitializationSpan)
+        fixed (byte* ext1Bytes = ext1 is null ? default : ext1.Storage.RawSpan)
+        fixed (bool* ext1Init = ext1 is null ? default : ext1.Storage.InitializationSpan)
         {
-            invocation.Reset(this, activation, executable, version, token, frameAllocation, (nint)frameBytes + storage.RawOffset, (nint)frameInit + storage.RawOffset, profile is not null,
-                ext0, (nint)ext0Bytes + (ext0?.Storage.RawOffset ?? 0), (nint)ext0Init + (ext0?.Storage.RawOffset ?? 0),
-                ext1, (nint)ext1Bytes + (ext1?.Storage.RawOffset ?? 0), (nint)ext1Init + (ext1?.Storage.RawOffset ?? 0));
+            invocation.Reset(this, activation, executable, version, token, frameAllocation, (nint)frameBytes, (nint)frameInit, profile is not null,
+                ext0, (nint)ext0Bytes, (nint)ext0Init,
+                ext1, (nint)ext1Bytes, (nint)ext1Init);
+            invocation.Memory.Context->GuestHostRoots = (nint)frameHostRoots;
             if (profile is not null)
                 activation.Work.Counters.TierPendingContext(invocation.Memory.HadGlobalPending, invocation.Memory.HasRelevantPending);
             try
             {
                 while (true)
                 {
-                    int status;
-                    try { status = version.Run(invocation.Handle, pc); }
-                    catch (ObjectDisposedException) { return TierInvocation.DisposedExit; }
+                    int status = jump(invocation.Handle, pc);
                     invocation.Memory.Flush(activation.Work.Counters, tierCounters, status);
                     tierCounters.Entered();
                     activation.Work.Counters.TierEntry();
@@ -175,6 +190,7 @@ public sealed partial class NativeInterpreter
                     tierCounters.Poll();
                     token.ThrowIfCancellationRequested();
                     pc = invocation.Pc;
+                    if (guestHeapWorker != 0 && guestHeap.WantsActiveCollection) CollectActiveGuestHeap(activation, pc);
                     invocation.Memory.Continue();
                 }
             }
@@ -215,6 +231,7 @@ public sealed partial class NativeInterpreter
     private static unsafe int TierBridge(nint handle, int pc)
     {
         TierInvocation state = TierState(handle);
+        if (state.Observed) state.BridgeCalls++;
         long visited = 0, polls = 0, bridgeDirect = 0, bridgeFallback = 0;
         NativeInterpreter owner = state.Owner;
         Activation activation = state.Activation;
@@ -226,6 +243,7 @@ public sealed partial class NativeInterpreter
         NativeMemory mem = owner.memory;
         NativeTierMemory tierMemory = state.Memory;
         bool observed = state.Observed;
+        bool machineClosures = tierMemory.TracksMachineClosures;
         CancellationToken token = state.Token;
         try
         {
@@ -241,7 +259,31 @@ public sealed partial class NativeInterpreter
                 ref readonly NativeExecutionInstruction exec = ref instructions[pc];
                 if (exec.Op == NativeOp.Call && exec.Result >= 0 && exec.Handler != DirectCallHandler
                     && activation.ReturnDestination.IsNull && owner.IsTailCall(activation, pc)) return TierInvocation.TailExit;
-                if (observed) executable.Visit(activation.Work.Counters, pc);
+                if (observed)
+                {
+                    executable.Visit(activation.Work.Counters, pc);
+                    if (operations[pc].IsGuestAccess())
+                    {
+                        nint* edges = (nint*)tierMemory.Context->GuestEdges;
+                        if (operations[pc] == NativeFastOperation.GuestView)
+                            activation.Work.Counters.GuestViewFallback();
+                        else if (operations[pc] == NativeFastOperation.GuestCopy)
+                            activation.Work.Counters.GuestCopyFallback(mem.HasAnyPending,
+                                frame.Location(exec.A).IsInitialized);
+                        else if (operations[pc] == NativeFastOperation.GuestHasLayout)
+                        {
+                            executable.TryGuestLayoutCheck(pc, out NativeFrameSlot basis);
+                            activation.Work.Counters.GuestLayoutFallback(mem.HasAnyPending,
+                                edges is null ? 0 : edges[basis.Offset.References]);
+                        }
+                        else
+                        {
+                            executable.TryGuestAccess(pc, out NativeGuestAccess access);
+                            activation.Work.Counters.GuestFieldFallback(mem.HasAnyPending,
+                                edges is not null && edges[access.Base.Offset.References] != 0);
+                        }
+                    }
+                }
                 visited += exec.Span;
                 int nextPc;
                 bool returned = false;
@@ -338,7 +380,8 @@ public sealed partial class NativeInterpreter
                     }
                     case NativeOp.Unary:
                         bridgeDirect++;
-                        frame.SetDatum(exec.Result, owner.Unary(frame, executable.Metadata[pc]));
+                        if (exec.Immediate != (long)NativeUnary.HasLayout || !owner.TryGuestLayout(frame, exec))
+                            frame.SetDatum(exec.Result, owner.Unary(frame, executable.Metadata[pc]));
                         nextPc = pc + exec.Span;
                         break;
                     case NativeOp.Binary when exec.Handler == UnsignedBinaryHandler:
@@ -362,6 +405,11 @@ public sealed partial class NativeInterpreter
                         nextPc = pc + exec.Span;
                         break;
                     }
+                    case NativeOp.Load when exec.Handler == FrameLoadHandler:
+                        bridgeDirect++;
+                        mem.Copy(frame.Location(exec.A), frame.Location(exec.Result));
+                        nextPc = pc + exec.Span;
+                        break;
                     case NativeOp.Load when exec.Handler != ProjectLoadHandler && exec.Handler != OffsetLoadHandler:
                         bridgeDirect++;
                         mem.Copy(frame.Pointer(exec.A), frame.Location(exec.Result));
@@ -424,7 +472,7 @@ public sealed partial class NativeInterpreter
                         }
                         else
                         {
-                            NativeAllocation allocation = new(allocLayout, exec.A, 1) { AllocationSite = Math.Max(0, exec.B) };
+                            NativeAllocation allocation = owner.AllocateLogical(allocLayout, exec.A, 1, Math.Max(0, exec.B), activation.Work.Counters);
                             activation.Work.Counters.Allocation(allocation);
                             frame.SetPointer(exec.Result, allocation.Address);
                         }
@@ -483,6 +531,8 @@ public sealed partial class NativeInterpreter
                     }
                 }
                 if (observed) activation.Work.Counters.Edge(pc + exec.Span - 1, nextPc);
+                if (machineClosures)
+                    tierMemory.RefreshMachineReference(exec.Result);
                 if (mem.HasAnyPending)
                     tierMemory.RefreshPending(exec.Result, exec.Op is NativeOp.Move or NativeOp.Drop ? exec.A : -1);
                 pc = nextPc;
@@ -541,7 +591,14 @@ public sealed partial class NativeInterpreter
             state.Owner.tierCounters.Poll();
             state.Token.ThrowIfCancellationRequested();
             NativeExecutionInstruction instruction = state.Executable.Instructions[pc];
-            if (state.Observed) state.Executable.Visit(state.Activation.Work.Counters, pc);
+            if (state.Observed)
+            {
+                state.Executable.Visit(state.Activation.Work.Counters, pc);
+                if (state.Version.Operations[pc].IsUnaryMath())
+                    state.Activation.Work.Counters.Native(state.Executable.Metadata[pc].Symbol!);
+                else if (state.Version.Operations[pc].IsScalarSelect())
+                    state.Activation.Work.Counters.DirectSelect(1);
+            }
             state.Owner.tierCounters.Operation(true, instruction.Span);
             if (state.Observed) state.Activation.Work.Counters.TierOperation(true, instruction.Span);
             state.Activation.Frame.Set(instruction.Result, result);
@@ -566,7 +623,7 @@ public sealed partial class NativeInterpreter
 
     private sealed unsafe class TierInvocation : IDisposable
     {
-        internal const int ReturnExit = -1, AwaitExit = -2, GuardExit = -3, ErrorExit = -4, PollExit = -5, TailExit = -6, DisposedExit = -7, ReturnNumberExit = -8, ReturnBoolExit = -9, DemandExit = -10;
+        internal const int ReturnExit = -1, AwaitExit = -2, GuardExit = -3, ErrorExit = -4, PollExit = -5, TailExit = -6, DisposedExit = -7, ReturnNumberExit = -8, ReturnBoolExit = -9, DemandExit = -10, ReturnNullExit = -11, MachineCallExit = -12;
         private readonly GCHandle handle;
         internal TierInvocation()
         {
@@ -588,6 +645,7 @@ public sealed partial class NativeInterpreter
             Failure = null;
             Returned = false;
             BridgeFuel = 256;
+            BridgeCalls = 0;
             BridgeVisited = 0;
             BridgePolls = 0;
             BridgeDirect = 0;
@@ -595,15 +653,19 @@ public sealed partial class NativeInterpreter
             Memory.Reset(activation.Frame, owner.memory, executable, version, pinnedFrame, pinnedBytes, pinnedFlags, observed,
                 pinnedExt0, pinnedExt0Bytes, pinnedExt0Flags, pinnedExt1, pinnedExt1Bytes, pinnedExt1Flags);
         }
+        internal long BridgeCalls;
+
         internal void FlushBridge()
         {
             long visited = BridgeVisited, polls = BridgePolls, direct = BridgeDirect, fallback = BridgeFallback;
-            if (visited == 0 && polls == 0 && direct == 0 && fallback == 0) return;
+            long calls = BridgeCalls;
+            if (visited == 0 && polls == 0 && direct == 0 && fallback == 0 && calls == 0) return;
+            BridgeCalls = 0;
             BridgeVisited = 0;
             BridgePolls = 0;
             BridgeDirect = 0;
             BridgeFallback = 0;
-            Owner.tierCounters.BridgeBatch(visited, polls, direct, fallback);
+            Owner.tierCounters.BridgeBatch(visited, polls, direct, fallback, calls);
             if (Observed) Activation.Work.Counters.TierBridgeBatch(visited);
         }
         internal void ClearReferences()

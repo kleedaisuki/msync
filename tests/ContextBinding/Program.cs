@@ -75,7 +75,9 @@ try
     {
         string source = "if $std::fs::exists(./selected) { ($local @ ./source) -> ./destination } else { false }";
         NativeProgram portable = Compiler.Compile(source, "selected.msync", level);
-        NativeProgram residual = Codec(portable with { Stage = ArtifactStage.Executable, Context = binding });
+        // This control retains runtime selection instead of freezing the current filesystem.
+        NativeProgram residual = Codec(NativeBackendCompiler.Compile(
+            portable with { Stage = ArtifactStage.Executable, Context = binding }, new(null, binding)));
         File.Delete(Path.Combine(root, "selected"));
         File.Delete(Path.Combine(root, "destination"));
         Check(!(await Run(residual, Environment.CurrentDirectory)).AsBool() && !File.Exists(Path.Combine(root, "destination")), $"O{level}: unselected transfer executed");

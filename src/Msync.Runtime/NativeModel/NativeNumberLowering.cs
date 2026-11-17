@@ -20,6 +20,7 @@ internal static class NativeNumberLowering
         List<int>[] predecessors = Enumerable.Range(0, flow.Blocks.Count).Select(_ => new List<int>()).ToArray();
         for (int block = 0; block < flow.Blocks.Count; block++)
             foreach (int successor in flow.Blocks[block].Successors) predecessors[successor].Add(block);
+        bool[] loopJoins = predecessors.Select((incoming, block) => incoming.Any(pred => pred >= block)).ToArray();
         Range[]?[] exits = new Range[flow.Blocks.Count][];
         Range[]?[] entries = new Range[flow.Blocks.Count][];
         Dictionary<(int From, int To), (int Slot, Range Range)[]> refinements = [];
@@ -29,7 +30,7 @@ internal static class NativeNumberLowering
             if (function.Slots[slot].Escapes || function.Storage!.Slots[slot].HasFlag(NativeSlotStorage.Escapes)) exposed.Add(slot);
         if (function.Storage!.Instructions.Any(item => item.HasFlag(NativeInstructionStorage.FrameAlias)))
             exposed.UnionWith(Enumerable.Range(0, function.Slots.Count));
-        int rounds = 0, transfers = 0;
+        int rounds = 0, transfers = 0, widened = 0;
         bool changed;
         do
         {
@@ -48,11 +49,20 @@ internal static class NativeNumberLowering
                     else for (int slot = 0; slot < state.Length; slot++) state[slot] = Range.Join(state[slot], candidate[slot]);
                 }
                 if (state is null) continue;
-                if (entries[block] is { } previous && predecessors[block].Any(pred => pred >= block))
+                if (entries[block] is { } previous)
                     for (int slot = 0; slot < state.Length; slot++)
-                        if (previous[slot].Known && state[slot].Known)
-                            state[slot] = new(state[slot].Min < previous[slot].Min ? 0 : state[slot].Min,
-                                state[slot].Max > previous[slot].Max ? ExactLimit : state[slot].Max);
+                    {
+                        Range old = previous[slot];
+                        Range next = Range.Join(old, state[slot]);
+                        if (loopJoins[block] && next.Known && next != old)
+                        {
+                            // Keep the widened endpoint on subsequent rounds.
+                            // Replacing it with a freshly narrowed edge can oscillate.
+                            next = new(next.Min < old.Min ? 0 : next.Min, next.Max > old.Max ? ExactLimit : next.Max);
+                            widened++;
+                        }
+                        state[slot] = next;
+                    }
                 if (entries[block] is { } before && before.SequenceEqual(state)) continue;
                 entries[block] = (Range[])state.Clone();
                 NativeControlFlow.Block body = flow.Blocks[block];
@@ -109,6 +119,7 @@ internal static class NativeNumberLowering
         }
         trace?.Metric("blocks", flow.Blocks.Count);
         trace?.Metric("fixed_point.rounds", rounds);
+        trace?.Metric("fixed_point.widened_ranges", widened);
         trace?.Metric("instructions.transferred", transfers);
         trace?.Metric("alias.exposed_slots", exposed.Count);
         return result;

@@ -59,8 +59,27 @@ public static partial class LlvmNativeLowerer
                         : new(NativeOp.Acquire, Slot(call), ArgumentSlot(call, 0), Source: call.Source));
                     break;
                 case LlvmRuntimeValueOperation.HasLayout:
+                    if (TryLayoutTest(call, out bool matches))
+                    {
+                        if (call.Users.Any(user => user is not LlvmCondBrInstruction))
+                            Add(new(NativeOp.Constant, Slot(call),
+                                owner.Constant(new(NativeKind.Bool, Boolean: matches)), Source: call.Source));
+                        trace?.Metric("addresses.layout_tests_folded", 1);
+                        break;
+                    }
                     Add(new(NativeOp.Unary, Slot(call), ArgumentSlot(call, 0), binding.Mode,
                         Immediate: (int)NativeUnary.HasLayout, Source: call.Source));
+                    break;
+                case LlvmRuntimeValueOperation.ProjectAddress:
+                    NativeProjection projection = binding.Projection!;
+                    if (!owner.ProjectionIndices.TryGetValue(projection, out int index))
+                    {
+                        index = owner.Projections.Count;
+                        owner.ProjectionIndices.Add(projection, index);
+                        owner.Projections.Add(projection);
+                    }
+                    Add(new(NativeOp.ProjectAddress, Slot(call), ArgumentSlot(call, 0), index, Source: call.Source));
+                    trace?.Metric("addresses.uniform_projection_cases", projection.Cases.Count);
                     break;
                 case LlvmRuntimeValueOperation.ProcessCall:
                     Add(new(NativeOp.ProcessCall, Slot(call), ArgumentSlot(call, 0), binding.Mode,
@@ -68,6 +87,10 @@ public static partial class LlvmNativeLowerer
                     break;
                 case LlvmRuntimeValueOperation.DemandBool:
                     DemandBool(call);
+                    break;
+                case LlvmRuntimeValueOperation.BindSessionCell:
+                    Add(new(NativeOp.BindLocation, A: binding.Mode, B: ArgumentSlot(call, 0), Source: call.Source));
+                    trace?.Metric("session.import_field_bindings", 1);
                     break;
             }
             trace?.Metric("operations.arguments", call.ArgumentCount);

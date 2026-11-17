@@ -28,25 +28,23 @@ internal static class PreparationImageJourney
             File.WriteAllText(sourceFile, source);
             var options = new ExecutionOptions(WorkingDirectory: work);
             NativeProgram original = Compiler.Compile(source, sourceFile, optimization);
+            Require(original.Backend is null, "The relocatable source must not preselect an executable image.");
             NativeProgram prepared = NativePreparation.Prepare(original, options);
             Require(prepared.ExecutionPlans is { Count: > 0 } &&
                 prepared.Functions[prepared.EntryPoint].Instructions.Any(code => code.Op == NativeOp.ExecutePlan),
                 "The source fixture must actually rewrite contextual selection/transfer into an execution plan.");
-            var before = original.Backend!;
-            var after = prepared.Backend!;
-            Require(!ReferenceEquals(before.Functions[original.EntryPoint], after.Functions[prepared.EntryPoint]),
-                "Preparation retained the stale modified-entry execution image.");
-            Require(ReferenceEquals(before.Connections, after.Connections), "Preparation changed untouched connection indices.");
-            for (int i = 0; i < before.Functions.Count; ++i)
-                if (i != original.EntryPoint) Require(ReferenceEquals(before.Functions[i], after.Functions[i]),
-                    "Preparation rebuilt an untouched function image.");
+            var after = prepared.Backend ?? throw new InvalidOperationException("Preparation did not emit executable code.");
+            Require(after.Functions.Count == original.Functions.Count,
+                "Preparing the entry transfer changed the function identities.");
+            for (int i = 0; i < original.Functions.Count; ++i)
+                if (i != original.EntryPoint) Require(ReferenceEquals(original.Functions[i], prepared.Functions[i]),
+                    "Preparation rewrote the logical instructions of an untouched function.");
             var body = after.Functions[prepared.EntryPoint];
             Require(body.Instructions.Count == prepared.Functions[prepared.EntryPoint].Instructions.Count &&
                 body.RawWritable.Count == prepared.Functions[prepared.EntryPoint].Slots.Count,
                 "Prepared image dimensions disagree with its actual emitted target records.");
-            Require(body.Instructions.Select((instruction, pc) => instruction.Span == 1 && instruction.Operand == pc &&
-                instruction.Handler == NativeBackendHandler.Standard).All(value => value),
-                "Prepared image source indices/handlers are not the emitted baseline stream.");
+            Require(prepared.ExecutionPlans!.All(plan => body.Instructions[plan.Start].Op == NativeOp.ExecutePlan),
+                "The selected executable image did not retain the contextual plan entry.");
             Require(!body.PureSynchronous && !body.ContextFree, "ExecutePlan must retain its effectful/contextual classification.");
             File.WriteAllText(later, "late", new UTF8Encoding(false));
             using MemoryStream bytes = new();
@@ -54,12 +52,15 @@ internal static class PreparationImageJourney
             File.WriteAllBytes(Path.Combine(work, "bound.msyncx"), bytes.ToArray());
             bytes.Position = 0;
             NativeProgram detached = NativeArtifact.Read(bytes);
+            Require(detached.Backend!.Functions[detached.EntryPoint].Instructions.SequenceEqual(body.Instructions)
+                && ReferenceEquals(detached, NativePreparation.Prepare(detached, options)),
+                "Loading the detached executable lost the selected image or repeated contextual preparation.");
             await using (NativeInterpreter runtime = new(detached, options)) await runtime.ExecuteAsync();
             Require(File.ReadAllText(Path.Combine(destination, "first.txt")) == "first", "Prepared transfer output was lost.");
             Require(!File.Exists(Path.Combine(destination, "later.txt")) && !File.Exists(Path.Combine(destination, "ignored.bin")),
                 "Bound fs selection did not preserve its frozen membership.");
             receipts.Add(new { optimization, rewrittenInstructions = body.Instructions.Count,
-                preservedFunctions = before.Functions.Count - 1, executionPlans = prepared.ExecutionPlans!.Count, checkedFiles = 3 });
+                preservedFunctions = original.Functions.Count - 1, executionPlans = prepared.ExecutionPlans!.Count, checkedFiles = 3 });
         }
         string receipt = JsonSerializer.Serialize(new { status = "passed", path = "source-prepare-image", receipts });
         File.WriteAllText(Path.Combine(output, "receipt.json"), receipt);

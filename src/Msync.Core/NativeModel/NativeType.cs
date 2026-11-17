@@ -107,6 +107,7 @@ public sealed class NativeLayout
             ArgumentNullException.ThrowIfNull(field.Type);
             ArgumentNullException.ThrowIfNull(field.Name);
             NativeRepresentation format = NativeRepresentation.Of(field.Type);
+            HasCallableCells |= IsCallableCell(field.Type);
             bytes = Align(bytes, format.Alignment);
             placed[index] = new(field.Type, new(bytes, references), field.Name);
             bytes = checked(bytes + Math.Max(1, format.Bytes));
@@ -127,6 +128,7 @@ public sealed class NativeLayout
         stride = new(Align(Math.Max(1, format.Bytes), Alignment), format.References);
         RawSize = checked(stride.Bytes * count);
         ReferenceCount = checked(stride.References * count);
+        HasCallableCells = IsCallableCell(type);
         repeatedType = type;
         fields = Fields = new RepeatedFields(type, count, stride);
     }
@@ -139,6 +141,7 @@ public sealed class NativeLayout
         stride = element.Extent;
         RawSize = checked(element.RawSize * count);
         ReferenceCount = checked(element.ReferenceCount * count);
+        HasCallableCells = element.HasCallableCells;
         fields = Fields = new RepeatedLayoutFields(element, count);
     }
     public static NativeLayout Repeat(NativeLayout element, int count) => new(element, count);
@@ -171,6 +174,23 @@ public sealed class NativeLayout
         RawSize = bytes;
         ReferenceCount = references;
         Alignment = alignment;
+        HasCallableCells = fields.Any(static field => IsCallableCell(field.Type));
+    }
+
+    private NativeLayout(NativeLayout basis, int rawSize, int alignment)
+    {
+        fields = Fields = basis.Fields;
+        RawSize = rawSize;
+        ReferenceCount = basis.ReferenceCount;
+        Alignment = alignment;
+        HasCallableCells = basis.HasCallableCells;
+    }
+
+    internal NativeLayout AppendRaw(int bytes, int alignment, out int start)
+    {
+        start = Align(RawSize, alignment);
+        int combinedAlignment = Math.Max(Alignment, alignment);
+        return new(this, Align(checked(start + bytes), combinedAlignment), combinedAlignment);
     }
     public NativeLayout(params NativeType[] types)
         : this(types.Select((type, index) => new NativeField(index.ToString(System.Globalization.CultureInfo.InvariantCulture), type))) { }
@@ -180,6 +200,8 @@ public sealed class NativeLayout
     public int RawSize { get; }
     public int ReferenceCount { get; }
     public int Alignment { get; }
+    internal bool HasCallableCells { get; }
+    private static bool IsCallableCell(NativeType type) => type.Kinds == 1UL << (int)NativeKind.Function;
     public NativeOffset Extent => new(RawSize, ReferenceCount);
     internal int Find(NativeOffset offset, NativeType? type = null)
     {

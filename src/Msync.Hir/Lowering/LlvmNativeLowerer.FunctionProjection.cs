@@ -12,6 +12,12 @@ public static partial class LlvmNativeLowerer
         private int functionProjectionValueHints, functionProjectionUseHints, functionProjectionCanonicalHints;
         private int functionProjectionCarrierCopies;
 
+        private int FunctionMemoryProjectionType(LlvmLoadInstruction load, int component)
+        {
+            var structure = LlvmStructType.GetTypeByName(function.Context, "msync.function")!;
+            return FunctionProjectionType(load, AggregateShapeFor(structure).Leaves[component]);
+        }
+
         private int FunctionProjectionType(LlvmValue value, AggregateLeaf leaf)
         {
             if (leaf.FunctionComponent != 1) return leaf.NativeType;

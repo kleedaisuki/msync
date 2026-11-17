@@ -12,6 +12,7 @@ internal sealed partial class NativeCodePage : SafeHandleZeroOrMinusOneIsInvalid
 
     private readonly nuint length;
     private readonly bool windows;
+    private List<NativeCodePage>? dependencies;
 
     private NativeCodePage(nuint length, bool windows) : base(ownsHandle: true)
     {
@@ -26,7 +27,7 @@ internal sealed partial class NativeCodePage : SafeHandleZeroOrMinusOneIsInvalid
         _ => false,
     };
 
-    internal static unsafe NativeCodePage? Create(ReadOnlySpan<byte> code)
+    internal static unsafe NativeCodePage? Create(ReadOnlySpan<byte> code, List<NativeCodePage>? dependencies = null)
     {
         if (!IsSupported || code.IsEmpty) return null;
         bool windows = OperatingSystem.IsWindows();
@@ -39,7 +40,11 @@ internal sealed partial class NativeCodePage : SafeHandleZeroOrMinusOneIsInvalid
         if (page.IsInvalid) return null;
 
         code.CopyTo(new Span<byte>((void*)page.handle, code.Length));
-        if (page.Seal()) return page;
+        if (page.Seal())
+        {
+            page.dependencies = dependencies;
+            return page;
+        }
         page.Dispose();
         return null;
     }
@@ -58,20 +63,32 @@ internal sealed partial class NativeCodePage : SafeHandleZeroOrMinusOneIsInvalid
             && FlushInstructionCache(GetCurrentProcess(), handle, length);
     }
 
-    internal unsafe int RunTier(nint context, int resume)
+    internal Entry OpenEntry()
     {
         bool retained = false;
-        try
-        {
-            DangerousAddRef(ref retained);
-            return ((delegate* unmanaged[Cdecl]<nint, int, int>)handle)(context, resume);
-        }
-        finally { if (retained) DangerousRelease(); }
+        DangerousAddRef(ref retained);
+        return new(this, handle);
     }
 
-    protected override bool ReleaseHandle() => windows
-        ? VirtualFree(handle, 0, Release)
-        : Munmap(handle, length) == 0;
+    internal nint Retain()
+    {
+        bool retained = false;
+        DangerousAddRef(ref retained);
+        return handle;
+    }
+
+    internal readonly ref struct Entry(NativeCodePage owner, nint address)
+    {
+        internal readonly nint Address = address;
+        public void Dispose() => owner.DangerousRelease();
+    }
+
+    protected override bool ReleaseHandle()
+    {
+        if (dependencies is { } pages)
+            foreach (NativeCodePage page in pages) page.DangerousRelease();
+        return windows ? VirtualFree(handle, 0, Release) : Munmap(handle, length) == 0;
+    }
 
     private static partial class LinuxArm64
     {

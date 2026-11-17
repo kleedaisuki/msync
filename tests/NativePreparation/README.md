@@ -9,6 +9,24 @@ known source wrappers, preservation of captured mutation, demanded Bool results,
 iterator membership, directory-merge survivors, and physical symlink aliases. Changed filesystem
 state after binding distinguishes recorded observations from runtime replay.
 
+`python3 scripts/test.py --journey bound-fusion` checks that the detached
+`.mso` binds to actual fused handlers in `.mexe`, including a capture address
+with nonadjacent uses. Running the executable without its source or portable
+input checks shared captured mutation, independent escaped objects, continued
+scalar replacement of local scopes, and dead-transfer elimination in the same
+bound job. Both interpreter-only and forced tier execution use the original
+binding directory while reading current file content.
+
+Run the machine-call journey with the packaged CLI on Linux and Windows x64:
+
+```console
+python tests/NativePreparation/test_machine_call_journey.py --binary <path-to-msync>
+```
+
+It runs detached bound artifacts with JIT off, Auto and Force. On both x64
+platforms it requires native calls with no managed bridge in the scalar
+fixture and native captured calls after replacing a callable through an alias.
+
 `dotnet run --project tests/NativePreparation -c Release` also exercises an
 accepted native IR program whose transfer result already has an address alias.
 The observed failed Bool must survive dead-write analysis, binary round-trip and

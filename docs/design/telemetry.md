@@ -1171,6 +1171,16 @@ lease counts did not establish a throughput benefit. The cache was removed;
 lease/reuse counters retain their previous pool/explicit-chain meaning. See the
 tier-child-pinned receipt and interpretation in native-execution-lowering-v090.md.
 
+### Whole-function native calls
+
+`jit_ssa_machine_call_sites` and `jit_ssa_machine_calls` include both
+machine ABIs. `jit_ssa_register_call_sites` counts emitted register-only call
+sites; `jit_ssa_register_calls` counts their executions.
+`jit_ssa_call_spill_slots` is a compile-time sum of caller-save slots across
+emitted call sites, not a count of guest heap allocations or dynamic spills.
+Counters are in `vm.function`; the native counter pointer is null when
+profiling is disabled.
+
 ### Native bridge representation-copy outcomes
 
 For observed TierBridge Narrow/Convert attempts, vm.function exposes

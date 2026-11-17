@@ -26,11 +26,16 @@ public sealed partial class NativeInterpreter
                 ? NativeValue.FromNumber(BitConverter.UInt64BitsToDouble(bits)) : NativeValue.FromBool(bits != 0));
             return;
         }
+        WriteScalarResult(destination, kind, bits, activation.Work.Counters);
+    }
+
+    private void WriteScalarResult(NativeAddress destination, NativeKind kind, ulong bits, RuntimeProfile.NativeFrameCounters counters)
+    {
         memory.RemovePending(destination);
         NativeStorage.StoreScalarTrusted(destination, kind, bits);
         if (profile is not null)
         {
-            activation.Work.Counters.DirectReturn(scalar: true);
+            counters.DirectReturn(scalar: true);
             memory.RecordScalarWrite(destination, kind);
         }
     }

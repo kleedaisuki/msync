@@ -20,11 +20,25 @@ public static class NativePreparation
     {
         if (program.Stage == ArtifactStage.Executable) return program;
         cancellationToken.ThrowIfCancellationRequested();
-        NativeProgram prepared = !program.Functions.Any(function => function.Instructions.Any(IsContextual))
-            ? program with { Context = binding, Stage = ArtifactStage.Executable, ExecutionPlans = [] }
-            : new NativePreparationState(program, options, cancellationToken, binding: binding, trace: trace?.Detail).Run();
-        return NativeBackendCompiler.Compile(prepared, new(options, binding), trace);
+        // Instruction selection consumes the final code, including relocated plans.
+        var input = program with { Backend = null };
+        var state = (input, binding, options, cancellationToken, detail: trace?.Detail);
+        NativeProgram prepared = trace?.Detail is not { } detail ? Plan(state)
+            : detail.MeasureDetailed("backend.contextualize", state, Plan, metrics: code => new Dictionary<string, ulong>
+            {
+                ["plans"] = (ulong)(code.ExecutionPlans?.Count ?? 0),
+                ["allocation.sites"] = (ulong)code.Allocations.Count,
+                ["entry.instructions"] = (ulong)code.Functions[code.EntryPoint].Instructions.Count
+            });
+        return NativeBackendCompiler.Compile(prepared, new(options, binding), trace, cancellationToken);
     }
+
+    private static NativeProgram Plan((NativeProgram input, BindingContext binding, ExecutionOptions? options,
+        CancellationToken cancellationToken, CompilationTrace? detail) state) =>
+        state.input.Functions.Any(function => function.Instructions.Any(IsContextual))
+            ? new NativePreparationState(state.input, state.options, state.cancellationToken,
+                binding: state.binding, trace: state.detail).Run()
+            : state.input with { Context = state.binding, Stage = ArtifactStage.Executable, ExecutionPlans = [] };
 
     private static bool IsContextual(NativeInstruction instruction) => instruction.Op is NativeOp.Transfer or NativeOp.SelectPath
         || (instruction.Op is NativeOp.CallNative or NativeOp.MakeFunction or NativeOp.ComposeFunction) && instruction.Symbol is { } name && name.StartsWith("fs.", StringComparison.Ordinal)

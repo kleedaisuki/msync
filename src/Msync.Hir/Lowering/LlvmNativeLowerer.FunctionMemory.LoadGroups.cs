@@ -45,14 +45,13 @@ public static partial class LlvmNativeLowerer
                 ++functionComponentLoads;
                 ++functionMemoryLoadGroupsEmitted;
             }
-            if (!group.NeededLeaves[component] && load.Uses.All(use => ReferenceEquals(use.User, group.Inserts[component])))
+            if (!group.NeededLeaves[component]
+                && !load.Uses.Any(use => !ReferenceEquals(use.User, group.Inserts[component]) && RetainedCaptureUse(use)))
             {
                 ++functionMemoryGroupComponentsOmitted;
                 return true;
             }
-            var structure = LlvmStructType.GetTypeByName(function.Context, "msync.function")!;
-            var shape = AggregateShapeFor(structure);
-            int type = FunctionProjectionType(load, shape.Leaves[component]);
+            int type = FunctionMemoryProjectionType(load, component);
             SetSelectedValueType(load, type);
             group.Slots[component] = values[load];
             Add(new(NativeOp.FunctionComponent, values[load], group.Whole, Immediate: component, Source: load.Source));

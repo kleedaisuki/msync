@@ -112,6 +112,11 @@ public static partial class LlvmNativeLowerer
             var use = load.GetOperandUse(0);
             if (use.LogicalType >= 0 && owner.Types[use.LogicalType].Pointee >= 0)
                 return owner.Types[use.LogicalType].Pointee;
+            if (FunctionMemoryComponent(use, load.Type, out _, out int component))
+            {
+                trace?.Metric("carriers.function_memory_projection", 1);
+                return FunctionMemoryProjectionType(load, component);
+            }
             if (LlvmGepOperator.TryGet(load.PointerOperand, out var address) && FunctionFieldCarrier(address) is int field)
                 return field;
             int pointer = FindCarrier(load.PointerOperand, active);

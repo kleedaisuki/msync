@@ -19,6 +19,9 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
     private readonly AsyncLocal<NativeRuntimeContext?> deferredContext = new();
     private NativeRuntimeContext context => deferredContext.Value ?? sessionContext;
     private readonly NativeMemory memory;
+    private readonly NativeGuestHeap guestHeap;
+    private readonly bool scopedGuestValues;
+    private bool guestReferencesExported;
     private readonly AsyncLocal<NativeWorkScope?> currentWork = new();
     private readonly NativeWorkScope executionWork = new(null);
     private StaticState[] statics;
@@ -28,6 +31,7 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
     private readonly ConditionalWeakTable<NativeRange, DatumRange> datumRanges = new();
     private readonly SemaphoreSlim transferSlots;
     private int failedTransfers;
+    private int guestHeapWorker;
     private bool disposed;
 
     public NativeInterpreter(NativeProgram program, ExecutionOptions? options = null,
@@ -55,6 +59,10 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
         int concurrency = Math.Max(1, Math.Min(this.context.Jobs,
             (int)Math.Min(int.MaxValue, this.context.MemoryLimit / Math.Max(1, this.context.BufferSize))));
         transferSlots = new(concurrency);
+        scopedGuestValues = options?.ScopedGuestValues == true;
+        guestHeap = new(scopedGuestValues && NativeCompiledFunction.MachineCallsSupported
+            && tierOptions.Policy is NativeJitPolicy.Auto or NativeJitPolicy.Force,
+            rawEdges: scopedGuestValues && IntPtr.Size == 8);
     }
 
     /// <summary>Publishes a session image without reanchoring existing storage or suspended frames.</summary>
@@ -85,8 +93,8 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
     public NativeValue? GetLocalValue(int slot)
     {
         if (!sessionLocations.TryGetValue(slot, out NativeAddress address) || !memory.TryRead(address, out NativeDatum datum)) return null;
-        if (datum.IsReady) return datum.Value;
-        return datum.Future!.Completion.IsCompletedSuccessfully ? datum.Future.Completion.Result : (NativeValue?)null;
+        if (datum.IsReady) return ExportGuestValue(datum.Value);
+        return datum.Future!.Completion.IsCompletedSuccessfully ? ExportGuestValue(datum.Future.Completion.Result) : (NativeValue?)null;
     }
 
     public int FailedTransfers => Volatile.Read(ref failedTransfers);
@@ -95,7 +103,7 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
         new(Task.Factory.StartNew(() => ExecuteEntry(cancellationToken), cancellationToken,
             TaskCreationOptions.LongRunning, TaskScheduler.Default));
 
-    private NativeValue ExecuteEntry(CancellationToken cancellationToken)
+    internal NativeValue ExecuteEntry(CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         NativeWorkScope? previous = currentWork.Value;
@@ -105,11 +113,14 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
         try
         {
             ValidateInvocation(image.Program.EntryPoint, 0);
+            if (scopedGuestValues && !image.Program.PreserveLocals)
+                guestHeapWorker = Environment.CurrentManagedThreadId;
             NativeDatum result = RunFunction(image.Program.EntryPoint, null, default, cancellationToken);
-            return Demand(result.ResolveAsync(cancellationToken));
+            return ExportGuestValue(Demand(result.ResolveAsync(cancellationToken)));
         }
         finally
         {
+            guestHeapWorker = 0;
             executionWork.CountCompletedTransfers(() => Interlocked.Increment(ref failedTransfers));
             currentWork.Value = previous;
             activeGeneration.Value = previousGeneration;
@@ -129,7 +140,7 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
         ValidateHostPointerArguments(callable, arguments);
         NativeDatum result = await InvokeDatumAsync(callable,
             arguments.Select(static value => new NativeDatum(value)).ToArray(), cancellationToken);
-        return await result.ResolveAsync(cancellationToken);
+        return ExportGuestValue(await result.ResolveAsync(cancellationToken));
     }
 
     private ValueTask<NativeDatum> InvokeDatumAsync(NativeValue callable,
@@ -159,6 +170,8 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
         bool linkedCounters = tierOptions.Policy == NativeJitPolicy.Linked;
         bool observed = profile is not null;
         if (linkedCounters && entering) { tierCounters.LinkedEntry(); activation.Work.Counters.LinkedEntry(); }
+        if (entering && pc == 0 && enableTiering && activation.Function.SsaBody is { } body
+            && !activation.Work.Counters.NeedsSites && TryRunSsa(activation, body, token)) return;
         RunActivationFromSync(activation, pc, null, true, enableTiering, linkedCounters, observed, token, ref tier);
     }
 
@@ -203,7 +216,12 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
             }
             if (step.Returned) return;
             if (observed) owner.Counters.Edge(pc + executable.Instructions[pc].Span - 1, step.Next);
-            if (step.Next <= pc) { if (enableTiering) executable.Backedge(); promotionPoint = true; }
+            if (step.Next <= pc)
+            {
+                if (guestHeapWorker != 0 && guestHeap.WantsActiveCollection) CollectActiveGuestHeap(activation, step.Next);
+                if (enableTiering) executable.Backedge();
+                promotionPoint = true;
+            }
             pc = step.Next;
         }
         ReturnSlot(activation, -1);
@@ -321,7 +339,6 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
             Function = function;
             Frame = frame;
             Execution = execution;
-            Iterators = function.IteratorCount == 0 ? [] : new IAsyncEnumerator<NativeDatum>?[function.IteratorCount];
         }
         internal NativeExecutionFunction Execution { get; }
         internal int FunctionIndex { get; }
@@ -333,7 +350,9 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
         internal NativeAddress ReturnDestination;
         internal TailInvocation? Tail { get; set; }
         internal GuestCall? Call { get; set; }
-        internal IAsyncEnumerator<NativeDatum>?[] Iterators { get; }
+        internal Activation? HeapCaller;
+        internal GuestInvocation Invocation;
+        private IAsyncEnumerator<NativeDatum>?[]? iterators;
         internal Dictionary<int, NativeDatum[]>? Plans;
         internal Dictionary<string, HashSet<NativeFuture>>? Regions;
 
@@ -353,18 +372,29 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
         {
             get
             {
-                for (int index = 0; index < Iterators.Length; index++)
-                    if (Iterators[index] is not null) return true;
+                if (iterators is not null)
+                    foreach (IAsyncEnumerator<NativeDatum>? iterator in iterators)
+                        if (iterator is not null) return true;
                 return false;
             }
         }
+        internal IAsyncEnumerator<NativeDatum>? Iterator(int index) => iterators?[index];
+        internal void SetIterator(int index, IAsyncEnumerator<NativeDatum> iterator) =>
+            (iterators ??= new IAsyncEnumerator<NativeDatum>?[Function.IteratorCount])[index] = iterator;
+        internal IAsyncEnumerator<NativeDatum>? RemoveIterator(int index)
+        {
+            if (iterators is null) return null;
+            IAsyncEnumerator<NativeDatum>? iterator = iterators[index];
+            iterators[index] = null;
+            return iterator;
+        }
         internal async ValueTask CloseIteratorsAsync()
         {
+            if (iterators is null) return;
             List<Exception>? failures = null;
-            for (int index = Iterators.Length - 1; index >= 0; index--)
+            for (int index = iterators.Length - 1; index >= 0; index--)
             {
-                IAsyncEnumerator<NativeDatum>? iterator = Iterators[index];
-                Iterators[index] = null;
+                IAsyncEnumerator<NativeDatum>? iterator = RemoveIterator(index);
                 if (iterator is null) continue;
                 try { await iterator.DisposeAsync(); }
                 catch (Exception error) { (failures ??= []).Add(error); }
@@ -385,6 +415,7 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
             foreach (KeyValuePair<NativeImage, NativeExecutionImage> entry in executableImages) entry.Value.Dispose();
             DisposeTierPool();
             transferSlots.Dispose();
+            guestHeap.Retire(Volatile.Read(ref guestReferencesExported));
             await sessionContext.Connections.ReleaseAsync(sessionContext);
         }
     }

@@ -111,20 +111,31 @@ internal static partial class NativeMachineCode
         {
             if (instruction.Op == NativeOp.Jump) { Advance(pc, instruction.A, 1, layout.Hits[pc]); return; }
             Scalar(instruction.A, NativeKind.Bool, false, pc);
-            Bytes(0x85, 0xc0, 0x0f, 0x84); int otherwise = code.Count; Int(0);
-            Advance(pc, instruction.B, 1, layout.TrueHits[pc]);
+            Bytes(0x85, 0xc0);
+            Conditional(instruction, pc, 1, 0x84);
+        }
+
+        private void Conditional(NativeExecutionInstruction instruction, int pc, int visits, byte otherwiseCondition)
+        {
+            Bytes(0x0f, otherwiseCondition); int otherwise = code.Count; Int(0);
+            Advance(pc, instruction.B, visits, layout.TrueHits[pc]);
             PatchLocal(otherwise);
-            Advance(pc, instruction.C, 1, layout.Hits[pc]);
+            Advance(pc, instruction.C, visits, layout.Hits[pc]);
         }
 
         private void Advance(int pc, int next, int visits, int hit)
         {
-            Bytes(0x41, 0x83, 0x7c, 0x24, 0x14, 0x00, 0x74); int skipHit = code.Count; Bytes(0);
-            Bytes(0x4d, 0x8b, 0x54, 0x24, 0x18, 0x49, 0xff, 0x82); Int(checked(hit * 8));
-            code[skipHit] = (byte)(code.Count - skipHit - 1);
+            RecordHit(hit);
             Bytes(0x41, 0x81, 0x6c, 0x24, 0x20); Int(visits);
             Jump(0x0f, 0x8f, next);
             Bytes(0x41, 0xc7, 0x44, 0x24, 0x10); Int(next); Bytes(0xb8); Int(-5); Jump(0xe9, -1);
+        }
+
+        private void RecordHit(int hit)
+        {
+            Bytes(0x41, 0x83, 0x7c, 0x24, 0x14, 0x00, 0x74); int skipHit = code.Count; Bytes(0);
+            Bytes(0x4d, 0x8b, 0x54, 0x24, 0x18, 0x49, 0xff, 0x82); Int(checked(hit * 8));
+            code[skipHit] = (byte)(code.Count - skipHit - 1);
         }
     }
 

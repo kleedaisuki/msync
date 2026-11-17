@@ -125,8 +125,8 @@ internal static class CallableObjectJourney
             File.WriteAllBytes(Path.Combine(work, "program.native"), bytes.ToArray());
             bytes.Position = 0;
             NativeProgram detached = NativeArtifact.Read(bytes);
-            Program.Require(detached.Backend is not null && detached.Functions.All(function => function.Storage is not null),
-                "Callable Native2 detached program lost target backend/storage.");
+            Program.Require(detached.Backend is null && detached.Functions.All(function => function.Storage is not null),
+                "Callable Native2 detached object must keep storage plans and defer executable selection.");
             await Expect(detached, work, test.Expected);
             executions++;
             artifacts++;

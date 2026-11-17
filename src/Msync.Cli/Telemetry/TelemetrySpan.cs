@@ -88,6 +88,8 @@ internal sealed class TelemetrySpan(TelemetrySession session, string name, strin
         SetMetric("tier.operations", stats.Operations - before.Operations);
         SetMetric("tier.direct_operations", stats.DirectOperations - before.DirectOperations);
         SetMetric("tier.raw_operations", stats.RawOperations - before.RawOperations);
+        SetMetric("tier.bridge_invocations", stats.BridgeInvocations - before.BridgeInvocations);
+        SetMetric("tier.machine_guest_calls", stats.MachineGuestCalls - before.MachineGuestCalls);
         SetMetric("tier.bridge_direct_operations", stats.BridgeDirectOperations - before.BridgeDirectOperations);
         SetMetric("tier.bridge_fallback_operations", stats.BridgeFallbackOperations - before.BridgeFallbackOperations);
         SetMetric("tier.readiness_exits", stats.ReadinessExits - before.ReadinessExits);

@@ -21,14 +21,22 @@ public sealed class NativeExecutionSession : IAsyncDisposable
     public bool IsLocalInitialized(int slot) => interpreter?.IsLocalInitialized(slot) == true;
     public NativeValue? GetLocalValue(int slot) => interpreter?.GetLocalValue(slot);
 
-    public ValueTask<NativeValue> ExecuteAsync(NativeProgram program, CancellationToken cancellationToken = default)
+    public ValueTask<NativeValue> ExecuteAsync(NativeProgram program, CancellationToken cancellationToken = default) =>
+        Prepare(program).ExecuteAsync(cancellationToken);
+
+    internal NativeValue ExecuteEntry(NativeProgram program, CancellationToken cancellationToken) =>
+        Prepare(program).ExecuteEntry(cancellationToken);
+
+    private NativeInterpreter Prepare(NativeProgram program)
     {
         context.AdoptAmbientDirectory();
         program = program with { PreserveLocals = true };
         if (interpreter is null) interpreter = new(program, options, context);
         else interpreter.UpdateProgram(program);
-        return interpreter.ExecuteAsync(cancellationToken);
+        return interpreter;
     }
+
+    internal void CollectGuestHeap() => interpreter?.CollectGuestHeap();
 
     public ValueTask DisposeAsync() => interpreter?.DisposeAsync() ?? ValueTask.CompletedTask;
 }

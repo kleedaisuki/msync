@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import sqlite3
 import subprocess
 from collections.abc import Sequence
@@ -42,6 +43,11 @@ if input is not null {
         fraction = fraction + item;
     };
     io::println(fraction as String);
+    let repeatable = ranges::sequence(2, -1, -0.5);
+    let direct = 0;
+    for item in repeatable { if item == 0 { break; }; direct = direct + item; };
+    for item in repeatable { if item == 0 { break; }; direct = direct + item; };
+    if direct != fraction * 2 { io::println("sequence cursor mismatch"); };
     let zero = ranges::materialize(ranges::sequence(-0, 1, 0.25));
     io::println($std::math::signbit(ranges::at(zero, 0)) as String);
     for first in ranges::sequence(9007199254740992, 9007199254740994, 1) {
@@ -52,6 +58,9 @@ if input is not null {
 """
 
 STALL: str = """
+let warm = 0;
+for item in $std::ranges::iota(0, 2000) { warm = warm + item; };
+if warm != 1999000 { $std::io::println("warmup mismatch"); };
 for item in $std::ranges::sequence(9007199254740992, 9007199254740994, 1) {
     $std::io::println("first");
 };
@@ -64,11 +73,17 @@ def invoke(
     args: Sequence[str],
     *,
     data: bytes = b"",
+    policy: str = "off",
 ) -> subprocess.CompletedProcess[bytes]:
     env: dict[str, str] = dict(os.environ)
-    env["MSYNC_JIT"] = "off"
+    env["MSYNC_JIT"] = policy
+    options: list[str | Path] = ["--no-config"]
+    if "--telemetry-db" in args:
+        config: Path = work / "observer.toml"
+        config.write_text("[telemetry]\nqueue_capacity = 32768\n", encoding="utf-8")
+        options = ["--config", config]
     return subprocess.run(
-        [binary, "--no-config", *args],
+        [binary, *options, *args],
         cwd=work,
         env=env,
         input=data,
@@ -107,6 +122,7 @@ def exercise(
     root: Path,
     count: int,
     rounds: int,
+    verify_machine: bool,
 ) -> dict[str, object]:
     source: Path = root / "numeric.msync"
     source.write_text(PROGRAM, encoding="utf-8", newline="\n")
@@ -181,16 +197,63 @@ def exercise(
             )
             wall[name].append(perf_counter_ns() - start)
 
+    sequence_metrics: dict[str, dict[str, int]] = {}
+    if verify_machine:
+        for policy in ("off", "force"):
+            database: Path = root / f"sequence-{policy}.sqlite"
+            accept(
+                invoke(
+                    hosts["candidate"],
+                    build,
+                    [
+                        "--telemetry-db",
+                        str(database),
+                        "--telemetry-level",
+                        "instructions",
+                        "run",
+                        "numeric.mexe",
+                    ],
+                    data=data,
+                    policy=policy,
+                ),
+                output,
+            )
+            with closing(sqlite3.connect(database)) as connection:
+                metrics: dict[str, int] = dict(
+                    connection.execute("""
+                    SELECT key, SUM(value_int) FROM metrics
+                    WHERE key IN ('native_sequence_opens', 'native_sequence_steps', 'jit_sequence_steps')
+                    GROUP BY key
+                """)
+                )
+            assert metrics["native_sequence_opens"] >= 4, (policy, metrics)
+            assert metrics["native_sequence_steps"] >= count, (policy, metrics)
+            if (
+                policy == "force"
+                and platform.system() in ("Linux", "Windows")
+                and platform.machine().lower() in ("x86_64", "amd64")
+                and count >= 512
+            ):
+                assert metrics["jit_sequence_steps"] >= count - 256, metrics
+            sequence_metrics[policy] = metrics
+
     source.write_text(STALL, encoding="utf-8", newline="\n")
-    result: subprocess.CompletedProcess[bytes] = invoke(
-        hosts["candidate"], root, ["--no-telemetry", "run", source.name]
-    )
-    assert result.returncode != 0 and result.stdout.splitlines() == [b"first"], result
-    assert (
-        b"ranges.sequence step no longer advances the Number value" in result.stderr
-    ), result
+    for policy in ("off", "force") if verify_machine else ("off",):
+        result: subprocess.CompletedProcess[bytes] = invoke(
+            hosts["candidate"],
+            root,
+            ["--no-telemetry", "run", source.name],
+            policy=policy,
+        )
+        assert result.returncode != 0 and result.stdout.splitlines() == [b"first"], (
+            result
+        )
+        assert (
+            b"ranges.sequence step no longer advances the Number value" in result.stderr
+        ), result
     return {
         "routes": all_metrics,
+        "sequence_iteration": sequence_metrics,
         "bound_wall_ns": wall,
         "bound_wall_median_ns": {
             name: median(samples) for name, samples in wall.items() if samples
@@ -205,6 +268,7 @@ def main() -> None:
     parser.add_argument("--count", type=int, default=250_000)
     parser.add_argument("--rounds", type=int, default=0)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--verify-machine", action="store_true")
     args: argparse.Namespace = parser.parse_args()
     if not 1 <= args.count <= 10_000_000:
         parser.error("--count must be in 1..10000000 for the exact binary64 sum oracle")
@@ -217,7 +281,12 @@ def main() -> None:
     (ROOT / ".temp").mkdir(exist_ok=True)
     with TemporaryDirectory(prefix="numeric-range-", dir=ROOT / ".temp") as temporary:
         metrics: dict[str, object] = exercise(
-            next(iter(hosts.values())), hosts, Path(temporary), args.count, args.rounds
+            next(iter(hosts.values())),
+            hosts,
+            Path(temporary),
+            args.count,
+            args.rounds,
+            args.verify_machine,
         )
     report: str = json.dumps(
         {

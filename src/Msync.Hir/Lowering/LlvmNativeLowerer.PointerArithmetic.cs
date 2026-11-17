@@ -192,7 +192,9 @@ public static partial class LlvmNativeLowerer
             }
             var field = PointerField(address, position, preferred);
             if (preferred >= 0 && !NativeTypeRelations.SameStorageRepresentation(owner.Types, field.Type, preferred))
-                throw Unsupported(address, "GEP native field representation for the declared operand view");
+                throw Unsupported(address, $"GEP field {position.Structure?.Name}[{field.Field}] at byte offset " +
+                    $"{position.Offset.GetSExtValue()} in '{function.Name}' has native type #{field.Type} " +
+                    $"({owner.Types[field.Type]}), not declared pointee #{preferred} ({owner.Types[preferred]})");
             int type = owner.Pointer(field.Type);
             int result = Register(type);
             Add(new(NativeOp.AddressOffset, result, Slot(position.Root), position.Layout, field.Field,

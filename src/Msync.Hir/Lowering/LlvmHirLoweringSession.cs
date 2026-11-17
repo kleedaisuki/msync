@@ -17,6 +17,7 @@ public sealed class LlvmHirLoweringSession
                 {
                     ["generation"] = (ulong)state.Number,
                     ["roots"] = (ulong)state.Roots.Count,
+                    ["import.roots"] = (ulong)state.ImportSlots.Count,
                     ["types"] = (ulong)state.Metadata.Types.Count,
                     ["layouts"] = (ulong)state.Metadata.Layouts.Count,
                     ["retained.functions"] = (ulong)(state.Program?.Functions.Count ?? 0)
@@ -64,6 +65,7 @@ public sealed class LlvmHirLoweringSession
         internal readonly int Number;
         internal readonly HirLocationId[] Exports;
         internal readonly List<NativeStatic> Statics;
+        internal readonly List<int> ImportSlots = [];
 
         internal Generation(HirModule module, Generation? previous)
         {
@@ -74,7 +76,13 @@ public sealed class LlvmHirLoweringSession
             Program = previous?.Program;
             Statics = Program?.Statics.ToList() ?? [];
             if (previous is not null) Copy(previous);
-            foreach (var location in Exports.Concat(module.UnresolvedImports).Distinct())
+            // A module activation writes an import in this generation; later
+            // submissions and existing closures still address the same cell.
+            var imports = module.Locations.Select((declaration, index) => (declaration, index))
+                .Where(item => item.declaration.Kind == HirLocationKind.Import
+                    && item.declaration.TemplateOwner is null && item.declaration.Owner == module.Entry)
+                .Select(item => new HirLocationId(item.index));
+            foreach (var location in Exports.Concat(module.UnresolvedImports).Concat(imports).Distinct())
             {
                 if (!Roots.TryGetValue(location, out var root))
                 {
@@ -82,6 +90,8 @@ public sealed class LlvmHirLoweringSession
                     root = new(location, Roots.Count, Metadata.Type(declaration.StorageType, declaration.AdmitsNull), declaration.Name);
                     Roots.Add(location, root);
                 }
+                if (module.Locations[location.Value].Kind == HirLocationKind.Import)
+                    ImportSlots.Add(root.Slot);
                 Map.Locations[new(module.Entry, location)] = root.Slot;
                 Map.Locations[new(module.Locations[location.Value].Owner, location)] = root.Slot;
             }

@@ -29,7 +29,14 @@ public static partial class LlvmHirLowerer
         private void BindScope(HirNode node, HirScopeConstruction construction, LlvmStructType layout, LlvmValue pointer)
         {
             for (int index = 0; index < construction.Fields.Length; index++)
-                locations[construction.Fields[index]] = FieldAddress(layout, pointer, index);
+            {
+                HirLocationId field = construction.Fields[index];
+                LlvmValue address = locations[field] = FieldAddress(layout, pointer, index);
+                if (node.Kind == HirKind.AllocateScope && owner.session is { } session
+                    && session.Roots.TryGetValue(field, out var root))
+                    OperationCall(new(LlvmRuntimeValueOperation.BindSessionCell, root.Slot),
+                        LlvmType.GetVoidTy(owner.context), owner.metadata.RuntimeType(TypeRef.Null), [address]);
+            }
             if (construction.Self is { } self)
                 Add(new LlvmStoreInstruction(Represent(pointer, Hir.Locations[self.Value].StorageType,
                     Hir.Locations[self.Value].AdmitsNull), Address(self)));

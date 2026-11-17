@@ -9,7 +9,7 @@ public static partial class NativeArtifact
 
     private enum CompactSection : byte
     {
-        Header = 1, Types, Layouts, Projections, Statics, Constants, Functions, Debug, Code, Allocations, Plans, Backend
+        Header = 1, Types, Layouts, Projections, Statics, Constants, Functions, Debug, Code, Allocations, Plans, Backend, WholeSsa
     }
 
     private sealed class CompactPool

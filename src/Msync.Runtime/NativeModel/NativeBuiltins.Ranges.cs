@@ -21,7 +21,7 @@ public static partial class NativeBuiltins
         {
             double first = FiniteNumber(args[0], operation), last = FiniteNumber(args[1], operation), step = FiniteNumber(args[2], operation);
             if (step == 0) throw new MsyncException("ranges.sequence requires a nonzero step");
-            return NativeValue.FromRange(new(Sequence(first, last, step, token), TypeRef.Number));
+            return NativeValue.FromRange(NativeRange.Sequence(new(first, last, step, token)));
         }
         NativeRange source = Range(args[0], operation);
         if (operation is "identity" or "all") return args[0];
@@ -61,20 +61,6 @@ public static partial class NativeBuiltins
         return new(operation(source, token), itemType, roots, adapted,
             source.Resolve is null ? null : async cancellation => Adapt(await source.Resolve(cancellation), itemType, operation, cancellation, captures, physicalItemType),
             physicalItemType: physicalItemType);
-    }
-
-    private static async IAsyncEnumerable<NativeValue> Sequence(double first, double last, double step,
-        [EnumeratorCancellation] CancellationToken token)
-    {
-        for (double value = first; step > 0 ? value < last : value > last;)
-        {
-            token.ThrowIfCancellationRequested();
-            yield return NativeValue.FromNumber(value);
-            double next = value + step;
-            if (next == value) throw new MsyncException("ranges.sequence step no longer advances the Number value");
-            value = next;
-        }
-        await Task.CompletedTask;
     }
 
     private static async IAsyncEnumerable<NativeValue> Repeated(NativeValue value, long count,

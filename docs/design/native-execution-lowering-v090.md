@@ -591,6 +591,515 @@ in that producer.
 Preparation relocates unchanged instruction/call plans, removes replaced call
 sites and describes its new constant slots. It does not run alias analysis.
 
+### Bind-time execution selection
+
+A serialized LLVM-produced relocatable object contains the logical instructions
+and their compiler-owned storage plans, but no selected execution image. Binding
+first prepares contextual file operations and relocates the corresponding code,
+allocation sites and call plans. Instruction selection then consumes that final
+code and writes the fused backend to the executable artifact. Loading a bound
+artifact consumes that image without repeating selection or file planning. Older
+relocatable payloads that already contain a backend do not dictate the newly
+bound image. Interactive submissions can still carry a session image directly;
+publishing one does not invoke the contextual file planner.
+
+JSON disassembly exposes both the logical instructions and, when present, the
+selected backend dispatch sites and their spans. Logical profiling still counts
+the original instructions covered by a span. Use the backend sites, rather than
+those logical counts, to determine whether binding removed a dispatch.
+
+The selector folds non-escaping address temporaries into their memory users
+when the producer dominates the access and the base cannot be rebound. A
+numeric frame load/store may then use the tier's direct scalar path; a dynamic
+pointee still needs the existing managed ownership and pending-value path.
+Register planning uses the selected operands, not the eliminated logical
+address slots. Literal globals are not Native addresses: when SimplifyCFG
+sinks whole immutable literal loads through a select, target selection uses
+the literals directly so contextual planning can still freeze file decisions.
+Bind-time liveness is a block dataflow over packed slot sets, expanded once
+to per-PC membership for the selector. This avoids allocating large
+per-instruction hash sets for long straight-line preparation bodies.
+
+A synchronous guest root owns the frame arena: payload and initialization
+bytes are in unmanaged segments, while references remain in a separate
+GC-visible root bank. Nested synchronous calls borrow the arena, and root
+exit frees its segments. The tier consumes those byte addresses without
+creating GC handles for them; escaping allocations retain their existing
+ownership. A tier invocation holds one code-page lease across poll resumes
+and calls the published machine entry through its address.
+
+On Linux and Windows x64, a statically bound call to a fully native scalar leaf can enter
+the callee directly from generated code. The caller borrows one scratch extent
+per activation, builds the ordinary tier context there, and calls the same
+published entry used by the runtime tier driver. The caller's executable
+page retains the callee's page until its own last invocation ends, including
+when a version is retired. No secondary copy of the callee or managed entry
+call is required. Applicable callees have a bounded native body and return
+one exact Number, Bool, or Null. Hot-caller linkage can compile a leaf the
+standalone Auto heuristic had rejected; Auto evaluates the caller after linking.
+Pending inputs resume at the original call before any native capture writes.
+The artifact representation and non-x64 paths are unchanged. Telemetry
+distinguishes linked sites and successful machine calls, including captured
+calls and their targets.
+The hidden context argument follows the same broad pattern as
+[Cranelift's VM context](https://github.com/bytecodealliance/wasmtime/blob/main/cranelift/docs/ir.md);
+publication also tracks the lifetime of referenced code, as in
+[LLVM ORC's dependency model](https://llvm.org/docs/ORCv2.html).
+
+Windows x64 uses the same leaf eligibility, context layout, guards and
+code-page ownership as Linux x64. The x64 emitter puts the child context
+above the Windows home area and caller spills, passes the context and entry
+PC in RCX and EDX, and clears child initialization bytes without clobbering
+RDI. Large combined frames probe the intervening stack pages. Scalar
+floating remainder uses the system UCRT's `fmod` on Windows, so a captured
+leaf with binary64 remainder does not require a managed bridge there.
+These are platform ABI details, not a separate guest call protocol.
+See [Microsoft's x64 calling convention](https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention)
+and [stack probing requirements](https://learn.microsoft.com/en-us/cpp/build/prolog-and-epilog).
+
+The machine-call journey on the Windows .NET 10.0.14 x64 host under Wine 10
+recorded 3,544 completed scalar calls with zero bridge invocations, and
+7,488 captured field calls with matching alias mutations, under both Auto and
+Force. This executes the Windows emitter and Microsoft calling convention,
+but does not substitute for a packaged Native AOT run on Windows.
+
+On Linux x64, a detached two-callee loop (150,000 iterations, five
+alternating pairs pinned to one CPU, telemetry off) went from 414.6 ms to
+42.1 ms with the same artifact. An instruction-profile run at 2,000
+iterations replaced 3,744 managed bridge calls with 3,744 machine calls.
+Command-owned closures now publish capture vectors from the guest allocator.
+Each entry holds the payload and initialization addresses of a scalar capture.
+The collector marks the vector with its environment. A native call sets up
+location captures as pointers to the original cells, not copies; a value
+capture still initializes its private frame slot. Shapes and pending inputs
+are resolved at the call boundary, before the callee writes to shared storage.
+Binary64 remainder uses [libm fmod](https://sourceware.org/glibc/manual/2.24/html_node/Remainder-Functions.html)
+on Linux when the entry is available, rather than entering the value bridge.
+
+Direct LLVM calls include one argument edge per location capture, but Native
+uses the call's evaluated closure descriptor, not those LLVM arguments. Native
+lowering now drops ordinary pointer loads and address producers whose only
+remaining uses are those discarded edges. Function reassembly uses that same
+view of the use list. It keeps volatile/ordered loads under the existing
+[LLVM load contract](https://www.llvm.org/docs/LangRef.html#load-instruction)
+and keeps any producer still needed by the actual closure or a Native input.
+The lowering trace counts capture ABI edges and omitted producers by kind.
+
+Command-owned heap layouts with exact Function fields have a native callable
+vector lane indexed by the existing reference offset. A typed field write or
+representation copy publishes that field's closure vector there. For a field
+load consumed only by the next linked call, generated code loads the vector
+from that offset and does not write a temporary Function value. It can also
+consume a directly preceding composition whose code/name are entry constants
+and whose environment has a published vector. Fallback resumes at the original
+producer, not the call, so it can materialize the full value. CLR root storage
+still retains compatibility references; the new lane does not replace the
+whole root graph. The detached journey replaces a callable through a shared
+scope field in a hot loop and checks both the replacement and the original
+capture's state after collection.
+
+For signal hysteresis (65,536 samples), the compiler omits 40 static capture
+loads, including 24 per hot-loop iteration. An instruction run records
+130,816 field-to-call fusions and 65,408 composition-to-call fusions; bridge
+entries fall from 392,451 to 130,819. Rebuilding the same source with each
+image and running detached artifacts on one CPU with telemetry off (five
+alternating pairs) changes the run median from 470.7 to 103.8 ms, a paired
+median change of -77.4% before native sequence iteration.
+
+Numeric sequence ranges now carry their start, limit and step directly.
+A VM iterator uses a 32-byte cursor in its frame's raw suffix; it does not
+create an async enumerator or enter the GC root graph. External Range
+consumers can still request the original async traversal lazily. Opaque
+iterators retain the existing lifetime and effect scheduling. The range
+cursor retains binary64 stepping, signed zero, both directions, an
+exclusive limit, and the delayed failure if adding the step stops
+advancing. The x64 tier increments and branches directly against this same
+frame state. Lua's [numeric loops](https://www.lua.org/source/5.4/lvm.c.html)
+similarly keep the arithmetic progression in frame-local state, but use
+different endpoint and overflow semantics. The profile distinguishes
+sequence opens, yields and machine-side yields.
+
+Field-to-call fusion also covers one intervening pure scalar argument
+operation on a private destination. It reads the field first and executes
+the arithmetic before entry; on a pending operand the original sequence
+is still materialized in order. The signal loop no longer crosses the
+bridge in steady state: 65,407 advances and 65,408 nonadjacent field
+calls run as machine code, while the full execution records three bridge
+entries, down from 130,819. On the same bound artifact, five alternating
+single-CPU runs with telemetry off change the median from 112.8 to 62.9 ms
+(paired median -42.4%). The detached heap journey also sweeps 19 times
+while a numeric cursor is open, reclaiming about 78,000 dead objects.
+
+Signal hysteresis, 65,536 samples, one CPU, five alternating telemetry-off runs
+of the same artifact: median 1,182.4 to 490.7 ms in the final stack/capture
+image. Closure linkage and native remainder/Null handling are included.
+Separate instruction runs record 261,632
+machine calls and 842,018 to 392,451 bridge entries. The alias-and-sweep
+journey also checks both JIT policies after collecting over 16,000 dead objects.
+
+Ordinary call continuations now use the activation chain already owned by the
+segmented guest stack; there is no parallel list of suspended callers. Tail
+selection consumes the compiled private-slot flags, and its two alternating
+argument buffers use the guest heap. The collector treats the cached buffer
+and active incoming buffer as roots. The detached O0 journey exercises
+20,000 non-tail calls followed by 100,001 tail swaps and checks matching
+push/resume counts and exactly two allocated argument buffers. This reuses the
+current call record as in [Lua's tail entry](https://www.lua.org/source/5.4/ldo.c.html),
+but keeps alternating parameter buffers because an incoming parameter can
+still borrow a cell in the previous buffer until the next snapshot is written.
+
+Bool/Number selects use typed machine loads of the chosen arm only. A
+pending condition or chosen arm still transfers control to the existing
+semantic handler. Instruction telemetry distinguishes machine selects and
+actual managed bridge invocations from operations dispatched inside a bridge.
+
+Command, embedded, and REPL execution use the same non-moving guest heap for
+object payloads and initialization flags. Explicit objects, escaping frame
+cells, closure environments, and interpreter-created ready range snapshots
+use unmanaged slabs. Block headers and free-list links live in those slabs;
+sweep coalesces dead blocks and subsequent allocations reuse them before
+growing. A command can sweep at interpreter backedges and machine poll exits,
+tracing active frames as well as statics and retained literals. The REPL also
+sweeps between submissions, adding its persistent cells to the roots.
+Pending work and opaque active iterators defer active collection. Embedded
+interpreters do not sweep while their public value exports can be retained
+outside the VM's root set. Disposal transfers slab lifetime to one lease in
+that case so existing address aliases keep working; other instances release
+their slabs on disposal.
+
+Scoped 64-bit command and REPL execution store same-arena object edges in an
+unmanaged pointer lane in both stack segments and heap blocks. A canonical
+closure environment uses the same lane with a low-bit tag. Typed reads and
+writes select the lane by value kind; only copies across different storage
+representations materialize and classify a generic root. The CLR lane still
+holds host resources and type metadata, not a second copy of each guest edge.
+Even an empty Scope has a unique native block. A live block header identifies a
+reusable allocation descriptor; sweeping returns that descriptor and any
+canonical environment view to the next lifetime. A second composition of the
+same live environment still has its own callable identity. Public embedding
+does not recycle exposed descriptors. The mark frontier is native and queues
+each local object once; hosted resource graphs retain the compatibility tracer.
+
+`heap.collect` records the live bytes, reusable extent, and reclaimed blocks
+or the reason a requested collection was deferred, as well as raw object and
+edge counts and frontier capacity. The `guest-heap-repl` journey checks stable
+live size and block reuse across REPL submissions, and keeps cycles reachable
+via an active frame, closure, and range snapshot in a bound command under both
+interpreter and JIT policies. The machine call journey also overwrites 40,000
+captured functions through a Scope field, preserving an independent live
+closure while checking that the majority of guest environment views are reused.
+
+LLVM byte offsets identify fields within a declared storage view; they are not
+the VM's split byte/reference offsets. CSE keys typed GEPs by storage view and
+logical carrier as well as their base/offset. Select and phi folds retain typed
+field addresses rather than selecting a variable LLVM byte offset. Aggregate
+memory transforms keep a callable whole when it would otherwise be expanded
+into independent pointer loads/stores, and carrier selection uses the same
+function-component mapping as emission for any remaining component loads.
+Iterator operations retain their individual call sites because tokens lower to
+immediate cursor IDs scoped to a single activation, not runtime pointer values.
+
+At bind time, unsigned-number range propagation now joins with prior block
+entries before widening loop endpoints. This preserves a widened endpoint on
+revisits and prevents a later narrow edge from restarting the same interval
+cycle. The existing numeric-lowering pass reports rounds, transferred
+instructions and the number of widening events.
+
+The official application runner now passes the standard-scale seed-17
+`heap-scheduler`, `set-dedup`, and `bplus-inventory` cases from source, portable
+object and detached executable. The previous AOT image could not compile those
+fixtures. In one telemetry-off Native AOT observation pinned to one CPU, B+
+compiled in 1.67 s, bound in 0.19 s, and ran from the bound artifact in 4.05 s
+(5.72 s on the separate source route). The earlier same-object managed binder
+was stopped after about two minutes while still in numeric range propagation;
+after the fix a separate bind trace saw at most seven rounds per function.
+
+Allocation sampling of the managed build on the same executable exposed two
+unrelated hot-path allocations: `Enum.HasFlag` boxed frame-slot flags on reads
+and copies, and the cached JIT lookup created a captured compiler callback
+before checking for a published entry. The former is now a bit test; the latter
+is created only on the cold compilation path.
+
+On Linux/x64, nine interleaved runs pinned to one CPU of the same 40,000-pair
+cycle workload (80,017 guest allocations, JIT forced, telemetry off) moved the
+median process wall time from 221.5 to 210.9 ms (median paired change -3.9%).
+A separate diagnostics run reports 31.73 to 15.48 MB of process-wide managed
+allocation during execution, including instrumentation, and 77,636 descriptor
+reuses out of 80,017 requests. Native slabs reserve the same 327,840 bytes.
+
+The x64 tier lowers exact Number and Bool field accesses directly from the
+frame's edge lane. The native block header supplies the payload extent, so the
+same base pointer computes both the data and initialization-flag addresses;
+the packed address bytes supply any interior offset. The field displacement
+comes from the bound operand (also for projections with one shared offset),
+not from a field-name lookup or a CLR descriptor. Pending values, uninitialized
+reads and non-native targets use the original linked access. An isolated
+field access between two bridged operations stays in that bridge run rather
+than splitting it into two machine/host transitions. Profiles distinguish
+emitted sites, retained bridge sites, native load/store hits, and redirect causes.
+
+On Linux/x64, 11 alternating runs of the same bound artifacts (one CPU, JIT
+forced, telemetry off) moved the 40,000-iteration shared-field loop from
+89.7 to 25.1 ms (paired median -73.4%). Diagnostics recorded 119,617 direct
+loads, 119,616 direct stores and 199,361 to one bridge entry. The 40,000-pair
+allocation workload moved from 201.9 to 195.9 ms (paired median -3.1%):
+79,846 scalar accesses moved into machine code without increasing its 119,819
+bridge entries. The focused field journey checks both alias writes and exact
+Bool and Number reads under off, auto and force.
+
+For genuinely mixed layouts, the x64 tier and linked interpreter can compare
+the layout ID in a native object header directly. The ID uses the high 16 bits
+of the existing extent word; unknown IDs retain the ordinary lookup. No header
+or payload grew. In the official B+ benchmark, with the same bound artifact,
+five telemetry-off Auto pairs measured 4,404 to 3,511 ms (paired -19.9%).
+A separate profile recorded 1,556,532 machine layout comparisons and
+4,102,845 to 2,928,210 bridge entries.
+
+The HIR lowerer now eliminates the comparison entirely when the producer is
+a known allocation or all admissible layouts map the accessed field to the
+same native byte and reference offsets and the same field contract. It emits
+one typed projection retaining the original layout/ordinal pairs for analysis
+and artifacts. Backend operand linking collapses equal geometry to one fixed
+displacement; no runtime layout ID is retrieved for that projection. Distinct
+LLVM byte offsets are not reinterpreted as a common Native offset. Mixed
+member dispatch remains explicit, and LLVM can reuse its layout comparison
+for an unchanged SSA receiver.
+
+On the official standard-scale B+ workload, this removed 621 static
+`HasLayout` sites (1,680 to 1,059). Separate instrumentation recorded
+2,188,663 to 1,709,684 direct header comparisons and 2,928,210 to 2,823,554
+bridge entries. Five telemetry-off Auto pairs with each image's own artifact
+measured 3,452 to 3,508 ms (paired +0.8%); this lowers dynamic work but does
+not establish a wall-time improvement.
+
+Each anonymous scope already has a concrete LLVM struct and a guest payload
+layout. The source category `Scope` does not specify a universal field
+displacement. When a direct call supplies an allocation or a source call with a
+known concrete result, target lowering can select a fixed entry for that
+argument layout. It traces parameter forwarding only for parameters that feed
+a layout test, reuses variants by function, parameter and layout, and drops
+constant layout branches and their unreachable blocks. The original entry is
+retained for calls without a known layout; function capture and argument
+passing remain unchanged. This does not specialize incremental session entries.
+
+The official corpus B+ case (standard/17, bound, Auto, five telemetry-off pairs,
+one warmup, CPU 12) passed its output oracle. It generated 25 variants with
+15,849 profiled calls, reducing native and linked layout-header comparisons from
+1,709,681 to 1,647,971 while bridge entries remained at 2,823,554. Median
+bound-run wall time moved from 3,659 to 3,633 ms (paired median -0.6%); the bound
+artifact grew from 575,058 to 652,337 bytes. The numeric-record-stream control
+also passed. The B+ measurements establish fewer layout comparisons, not a
+material throughput improvement.
+
+### Passing guest object addresses across machine calls
+
+When a layout test becomes constant, the remaining blocks are emitted along
+the surviving edges. A field-address phi with a single reachable definition
+uses that address directly. Fallthrough leaves the field address next to its
+load for the existing offset fusion; no address slot is copied just to feed a
+load in a later block.
+
+On Linux x64, a bounded machine leaf can read exact guest-object parameters
+and return a scalar using its existing published entry. The caller puts the
+guest payload pointer and interior byte offset in its existing stack scratch.
+The leaf reads scalar fields from this pointer and the bound displacement.
+Read-only borrowed parameters use the same pointer access through the slot's
+edge address. The scratch context has no interpreter handle: an unresolved
+read exits to the original call, not to a bridge owned by the scratch frame.
+Guest stores and mutable captured locations are not part of this entry.
+Codegen records linked pointer call sites and profiles count completed calls
+separately from the existing scalar/captured call families.
+
+In official B+ (standard/17, bound, Auto), six linked sites completed 494
+pointer calls. Managed direct calls fell by exactly 494 (592,489 to 591,995).
+The combined lowering and runtime change reduced bridge entries from 2,823,554
+to 2,792,754 without changing the 1,647,971 layout comparisons. One
+`_Chain::at` instance still accounts for 550,232 of them. Both B+ and the
+numeric-record-stream control passed their output oracles. Telemetry-off B+
+pairs gave +2.0% on CPU 12 (five pairs, 3,895 to 4,111 ms median wall time)
+and -1.2% on CPU 6 (seven pairs, 4,008 to 3,929 ms); this establishes the
+new call path and the reduction in bridge entries, not a throughput win.
+
+### Layout test and branch fusion
+
+When the x64 tier can read an object header directly, an adjacent branch that
+is the only consumer of the layout test uses the comparison flags. The machine
+path does not publish or reload a Boolean frame slot and decrements fuel once
+for the pair. The original branch PC is bridge-only: a host or pending fallback
+materializes the Boolean and consumes it within the same bridge dispatch loop.
+Profiling still attributes both logical instructions and their edges; fused
+native executions are counted separately.
+No artifact or object layout changes. The parallel in LLVM is its
+[x86 flag reuse during compare optimization](https://llvm.org/doxygen/classllvm_1_1X86InstrInfo.html).
+
+On official B+ the bridge-only cold continuation kept 406 fused sites and
+1,014,244 native executions. JIT output shrank from 646,944 to 593,758 bytes.
+Bridge counts did not change; the five same-artifact, telemetry-off CPU-6 pairs
+showed a paired median +4.7% elapsed. This result is not a throughput win.
+
+### Native guest-reference copies
+
+The x64 tier moves an exact scope or nullable scope between fixed frame slots
+by copying the guest edge lanes and packed offset. Both slots must have the
+same representation. It never writes managed references. The separate host
+root lane is pinned only for an activation that emits these copies, and read
+only to detect an occupied host root. Pending data, a missing native lane or
+an occupied host root still use the original operation. This retains the
+guest heap's original ownership and does not move host values into it.
+
+Selection leaves runs of copies between bridged operations in the same bridge
+instead of introducing two extra transitions. Codegen reports selected and
+retained sites, and execution reports completed native copies and redirect
+causes. The on-disk format is unchanged.
+
+Official B+ (standard/17, shared bound artifact, x64 Auto) executed 893,505
+native copies at 132 selected sites with no copy redirects. Bridge entries fell
+from 2,792,754 to 2,070,036 (-25.9%). Five telemetry-off CPU-6 pairs measured
+3,649 to 3,785 ms median wall time and -0.85% paired median change. The numeric
+control triggered no native copies and its bridge and generated-code counts
+were unchanged. Both output oracles passed. This establishes fewer bridge
+entries, not a stable wall-time speedup.
+
+### Inline checked guest-reference forwarding
+
+The x64 tier can inline a statically linked function whose result is just one
+of its nullable scope parameters converted to a single concrete layout.
+Selection recognizes the linked body, not the library name, and discards
+only private null setup. Call-site machine code tests the native object's
+header (null needs no header), then uses the ordinary guest reference copy
+without creating a callee frame. The runtime still evaluates the callable
+and argument expressions as before; the original call handles a mismatch or
+a host/pending input. Call edges and actual frame entries remain separate
+profile measurements. Isolated runs of forwarding calls and copies are kept
+in the bridge rather than adding a new round trip. Neither the object header
+nor the bound artifact format changes.
+
+Official B+ (standard/17, shared bound artifact, x64 Auto) inlined 359,729
+executed calls at 26 sites with no redirects; 17 isolated sites stayed within
+their respective bridges. Bridge entries stayed at 2,070,036. Guest frame
+entries fell from 760,457 to 400,728 and logical instructions from 20,455,434
+to 18,297,060. Managed allocation in the separate profiled run fell from
+297.8 to 188.5 MB. Five telemetry-off CPU-6 pairs all favored the candidate
+(paired median -19.8%; wall-time medians 4,157 to 3,025 ms). The numeric control
+emitted no forwarding sites and its bridge and generated-code counts were
+unchanged. Both output oracles passed.
+
+### Whole-function SSA machine entry
+
+Execution has a separate Linux x64 path for ready, pure scalar
+functions. Target selection reads the optimized LLVM graph, not the serialized
+slot instructions. It retains blocks, scalar values, and phi edge assignments
+in a typed function body. The first call emits a single machine body; the
+selected function does not dispatch partial regions through TierBridge.
+Comparisons and arithmetic use XMM registers, with native state storage for
+pressure and simultaneous copies on interfering phi edges. A backedge budget
+returns only to check cancellation; its continuation resumes the same body.
+
+The first body format accepts Number and Bool arguments and results and has no
+producer of a future. It therefore selects away ready Boolean demands. A
+pending argument or an unsupported whole body uses the existing function
+entry. A direct call with no captures can feed the original arguments into
+native scratch storage and write the result into the caller's destination
+without a callee frame. Full
+instruction-site recording uses the slot executable so its original site IDs
+remain meaningful.
+
+A compact `WholeSsa` section carries these typed bodies in relocatable and
+bound artifacts. Existing artifacts omit the section and run as before on the
+new reader. An older reader that has not learned the section cannot read a
+new artifact containing it. Decode checks the scalar signature, operands and
+definite initialization over the control-flow edges once. The body contains
+no machine code, host pointers, or runtime dependencies. Direct call operands
+carry function IDs, not relocated host addresses.
+This follows the separation of SSA and physical registers documented in
+[LLVM code generation](https://llvm.org/docs/CodeGenerator.html#machine-code-in-ssa-form).
+
+The existing NativeJit `merge` fixture (2,000,000 iterations, initial 1.125) passed
+its binary64 oracle on both x64 Native AOT CLIs. Five alternating source-route
+pairs pinned to CPU 6 with telemetry disabled moved process medians from
+150.1 to 53.7 ms (paired median -62.3%). A separate profile shows one
+`accumulate` machine entry, 702 bytes of code, 488 cancellation polls and no
+slot instruction dispatches in that function. The old route reported
+24,000,012 logical instructions in the function and also reported zero
+TierBridge entries; this isolates bypassing dispatch, not an application-wide
+bridge reduction.
+
+Detached Native AOT verification used the same new executable for both
+artifacts. The old `merge` artifact bound and ran without an SSA body. The
+new artifact bound after the temporary source was removed and ran both as
+`.mso` and `.mexe`, each matching the existing binary64 oracle. The optional
+section added 80 bytes to both artifact stages. For 2,000,000 iterations,
+five telemetry-off CPU-6 pairs measured 121.5 to 37.6 ms median whole-process
+time (paired median -69.0%). The bound profile recorded one frameless
+`accumulate` execution, 702 machine-code bytes, 488 cancellation polls, and
+zero TierBridge entries; the old artifact also reported zero TierBridge
+entries. The existing detached `estimate` fixture matched its oracle and
+recorded 31 frameless entries during warmup of the older caller tier.
+
+#### Direct whole-function machine calls
+
+The source call's evaluated descriptor must denote the same capture-free
+function as its static target. Selection admits it into an SSA body only if
+the target also has an SSA body and can complete without returning a loop
+continuation. This first linker accepts forward-control-flow leaves. At JIT
+publication it resolves each target once and retains its executable page for
+the caller's lifetime. Machine code passes parameters through native stack
+scratch and executes a native call without an interpreter handle or callee
+VM frame. The state-buffer entry follows the
+[System V x64 ABI](https://refspecs.linuxfoundation.org/elf/x86_64-SysV-psABI.pdf).
+A leaf whose values fit in the 14 allocatable XMM lanes uses a private register
+entry instead: arguments arrive in XMM2 onward, literals are created in the
+leaf, and the result comes back in XMM0. The host adapter and native callers
+share the same emitted body. A parallel argument copy uses a scratch register
+to break cycles. Wider leaves keep the native state-buffer ABI.
+
+The emitter computes backwards liveness over the selected control-flow graph
+only for functions with native calls. It saves the intersection of live
+registers after each call with the lanes that its callee can overwrite; phi
+definitions and uses belong to edges. This is the same distinction between
+live ranges and a call's physical register mask used in
+[LLVM machine code generation](https://llvm.org/docs/CodeGenerator.html#call-clobbered-registers).
+The optional profiler records actual register calls separately from total
+machine calls and SSA entries.
+Guest pointer fields and nonleaf resumable native calls are not yet supported.
+
+The detached Native AOT `estimate` fixture runs 8,192 `estimate → step`
+machine calls through one linked site and no SSA entry redirects. The same
+executable running the previous bound artifact recorded 32,353 bridge
+entries; the new artifact recorded 24,192. Both the new relocatable and bound
+images passed the existing oracle after the temporary source was removed.
+The previous whole-SSA `merge` executable also retained its output. Seven
+telemetry-off pairs pinned to CPU 6 gave 175.1 to 164.6 ms process medians
+(paired median -6.0%, five faster pairs).
+
+On the same detached `estimate.mexe`, the register-entry revision executed
+all 8,192 calls through one register site, with three caller-save slots there.
+The caller's emitted body shrank from 449 to 256 bytes. Both AOT binaries
+recorded 24,192 TierBridge entries in the separate profile runs. Eleven
+alternating CPU-6 pairs with telemetry disabled measured process medians of
+148.9 to 138.7 ms (paired median -6.1%, seven faster pairs). The profile run's
+execution span was slower on the candidate, so the process result should
+not be interpreted as a precise per-call estimate. The relocatable artifact,
+the old bound estimate, and the existing one-million-iteration bound merge
+fixture all passed their oracles. Receipt: `.temp/ssa-register-call/results.json`.
+
+The standard seed-17 collection workloads do not enter this whole-function
+SSA tier. The register-entry image's telemetry-off bound medians were 2.762 s
+for B+, 4.358 s for Set and 1.190 s for Heap. Separate bound profiles show
+2.07 M, 2.43 M and 1.14 M bridge invocations respectively; tier compilation
+is 121, 39 and 47 ms in those profiles. These counts are not CPU time.
+Four source-mapped variants of `_Chain::at` account for 9.0 M of B+'s 18.5 M
+logical visits: page keys and children are linked chains even though the
+search indexes them. Linked-node `_heap_link`, `_heap_value` and
+`_heap_node` account for 3.97 M of Heap's 6.62 M visits. Set's ordered-tree
+helpers are hot, but the end-to-end fixture also submits 12,288 separate
+line reads. The console reader schedules each read with `Task.Run`; the main
+thread's demand-wait stack is common with one CPU, but only 29/432 samples
+with a pipe and four CPUs. Do not extrapolate the one-CPU wait share.
+Receipts: `.temp/benchmarks/full-ssa-register-call/applications/result.json`
+and `.temp/benchmarks/collection-cost-register-ssa/`. Source phase spans
+come from the lossless phases-only replay, not the overloaded profile replay.
+
 `NativeImage`, `FrameAllocation` and `NativeExecutionFunction` no longer create
 `ProgramFacts`, `NativeEscapeAnalysis`, or invoke `NativeAllocationSafety` /
 `NativeCallFacts`. Physical ABI layout and machine-code register allocation remain

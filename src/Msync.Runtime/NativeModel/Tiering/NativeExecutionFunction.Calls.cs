@@ -13,14 +13,21 @@ internal sealed partial class NativeExecutionFunction
     private bool reusableFrame;
     private NativeAllocation? spareTailArguments;
 
-    internal NativeArguments CopyTailArguments(NativeArguments source, NativeMemory memory, out bool allocated)
+    internal NativeArguments CopyTailArguments(NativeArguments source, NativeMemory memory, NativeGuestHeap heap,
+        RuntimeProfile.NativeFrameCounters counters, out bool allocated)
     {
         NativeAllocation? storage = Interlocked.Exchange(ref spareTailArguments, null);
         allocated = storage is null;
         FrameAllocation layout = image.Frame(Index);
-        storage ??= new(layout.Parameters);
+        storage ??= heap.NewObject(layout.Parameters, -1, 1, 0, counters);
         source.CopyTo(storage, memory);
         return new(storage, layout.ParameterBorrows, layout.ParameterBorrowCount);
+    }
+
+    internal void MarkCachedTailArguments(NativeGuestHeap heap)
+    {
+        if (Volatile.Read(ref spareTailArguments) is { } storage)
+            heap.Mark(storage.Storage.RawAddress);
     }
 
     internal void ReturnTailArguments(NativeAllocation? storage, NativeMemory memory)
@@ -52,7 +59,8 @@ internal sealed partial class NativeExecutionFunction
     }
 
     internal NativeFrame EnterFrame(NativeEnvironment? environment, NativeArguments arguments, NativeMemory memory,
-        Dictionary<int, NativeAddress>? sessionLocations, out bool reused)
+        Dictionary<int, NativeAddress>? sessionLocations, NativeGuestHeap heap,
+        RuntimeProfile.NativeFrameCounters counters, out bool reused)
     {
         NativeFrame? frame = Interlocked.Exchange(ref spareFrame, null);
         if (frame is null && framePool.TryPop(out frame))
@@ -61,7 +69,7 @@ internal sealed partial class NativeExecutionFunction
         if (frame is not null)
         {
             frame.EnterStack();
-            try { frame.Reset(environment, arguments, sessionLocations); }
+            try { frame.Reset(environment, arguments, sessionLocations, counters); }
             catch
             {
                 memory.ResetFrame(frame.Allocation);
@@ -70,7 +78,7 @@ internal sealed partial class NativeExecutionFunction
             }
             return frame;
         }
-        return new(image, Index, environment, arguments, memory, sessionLocations, null, stack: reusableFrame);
+        return new(image, Index, environment, arguments, memory, sessionLocations, null, reusableFrame, heap, counters);
     }
 
     internal void LeaveFrame(NativeFrame frame, NativeMemory memory)

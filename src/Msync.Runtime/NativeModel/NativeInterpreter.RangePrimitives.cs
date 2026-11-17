@@ -126,15 +126,31 @@ public sealed partial class NativeInterpreter
     private bool DatumMayDefer(NativeDatum value) => !value.IsReady || value.Value.Kind == NativeKind.Range
         && datumRanges.TryGetValue(value.Value.AsRange(), out DatumRange? range) && range.MayDefer;
 
+    private NativeRange ReadySnapshot(IReadOnlyList<NativeDatum> values, TypeRef itemType, NativeType physicalItemType)
+    {
+        NativeLayout element = new(physicalItemType);
+        NativeAllocation storage = guestHeap.NewObject(element, -1, values.Count, 0, currentWork.Value?.Counters ?? default);
+        NativeFieldLayout field = element[0];
+        for (int index = 0; index < values.Count; index++)
+        {
+            NativeValue value = values[index].Value;
+            if (!physicalItemType.Accepts(value))
+                throw new ArgumentException($"{value.Type} is not admitted by the Range's item ABI {physicalItemType}.", nameof(values));
+            NativeStorage.StoreTrusted(physicalItemType, storage.Address.OffsetBy(element.Extent * index + field.Offset, physicalItemType), value);
+        }
+        return NativeRange.FromGuestSnapshot(storage.Address, values.Count, element, itemType);
+    }
+
     private NativeRange DatumSnapshot(IReadOnlyList<NativeDatum> values, TypeRef itemType, NativeType physicalItemType)
     {
         if (values.All(static value => value.IsReady))
         {
-            NativeRange ready = NativeRange.Snapshot(values.Select(static value => value.Value), itemType, physicalItemType);
+            NativeRange ready = ReadySnapshot(values, itemType, physicalItemType);
             if (values.Any(DatumMayDefer)) datumRanges.Add(ready, new(ReadyDatumItems(ready.Items, CancellationToken.None)));
             return ready;
         }
-        NativeAllocation storage = new(NativeLayout.Repeat(physicalItemType, values.Count));
+        NativeAllocation storage = guestHeap.NewObject(NativeLayout.Repeat(physicalItemType, values.Count),
+            -1, 1, 0, currentWork.Value?.Counters ?? default);
         for (int index = 0; index < values.Count; index++) memory.Write(storage.Field(index), values[index]);
         IAsyncEnumerable<NativeDatum> items = SnapshotDatums(storage, CancellationToken.None);
         NativeValue owner = NativeValue.FromAddress(storage.Address);

@@ -160,15 +160,15 @@ internal static class OptimizedExecutionJourney
 
     private static NativeProgram RoundTrip(NativeProgram program, string work)
     {
-        Program.Require(program.Backend is not null && program.Functions.All(function => function.Storage is not null),
-            "The new adapter must supply backend/storage directly, without the old optimizer.");
+        Program.Require(program.Backend is null && program.Functions.All(function => function.Storage is not null),
+            "The adapter must supply storage plans without selecting an executable image.");
         using MemoryStream stream = new();
         NativeArtifact.Write(program, stream);
         File.WriteAllBytes(Path.Combine(work, "program.native"), stream.ToArray());
         stream.Position = 0;
         NativeProgram decoded = NativeArtifact.Read(stream);
-        Program.Require(decoded.Backend is not null && decoded.Functions.All(function => function.Storage is not null),
-            "Native2 roundtrip lost backend/storage required by detached execution.");
+        Program.Require(decoded.Backend is null && decoded.Functions.All(function => function.Storage is not null),
+            "Native2 object roundtrip must keep storage plans and defer executable selection.");
         return decoded;
     }
 

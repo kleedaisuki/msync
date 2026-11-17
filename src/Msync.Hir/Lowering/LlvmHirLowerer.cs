@@ -139,7 +139,9 @@ public static partial class LlvmHirLowerer
             result = LlvmStructType.Create(context, "msync.scope." + index);
             layouts.Add(index, result);
             result.SetBody(hir.ScopeLayouts[index].Fields.Select(field => Type(field.StorageType, field.AdmitsNull)).ToArray());
-            structLayouts.Add(result, metadata.Layout(index));
+            int physical = metadata.Layout(index);
+            structLayouts.Add(result, physical);
+            scopeLayoutsByPhysicalId.TryAdd(physical, result);
             return result;
         }
 

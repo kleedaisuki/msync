@@ -30,9 +30,7 @@ public static partial class LlvmNativeLowerer
             if (load.Type is not LlvmPointerType) return false;
             if (!FunctionMemoryComponent(load.GetOperandUse(0), load.Type, out var location, out int index)) return false;
             if (TryFunctionMemoryLoadGroup(load, location, index)) return true;
-            var structure = LlvmStructType.GetTypeByName(function.Context, "msync.function")!;
-            var shape = AggregateShapeFor(structure);
-            int type = FunctionProjectionType(load, shape.Leaves[index]);
+            int type = FunctionMemoryProjectionType(load, index);
             int storage = location.Type;
             int whole = Register(storage);
             Add(new(NativeOp.Load, whole, FunctionMemoryAddress(location),

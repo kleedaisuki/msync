@@ -127,8 +127,8 @@ internal static class TypeOperationJourney
                 File.WriteAllBytes(Path.Combine(work, "program.native"), bytes.ToArray());
                 bytes.Position = 0;
                 NativeProgram detached = NativeArtifact.Read(bytes);
-                Program.Require(detached.Backend is not null && detached.Functions.All(function => function.Storage is not null),
-                    "Native2 type/object program lost target backend/storage.");
+                Program.Require(detached.Backend is null && detached.Functions.All(function => function.Storage is not null),
+                    "Native2 detached type/object program must keep storage plans and defer executable selection.");
                 NativeValue decoded = await Execute(detached, work);
                 Program.Require(decoded.AsNumber() == test.Expected, $"{work}: detached Native2 result differs.");
                 executions++;

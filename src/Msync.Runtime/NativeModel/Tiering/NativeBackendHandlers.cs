@@ -71,6 +71,7 @@ public sealed partial class NativeInterpreter
         NativeBackendHandler.DirectCall => DirectCallHandler,
         NativeBackendHandler.Nop => NopHandler,
         NativeBackendHandler.FrameStore => FrameStoreHandler,
+        NativeBackendHandler.FrameLoad => FrameLoadHandler,
         NativeBackendHandler.OffsetLoad => OffsetLoadHandler,
         NativeBackendHandler.OffsetStore => OffsetStoreHandler,
         NativeBackendHandler.OffsetBind => OffsetBindHandler,
@@ -86,6 +87,7 @@ public sealed partial class NativeInterpreter
 
     internal static NativeBackendHandler BackendHandlerKind(nint handler, NativeOp op)
     {
+        if (handler == NopHandler) return NativeBackendHandler.Nop;
         foreach (NativeBackendHandler kind in BackendHandlers)
             if (BackendHandlerAddress(kind, op) == handler) return kind;
         throw new InvalidOperationException($"Unregistered backend handler for {op}.");

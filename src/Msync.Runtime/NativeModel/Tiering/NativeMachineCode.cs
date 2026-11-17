@@ -20,12 +20,13 @@ internal static partial class NativeMachineCode
     internal static byte[] Emit(NativeExecutionFunction function, NativeFastOperation[] operations,
         Architecture architecture, bool windows, nint bridge, nint number, nint boolean,
         IReadOnlyList<NativeConstant> constants, out NativeInitializationElisions initializationElisions,
-        NativeTierLayout? layout = null, nint commit = 0)
+        NativeTierLayout? layout = null, nint commit = 0, IReadOnlyDictionary<int, NativeMachineCall>? calls = null,
+        bool guestLeaf = false)
     {
         layout ??= NativeTierLayout.Create(function, operations);
         if (architecture == Architecture.X64)
         {
-            X64 emitter = new(function, operations, constants, layout, windows, bridge, number, boolean, commit);
+            X64 emitter = new(function, operations, constants, layout, windows, bridge, number, boolean, commit, calls, guestLeaf);
             byte[] bytes = emitter.Emit();
             initializationElisions = new(emitter.InitializationChecksElided, emitter.InitializationWritesElided);
             return bytes;
@@ -41,7 +42,8 @@ internal static partial class NativeMachineCode
     }
 
     private sealed partial class X64(NativeExecutionFunction function, NativeFastOperation[] operations,
-        IReadOnlyList<NativeConstant> constants, NativeTierLayout layout, bool windows, nint bridge, nint number, nint boolean, nint commit)
+        IReadOnlyList<NativeConstant> constants, NativeTierLayout layout, bool windows, nint bridge, nint number, nint boolean, nint commit,
+        IReadOnlyDictionary<int, NativeMachineCall>? calls, bool guestLeaf)
     {
         internal int InitializationChecksElided { get; private set; }
         internal int InitializationWritesElided { get; private set; }
@@ -51,8 +53,11 @@ internal static partial class NativeMachineCode
         private readonly Dictionary<(int Pc, bool Demand), int> guardStubs = [];
         private readonly int[] labels = Enumerable.Repeat(-1, function.Instructions.Length + 1).ToArray();
         private readonly IReadOnlyDictionary<int, NativeRegisterRegion> regions = layout.RegionsByPc;
+        private readonly Dictionary<int, int>? fieldCalls = calls?.Where(item => item.Value.Source.HasValue)
+            .ToDictionary(item => item.Value.Source!.Value.Pc, item => item.Key);
         private int ShadowBytes => windows ? 32 : 0;
-        private int StackBytes => ShadowBytes + layout.StackBytes;
+        private int CallScratch => ShadowBytes + layout.StackBytes;
+        private int StackBytes => CallScratch + (calls?.Values.Max(call => call.Leaf.WorkspaceBytes) ?? 0);
         private int tableReference, dispatch, exit, guard;
         internal byte[] Emit()
         {
@@ -88,9 +93,46 @@ internal static partial class NativeMachineCode
                     Control(instruction, pc);
                     continue;
                 }
-                if (operations[pc] is NativeFastOperation.NumberReturn or NativeFastOperation.BoolReturn)
+                if (operations[pc] == NativeFastOperation.SequenceNext)
+                {
+                    SequenceNext(instruction, pc);
+                    continue;
+                }
+                if (operations[pc] == NativeFastOperation.GuestHasLayout)
+                {
+                    GuestHasLayout(instruction, pc);
+                    continue;
+                }
+                if (operations[pc] is NativeFastOperation.GuestCopy or NativeFastOperation.GuestView)
+                {
+                    GuestCopy(instruction, pc, operations[pc] == NativeFastOperation.GuestView ? layout.GuestViews![pc] : null);
+                    continue;
+                }
+                if (operations[pc].IsGuestAccess())
+                {
+                    GuestMemory(instruction, pc);
+                    continue;
+                }
+                if (operations[pc] == NativeFastOperation.MachineCall)
+                {
+                    MachineCall(instruction, pc, calls![pc]);
+                    continue;
+                }
+                if (operations[pc] == NativeFastOperation.MachineFusedCall)
+                {
+                    int callPc = fieldCalls![pc];
+                    NativeMachineCall call = calls![callPc];
+                    MachineCall(function.Instructions[callPc], callPc, call, call.Source);
+                    continue;
+                }
+                if (operations[pc] is NativeFastOperation.NumberReturn or NativeFastOperation.BoolReturn or NativeFastOperation.NullReturn)
                 {
                     ReturnValue(instruction, operations[pc], pc);
+                    continue;
+                }
+                if (operations[pc] == NativeFastOperation.NullConstant)
+                {
+                    NullConstant(instruction, pc);
                     continue;
                 }
 
@@ -101,10 +143,7 @@ internal static partial class NativeMachineCode
                 }
                 if (operations[pc] == NativeFastOperation.Bridge)
                 {
-                    Arguments(pc);
-                    Bytes(0x48, 0xb8); Long(bridge); Bytes(0xff, 0xd0, 0x85, 0xc0);
-                    Jump(0x0f, 0x88, -1);
-                    Jump(0xe9, -3);
+                    EmitBridge(pc);
                     continue;
                 }
                 StoreScalar(instruction, operations[pc], pc, number, boolean);
@@ -152,15 +191,30 @@ internal static partial class NativeMachineCode
 
         private void ReturnValue(NativeExecutionInstruction instruction, NativeFastOperation operation, int pc)
         {
-            bool isBool = operation == NativeFastOperation.BoolReturn;
-            Scalar(instruction.A, isBool ? NativeKind.Bool : NativeKind.Number, false, pc);
+            if (operation == NativeFastOperation.NullReturn)
+            {
+                if (instruction.A >= 0) EmitIsNull(instruction.A, pc);
+            }
+            else Scalar(instruction.A, operation == NativeFastOperation.BoolReturn ? NativeKind.Bool : NativeKind.Number, false, pc);
             Bytes(0x41, 0xc7, 0x44, 0x24, 0x10); Int(pc);
             Bytes(0x41, 0x83, 0x7c, 0x24, 0x14, 0x00, 0x74); int skipHit = code.Count; Bytes(0);
             Bytes(0x4d, 0x8b, 0x54, 0x24, 0x18);
             Bytes(0x49, 0xff, 0x82); Int(layout.Hits[pc] * 8);
             code[skipHit] = (byte)(code.Count - skipHit - 1);
-            Bytes(0xb8); Int(isBool ? -9 : -8);
+            Bytes(0xb8); Int(operation == NativeFastOperation.NullReturn ? -11 : operation == NativeFastOperation.BoolReturn ? -9 : -8);
             Jump(0xe9, -1);
+        }
+
+        private void NullConstant(NativeExecutionInstruction instruction, int pc)
+        {
+            if (layout.TryFixed(instruction.Result, out FixedTierSlot slot))
+            {
+                Bytes(0x41, 0xf6, 0x44, 0x24, 0x24, 0x01); Jump(0x0f, 0x85, GuardTarget(pc, demand: true));
+                StoreInitialized(instruction.Result, slot);
+                Advance(pc, pc + instruction.Span, instruction.Span, layout.Hits[pc]);
+                return;
+            }
+            Jump(0xe9, GuardTarget(pc, demand: true));
         }
 
         private void StoreScalar(NativeExecutionInstruction instruction, NativeFastOperation operation, int pc, nint number, nint boolean)
@@ -245,15 +299,28 @@ internal static partial class NativeMachineCode
             Bytes(0x41, 0xc6, 0x03, 0x00);
         }
 
+        private void Arguments(int pc)
+        {
+            if (windows) { Bytes(0x4c, 0x89, 0xe1, 0xba); Int(pc); }
+            else { Bytes(0x4c, 0x89, 0xe7, 0xbe); Int(pc); }
+        }
+
         private void ProbeStack(int offset)
         {
             Bytes(0xf6, 0x84, 0x24); Int(-offset); Bytes(0); // test byte ptr [rsp - offset], 0
         }
 
-        private void Arguments(int pc)
+        private void EmitBridge(int pc)
         {
-            if (windows) { Bytes(0x4c, 0x89, 0xe1, 0xba); Int(pc); }
-            else { Bytes(0x4c, 0x89, 0xe7, 0xbe); Int(pc); }
+            if (guestLeaf)
+            {
+                Bytes(0x49, 0x83, 0x3c, 0x24, 0x00); // No host handle in a machine-to-machine context.
+                Jump(0x0f, 0x84, GuardTarget(pc, demand: true));
+            }
+            Arguments(pc);
+            Bytes(0x48, 0xb8); Long(bridge); Bytes(0xff, 0xd0, 0x85, 0xc0);
+            Jump(0x0f, 0x88, -1);
+            Jump(0xe9, -3);
         }
 
         private bool Fast(NativeExecutionInstruction instruction, NativeFastOperation operation, int pc)
@@ -273,6 +340,25 @@ internal static partial class NativeMachineCode
         private void Calculate(NativeExecutionInstruction instruction, NativeFastOperation operation, int pc,
             NativeRegisterRegion? region = null, NativeRegisterOperation selected = default)
         {
+            if (operation == NativeFastOperation.FloatRemainder)
+            {
+                Scalar(instruction.A, NativeKind.Number, false, pc);
+                Scalar(instruction.B, NativeKind.Number, true, pc);
+                Bytes(0x48, 0xb8); Long(NativeSystemMath.Remainder); Bytes(0xff, 0xd0);
+                return;
+            }
+            if (operation.IsScalarSelect())
+            {
+                NativeKind kind = operation.IsBoolResult() ? NativeKind.Bool : NativeKind.Number;
+                Scalar(instruction.A, NativeKind.Bool, false, pc);
+                Bytes(0x84, 0xc0, 0x0f, 0x84); int otherwise = code.Count; Int(0);
+                Scalar(instruction.B, kind, false, pc);
+                Bytes(0xe9); int done = code.Count; Int(0);
+                PatchLocal(otherwise);
+                Scalar(instruction.C, kind, false, pc);
+                PatchLocal(done);
+                return;
+            }
             if (UnsignedOperation(operation, region, selected))
             { Unsigned(instruction, operation, pc, region, selected); return; }
             void Operand(int slot, int value, NativeKind kind, bool second)
@@ -291,8 +377,10 @@ internal static partial class NativeMachineCode
             else if (operation == NativeFastOperation.IsNull) EmitIsNull(instruction.A, pc);
             else
             {
-                Operand(instruction.A, selected.A, operation.ExpectsBoolInputs() ? NativeKind.Bool : NativeKind.Number, false);
-                if (operation == NativeFastOperation.BoolNot) Bytes(0x83, 0xf0, 0x01);
+                Operand(region is null && operation.IsUnaryMath() ? operation.FirstOperand(function, pc) : instruction.A,
+                    selected.A, operation.ExpectsBoolInputs() ? NativeKind.Bool : NativeKind.Number, false);
+                if (operation.IsUnaryMath()) UnaryMath(operation);
+                else if (operation == NativeFastOperation.BoolNot) Bytes(0x83, 0xf0, 0x01);
                 else if (operation == NativeFastOperation.NumberNegate)
                     Bytes(0x66, 0x48, 0x0f, 0x7e, 0xc0, 0x48, 0x0f, 0xba, 0xf8, 0x3f, 0x66, 0x48, 0x0f, 0x6e, 0xc0);
                 else if (operation is NativeFastOperation.BoolEqual or NativeFastOperation.BoolNotEqual)
@@ -479,9 +567,21 @@ internal static partial class NativeMachineCode
                     Control(instruction, pc);
                     continue;
                 }
-                if (operation is NativeFastOperation.NumberReturn or NativeFastOperation.BoolReturn)
+                if (operation is NativeFastOperation.NumberReturn or NativeFastOperation.BoolReturn or NativeFastOperation.NullReturn)
                 {
                     ReturnValue(instruction, operation, pc);
+                    continue;
+                }
+                if (operation == NativeFastOperation.NullConstant)
+                {
+                    if (layout.TryFixed(instruction.Result, out FixedTierSlot slot))
+                    {
+                        Word(0xb940266e); Word(0x710001df);
+                        Branch(GuardTarget(pc, demand: true), 4);
+                        StoreInitialized(instruction.Result, slot);
+                        Advance(next, instruction.Span, layout.Hits[pc]);
+                    }
+                    else Branch(GuardTarget(pc, demand: true), 0);
                     continue;
                 }
 
@@ -553,8 +653,11 @@ internal static partial class NativeMachineCode
 
         private void ReturnValue(NativeExecutionInstruction instruction, NativeFastOperation operation, int pc)
         {
-            bool isBool = operation == NativeFastOperation.BoolReturn;
-            Scalar(instruction.A, isBool ? NativeKind.Bool : NativeKind.Number, false, pc);
+            if (operation == NativeFastOperation.NullReturn)
+            {
+                if (instruction.A >= 0) EmitIsNull(instruction.A, pc);
+            }
+            else Scalar(instruction.A, operation == NativeFastOperation.BoolReturn ? NativeKind.Bool : NativeKind.Number, false, pc);
             Load(17, (ulong)pc); Word(0xb9001271);
             Word(0xb9401670); int skipHit = code.Count; Word(0);
             Word(0xf9400e70);
@@ -564,7 +667,8 @@ internal static partial class NativeMachineCode
             Word(0x91000631);
             Word(0xf9000211);
             code[skipHit] = 0x34000000u | 16u | (((uint)(code.Count - skipHit) & 0x7ffffu) << 5);
-            Word(isBool ? 0x12800100u : 0x128000e0u);
+            Word(operation == NativeFastOperation.NullReturn ? 0x12800140u
+                : operation == NativeFastOperation.BoolReturn ? 0x12800100u : 0x128000e0u);
             Branch(-1, 0);
         }
 
@@ -654,6 +758,25 @@ internal static partial class NativeMachineCode
         private void Calculate(NativeExecutionInstruction instruction, NativeFastOperation operation, int pc,
             NativeRegisterRegion? region = null, NativeRegisterOperation selected = default)
         {
+            if (operation == NativeFastOperation.FloatRemainder)
+            {
+                Scalar(instruction.A, NativeKind.Number, false, pc);
+                Scalar(instruction.B, NativeKind.Number, true, pc);
+                Load(16, (ulong)NativeSystemMath.Remainder); Word(0xd63f0200);
+                return;
+            }
+            if (operation.IsScalarSelect())
+            {
+                NativeKind kind = operation.IsBoolResult() ? NativeKind.Bool : NativeKind.Number;
+                Scalar(instruction.A, NativeKind.Bool, false, pc);
+                int otherwise = code.Count; Word(0);
+                Scalar(instruction.B, kind, false, pc);
+                int done = code.Count; Word(0);
+                code[otherwise] = 0x34000002u | (((uint)(code.Count - otherwise) & 0x7ffffu) << 5);
+                Scalar(instruction.C, kind, false, pc);
+                code[done] = 0x14000000u | ((uint)(code.Count - done) & 0x03ffffffu);
+                return;
+            }
             if (UnsignedOperation(operation, region, selected))
             { Unsigned(instruction, operation, pc, region, selected); return; }
             void Operand(int slot, int value, NativeKind kind, bool second)
@@ -667,8 +790,10 @@ internal static partial class NativeMachineCode
             else if (operation == NativeFastOperation.IsNull) EmitIsNull(instruction.A, pc);
             else
             {
-                Operand(instruction.A, selected.A, operation.ExpectsBoolInputs() ? NativeKind.Bool : NativeKind.Number, false);
-                if (operation == NativeFastOperation.BoolNot) Word(0x52000042);
+                Operand(region is null ? operation.FirstOperand(function, pc) : instruction.A,
+                    selected.A, operation.ExpectsBoolInputs() ? NativeKind.Bool : NativeKind.Number, false);
+                if (operation.IsUnaryMath()) UnaryMath(operation);
+                else if (operation == NativeFastOperation.BoolNot) Word(0x52000042);
                 else if (operation == NativeFastOperation.NumberNegate) Word(0x1e614000);
                 else if (operation is NativeFastOperation.BoolEqual or NativeFastOperation.BoolNotEqual)
                 {

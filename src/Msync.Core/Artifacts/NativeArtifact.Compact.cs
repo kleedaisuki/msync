@@ -36,6 +36,8 @@ public static partial class NativeArtifact
         }));
         Add(CompactSection.Plans, writer => WriteArray(writer, program.ExecutionPlans ?? [], WritePlan));
         Add(CompactSection.Backend, writer => WriteBackend(writer, program.Backend));
+        if (program.Functions.Any(function => function.SsaBody is not null))
+            Add(CompactSection.WholeSsa, writer => WriteSsaBodies(writer, program.Functions, trace));
 
         trace?.Metric("pool.strings", pool.Strings.Count);
         trace?.Metric("pool.source_spans", pool.Spans.Count);
@@ -145,7 +147,8 @@ public static partial class NativeArtifact
         trace?.Metric("pool.strings", strings.Length);
         trace?.Metric("pool.source_spans", spans.Length);
         uint sections = ReadUnsigned(input);
-        if (sections != (uint)CompactSection.Backend) throw new MsyncException("Native IR compact section set is incomplete or unknown");
+        if (sections is not ((uint)CompactSection.Backend or (uint)CompactSection.WholeSsa))
+            throw new MsyncException("Native IR compact section set is incomplete or unknown");
         (ModuleSemantics semantics, ArtifactStage stage, int optimization, int entry, bool preserve, BindingContext? context)
             = ReadSection(CompactSection.Header, ReadCompactHeader);
         NativeCodeType[] types = ReadSection(CompactSection.Types, reader => ReadArray(reader, value => NativeCodeType.FromWire(
@@ -165,6 +168,8 @@ public static partial class NativeArtifact
             value.ReadInt32(), value.ReadInt32(), (NativeAllocationPlacement)value.ReadByte(), value.ReadInt32())));
         NativeExecutionPlan[] plans = ReadSection(CompactSection.Plans, reader => ReadArray(reader, ReadPlan));
         NativeBackendCode? backend = ReadSection(CompactSection.Backend, ReadBackend);
+        if (sections == (uint)CompactSection.WholeSsa)
+            ReadSection(CompactSection.WholeSsa, reader => ReadSsaBodies(reader, functions, types, trace));
         NativeProgram program = new(constants, functions, types, layouts, entry)
         {
             Backend = backend,

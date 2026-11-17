@@ -684,6 +684,14 @@ CLI shell prelude plus stdin/TTY `first`, `transform` and late-callable workflow
 passed against frozen snapshot 12; a bare CompilerSession alone did not exercise
 this initialization boundary.
 
+The LLVM session registry reserves entry imports alongside lexical exports.
+When the canonical standard namespace is allocated, `BindSessionCell` lowers
+to `BindLocation`, linking each persistent import slot to the actual field in
+that namespace. A later submission and a closure captured earlier therefore
+use the same address, not a new slot or a copy of the namespace value.
+`compiler.llvm.session.registry` reports `import.roots`; target lowering
+reports `session.import_field_bindings` on publication.
+
 ### Discarding join history
 
 A semantic join retains its product of facts: the joined type, common Scope

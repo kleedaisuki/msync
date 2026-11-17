@@ -60,9 +60,11 @@ Run the isolated source/bind/Native2 roundtrip fixture with:
 dotnet run --project tests/LlvmSession -c Release -- --prepare-image --output artifacts/diagnostics/llvm-prepare-image
 ```
 
-It requires actual contextual selection/transfer rewriting into ExecutePlan,
-checks that only the entry backend image changes, then adds a file after bind
-and executes the saved bound image to check frozen selection membership.
+It requires actual contextual selection/transfer rewriting into ExecutePlan.
+The relocatable program leaves executable selection to binding; the selected
+execution image must preserve the prepared plan entry and survive a roundtrip
+without replanning. The fixture adds a file after bind and executes the saved
+bound image to check frozen selection membership.
 
 ## Pending Number and zero-trip LICM behavior
 

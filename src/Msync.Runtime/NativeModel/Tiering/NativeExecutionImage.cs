@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Msync.Core;
 using Msync.Core.Native;
@@ -30,21 +31,37 @@ internal readonly struct NativeExecutionInstruction
         this = source;
         Immediate = immediate;
     }
+
+    internal NativeExecutionInstruction WithSpan(int span) => new(this, span, Immediate);
+
+    private NativeExecutionInstruction(in NativeExecutionInstruction source, int span, long immediate)
+    {
+        this = source;
+        Span = span;
+        Immediate = immediate;
+    }
 }
 
-internal sealed class NativeExecutionImage(NativeImage image, NativeTierOptions options) : IDisposable
+internal sealed class NativeExecutionImage(NativeImage image, NativeTierOptions options, bool machineClosures = false) : IDisposable
 {
     private readonly NativeExecutionFunction?[] functions = new NativeExecutionFunction?[image.Program.Functions.Count];
     internal NativeImage Image => image;
+    internal bool MachineClosures { get; } = machineClosures;
     internal NativeExecutionFunction Function(int index)
     {
         NativeExecutionFunction? existing = Volatile.Read(ref functions[index]);
         if (existing is not null) return existing;
-        NativeExecutionFunction created = new(image, index, options);
+        NativeExecutionFunction created = new(image, index, options, executionImage: this);
         NativeExecutionFunction? winner = Interlocked.CompareExchange(ref functions[index], created, null);
         if (winner is null) return created;
         created.Dispose();
         return winner;
+    }
+
+    internal void MarkCachedTailArguments(NativeGuestHeap heap)
+    {
+        for (int index = 0; index < functions.Length; index++)
+            Volatile.Read(ref functions[index])?.MarkCachedTailArguments(heap);
     }
 
     public void Dispose()
@@ -59,10 +76,13 @@ internal sealed partial class NativeExecutionFunction : IDisposable
     private readonly object gate = new();
     private readonly NativeImage image;
     private readonly NativeTierOptions options;
+    private readonly NativeExecutionImage? executionImage;
     private int calls;
     private int backedges;
     private int invalidations;
     private bool unavailable;
+    private bool leafUnavailable;
+    private bool disposed;
     private NativeCompiledFunction? compiled;
     private readonly NativeExecutionInstruction[] instructions;
     internal NativeExecutionOperand[] Operands { get; }
@@ -74,10 +94,12 @@ internal sealed partial class NativeExecutionFunction : IDisposable
     internal NativeNumberForm NumberForm(int pc) => backend is { } body ? body.Instructions[pc].Numbers : numberForms![pc];
     internal int ConnectionSlot(int pc) => backend!.Instructions[pc].Connection;
 
-    internal NativeExecutionFunction(NativeImage image, int index, NativeTierOptions options, bool lowering = false, CompilationTrace? trace = null)
+    internal NativeExecutionFunction(NativeImage image, int index, NativeTierOptions options, bool lowering = false,
+        CompilationTrace? trace = null, NativeExecutionImage? executionImage = null)
     {
         this.image = image;
         this.options = options;
+        this.executionImage = executionImage;
         Index = index;
         Definition = image.Program.Functions[index];
         Metadata = Definition.Instructions as NativeInstruction[] ?? Definition.Instructions.ToArray();
@@ -126,7 +148,7 @@ internal sealed partial class NativeExecutionFunction : IDisposable
         IsContextFree = contextFree;
         HasObservableBinary = observableBinary;
         Operands = Metadata.Select(instruction => NativeExecutionOperand.Link(image, Definition, instruction)).ToArray();
-        instructions = Lower();
+        instructions = Lower(trace);
         numberForms = trace is null ? NativeNumberLowering.Analyze(image.Program, Definition, instructions)
             : trace.MeasureDetailed("backend.number_analysis", 0, _ => NativeNumberLowering.Analyze(image.Program, Definition, instructions, trace));
     }
@@ -146,6 +168,7 @@ internal sealed partial class NativeExecutionFunction : IDisposable
     internal bool IsUnavailable => Volatile.Read(ref unavailable);
     internal NativeFunctionCode Definition { get; }
     internal NativeInstruction[] Metadata { get; }
+    internal int SequenceOffset(int iterator) => image.Frame(Index).IteratorOffset + iterator * NativeSequenceCursor.Bytes;
     internal NativeExecutionInstruction[] Instructions => instructions;
     private bool Escapes(int slot) => Definition.Slots[slot].Escapes
         || Definition.Storage!.Slots[slot].HasFlag(NativeSlotStorage.Escapes);
@@ -158,12 +181,12 @@ internal sealed partial class NativeExecutionFunction : IDisposable
         Definition.Storage!.Slots[slot].HasFlag(NativeSlotStorage.UnobservedInitialization);
     internal bool IsUnion(int slot) => image.Type(Definition.Slots[slot].Type).IsUnion;
     internal bool AdmitsKind(int slot, NativeKind kind) => image.Type(Definition.Slots[slot].Type).Accepts(kind);
-    private NativeExecutionInstruction[] Lower()
+    private NativeExecutionInstruction[] Lower(CompilationTrace? trace)
     {
         NativeExecutionInstruction[] code = Metadata.Select(instruction => new NativeExecutionInstruction(instruction)).ToArray();
         bool[] entry = new bool[code.Length];
         NativeControlFlow flow = new(Metadata);
-        HashSet<int>[] liveAfter = NativeRegisterPlan.LiveAfter(Metadata, flow);
+        NativeBackendLiveness live = NativeBackendLiveness.Analyze(Metadata, Definition.Slots.Count, flow, trace);
         for (int pc = 0; pc < code.Length; pc++)
             foreach (int next in flow.Successors[pc]) if (next != pc + 1) entry[next] = true;
         HashSet<int> exposed = Metadata.Where(instruction => instruction.Op is NativeOp.FrameAddress or NativeOp.BindLocation)
@@ -175,10 +198,13 @@ internal sealed partial class NativeExecutionFunction : IDisposable
             && !Definition.Slots[slot].Escapes
             && !exposed.Contains(slot)
             && FixedCell(slot, rebound);
+        FuseAddresses(code, flow, exposed, rebound, trace);
         for (int pc = 0; pc + 1 < code.Length; pc++)
         {
+            if (code[pc].Handler == NativeInterpreter.NopHandler
+                || code[pc + 1].Handler != NativeInterpreter.ExecutionHandlerAddress(Metadata[pc + 1].Op)) continue;
             NativeInstruction address = Metadata[pc], access = Metadata[pc + 1];
-            bool deadTemp = !liveAfter[pc + 1].Contains(address.Result)
+            bool deadTemp = !live.ContainsAfter(pc + 1, address.Result)
                 || NativeInstructionFacts.Definitions(access).Contains(address.Result);
             if (entry[pc + 1] || !deadTemp) continue;
             if (address.Op == NativeOp.FrameAddress && CanElideTemp(address.Result) && access.A == address.Result)
@@ -229,6 +255,8 @@ internal sealed partial class NativeExecutionFunction : IDisposable
         bool[] safeValueSlot = new bool[Definition.Slots.Count];
         for (int pc = 0; pc < code.Length; pc += code[pc].Span)
         {
+            // Liveness above describes the logical instructions, where address
+            // consumers use the (possibly elided) pointer, not its source slot.
             if (code[pc].Op is NativeOp.FrameAddress or NativeOp.BindLocation
                 || (code[pc].Span == 1 && Metadata[pc].Op == NativeOp.FrameAddress))
                 unfusedExposed[Metadata[pc].A] = true;
@@ -249,7 +277,7 @@ internal sealed partial class NativeExecutionFunction : IDisposable
             if (entry[pc] || pc == blockStart[pc]) blockProvenTypes.Clear();
             NativeExecutionInstruction instruction = code[pc];
             int tailPc = pc + instruction.Span - 1;
-            if (instruction.Result >= 0 && !liveAfter[tailPc].Contains(instruction.Result)
+            if (instruction.Result >= 0 && !live.ContainsAfter(tailPc, instruction.Result)
                 && safeValueSlot[instruction.Result]
                 && (instruction.Op == NativeOp.MakeFunction && (instruction.A < 0 || instruction.C == 0 || Metadata[pc].Inputs is null or { Count: 0 })
                     || instruction.Op == NativeOp.Constant && image.Program.Constants[instruction.A].Kind is NativeKind.Number or NativeKind.Bool or NativeKind.Null or NativeKind.String))
@@ -277,7 +305,7 @@ internal sealed partial class NativeExecutionFunction : IDisposable
                 if (instruction.Result >= 0 && instruction.Result != instruction.A)
                     slotVersion[instruction.Result]++;
             }
-            else if (instruction.Op == NativeOp.Move && (!liveAfter[pc].Contains(instruction.A) || instruction.A == instruction.Result))
+            else if (instruction.Op == NativeOp.Move && (!live.ContainsAfter(pc, instruction.A) || instruction.A == instruction.Result))
             {
                 code[pc] = new(Metadata[pc] with { Op = NativeOp.Copy }, code[pc].Span);
             }
@@ -339,6 +367,7 @@ internal sealed partial class NativeExecutionFunction : IDisposable
             code[pc] = new(Metadata[pc] with { Op = NativeOp.Copy, A = copy.A, Result = copy.Result },
                 copy.Span, NativeInterpreter.CompiledCopyHandler);
         }
+        GroupNoOps(code, flow, trace);
         return code;
     }
 
@@ -498,20 +527,37 @@ internal sealed partial class NativeExecutionFunction : IDisposable
     internal void Enter() => Interlocked.Increment(ref calls);
     internal void Backedge() => Interlocked.Increment(ref backedges);
 
-    internal NativeCompiledFunction? TryCompile(NativeTierCounters counters, RuntimeProfile.NativeFrameCounters profile)
+    internal NativeCompiledFunction? TryCompile(NativeTierCounters counters, RuntimeProfile.NativeFrameCounters profile, bool leaf = false)
     {
-        if (options.Policy is NativeJitPolicy.Off or NativeJitPolicy.Linked || unavailable) return null;
+        if (options.Policy is NativeJitPolicy.Off or NativeJitPolicy.Linked || !leaf && unavailable) return null;
+        if (leaf && !NativeMachineLeaf.Candidate(this)) return null;
         NativeCompiledFunction? ready = Volatile.Read(ref compiled);
-        if (ready is not null) return ready;
+        if (ready is not null) return !leaf || ready.Leaf is not null ? ready : null;
+        if (leaf && Volatile.Read(ref leafUnavailable)) return null;
         int threshold = invalidations == 0 ? options.CallThreshold : options.RecompileThreshold;
-        if (calls < threshold && backedges < options.BackedgeThreshold) return null;
+        if (!leaf && calls < threshold && backedges < options.BackedgeThreshold) return null;
+        return CompileCold(counters, profile, leaf);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private NativeCompiledFunction? CompileCold(NativeTierCounters counters, RuntimeProfile.NativeFrameCounters profile, bool leaf)
+    {
         lock (gate)
         {
-            if (compiled is not null || unavailable) return compiled;
+            if (compiled is { } won) return !leaf || won.Leaf is not null ? won : null;
+            if (disposed || (leaf ? leafUnavailable : unavailable)) return null;
             long started = System.Diagnostics.Stopwatch.GetTimestamp();
-            NativeCompiledFunction? code = NativeCompiledFunction.Compile(image, this, options.Policy, profile.Observed);
-            if (code is null) { unavailable = true; counters.Unavailable(); return null; }
-            compiled = code;
+            NativeCompiledFunction? code = NativeCompiledFunction.Compile(image, this, options.Policy, profile.Observed,
+                leaf, leaf || executionImage is null ? null : target => executionImage.Function(target).TryCompile(counters, default, leaf: true),
+                executionImage?.MachineClosures == true);
+            if (code is null)
+            {
+                if (leaf) leafUnavailable = true;
+                else { unavailable = true; counters.Unavailable(); }
+                return null;
+            }
+            Volatile.Write(ref compiled, code);
+            if (leaf) Volatile.Write(ref unavailable, false);
             TimeSpan duration = System.Diagnostics.Stopwatch.GetElapsedTime(started);
             counters.Compiled(code.Bytes, duration, invalidations != 0, code.Statistics);
             profile.TierCompilation(code.Bytes, duration.Ticks * 100, invalidations != 0);
@@ -533,7 +579,45 @@ internal sealed partial class NativeExecutionFunction : IDisposable
         }
     }
 
-    public void Dispose() { lock (gate) { unavailable = true; compiled?.Dispose(); compiled = null; } }
+    private NativeSsaCode? ssaCode;
+    private bool ssaAttempted;
+
+    internal NativeSsaCode? GetSsaCode(NativeSsaBody body, RuntimeProfile.NativeFrameCounters counters)
+    {
+        if (Volatile.Read(ref ssaAttempted)) return ssaCode;
+        lock (gate)
+        {
+            if (disposed) return null;
+            if (ssaAttempted) return ssaCode;
+            long start = System.Diagnostics.Stopwatch.GetTimestamp();
+            ssaCode = NativeSsaCode.Compile(body, ResolveSsaTarget);
+            counters.SsaCompile(ssaCode?.Bytes ?? 0, System.Diagnostics.Stopwatch.GetElapsedTime(start).Ticks * 100,
+                ssaCode?.CallSites ?? 0, ssaCode?.RegisterCallSites ?? 0, ssaCode?.CallSpills ?? 0);
+            Volatile.Write(ref ssaAttempted, true);
+            return ssaCode;
+        }
+    }
+
+    private (NativeSsaBody, NativeSsaCode)? ResolveSsaTarget(int index)
+    {
+        if (executionImage is null) return null;
+        NativeExecutionFunction callee = executionImage.Function(index);
+        if (callee.Definition.SsaBody is not { CanBeCalled: true } body || callee.GetSsaCode(body, default) is not { } code)
+            return null;
+        return (body, code);
+    }
+
+    public void Dispose()
+    {
+        lock (gate)
+        {
+            disposed = unavailable = true;
+            compiled?.Dispose();
+            compiled = null;
+            ssaCode?.Dispose();
+            ssaCode = null;
+        }
+    }
 }
 
 internal sealed class NativeTierCounters
@@ -575,10 +659,15 @@ internal sealed class NativeTierCounters
         Interlocked.Add(ref directOperations, count);
         Interlocked.Add(ref rawOperations, count);
     }
-    internal void BridgeBatch(long count, long polls, long bridgeDirect = 0, long bridgeFallback = 0)
+    private long bridgeInvocations;
+    private long machineCalls;
+    internal void MachineCalls(long count) => Interlocked.Add(ref machineCalls, count);
+
+    internal void BridgeBatch(long count, long polls, long bridgeDirect = 0, long bridgeFallback = 0, long invocations = 0)
     {
         Interlocked.Add(ref operations, count);
         Interlocked.Add(ref cancellationPolls, polls);
+        if (invocations != 0) Interlocked.Add(ref bridgeInvocations, invocations);
         if (bridgeDirect != 0) Interlocked.Add(ref bridgeDirectOperations, bridgeDirect);
         if (bridgeFallback != 0) Interlocked.Add(ref bridgeFallbackOperations, bridgeFallback);
     }
@@ -592,6 +681,8 @@ internal sealed class NativeTierCounters
         Volatile.Read(ref recompilations), Volatile.Read(ref cancellationPolls), Volatile.Read(ref unavailable))
     {
         ReadinessExits = Volatile.Read(ref readinessExits), LinkedEntries = Volatile.Read(ref linkedEntries), LinkedOperations = Volatile.Read(ref linkedOperations), RawOperations = Volatile.Read(ref rawOperations),
+        BridgeInvocations = Volatile.Read(ref bridgeInvocations),
+        MachineGuestCalls = Volatile.Read(ref machineCalls),
         BridgeDirectOperations = Volatile.Read(ref bridgeDirectOperations), BridgeFallbackOperations = Volatile.Read(ref bridgeFallbackOperations),
         RegisterRegions = Volatile.Read(ref registerRegions), RegisterValues = Volatile.Read(ref registerValues),
         RegisterSpills = Volatile.Read(ref registerSpills), EliminatedFrameStores = Volatile.Read(ref eliminatedStores),

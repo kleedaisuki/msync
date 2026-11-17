@@ -19,10 +19,18 @@ internal static class NativeFixture
     internal static NativeProgram Codec(NativeProgram program)
     {
         using MemoryStream bytes = new();
-        NativeArtifact.Write(program, bytes);
+        NativeArtifact.Write(WithStorage(program), bytes);
         bytes.Position = 0;
         return NativeArtifact.Read(bytes);
     }
+
+    internal static NativeProgram WithStorage(NativeProgram program) => program with
+    {
+        Functions = program.Functions.Select(body => body.Storage is not null ? body : body with
+        {
+            Storage = new(new NativeSlotStorage[body.Slots.Count], new NativeInstructionStorage[body.Instructions.Count])
+        }).ToArray()
+    };
 
     internal static async Task<NativeValue> Run(NativeProgram program, ExecutionOptions? options = null)
     {

@@ -22,6 +22,8 @@ internal readonly record struct NativeExecutionOperand(NativeType? Type, NativeL
         NativeFieldLayout field = code.Op == NativeOp.AddressOffset ? layout![code.C] : default;
         NativeProjectionField[]? projection = code.Op == NativeOp.ProjectAddress
             ? image.Program.Projections[code.B].Cases.Select(item => new NativeProjectionField(item.Layout, image.Layout(item.Layout)[item.Field])).ToArray() : null;
+        if (projection is { Length: > 1 } && UniformProjection(projection))
+            projection = [projection[0]];
         Msync.Core.NativeSignature? signature = code.Op == NativeOp.CallNative && NativeSignatures.TryGet(code.Symbol!, out Msync.Core.NativeSignature? found) ? found : null;
         bool needsLayoutCheck = true;
         if (code.Op is NativeOp.Narrow or NativeOp.Convert && code.A >= 0 && code.Type >= 0)
@@ -34,6 +36,14 @@ internal readonly record struct NativeExecutionOperand(NativeType? Type, NativeL
                 needsLayoutCheck = false;
         }
         return new(type, layout, field, projection, signature, needsLayoutCheck);
+    }
+
+    private static bool UniformProjection(NativeProjectionField[] cases)
+    {
+        NativeFieldLayout first = cases[0].Field;
+        for (int index = 1; index < cases.Length; index++)
+            if (cases[index].Field.Offset != first.Offset || !first.Type.Equals(cases[index].Field.Type)) return false;
+        return true;
     }
 
     internal NativeAddress AddressField(NativeAddress address) => address.OffsetBy(Field.Offset, Field.Type);

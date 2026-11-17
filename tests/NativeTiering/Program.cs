@@ -4,6 +4,26 @@ using Msync.Core.Native;
 using Msync.Runtime;
 using Msync.Runtime.Native;
 
+if (args.Contains("--emission"))
+{
+    Console.WriteLine($"PASS {EmissionChecks.Run()} descriptor ABI and native emission checks");
+    return;
+}
+
+if (args.Contains("--guest-heap"))
+{
+    GuestHeapChecks.Run();
+    await GuestHeapChecks.HostLifetimeAsync();
+    Console.WriteLine("PASS native heap coalescing, pinned identity, and CLR-allocation-free reuse");
+    return;
+}
+
+if (args.Contains("--unary-math"))
+{
+    Console.WriteLine($"PASS {await UnaryMathChecks.RunAsync()} direct scalar math Native2 and pending properties");
+    return;
+}
+
 if (args.Contains("--floating-predicates"))
 {
     Console.WriteLine($"PASS {await FloatingPredicateChecks.RunAsync()} binary64 predicate Native2 and pending properties");
@@ -59,6 +79,7 @@ if (args.Contains("--materialization"))
 }
 
 int checks = EmissionChecks.Run() + FrameBindingChecks.Run() + RegionCopyChecks.Run();
+checks += await UnaryMathChecks.RunAsync();
 checks += await NumberAccessChecks.RunAsync();
 checks += await RegisterRegionChecks.RunAsync();
 void Check(bool condition, string message)

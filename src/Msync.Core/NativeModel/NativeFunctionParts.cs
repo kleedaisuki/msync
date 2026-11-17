@@ -26,8 +26,18 @@ public static class NativeFunctionParts
         Compose(code, environment, name, [], environmentLayout);
 
     public static NativeValue Compose(NativeValue code, NativeValue environment, NativeValue name,
-        NativeEnvironmentLayout[] environments, Func<NativeAddress, NativeEnvironmentLayout>? environmentLayout)
+        NativeEnvironmentLayout[] environments, Func<NativeAddress, NativeEnvironmentLayout>? environmentLayout) =>
+        Compose(code, environment, name, environments, environmentLayout, false, out _);
+
+    internal static NativeValue ComposeGuest(NativeValue code, NativeValue environment, NativeValue name,
+        Func<NativeAddress, NativeEnvironmentLayout> environmentLayout, out bool? reused) =>
+        Compose(code, environment, name, [], environmentLayout, true, out reused);
+
+    private static NativeValue Compose(NativeValue code, NativeValue environment, NativeValue name,
+        NativeEnvironmentLayout[] environments, Func<NativeAddress, NativeEnvironmentLayout>? environmentLayout,
+        bool scoped, out bool? reused)
     {
+        reused = null;
         int target = unchecked((int)(code.AsMachineInteger().GetZExtValue() - 1));
         NativeEnvironment? captures = null;
         if (environment.Kind != NativeKind.Null)
@@ -35,7 +45,13 @@ public static class NativeFunctionParts
             NativeAddress address = environment.AsAddress();
             NativeEnvironmentLayout layout = environmentLayout is not null ? environmentLayout(address)
                 : name.Kind == NativeKind.Null ? environments[target] : address.Allocation.Layout.EnvironmentSchema!;
-            captures = NativeEnvironment.View(layout, address);
+            NativeAllocation allocation = address.Allocation;
+            if (scoped && address.Offset == default && allocation.GuestReferences is not null && allocation.GuestEnvironment is null)
+            {
+                captures = allocation.OpenGuestEnvironment(layout, out bool recycled);
+                reused = recycled;
+            }
+            else captures = NativeEnvironment.View(layout, address);
         }
         return NativeValue.FromFunction(new(target, captures, name.Kind == NativeKind.Null ? null : name.AsString()));
     }

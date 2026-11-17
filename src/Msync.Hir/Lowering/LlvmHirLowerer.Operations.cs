@@ -4,8 +4,11 @@ using Msync.Core.Native;
 
 namespace Msync.Hir;
 
-public enum LlvmRuntimeValueOperation : byte { SelectPath, Barrier, Acquire, ProcessCall, HasLayout, DemandBool }
-public sealed record LlvmRuntimeValueBinding(LlvmRuntimeValueOperation Operation, int Mode = 0, string? Symbol = null);
+public enum LlvmRuntimeValueOperation : byte { SelectPath, Barrier, Acquire, ProcessCall, HasLayout, DemandBool, ProjectAddress, BindSessionCell }
+public sealed record LlvmRuntimeValueBinding(LlvmRuntimeValueOperation Operation, int Mode = 0, string? Symbol = null)
+{
+    public NativeProjection? Projection { get; init; }
+}
 
 public static partial class LlvmHirLowerer
 {
@@ -23,6 +26,9 @@ public static partial class LlvmHirLowerer
             if (binding.Operation == LlvmRuntimeValueOperation.DemandBool)
                 // Waiting touches runtime state, not source-addressable objects.
                 target.MemoryEffectsAttribute = new(12);
+            else if (binding.Operation is LlvmRuntimeValueOperation.HasLayout or LlvmRuntimeValueOperation.ProjectAddress)
+                // The object shape and storage location do not change on field writes.
+                target.MemoryEffectsAttribute = new(0);
             operationBindings.Add((binding, signature), target);
             valueOperations.Add(target, binding);
             trace?.Detail?.Metric("operations.binding.created", 1);

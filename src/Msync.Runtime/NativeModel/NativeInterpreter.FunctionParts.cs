@@ -44,8 +44,17 @@ public sealed partial class NativeInterpreter
         NativeDatum code = activation.Frame.GetDatum(inputs[0]);
         NativeDatum environment = activation.Frame.GetDatum(inputs[1]);
         NativeDatum name = activation.Frame.GetDatum(inputs[2]);
-        activation.Work.Counters.FunctionCompose(code.IsReady && environment.IsReady && name.IsReady);
-        activation.Frame.SetDatum(instruction.Result, owner.Track(NativeDatum.ComposeFunction(code, environment, name,
+        bool ready = code.IsReady && environment.IsReady && name.IsReady;
+        activation.Work.Counters.FunctionCompose(ready);
+        if (ready)
+        {
+            NativeValue function = NativeFunctionParts.ComposeGuest(code.Value, environment.Value, name.Value,
+                owner.image.EnvironmentLayoutResolver, out bool? reused);
+            if (reused is { } recycled) activation.Work.Counters.NativeGuestEnvironment(recycled);
+            if (function.AsFunction().Environment is { } captures) owner.PublishMachineCaptures(captures);
+            activation.Frame.Set(instruction.Result, function);
+        }
+        else activation.Frame.SetDatum(instruction.Result, owner.Track(NativeDatum.ComposeFunction(code, environment, name,
             metadata.Source, owner.image.EnvironmentLayoutResolver)));
         return new(pc + instruction.Span);
     }

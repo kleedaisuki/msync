@@ -90,6 +90,7 @@ public sealed record NativeFunctionCode(string Name, IReadOnlyList<NativeSlot> S
 {
     public NativeFunctionReflectionSignature? ReflectionSignature { get; init; }
     public NativeStoragePlan? Storage { get; init; }
+    internal NativeSsaBody? SsaBody { get; init; }
 }
 
 [Flags]

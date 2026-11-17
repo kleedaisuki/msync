@@ -60,7 +60,7 @@ NativeProgram nested = new([Constant(relative)],
     [new(TypeKind.Path), new(TypeKind.Scope, Layouts: [0]), new(TypeKind.Never, Pointee: 0)], [new([new("file", 0)])]);
 using (MemoryStream stream = new())
 {
-    NativeArtifact.Write(nested, stream);
+    NativeArtifact.Write(WithStorage(nested), stream);
     Equal((int)NativeArtifact.FormatVersion, (int)BitConverter.ToUInt16(stream.ToArray(), 8), "New path projection did not use the current artifact format");
     stream.Position = 0;
     NativeValue loaded = await Run(NativeArtifact.Read(stream));

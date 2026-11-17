@@ -45,3 +45,9 @@ edges and invocation/pin-lease reuse across safepoints. A contextual transfer
 followed by a mutable loop checks that preparation does not freeze first-iteration
 values into a source-free executable. See the
 [backend receipt](../../docs/design/native-execution-lowering-v090.md#register-allocated-native-regions).
+
+The focused `--unary-math` journey round-trips Native2 routines through the
+artifact reader and compares compiled scalar math with the interpreter for
+finite values, signed zero, subnormals and non-finite inputs. It also checks an
+unresolved Process result, native-call census preservation, and unary math
+inside a register region whose entry PC precedes the builtin.

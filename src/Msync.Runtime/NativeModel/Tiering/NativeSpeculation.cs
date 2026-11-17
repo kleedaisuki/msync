@@ -24,9 +24,10 @@ internal sealed record NativeSiteShape(NativeKind First, NativeKind Second);
 
 internal enum NativeFastOperation : byte
 {
-    Bridge, Nop, Jump, Branch, NumberReturn, BoolReturn, NumberConstant, BoolConstant,
+    Bridge, MachineCall, MachineFusedCall, SequenceNext, GuestLoad, GuestStore, GuestHasLayout, GuestCopy, GuestView, Nop, Jump, Branch, NumberReturn, BoolReturn, NullReturn, NumberConstant, BoolConstant, NullConstant,
     NumberCopy, BoolCopy, NumberMove, BoolMove, IsNull, NumberNegate, BoolNot,
-    BoolEqual, BoolNotEqual,
+    NumberFloor, NumberCeiling, NumberTruncate, NumberRoundEven, NumberAbs, NumberSqrt,
+    NumberSelect, BoolSelect, FloatRemainder, BoolEqual, BoolNotEqual,
     NumberAdd, NumberSubtract, NumberMultiply, NumberDivide, NumberRemainder,
     NumberEqual, NumberNotEqual, NumberLess, NumberLessEqual, NumberGreater, NumberGreaterEqual,
     NumberOrderedNotEqual, NumberOrdered, NumberUnordered, NumberUnorderedEqual,
@@ -36,6 +37,19 @@ internal enum NativeFastOperation : byte
 
 internal static class NativeFastOperations
 {
+    internal static bool IsGuestAccess(this NativeFastOperation op) =>
+        op is NativeFastOperation.GuestLoad or NativeFastOperation.GuestStore or NativeFastOperation.GuestHasLayout
+            or NativeFastOperation.GuestCopy or NativeFastOperation.GuestView;
+
+    internal static bool IsScalarSelect(this NativeFastOperation op) =>
+        op is NativeFastOperation.NumberSelect or NativeFastOperation.BoolSelect;
+
+    internal static bool IsUnaryMath(this NativeFastOperation op) =>
+        op is >= NativeFastOperation.NumberFloor and <= NativeFastOperation.NumberSqrt;
+
+    internal static int FirstOperand(this NativeFastOperation op, NativeExecutionFunction function, int pc) =>
+        op.IsUnaryMath() ? function.Metadata[pc].Inputs![0] : function.Instructions[pc].A;
+
     internal static NativeFastOperation FloatingCompare(LlvmCmpPredicate predicate) => predicate switch
     {
         LlvmCmpPredicate.FCmpFalse => NativeFastOperation.NumberAlwaysFalse,
@@ -60,10 +74,10 @@ internal static class NativeFastOperations
     internal static bool IsBoolResult(this NativeFastOperation op) =>
         op is NativeFastOperation.BoolConstant or NativeFastOperation.BoolCopy or NativeFastOperation.BoolMove
             or NativeFastOperation.IsNull or NativeFastOperation.BoolNot
-            or NativeFastOperation.BoolEqual or NativeFastOperation.BoolNotEqual or >= NativeFastOperation.NumberEqual;
+            or NativeFastOperation.BoolSelect or NativeFastOperation.BoolEqual or NativeFastOperation.BoolNotEqual or >= NativeFastOperation.NumberEqual;
 
     internal static bool TakesSecondOperand(this NativeFastOperation op) =>
-        op >= NativeFastOperation.BoolEqual;
+        op == NativeFastOperation.FloatRemainder || op >= NativeFastOperation.BoolEqual;
 
     internal static bool ExpectsBoolInputs(this NativeFastOperation op) =>
         op is NativeFastOperation.BoolCopy or NativeFastOperation.BoolMove or NativeFastOperation.BoolNot

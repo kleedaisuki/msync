@@ -18,8 +18,9 @@ internal static class SelectChecks
         NativeArtifact.Write(original, artifact); artifact.Position = 0;
         int checks = 0;
         foreach (NativeProgram program in new[] { original, NativeArtifact.Read(artifact) })
+        foreach (NativeJitPolicy policy in new[] { NativeJitPolicy.Off, NativeJitPolicy.Force })
         {
-            await using NativeInterpreter interpreter = new(program, new() { Tiers = new(NativeJitPolicy.Off) });
+            await using NativeInterpreter interpreter = new(program, new() { Tiers = new(policy, CallThreshold: 1) });
             foreach (bool left in new[] { false, true })
                 foreach (bool right in new[] { false, true })
                     foreach (string name in new[] { "BoolAnd", "BoolOr", "BoolXor", "SMin", "SMax", "UMin", "UMax", "SelectBool" })

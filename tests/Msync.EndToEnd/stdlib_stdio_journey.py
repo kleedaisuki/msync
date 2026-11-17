@@ -144,7 +144,8 @@ def exercise_prompt(
         "got:ok",
     )
 
-    key('$std::io::prompt($std::string::concat("WAIT", "! "));')
+    # Demand the input; a discarded Future is abandoned at submission exit.
+    key('if $std::io::prompt($std::string::concat("WAIT", "! ")) is null { "eof" } else { "line" }')
     start = len(terminal.plain)
     send("\r")
     terminal.until(lambda: "WAIT! " in terminal.plain[start:], "blocked program read")

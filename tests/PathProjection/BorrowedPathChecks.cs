@@ -67,8 +67,11 @@ internal static class BorrowedPathChecks
         async Task<NativeValue> Execute(NativeProgram program, string name)
         {
             RuntimeProfile profile = new(instructionSites: true);
-            await using NativeInterpreter interpreter = new(NativeFixture.Codec(program with
-            { Stage = ArtifactStage.Executable, Context = new(root, root) }), new(WorkingDirectory: root) { Profile = profile });
+            BindingContext binding = new(root, root);
+            NativeProgram contextual = NativeFixture.WithStorage(program with { Stage = ArtifactStage.Executable, Context = binding });
+            // The check measures the actual lexical builtin, not a contextualized constant.
+            NativeProgram residual = NativeBackendCompiler.Compile(contextual, new(null, binding));
+            await using NativeInterpreter interpreter = new(NativeFixture.Codec(residual), new(WorkingDirectory: root) { Profile = profile });
             NativeValue result = await interpreter.ExecuteAsync();
             IReadOnlyList<RuntimeProfileSample> samples = profile.Drain();
             RuntimeProfileSample call = samples.Single(sample => sample.Name == "vm.native" && sample.Attributes["native.name"] == name);

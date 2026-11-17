@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using Msync.Core.Native;
 
 namespace Msync.Runtime.Native;
@@ -10,13 +11,14 @@ internal sealed class NativeFrame
     private readonly NativeAllocation storage;
     private readonly NativeAddress[] bindings;
     private readonly NativeMemory memory;
+    private readonly NativeGuestHeap? heap;
     private readonly Dictionary<int, NativeAddress>? sessionLocations;
     private NativeDatum[] argumentSnapshot = [];
     private int argumentCount;
     private NativeFrameStack.Lease? stackLease;
     internal NativeFrameStack.Lease? StackLease => stackLease;
 
-    internal void EnterStack() => stackLease = NativeFrameStack.Current.Push(storage);
+    internal void EnterStack() => stackLease = NativeFrameStack.Current.Push(storage, heap?.References);
 
     internal void LeaveStack()
     {
@@ -48,15 +50,19 @@ internal sealed class NativeFrame
 
     internal NativeFrame(NativeImage image, int functionIndex, NativeEnvironment? environment,
         NativeArguments arguments, NativeMemory memory,
-        Dictionary<int, NativeAddress>? sessionLocations = null, NativeAllocation? allocation = null, bool stack = false)
+        Dictionary<int, NativeAddress>? sessionLocations = null, NativeAllocation? allocation = null, bool stack = false,
+        NativeGuestHeap? heap = null, RuntimeProfile.NativeFrameCounters counters = default)
     {
         this.memory = memory;
+        this.heap = heap;
         this.sessionLocations = sessionLocations;
         layout = image.Frame(functionIndex);
-        storage = allocation ?? new(layout.Layout, allocate: !stack);
+        storage = allocation ?? (stack
+            ? new(layout.Layout, allocate: false)
+            : Allocate(layout.Layout, counters));
         bindings = layout.BindingSlots.Length == 0 ? [] : new NativeAddress[layout.BindingSlots.Length];
         if (stack) EnterStack();
-        try { Initialize(environment, arguments, sessionLocations); }
+        try { Initialize(environment, arguments, sessionLocations, counters); }
         catch
         {
             if (stack) { memory.ResetFrame(storage); LeaveStack(); }
@@ -65,14 +71,18 @@ internal sealed class NativeFrame
     }
 
     internal void Reset(NativeEnvironment? environment, NativeArguments arguments,
-        Dictionary<int, NativeAddress>? sessionLocations = null)
+        Dictionary<int, NativeAddress>? sessionLocations = null, RuntimeProfile.NativeFrameCounters counters = default)
     {
-        Initialize(environment, arguments, sessionLocations);
+        Initialize(environment, arguments, sessionLocations, counters);
     }
 
+    private NativeAllocation Allocate(NativeLayout layout, RuntimeProfile.NativeFrameCounters counters) =>
+        heap?.NewObject(layout, -1, 1, 0, counters) ?? new(layout);
+
     private void Initialize(NativeEnvironment? environment, NativeArguments arguments,
-        Dictionary<int, NativeAddress>? activeSessionLocations)
+        Dictionary<int, NativeAddress>? activeSessionLocations, RuntimeProfile.NativeFrameCounters counters)
     {
+        if (layout.Code.IteratorCount != 0) storage.Storage.RawSpan[layout.IteratorOffset..].Clear();
         foreach (int index in layout.BindingSlots)
         {
             NativeFrameSlot slot = layout.Slots[index];
@@ -81,11 +91,11 @@ internal sealed class NativeFrame
             {
                 if (!activeSessionLocations.TryGetValue(index, out address))
                 {
-                    address = new NativeAllocation(new(slot.Type)).Field(0);
+                    address = Allocate(new(slot.Type), counters).Field(0);
                     activeSessionLocations.Add(index, address);
                 }
             }
-            else if (slot.HeapLayout is { } heap) address = new NativeAllocation(heap).Field(0);
+            else if (slot.HeapLayout is { } escaped) address = Allocate(escaped, counters).Field(0);
             bindings[slot.Binding] = address;
         }
         for (int index = 0; index < layout.Code.CaptureCount; index++)
@@ -103,6 +113,8 @@ internal sealed class NativeFrame
         foreach (int index in layout.BindingSlots)
             if (layout.Slots[index].HeapLayout is { } heap) counters.EscapingLocation(heap);
     }
+    internal ReadOnlySpan<NativeAddress> BindingRoots => bindings;
+    internal ReadOnlySpan<NativeDatum> ArgumentRoots => argumentSnapshot.AsSpan(0, argumentCount);
     internal int CaptureCount => layout.Code.CaptureCount;
     internal void BorrowParameter(int slot, NativeAddress address)
     {
@@ -133,6 +145,19 @@ internal sealed class NativeFrame
         return slot.Binding < 0 ? storage.AddressAt(slot.Offset, slot.Type) : bindings[slot.Binding];
     }
     internal NativeAllocation Allocation => storage;
+    internal ref NativeSequenceCursor SequenceCursor(int index) =>
+        ref MemoryMarshal.Cast<byte, NativeSequenceCursor>(storage.Storage.RawSpan[layout.IteratorOffset..])[index];
+
+    internal void SetSequenceValue(int slot, double value)
+    {
+        NativeAddress destination = Location(slot);
+        if (destination.Type.Kinds == 1UL << (int)NativeKind.Number)
+        {
+            memory.RemovePending(destination);
+            NativeStorage.StoreNumberCompiled(destination, value);
+        }
+        else memory.Write(destination, new(NativeValue.FromNumber(value)));
+    }
     internal int Type(int index) => layout.Code.Slots[index].Type;
     internal void Bind(int index, NativeAddress address)
     {
@@ -165,7 +190,7 @@ internal sealed class NativeFrame
         => CopyTo(source, Location(destination));
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal bool IsPrivate(int slot) => layout.Slots[slot].Storage.HasFlag(NativeSlotStorage.PrivateArgument);
+    internal bool IsPrivate(int slot) => (layout.Slots[slot].Storage & NativeSlotStorage.PrivateArgument) != 0;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool IsReady(int slot, NativeAddress address) =>

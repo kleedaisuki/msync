@@ -82,13 +82,12 @@ public sealed class NativeEnvironmentLayout
 
 public sealed class NativeEnvironment
 {
-    private readonly NativeAddress address;
-    private NativeEnvironment(NativeEnvironmentLayout layout, NativeAddress existing)
-    {
-        Layout = layout;
-        address = existing;
-    }
+    private NativeAddress address;
+    private NativeEnvironment(NativeEnvironmentLayout layout, NativeAddress existing) =>
+        BindGuest(layout, existing);
     internal static NativeEnvironment View(NativeEnvironmentLayout layout, NativeAddress address) => new(layout, address);
+    internal void BindGuest(NativeEnvironmentLayout layout, NativeAddress existing) =>
+        (Layout, address) = (layout, existing);
     public NativeEnvironment(NativeEnvironmentLayout layout, int layoutId = -1)
     {
         ArgumentNullException.ThrowIfNull(layout);
@@ -103,6 +102,7 @@ public sealed class NativeEnvironment
         for (int index = 0; index < captures.Count; index++) Initialize(index, captures[index]);
     }
     public NativeAddress Address => address;
+    internal nint MachineCaptures => address.Offset == default ? Volatile.Read(ref address.Allocation.MachineCaptures) : 0;
     public NativeAddress CaptureAddress(int index) => address.OffsetBy(Layout.Storage[index].Offset, Layout.Storage[index].Type);
     public void Initialize(int index, NativeCapture capture)
     {
@@ -115,6 +115,7 @@ public sealed class NativeEnvironment
         if (!Layout.Storage[index].Type.Accepts(value))
             throw new ArgumentException("Capture value disagrees with its static storage type.", nameof(capture));
         NativeStorage.StoreTrusted(Layout.Storage[index].Type, CaptureAddress(index), value);
+        Volatile.Write(ref address.Allocation.MachineCaptures, 0);
     }
     public bool TryGetCapture(int index, out NativeCapture capture)
     {
@@ -122,7 +123,7 @@ public sealed class NativeEnvironment
         capture = this[index];
         return true;
     }
-    public NativeEnvironmentLayout Layout { get; }
+    public NativeEnvironmentLayout Layout { get; private set; } = null!;
     public int Count => Layout.Captures.Count;
     public NativeCapture this[int index]
     {
@@ -140,13 +141,15 @@ public sealed record NativePathSelection(NativePath Directory, string Pattern, b
 
 public sealed class NativeRange
 {
+    private IAsyncEnumerable<NativeValue>? items;
+
     public NativeRange(IAsyncEnumerable<NativeValue> items, TypeRef itemType,
         IReadOnlyList<NativeValue>? retainedValues = null, NativePathSelection? selection = null,
         Func<CancellationToken, ValueTask<NativeRange>>? resolve = null, NativeType? physicalItemType = null)
     {
         ArgumentNullException.ThrowIfNull(items);
         ArgumentNullException.ThrowIfNull(itemType);
-        Items = items;
+        this.items = items;
         PhysicalItemType = physicalItemType ?? NativeType.FromTypeRef(itemType);
         ItemType = itemType;
         Type = new(TypeKind.Range, itemType);
@@ -157,20 +160,30 @@ public sealed class NativeRange
 
     private NativeRange(NativeSnapshot snapshot, TypeRef itemType)
     {
-        Items = snapshot;
+        items = snapshot;
         PhysicalItemType = snapshot.PhysicalType;
         ItemType = itemType;
         Type = new(TypeKind.Range, itemType);
         RetainedValues = SnapshotValues = snapshot;
     }
+    private NativeRange(NativeNumberSequence sequence)
+    {
+        NumberSequence = sequence;
+        ItemType = TypeRef.Number;
+        PhysicalItemType = NativeType.Of(NativeKind.Number);
+        Type = new(TypeKind.Range, ItemType);
+        RetainedValues = [];
+    }
+
     private NativeRange(NativeRange source, TypeRef itemType)
     {
-        Items = source.Items;
+        items = Volatile.Read(ref source.items);
         PhysicalItemType = source.PhysicalItemType;
         ItemType = itemType;
         Type = new(TypeKind.Range, itemType);
         RetainedValues = source.RetainedValues;
         SnapshotValues = source.SnapshotValues;
+        NumberSequence = source.NumberSequence;
         Selection = source.Selection;
         Resolve = source.Resolve is { } resolve
             ? async token => (await resolve(token).ConfigureAwait(false)).WithItemType(itemType) : null;
@@ -180,7 +193,15 @@ public sealed class NativeRange
         ArgumentNullException.ThrowIfNull(itemType);
         return ItemType == itemType ? this : new(this, itemType);
     }
-    public IAsyncEnumerable<NativeValue> Items { get; }
+    public IAsyncEnumerable<NativeValue> Items
+    {
+        get
+        {
+            if (Volatile.Read(ref items) is { } ready) return ready;
+            IAsyncEnumerable<NativeValue> created = NumberSequence!.Value.Enumerate();
+            return Interlocked.CompareExchange(ref items, created, null) ?? created;
+        }
+    }
     public TypeRef ItemType { get; }
     public NativeType PhysicalItemType { get; }
     public TypeRef Type { get; }
@@ -188,6 +209,9 @@ public sealed class NativeRange
     public NativePathSelection? Selection { get; }
     public Func<CancellationToken, ValueTask<NativeRange>>? Resolve { get; }
     public IReadOnlyList<NativeValue>? SnapshotValues { get; }
+    internal NativeAddress SnapshotStorage => SnapshotValues is NativeSnapshot snapshot ? snapshot.Storage : default;
+    internal NativeNumberSequence? NumberSequence { get; }
+    internal static NativeRange Sequence(NativeNumberSequence sequence) => new(sequence);
 
     public static NativeRange Snapshot(IEnumerable<NativeValue> values, TypeRef itemType) =>
         new(new NativeSnapshot(values, itemType, NativeType.FromTypeRef(itemType), validateLogical: true), itemType);
@@ -212,6 +236,9 @@ public sealed class NativeRange
     public static NativeRange FromOwnedMemory(NativeAddress address, int count, NativeLayout element, TypeRef itemType, int field = 0) =>
         new(new NativeSnapshot(address, count, element, itemType, field), itemType);
 
+    internal static NativeRange FromGuestSnapshot(NativeAddress address, int count, NativeLayout element, TypeRef itemType) =>
+        new(new NativeSnapshot(address, count, element, itemType, 0, validateLogical: false), itemType);
+
     private sealed class NativeSnapshot : IReadOnlyList<NativeValue>, IAsyncEnumerable<NativeValue>
     {
         private readonly NativeAddress first;
@@ -235,10 +262,10 @@ public sealed class NativeRange
                 NativeStorage.StoreTrusted(type, first.OffsetBy(stride * index, type), inputs[index]);
             }
         }
-        public NativeSnapshot(NativeAddress address, int count, NativeLayout element, TypeRef itemType, int field)
+        public NativeSnapshot(NativeAddress address, int count, NativeLayout element, TypeRef itemType, int field, bool validateLogical = true)
         {
             NativeFieldLayout selected = element[field];
-            if ((NativeType.FromTypeRef(itemType).Kinds & selected.Type.Kinds) != selected.Type.Kinds)
+            if (validateLogical && (NativeType.FromTypeRef(itemType).Kinds & selected.Type.Kinds) != selected.Type.Kinds)
                 throw new ArgumentException("Owned memory field is not admitted by its Range element contract.", nameof(itemType));
             NativeStorage.ValidateRegion(address, element, count);
             type = selected.Type;
@@ -247,6 +274,7 @@ public sealed class NativeRange
             Count = count;
         }
         public NativeType PhysicalType => type;
+        internal NativeAddress Storage => first;
         public int Count { get; }
         public NativeValue this[int index]
         {
@@ -270,6 +298,25 @@ public sealed class NativeRange
             }
             await Task.CompletedTask;
         }
+    }
+}
+
+internal readonly record struct NativeNumberSequence(double First, double Limit, double Step, CancellationToken Token)
+{
+    internal bool UsesToken(CancellationToken token) => !Token.CanBeCanceled || Token == token;
+
+    internal IAsyncEnumerable<NativeValue> Enumerate() => Enumerate(this, Token);
+
+    private static async IAsyncEnumerable<NativeValue> Enumerate(NativeNumberSequence sequence,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken token)
+    {
+        NativeSequenceCursor cursor = new(sequence);
+        while (cursor.Next(out double value))
+        {
+            token.ThrowIfCancellationRequested();
+            yield return NativeValue.FromNumber(value);
+        }
+        await Task.CompletedTask;
     }
 }
 

@@ -32,6 +32,8 @@ public readonly record struct NativeTierStatistics(long Compilations, long Compi
     public long LinkedEntries { get; init; }
     public long LinkedOperations { get; init; }
     public long RawOperations { get; init; }
+    public long BridgeInvocations { get; init; }
+    public long MachineGuestCalls { get; init; }
     public long BridgeDirectOperations { get; init; }
     public long BridgeFallbackOperations { get; init; }
     public long RegisterRegions { get; init; }

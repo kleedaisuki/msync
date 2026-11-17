@@ -152,7 +152,9 @@ public static partial class LlvmNativeLowerer
             int result = Slot(call);
             calls.Add(new(code.Count, false, new bool[arguments.Length]));
             ++directCallCount;
-            Add(new(NativeOp.Call, result, callee, owner.Functions[target],
+            int entry = owner.SpecializeLayoutCall(call, target, layoutVariant);
+            if (entry != owner.Functions[target]) trace?.Metric("calls.layout_specialized", 1);
+            Add(new(NativeOp.Call, result, callee, entry,
                 Inputs: arguments, Source: call.Source));
         }
 

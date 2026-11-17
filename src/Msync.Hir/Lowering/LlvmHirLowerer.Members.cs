@@ -12,6 +12,18 @@ public static partial class LlvmHirLowerer
         private Dictionary<string, List<PhysicalMember>>? physicalMemberLayouts;
         private readonly Dictionary<(string Name, TypeKind Kinds), PhysicalMember[]> memberCases = [];
         private readonly Dictionary<int, StorageRecord> builtinRecords = [];
+        private readonly Dictionary<int, NativeLayout> memberGeometry = [];
+
+        internal NativeOffset MemberOffset(PhysicalMember member)
+        {
+            if (!memberGeometry.TryGetValue(member.Layout, out NativeLayout? layout))
+            {
+                layout = new(metadata.Layouts[member.Layout].Fields
+                    .Select(field => new NativeField(field.Name, metadata.Types[field.Type].PhysicalType)));
+                memberGeometry.Add(member.Layout, layout);
+            }
+            return layout[member.Ordinal].Offset;
+        }
         private HashSet<TypeKind>? declaredCarriers;
 
         internal PhysicalMember[] MemberLayouts(string name, TypeKind kinds)
@@ -27,12 +39,35 @@ public static partial class LlvmHirLowerer
             return result;
         }
 
-        internal PhysicalMember SourceMember(int shape, string name)
+        internal PhysicalMember SourceMember(int shape, string name, int ordinalHint)
         {
             var fields = hir.ScopeLayouts[shape].Fields;
-            int ordinal = fields.Select((field, index) => (field, index)).First(item => item.field.Name == name).index;
+            int ordinal = (uint)ordinalHint < (uint)fields.Length && fields[ordinalHint].Name == name
+                ? ordinalHint
+                : fields.Select((field, index) => (field, index)).First(item => item.field.Name == name).index;
             int layout = metadata.Layout(shape);
             return new(Layout(shape), layout, ordinal, metadata.Layouts[layout].Fields[ordinal].Type);
+        }
+
+        internal readonly Dictionary<int, LlvmStructType> scopeLayoutsByPhysicalId = [];
+
+        internal bool TryAllocatedMember(int layout, string name, int ordinalHint, out PhysicalMember member)
+        {
+            member = default;
+            if (!scopeLayoutsByPhysicalId.TryGetValue(layout, out var structure)) return false;
+            var fields = metadata.Layouts[layout].Fields;
+            if ((uint)ordinalHint < (uint)fields.Count && fields[ordinalHint].Name == name)
+            {
+                member = new(structure, layout, ordinalHint, fields[ordinalHint].Type);
+                return true;
+            }
+            for (int i = 0; i < fields.Count; i++)
+                if (fields[i].Name == name)
+                {
+                    member = new(structure, layout, i, fields[i].Type);
+                    return true;
+                }
+            return false;
         }
 
         private Dictionary<string, List<PhysicalMember>> BuildMemberCatalogue()
@@ -171,16 +206,39 @@ public static partial class LlvmHirLowerer
             if (domain.Count == 1)
             {
                 directMemberCount++;
-                return MemberAt(node, receiver, assigned, owner.SourceMember(domain[0], node.Text!));
+                owner.trace?.Detail?.Metric("layout.fixed_offset", 1);
+                return MemberAt(node, receiver, assigned, owner.SourceMember(domain[0], node.Text!, node.Data));
+            }
+            if (receiver is LlvmHeapAllocInst allocation
+                && owner.TryAllocatedMember(allocation.LogicalLayout, node.Text!, node.Data, out var allocated))
+            {
+                directMemberCount++;
+                owner.trace?.Detail?.Metric("layout.known_allocation", 1);
+                owner.trace?.Detail?.Metric("layout.fixed_offset", 1);
+                return MemberAt(node, receiver, assigned, allocated);
             }
             var cases = domain.Count == 0
                 ? owner.MemberLayouts(node.Text!, Hir.Types[(assigned is null ? node.Type : Hir.Node(Hir.Children(node)[1]).Type).Value].RuntimeType.Kind)
-                : Enumerable.Range(0, domain.Count).Select(index => owner.SourceMember(domain[index], node.Text!)).ToArray();
+                : Enumerable.Range(0, domain.Count).Select(index => owner.SourceMember(domain[index], node.Text!, node.Data)).ToArray();
             if (cases.Length == 0) throw new LlvmHirLoweringException(node.Source, "member without a declared physical object layout");
             if (cases.Length == 1)
             {
                 directMemberCount++;
                 return MemberAt(node, receiver, assigned, cases[0]);
+            }
+            if (UniformMember(cases))
+            {
+                var projection = new NativeProjection(cases.Select(member => new NativeProjectionCase(member.Layout, member.Ordinal))
+                    .Distinct().ToArray());
+                int fieldType = cases[0].FieldType;
+                var operation = new LlvmRuntimeValueBinding(LlvmRuntimeValueOperation.ProjectAddress) { Projection = projection };
+                var binding = owner.OperationBinding(operation, LlvmFunctionType.Get(receiver.Type, [receiver.Type]));
+                var address = Add(new LlvmCallInstruction(binding.FunctionType, binding, [receiver])
+                    { LogicalType = owner.metadata.Pointer(fieldType) });
+                directMemberCount++;
+                owner.trace?.Detail?.Metric("layout.uniform_projection", 1);
+                owner.trace?.Detail?.Metric("layout.tests_eliminated", cases.Length - 1);
+                return MemberAccess(node, address, assigned, fieldType);
             }
             dispatchedMemberCount++;
             owner.trace?.Detail?.Metric("layout.tests", cases.Length - 1);
@@ -188,17 +246,29 @@ public static partial class LlvmHirLowerer
         }
 
         private LlvmValue MemberAt(HirNode node, LlvmValue receiver, LlvmValue? assigned, Lowering.PhysicalMember member)
+            => MemberAccess(node, FieldAddress(member.Struct, receiver, member.Ordinal), assigned, member.FieldType);
+
+        private bool UniformMember(Lowering.PhysicalMember[] cases)
         {
-            var address = FieldAddress(member.Struct, receiver, member.Ordinal);
-            var type = owner.RepresentationType(owner.metadata.Types[member.FieldType].Kind);
+            var first = cases[0];
+            NativeOffset offset = owner.MemberOffset(first);
+            for (int index = 1; index < cases.Length; index++)
+                if (cases[index].FieldType != first.FieldType || owner.MemberOffset(cases[index]) != offset)
+                    return false;
+            return true;
+        }
+
+        private LlvmValue MemberAccess(HirNode node, LlvmValue address, LlvmValue? assigned, int fieldType)
+        {
+            var type = owner.RepresentationType(owner.metadata.Types[fieldType].Kind);
             if (assigned is not null)
             {
                 var value = ReferenceEquals(assigned.Type, type) ? assigned :
-                    ConversionCall(LlvmRuntimeConversionOperation.Represent, type, member.FieldType, [assigned]);
+                    ConversionCall(LlvmRuntimeConversionOperation.Represent, type, fieldType, [assigned]);
                 Add(new LlvmStoreInstruction(value, address));
                 return owner.Null;
             }
-            var loaded = Add(new LlvmLoadInstruction(type, address) { LogicalType = member.FieldType });
+            var loaded = Add(new LlvmLoadInstruction(type, address) { LogicalType = fieldType });
             return Represent(loaded, node.Type);
         }
 

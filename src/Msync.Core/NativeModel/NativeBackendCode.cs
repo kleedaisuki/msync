@@ -3,7 +3,7 @@ namespace Msync.Core.Native;
 public enum NativeBackendHandler : byte
 {
     Standard, Nop, FrameStore, OffsetLoad, OffsetStore, OffsetBind,
-    ProjectLoad, ProjectStore, NumberBinary, ConnectionQualify, UnsignedBinary, DirectCall, CompiledCopy
+    ProjectLoad, ProjectStore, NumberBinary, ConnectionQualify, UnsignedBinary, DirectCall, CompiledCopy, FrameLoad
 }
 
 [Flags]

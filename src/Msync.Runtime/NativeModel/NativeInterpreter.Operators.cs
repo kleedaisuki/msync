@@ -6,6 +6,22 @@ namespace Msync.Runtime.Native;
 
 public sealed partial class NativeInterpreter
 {
+    private bool TryGuestLayout(NativeFrame frame, in NativeExecutionInstruction instruction)
+    {
+        if (memory.HasAnyPending) return false;
+        NativeAddress input = frame.Location(instruction.A);
+        if (input.Type.Kinds != 1UL << (int)NativeKind.Address || !frame.IsReady(instruction.A, input)) return false;
+        nint edge = input.Allocation.Storage.roots.ReadGuestEdge(input.Offset.References);
+        if (edge == 0) return false;
+        int layout = NativeGuestObjectTable.LayoutIdentity(edge);
+        if (layout == NativeGuestObjectTable.UnknownLayout) return false;
+        NativeAddress output = frame.Location(instruction.Result);
+        if (output.Type.Kinds != 1UL << (int)NativeKind.Bool) return false;
+        NativeStorage.StoreBool(output, layout == instruction.B);
+        if (frame.Activation?.Work is { } work) work.Counters.GuestLinkedLayoutCheck();
+        return true;
+    }
+
     private NativeDatum Unary(NativeFrame frame, NativeInstruction instruction)
     {
         NativeDatum input = frame.GetDatum(instruction.A);

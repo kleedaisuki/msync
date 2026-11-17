@@ -19,7 +19,7 @@ public sealed partial class NativeInterpreter
             return;
         }
         NativeEnvironmentLayout layout = instruction.B < 0 ? environments[instruction.A] : EnvironmentLayout(instruction.B);
-        NativeEnvironment environment = new(layout, instruction.B);
+        NativeEnvironment environment = AllocateEnvironment(layout, instruction.B);
         IReadOnlyList<int> inputs = instruction.Inputs ?? [];
         for (int index = 0; index < inputs.Count; index++)
         {
@@ -31,7 +31,18 @@ public sealed partial class NativeInterpreter
             }
             else frame.CopyTo(inputs[index], environment.CaptureAddress(index));
         }
+        PublishMachineCaptures(environment);
         frame.Set(instruction.Result, NativeValue.FromFunction(new(instruction.A, environment)));
+    }
+
+    private NativeEnvironment AllocateEnvironment(NativeEnvironmentLayout layout, int id)
+    {
+        RuntimeProfile.NativeFrameCounters counters = currentWork.Value?.Counters ?? default;
+        NativeAllocation allocation = guestHeap.NewObject(layout.Storage, id, 1, 0, counters);
+        if (allocation.GuestReferences is null) return NativeEnvironment.View(layout, allocation.Address);
+        NativeEnvironment environment = allocation.OpenGuestEnvironment(layout, out bool reused);
+        counters.NativeGuestEnvironment(reused);
+        return environment;
     }
 
     private NativeEnvironmentLayout EnvironmentLayout(int index)
@@ -75,13 +86,14 @@ public sealed partial class NativeInterpreter
                 throw new MsyncException($"Selected function #{target} '{image.Program.Functions[target].Name}' capture #{index} requires {(expected.Location ? "location" : "value")} storage {expected.Type}, but the callable environment contains {(actual.Location ? "location" : "value")} storage {actual.Type}.");
         }
         if (identical) return original;
-        NativeEnvironment adapted = new(layout);
+        NativeEnvironment adapted = AllocateEnvironment(layout, -1);
         for (int index = 0; index < original.Count; index++)
         {
             if (layout.Captures[index].Location)
                 adapted.Initialize(index, new(original[index].Location, layout.Captures[index].Type));
             else memory.Write(adapted.CaptureAddress(index), memory.Read(original.CaptureAddress(index)));
         }
+        PublishMachineCaptures(adapted);
         return adapted;
     }
 
@@ -219,7 +231,7 @@ public sealed partial class NativeInterpreter
         NativeType physicalItemType = element >= 0 ? image.Type(element) : NativeType.FromTypeRef(TypeRef.Any);
         IAsyncEnumerable<NativeDatum> items = new DatumSequence(values);
         NativeRange range = values.All(static value => value.IsReady)
-            ? NativeRange.Snapshot(values.Select(static value => value.Value), itemType, physicalItemType)
+            ? ReadySnapshot(values, itemType, physicalItemType)
             : new(ResolveDatumItems(items, CancellationToken.None), itemType,
                 values.Where(static value => value.IsReady).Select(static value => value.Value).ToArray(), physicalItemType: physicalItemType);
         rangeRoots.Add(range, new(values));
@@ -296,7 +308,7 @@ public sealed partial class NativeInterpreter
         for (int index = 0; index < count; index++)
             values[index] = memory.Read(address.OffsetBy(layout.Extent * index + field.Offset, field.Type));
         NativeRange range = values.All(static value => value.IsReady)
-            ? NativeRange.Snapshot(values.Select(static value => value.Value), itemType, physicalItemType)
+            ? ReadySnapshot(values, itemType, physicalItemType)
             : new(EnumerateItems(values, CancellationToken.None), itemType,
                 values.Where(static value => value.IsReady).Select(static value => value.Value).ToArray(), physicalItemType: physicalItemType);
         rangeRoots.Add(range, new(values));
@@ -308,39 +320,61 @@ public sealed partial class NativeInterpreter
     {
         NativeDatum rangeDatum = activation.Frame.GetDatum(instruction.A);
         if (!rangeDatum.IsReady) return AwaitOpenIteratorAsync(activation, instruction, pc, rangeDatum, token);
-        NativeRange range = rangeDatum.Value.AsRange();
-        IAsyncEnumerator<NativeDatum>? previous = activation.Iterators[instruction.B];
-        activation.Iterators[instruction.B] = null;
+        return OpenReadyIterator(activation, instruction.B, pc, rangeDatum.Value.AsRange(), token);
+    }
+
+    private NativeStep OpenReadyIterator(Activation activation, int index, int pc, NativeRange range, CancellationToken token)
+    {
+        activation.Frame.SequenceCursor(index) = default;
+        IAsyncEnumerator<NativeDatum>? previous = activation.RemoveIterator(index);
         if (previous is not null)
         {
             ValueTask dispose = previous.DisposeAsync();
-            if (!dispose.IsCompletedSuccessfully) return AwaitOpenAfterDisposeAsync(activation, instruction, pc, range, dispose, token);
+            if (!dispose.IsCompletedSuccessfully) return AwaitOpenAfterDisposeAsync(activation, index, pc, range, dispose, token);
         }
-        activation.Iterators[instruction.B] = GetDatumIterator(range, token);
+        StartIterator(activation, index, range, token);
         return new NativeStep(pc + 1);
+    }
+
+    private void StartIterator(Activation activation, int index, NativeRange range, CancellationToken token)
+    {
+        if (range.NumberSequence is { } sequence && sequence.UsesToken(token))
+        {
+            activation.Frame.SequenceCursor(index) = new(sequence);
+            activation.Work.Counters.SequenceOpen();
+        }
+        else activation.SetIterator(index, GetDatumIterator(range, token));
     }
 
     private async ValueTask<NativeStep> AwaitOpenIteratorAsync(Activation activation, NativeInstruction instruction, int pc, NativeDatum rangeDatum, CancellationToken token)
     {
         NativeRange range = (await rangeDatum.ResolveAsync(token)).AsRange();
-        IAsyncEnumerator<NativeDatum>? previous = activation.Iterators[instruction.B];
-        activation.Iterators[instruction.B] = null;
+        activation.Frame.SequenceCursor(instruction.B) = default;
+        IAsyncEnumerator<NativeDatum>? previous = activation.RemoveIterator(instruction.B);
         if (previous is not null) await previous.DisposeAsync();
-        activation.Iterators[instruction.B] = GetDatumIterator(range, token);
+        StartIterator(activation, instruction.B, range, token);
         return new(pc + 1);
     }
 
-    private async ValueTask<NativeStep> AwaitOpenAfterDisposeAsync(Activation activation, NativeInstruction instruction, int pc, NativeRange range, ValueTask dispose, CancellationToken token)
+    private async ValueTask<NativeStep> AwaitOpenAfterDisposeAsync(Activation activation, int index, int pc, NativeRange range, ValueTask dispose, CancellationToken token)
     {
         await dispose;
-        activation.Iterators[instruction.B] = GetDatumIterator(range, token);
+        StartIterator(activation, index, range, token);
         return new(pc + 1);
     }
 
     private static NativeStep NextIterator(Activation activation, NativeInstruction instruction, int pc, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        IAsyncEnumerator<NativeDatum> iterator = activation.Iterators[instruction.A]
+        ref NativeSequenceCursor cursor = ref activation.Frame.SequenceCursor(instruction.A);
+        if ((cursor.State & NativeSequenceCursor.Open) != 0)
+        {
+            if (!cursor.Next(out double value)) return new NativeStep(instruction.B);
+            activation.Frame.SetSequenceValue(instruction.Result, value);
+            activation.Work.Counters.SequenceSteps(1, machine: false);
+            return new NativeStep(pc + 1);
+        }
+        IAsyncEnumerator<NativeDatum> iterator = activation.Iterator(instruction.A)
             ?? throw new InvalidOperationException("Iterator is not open.");
         ValueTask<bool> next = iterator.MoveNextAsync();
         if (!next.IsCompletedSuccessfully) return AwaitNextIteratorAsync(activation, iterator, instruction, pc, next);
@@ -359,8 +393,8 @@ public sealed partial class NativeInterpreter
 
     private static NativeStep CloseIterator(Activation activation, int index, int pc)
     {
-        IAsyncEnumerator<NativeDatum>? iterator = activation.Iterators[index];
-        activation.Iterators[index] = null;
+        activation.Frame.SequenceCursor(index) = default;
+        IAsyncEnumerator<NativeDatum>? iterator = activation.RemoveIterator(index);
         if (iterator is not null)
         {
             ValueTask dispose = iterator.DisposeAsync();

@@ -6,7 +6,11 @@ namespace Msync.Core.Native;
 public sealed class NativeAllocation
 {
     private NativeStorage.Data storage;
+    private int allocationSite;
     internal int PendingValues;
+    internal nint MachineCaptures;
+    internal NativeEnvironment? GuestEnvironment;
+    private NativeEnvironment? reusableEnvironment;
     public NativeAllocation(NativeLayout layout, int layoutId = -1, int elementCount = 1)
     {
         ArgumentNullException.ThrowIfNull(layout);
@@ -23,10 +27,48 @@ public sealed class NativeAllocation
         ElementCount = 1;
         storage = new(layout, allocate);
     }
-    public NativeLayout Layout { get; }
-    public int LayoutId { get; }
-    public int AllocationSite { get; init; }
-    public int ElementCount { get; }
+    internal NativeAllocation(NativeLayout layout, int layoutId, int elementCount, NativeLayout storageLayout, nint raw, object owner,
+        nint callableCells = 0)
+    {
+        Layout = layout;
+        LayoutId = layoutId;
+        ElementCount = elementCount;
+        storage = new(storageLayout, raw, callableCells);
+        NativeHeapOwner = owner;
+    }
+    internal NativeAllocation(object owner, NativeGuestObjectTable references) =>
+        (NativeHeapOwner, GuestReferences, Layout) = (owner, references, null!);
+
+    internal void BindGuest(NativeLayout layout, NativeLayout storageLayout, int id, int elementCount, int site,
+        nint raw, nint callableCells, nint edges)
+    {
+        Layout = layout;
+        LayoutId = id;
+        ElementCount = elementCount;
+        allocationSite = site;
+        MachineCaptures = 0;
+        storage = new(storageLayout, raw, callableCells, GuestReferences, edges, storage.roots.Buffer);
+    }
+
+    internal void ClearGuestRoots()
+    {
+        storage.roots.ClearHost();
+        GuestEnvironment = null;
+    }
+
+    internal NativeEnvironment OpenGuestEnvironment(NativeEnvironmentLayout layout, out bool reused)
+    {
+        NativeEnvironment? environment = reusableEnvironment;
+        reused = environment is not null;
+        if (environment is null) reusableEnvironment = environment = NativeEnvironment.View(layout, Address);
+        else environment.BindGuest(layout, Address);
+        return GuestEnvironment = environment;
+    }
+
+    public NativeLayout Layout { get; private set; }
+    public int LayoutId { get; private set; }
+    public int AllocationSite { get => allocationSite; init => allocationSite = value; }
+    public int ElementCount { get; private set; }
     public NativeAddress Index(int index, NativeLayout stride) => Address.Index(index, stride);
     public NativeAddress Address => new(this, default);
     public NativeAddress Field(int index)
@@ -43,6 +85,11 @@ public sealed class NativeAllocation
                 if (storage.IsInitialized(slot.Offset)) yield return storage.ReadInitialized(slot.Type, slot.Offset);
         }
     }
+    internal object? NativeHeapOwner { get; }
+    internal NativeGuestObjectTable? GuestReferences { get; }
+    internal ReadOnlySpan<NativeRoot> HeapRoots => storage.roots.HostRoots;
+    internal ReadOnlySpan<nint> HeapEdges => storage.roots.GuestEdges;
+    internal NativeGuestObjectTable? EdgeTable => storage.roots.ReferenceTable;
     internal ref NativeStorage.Data Storage => ref storage;
 }
 
@@ -138,7 +185,8 @@ public sealed partial class NativeStorage
         ref Data input = ref source.Allocation.Storage;
         ref Data output = ref destination.Allocation.Storage;
         input.bytes.Slice(source.Offset.Bytes, size.Bytes).CopyTo(output.bytes.Slice(destination.Offset.Bytes, size.Bytes));
-        input.roots.Slice(source.Offset.References, size.References).CopyTo(output.roots.Slice(destination.Offset.References, size.References));
+        input.roots.CopyTo(source.Offset.References, output.roots, destination.Offset.References, size.References);
+        output.PublishCallables(destination.Offset.References, size.References);
         input.initialized.Slice(source.Offset.Bytes, size.Bytes).CopyTo(output.initialized.Slice(destination.Offset.Bytes, size.Bytes));
     }
     public static void ClearRegion(NativeAddress address, NativeLayout layout, int count)
@@ -147,7 +195,7 @@ public sealed partial class NativeStorage
         NativeOffset size = layout.Extent * count;
         ref Data storage = ref address.Allocation.Storage;
         storage.bytes.Slice(address.Offset.Bytes, size.Bytes).Clear();
-        storage.roots.Slice(address.Offset.References, size.References).Clear();
+        storage.roots.Clear(address.Offset.References, size.References);
         storage.initialized.Slice(address.Offset.Bytes, size.Bytes).Clear();
     }
     public static void ValidateRegion(NativeAddress address, NativeLayout layout, int count)
@@ -180,14 +228,24 @@ public sealed partial class NativeStorage
         _ = address.Allocation.Storage.layout.Find(address.Offset, type);
     }
     internal static void ValidateAddress(NativeType type, NativeAddress address) => Validate(type, address);
-    internal static NativeValue LoadTrusted(NativeType type, NativeAddress address) =>
-        address.Allocation.Storage.Read(type, address.Offset);
+    internal static NativeValue LoadTrusted(NativeType type, NativeAddress address)
+    {
+        NativeValue value = address.Allocation.Storage.Read(type, address.Offset);
+        GC.KeepAlive(address.Allocation);
+        return value;
+    }
     internal static NativeValue LoadInitialized(NativeType type, NativeAddress address) =>
         address.Allocation.Storage.ReadInitialized(type, address.Offset);
-    internal static void StoreTrusted(NativeType type, NativeAddress address, NativeValue value) =>
+    internal static void StoreTrusted(NativeType type, NativeAddress address, NativeValue value)
+    {
         address.Allocation.Storage.Write(type, address.Offset, value);
-    internal static void ClearTrusted(NativeType type, NativeAddress address) =>
+        GC.KeepAlive(address.Allocation);
+    }
+    internal static void ClearTrusted(NativeType type, NativeAddress address)
+    {
         address.Allocation.Storage.Erase(type, address.Offset);
+        GC.KeepAlive(address.Allocation);
+    }
 
     internal static void StoreCompiled(NativeType type, NativeAddress address, NativeValue value) =>
         address.Allocation.Storage.WriteCompiled(type, address.Offset, value);
@@ -250,8 +308,8 @@ public sealed partial class NativeStorage
         if (actualFormat.References > 0)
             CopyRoots(ref input, source.Offset.References, ref output, destination.Offset.References, actualFormat.References);
         if (dstFormat.References > actualFormat.References)
-            output.roots.Slice(destination.Offset.References + actualFormat.References,
-                dstFormat.References - actualFormat.References).Clear();
+            output.roots.Clear(destination.Offset.References + actualFormat.References,
+                dstFormat.References - actualFormat.References);
         if (destination.Type.IsUnion) output.bytes[destination.Offset.Bytes] = (byte)actualKind;
         return actualFormat.Bytes;
     }
@@ -259,16 +317,8 @@ public sealed partial class NativeStorage
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void CopyRoots(ref Data input, int source, ref Data output, int destination, int count)
     {
-        if (count > 2)
-        {
-            input.roots.Slice(source, count).CopyTo(output.roots.Slice(destination, count));
-            return;
-        }
-        // Snapshot both references before storing: adjacent address carriers may overlap.
-        object? first = input.roots[source].Value;
-        object? second = count == 2 ? input.roots[source + 1].Value : null;
-        output.roots[destination].Value = first;
-        if (count == 2) output.roots[destination + 1].Value = second;
+        input.roots.CopyTo(source, output.roots, destination, count);
+        output.PublishCallables(destination, count);
     }
 
     public static double ReadNumber(NativeAddress address)
@@ -300,23 +350,30 @@ public sealed partial class NativeStorage
     public static double LoadNumber(NativeAddress address)
     {
         ref Data storage = ref Readable(address);
-        return BitConverter.UInt64BitsToDouble(BinaryPrimitives.ReadUInt64LittleEndian(storage.bytes.Slice(address.Offset.Bytes, 8)));
+        double value = BitConverter.UInt64BitsToDouble(BinaryPrimitives.ReadUInt64LittleEndian(storage.bytes.Slice(address.Offset.Bytes, 8)));
+        GC.KeepAlive(address.Allocation);
+        return value;
     }
-    public static bool LoadBool(NativeAddress address) => Readable(address).bytes[address.Offset.Bytes] != 0;
-    public static string LoadString(NativeAddress address) => Readable(address).roots[address.Offset.References].Text!;
+    public static bool LoadBool(NativeAddress address)
+    {
+        bool value = Readable(address).bytes[address.Offset.Bytes] != 0;
+        GC.KeepAlive(address.Allocation);
+        return value;
+    }
+    public static string LoadString(NativeAddress address) => Readable(address).roots.ReadHost(address.Offset.References).Text!;
     public static NativeConnection LoadConnection(NativeAddress address)
     {
         ref Data storage = ref Readable(address);
-        return storage.roots[address.Offset.References].Connection!.Connection;
+        return storage.roots.ReadHost(address.Offset.References).Connection!.Connection;
     }
     public static NativePath LoadPath(NativeAddress address)
     {
         ref Data storage = ref Readable(address);
         int raw = address.Offset.Bytes, root = address.Offset.References;
         NativeConnection? connection = storage.bytes[raw + 1] == 0 ? null
-            : new NativeConnection((ConnectionKind)storage.bytes[raw], storage.roots[root + 4].Text ?? "");
-        return new(storage.roots[root].Text!, storage.roots[root + 1].Text, connection,
-            storage.roots[root + 2].Text, storage.roots[root + 3].Text);
+            : new NativeConnection((ConnectionKind)storage.bytes[raw], storage.roots.ReadHost(root + 4).Text ?? "");
+        return new(storage.roots.ReadHost(root).Text!, storage.roots.ReadHost(root + 1).Text, connection,
+            storage.roots.ReadHost(root + 2).Text, storage.roots.ReadHost(root + 3).Text);
     }
     internal static NativeFunction LoadFunctionDirect(NativeAddress address)
     {
@@ -324,7 +381,7 @@ public sealed partial class NativeStorage
         int raw = address.Offset.Bytes + address.Type.Representation.PayloadOffset;
         int root = address.Offset.References;
         return new(BinaryPrimitives.ReadInt32LittleEndian(storage.bytes.Slice(raw, 4)),
-            storage.roots[root].Environment, storage.roots[root + 1].Text);
+            storage.roots.ReadEnvironment(root), storage.roots.ReadHost(root + 1).Text);
     }
 
     public static NativeFunction LoadFunction(NativeAddress address)
@@ -332,24 +389,24 @@ public sealed partial class NativeStorage
         ref Data storage = ref Readable(address);
         int root = address.Offset.References;
         return new(BinaryPrimitives.ReadInt32LittleEndian(storage.bytes.Slice(address.Offset.Bytes, 4)),
-            storage.roots[root].Environment, storage.roots[root + 1].Text);
+            storage.roots.ReadEnvironment(root), storage.roots.ReadHost(root + 1).Text);
     }
-    public static NativeRange LoadRange(NativeAddress address) => Readable(address).roots[address.Offset.References].Range!;
-    public static NativeProcess LoadProcess(NativeAddress address) => Readable(address).roots[address.Offset.References].Process!;
-    public static TypeRef LoadType(NativeAddress address) => Readable(address).roots[address.Offset.References].Type!;
+    public static NativeRange LoadRange(NativeAddress address) => Readable(address).roots.ReadHost(address.Offset.References).Range!;
+    public static NativeProcess LoadProcess(NativeAddress address) => Readable(address).roots.ReadHost(address.Offset.References).Process!;
+    public static TypeRef LoadType(NativeAddress address) => Readable(address).roots.ReadHost(address.Offset.References).Type!;
     public static NativeAddress LoadAddress(NativeAddress address)
     {
         ref Data storage = ref Readable(address);
         ulong bits = BinaryPrimitives.ReadUInt64LittleEndian(storage.bytes.Slice(address.Offset.Bytes, 8));
-        return storage.roots[address.Offset.References].Allocation!.AddressAt(NativeValue.Unpack(bits),
-            storage.roots[address.Offset.References + 1].StorageType);
+        return storage.roots.ReadAllocation(address.Offset.References)!.AddressAt(NativeValue.Unpack(bits),
+            storage.roots.ReadHost(address.Offset.References + 1).StorageType);
     }
     internal static NativeAddress LoadAddressDirect(NativeAddress address)
     {
         ref Data storage = ref address.Allocation.Storage;
         ulong bits = BinaryPrimitives.ReadUInt64LittleEndian(storage.bytes.Slice(address.Offset.Bytes, 8));
-        return storage.roots[address.Offset.References].Allocation!.AddressAt(NativeValue.Unpack(bits),
-            storage.roots[address.Offset.References + 1].StorageType);
+        return storage.roots.ReadAllocation(address.Offset.References)!.AddressAt(NativeValue.Unpack(bits),
+            storage.roots.ReadHost(address.Offset.References + 1).StorageType);
     }
     private static ref Data Readable(NativeAddress address)
     {
@@ -369,7 +426,7 @@ public sealed partial class NativeStorage
         int payload = offset + format.PayloadOffset;
         if (kind == NativeKind.Number) BinaryPrimitives.WriteUInt64LittleEndian(storage.bytes.Slice(payload, 8), bits);
         else storage.bytes[payload] = (byte)bits;
-        if (format.References != 0) storage.roots.Slice(address.Offset.References, format.References).Clear();
+        if (format.References != 0) storage.roots.Clear(address.Offset.References, format.References);
         storage.initialized[offset] = true;
     }
 
@@ -385,6 +442,7 @@ public sealed partial class NativeStorage
         ref Data storage = ref address.Allocation.Storage;
         BinaryPrimitives.WriteUInt64LittleEndian(storage.bytes.Slice(address.Offset.Bytes, 8), BitConverter.DoubleToUInt64Bits(value));
         storage.MarkInitialized(address.Offset.Bytes, 8);
+        GC.KeepAlive(address.Allocation);
     }
     public static void StoreBool(NativeAddress address, bool value)
     {
@@ -396,13 +454,13 @@ public sealed partial class NativeStorage
     {
         ArgumentNullException.ThrowIfNull(value);
         ref Data storage = ref address.Allocation.Storage;
-        storage.roots[address.Offset.References] = new() { Text = value };
+        storage.roots.WriteHost(address.Offset.References, new() { Text = value });
         storage.initialized[address.Offset.Bytes] = true;
     }
     public static void StoreConnection(NativeAddress address, NativeConnection value)
     {
         ref Data storage = ref address.Allocation.Storage;
-        storage.roots[address.Offset.References] = new() { Connection = new(value) };
+        storage.roots.WriteHost(address.Offset.References, new() { Connection = new(value) });
         storage.initialized[address.Offset.Bytes] = true;
     }
     public static void StorePath(NativeAddress address, NativePath value)
@@ -412,11 +470,11 @@ public sealed partial class NativeStorage
         int raw = address.Offset.Bytes, root = address.Offset.References;
         storage.bytes[raw] = (byte)(value.Connection?.Kind ?? ConnectionKind.Local);
         storage.bytes[raw + 1] = value.Connection.HasValue ? (byte)1 : (byte)0;
-        storage.roots[root] = new() { Text = value.Raw };
-        storage.roots[root + 1] = new() { Text = value.WorkingDirectory };
-        storage.roots[root + 2] = new() { Text = value.HomeDirectory };
-        storage.roots[root + 3] = new() { Text = value.LocalSpelling };
-        storage.roots[root + 4] = new() { Text = value.Connection?.Address };
+        storage.roots.WriteHost(root, new() { Text = value.Raw });
+        storage.roots.WriteHost(root + 1, new() { Text = value.WorkingDirectory });
+        storage.roots.WriteHost(root + 2, new() { Text = value.HomeDirectory });
+        storage.roots.WriteHost(root + 3, new() { Text = value.LocalSpelling });
+        storage.roots.WriteHost(root + 4, new() { Text = value.Connection?.Address });
         storage.MarkInitialized(raw, 2);
     }
     public static void StoreFunction(NativeAddress address, NativeFunction value)
@@ -424,29 +482,30 @@ public sealed partial class NativeStorage
         ref Data storage = ref address.Allocation.Storage;
         int root = address.Offset.References;
         BinaryPrimitives.WriteInt32LittleEndian(storage.bytes.Slice(address.Offset.Bytes, 4), value.Function);
-        storage.roots[root] = new() { Environment = value.Environment };
-        storage.roots[root + 1] = new() { Text = value.NativeName };
+        storage.roots.WriteEnvironment(root, value.Environment);
+        storage.roots.WriteHost(root + 1, new() { Text = value.NativeName });
+        storage.PublishCallable(root, value.Environment);
         storage.MarkInitialized(address.Offset.Bytes, 4);
     }
     public static void StoreRange(NativeAddress address, NativeRange value)
     {
         ArgumentNullException.ThrowIfNull(value);
         ref Data storage = ref address.Allocation.Storage;
-        storage.roots[address.Offset.References] = new() { Range = value };
+        storage.roots.WriteHost(address.Offset.References, new() { Range = value });
         storage.initialized[address.Offset.Bytes] = true;
     }
     public static void StoreProcess(NativeAddress address, NativeProcess value)
     {
         ArgumentNullException.ThrowIfNull(value);
         ref Data storage = ref address.Allocation.Storage;
-        storage.roots[address.Offset.References] = new() { Process = value };
+        storage.roots.WriteHost(address.Offset.References, new() { Process = value });
         storage.initialized[address.Offset.Bytes] = true;
     }
     public static void StoreType(NativeAddress address, TypeRef value)
     {
         ArgumentNullException.ThrowIfNull(value);
         ref Data storage = ref address.Allocation.Storage;
-        storage.roots[address.Offset.References] = new() { Type = value };
+        storage.roots.WriteHost(address.Offset.References, new() { Type = value });
         storage.initialized[address.Offset.Bytes] = true;
     }
     public static void StoreAddress(NativeAddress address, NativeAddress value)
@@ -466,7 +525,7 @@ public sealed partial class NativeStorage
     {
         ref Data storage = ref address.Allocation.Storage;
         BinaryPrimitives.WriteUInt64LittleEndian(storage.bytes.Slice(address.Offset.Bytes, 8), NativeValue.Pack(value.Offset));
-        storage.roots[address.Offset.References] = new() { Allocation = value.Allocation };
-        storage.roots[address.Offset.References + 1] = new() { StorageType = value.StorageType };
+        storage.roots.WriteAllocation(address.Offset.References, value.Allocation);
+        storage.roots.WriteHost(address.Offset.References + 1, new() { StorageType = value.StorageType });
     }
 }

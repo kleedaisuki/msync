@@ -26,6 +26,7 @@ try
             ], new([], 0, []))],
         [new(TypeKind.Bool), new(TypeKind.String), new(TypeKind.Path), new(TypeKind.Never, Pointee: 0)], [])
     { OptimizationLevel = 0 };
+    program = PreparationSemanticChecks.WithUnoptimizedStorage(program);
     NativeArtifact.Validate(program);
     NativeProgram prepared = NativePreparation.Prepare(program, new BindingContext(root, root, null));
     Require(prepared.ExecutionPlans is [{ EliminatedTransfers: 0, Transfers.Count: 2 }],
@@ -67,7 +68,7 @@ try
     NativeProgram compute = new([new(NativeKind.Null)],
         [new("compute-only", [new(0)], [new(NativeOp.Constant, 0, A: 0, Type: 0), new(NativeOp.Return, A: 0)], new([], 0, []))],
         [new(TypeKind.Null)], []);
-    NativeProgram emptyPlan = NativePreparation.Prepare(compute, new BindingContext(root, root, null));
+    NativeProgram emptyPlan = NativePreparation.Prepare(PreparationSemanticChecks.WithUnoptimizedStorage(compute), new BindingContext(root, root, null));
     using MemoryStream emptyWire = new();
     NativeArtifact.Write(emptyPlan, emptyWire);
     emptyWire.Position = 0;

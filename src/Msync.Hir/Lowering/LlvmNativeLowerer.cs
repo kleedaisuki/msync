@@ -35,6 +35,8 @@ public static partial class LlvmNativeLowerer
         internal readonly List<NativeCodeLayout> Layouts = input.Layouts.ToList();
         internal readonly List<NativeConstant> Constants = input.SessionGeneration?.Program?.Constants.ToList() ?? [];
         internal readonly List<NativeAllocationPlan> Allocations = input.SessionGeneration?.Program?.Allocations.ToList() ?? [];
+        internal readonly List<NativeProjection> Projections = input.SessionGeneration?.Program?.Projections.ToList() ?? [];
+        internal readonly Dictionary<NativeProjection, int> ProjectionIndices = [];
         internal readonly Dictionary<LlvmFunction, int> Functions = [];
         internal readonly Dictionary<LlvmGlobalVariable, int> StaticObjects = [];
         internal readonly Dictionary<LlvmGlobalVariable, int> StaticFlags = [];
@@ -48,6 +50,9 @@ public static partial class LlvmNativeLowerer
             for (int i = 0; i < bodies.Length; ++i) Functions.Add(bodies[i], CallableIndex(bodies[i], i));
             var functions = Session?.Program?.Functions.ToArray() ?? [];
             Array.Resize(ref functions, Session?.Map.NextCallable ?? bodies.Length);
+            layoutVariantBase = functions.Length;
+            if (trace is null) PrepareLayoutArguments();
+            else trace.Run("compiler.llvm.target.layout_arguments", this, static owner => owner.PrepareLayoutArguments());
             var replaced = Functions.Values.ToHashSet();
             Allocations.RemoveAll(plan => replaced.Contains(plan.Function));
             for (int i = 0; i < bodies.Length; ++i)
@@ -64,6 +69,19 @@ public static partial class LlvmNativeLowerer
                 var body = new Body(this, bodies[i], index, trace?.Detail);
                 functions[index] = trace is null ? body.Run() : trace.MeasureDetailed("compiler.llvm.target.function", body,
                     static state => state.Run(), attributes: FunctionAttributes(bodies[i].Name, index, bodies[i].BasicBlocks.FirstOrDefault()?.FirstInstruction?.Source));
+                if (Session is null && SelectSsa(bodies[i], functions[index], index) is { } ssa)
+                    functions[index] = functions[index] with { SsaBody = ssa };
+            }
+            functions = EmitLayoutVariants(functions);
+            for (int i = 0; Session is null && i < functions.Length; i++)
+            {
+                if (functions[i].SsaBody is not { } plan) continue;
+                if (plan.Calls.Any(call => functions[call.Target] is not { CaptureCount: 0, SsaBody.CanBeCalled: true }))
+                {
+                    functions[i] = functions[i] with { SsaBody = null };
+                    trace?.Metric("ssa.calls.unlinked_functions", 1);
+                }
+                else trace?.Metric("ssa.calls.linked_sites", plan.Calls.Count());
             }
             trace?.Metric("functions", functions.Length);
             trace?.Metric("constants", Constants.Count);
@@ -72,12 +90,22 @@ public static partial class LlvmNativeLowerer
             trace?.Metric("statics", statics.Length);
             NativeProgram program = new(Constants.ToArray(), functions, Types.ToArray(), Layouts.ToArray(), Functions[Input.Entry])
             {
-                Allocations = Allocations.ToArray(), Statics = statics,
+                Allocations = Allocations.ToArray(), Statics = statics, Projections = Projections.ToArray(),
                 PreserveLocals = Session is not null,
-                SessionRoots = Session is { } active ? active.Exports.Select(location => active.Roots[location].Slot).ToArray() : null,
+                SessionRoots = Session is { } active
+                    ? active.Exports.Select(location => active.Roots[location].Slot).Concat(active.ImportSlots).Distinct().ToArray()
+                    : null,
                 SessionDispatches = DispatchTables()
             };
-            return program with { Backend = Backend(program, trace) };
+            return Session is null ? program : program with { Backend = Backend(program, trace) };
+        }
+
+        private NativeSsaBody? SelectSsa(LlvmFunction function, NativeFunctionCode linked, int index)
+        {
+            if (trace?.Detail is not { } detail) return LlvmSsaBody.Select(Input, function, linked, Types, Functions, null);
+            return detail.MeasureDetailed("compiler.llvm.target.whole_ssa", (Owner: this, function, linked, detail),
+                static state => LlvmSsaBody.Select(state.Owner.Input, state.function, state.linked, state.Owner.Types, state.Owner.Functions, state.detail),
+                attributes: FunctionAttributes(linked.Name, index, function.BasicBlocks.FirstOrDefault()?.FirstInstruction?.Source));
         }
 
         private NativeFunctionCode Template(LlvmFunction function, LlvmTemplateFunctionInfo template, CompilationTrace? detail)
@@ -135,7 +163,8 @@ public static partial class LlvmNativeLowerer
         internal int Constant(NativeConstant value) { int index = Constants.Count; Constants.Add(value); return index; }
     }
 
-    private sealed partial class Body(Lowering owner, LlvmFunction function, int functionIndex, CompilationTrace? trace)
+    private sealed partial class Body(Lowering owner, LlvmFunction function, int functionIndex, CompilationTrace? trace,
+        LayoutVariant? layoutVariant = null)
     {
         private readonly List<NativeSlot> slots = [];
         private readonly List<NativeInstruction> code = [];
@@ -157,15 +186,21 @@ public static partial class LlvmNativeLowerer
 
         internal NativeFunctionCode Run()
         {
+            if (trace is null) PlanCallCapturePreparation();
+            else trace.Run("calls.capture_abi", this, static body => body.PlanCallCapturePreparation());
             PrepareSessionRoots();
             PrepareArguments();
             PrepareAggregateArguments();
+            FindLayoutReachability();
             PreparePhis();
-            foreach (var block in function.BasicBlocks)
+            IReadOnlyList<LlvmBasicBlock> blocks = layoutBlockOrder is { } reachable ? reachable : function.BasicBlocks;
+            for (int index = 0; index < blocks.Count; index++)
             {
+                var block = blocks[index];
+                fallthrough = layoutBlockOrder is not null && index + 1 < blocks.Count ? blocks[index + 1] : null;
                 positions.Add(block, code.Count);
                 for (var instruction = block.FirstInstruction; instruction is not null; instruction = instruction.Next)
-                    Emit(instruction, block);
+                    if (erasedCapturePreparation?.Contains(instruction) != true) Emit(instruction, block);
             }
             ApplyFunctionContextMarkers();
             int prefix = prelude.Count;
@@ -236,6 +271,7 @@ public static partial class LlvmNativeLowerer
             trace?.Metric("statics.publications", staticPublications);
             trace?.Metric("session.cell_addresses", sessionCellAddresses);
             string name = owner.Input.SourceFunctions.GetValueOrDefault(function)?.SourceName ?? function.Name;
+            if (layoutVariant is { } variant) name += $"$layout{variant.Argument}_{variant.Layout}";
             return new(name, slots.ToArray(), instructions, signature, parameters.Length, captureCount, IteratorCount: iterators.Count)
             { Storage = new(new NativeSlotStorage[slots.Count], new NativeInstructionStorage[instructions.Length])
                 { Calls = calls.Select(call => call with { Instruction = call.Instruction + prefix }).ToArray() } };

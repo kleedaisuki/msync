@@ -70,13 +70,14 @@ internal static class NativeRegisterPlan
             return [];
         }
         started = metrics is null ? 0 : Stopwatch.GetTimestamp();
-        NativeControlFlow flow = new(function.Metadata);
+        NativeInstruction[] effective = EffectiveInstructions(function);
+        NativeControlFlow flow = new(effective);
         if (metrics is not null) { ++metrics.ControlFlowBuilds; metrics.ControlFlowNanoseconds += Elapsed(started); }
         started = metrics is null ? 0 : Stopwatch.GetTimestamp();
-        HashSet<int>[] live = LiveAfter(function.Metadata, flow, metrics);
+        HashSet<int>[] live = LiveAfter(effective, flow, metrics);
         if (metrics is not null) metrics.LivenessNanoseconds += Elapsed(started);
         started = metrics is null ? 0 : Stopwatch.GetTimestamp();
-        bool[] pending = PendingSlots(function, operations, metrics);
+        bool[] pending = PendingSlots(function, operations, effective, metrics);
         if (metrics is not null) metrics.PendingNanoseconds += Elapsed(started);
         started = metrics is null ? 0 : Stopwatch.GetTimestamp();
         List<NativeRegisterRegion> regions = [];
@@ -90,7 +91,7 @@ internal static class NativeRegisterPlan
                 Dictionary<int, NativeKind> kinds = [];
                 // A region is a safepoint interval, not an unbounded cancellation-free trace.
                 while (pc < block.End && Eligible(function, operations, pc) && visits + function.Instructions[pc].Span <= 256
-                    && Compatible(function.Instructions[pc], operations[pc], kinds))
+                    && Compatible(function, pc, operations[pc], kinds))
                 {
                     kinds[function.Instructions[pc].Result] = ResultKind(operations[pc]);
                     visits += function.Instructions[pc].Span;
@@ -106,22 +107,27 @@ internal static class NativeRegisterPlan
     private static long Elapsed(long started) => Stopwatch.GetElapsedTime(started).Ticks * 100;
 
     private static bool Eligible(NativeExecutionFunction function, NativeFastOperation[] operations, int pc) =>
-        operations[pc] is not (NativeFastOperation.Bridge or NativeFastOperation.Nop or NativeFastOperation.Jump
-            or NativeFastOperation.Branch or NativeFastOperation.NumberReturn or NativeFastOperation.BoolReturn
+        operations[pc] is not (NativeFastOperation.Bridge or NativeFastOperation.MachineCall or NativeFastOperation.MachineFusedCall or NativeFastOperation.Nop or NativeFastOperation.Jump
+            or NativeFastOperation.Branch or NativeFastOperation.SequenceNext or NativeFastOperation.NumberReturn or NativeFastOperation.BoolReturn
+            or NativeFastOperation.NullReturn or NativeFastOperation.NullConstant or NativeFastOperation.FloatRemainder
             or NativeFastOperation.NumberMove or NativeFastOperation.BoolMove or NativeFastOperation.IsNull)
+        && !operations[pc].IsGuestAccess()
+        && !operations[pc].IsScalarSelect()
         && function.CanWriteRaw(function.Instructions[pc].Result);
 
     private static NativeKind ResultKind(NativeFastOperation op) =>
         op.IsBoolResult() ? NativeKind.Bool : NativeKind.Number;
 
-    private static bool Compatible(NativeExecutionInstruction instruction, NativeFastOperation op, Dictionary<int, NativeKind> kinds)
+    private static bool Compatible(NativeExecutionFunction function, int pc, NativeFastOperation op, Dictionary<int, NativeKind> kinds)
     {
         if (op is NativeFastOperation.NumberConstant or NativeFastOperation.BoolConstant) return true;
+        int firstSlot = op.FirstOperand(function, pc);
+        int secondSlot = function.Instructions[pc].B;
         NativeKind expected = op.ExpectsBoolInputs() ? NativeKind.Bool : NativeKind.Number;
-        if (kinds.TryGetValue(instruction.A, out NativeKind first) && first != expected) return false;
-        if (op.TakesSecondOperand() && kinds.TryGetValue(instruction.B, out NativeKind second) && second != expected) return false;
-        kinds.TryAdd(instruction.A, expected);
-        if (op.TakesSecondOperand()) kinds.TryAdd(instruction.B, expected);
+        if (kinds.TryGetValue(firstSlot, out NativeKind first) && first != expected) return false;
+        if (op.TakesSecondOperand() && kinds.TryGetValue(secondSlot, out NativeKind second) && second != expected) return false;
+        kinds.TryAdd(firstSlot, expected);
+        if (op.TakesSecondOperand()) kinds.TryAdd(secondSlot, expected);
         return true;
     }
 
@@ -152,7 +158,7 @@ internal static class NativeRegisterPlan
             NativeKind inputKind = op.ExpectsBoolInputs() ? NativeKind.Bool : NativeKind.Number;
             NativeNumberForm form = function.NumberForm(pc);
             int a = op is NativeFastOperation.NumberConstant or NativeFastOperation.BoolConstant ? -1
-                : Read(instruction.A, inputKind, form.HasFlag(NativeNumberForm.UnsignedA));
+                : Read(op.FirstOperand(function, pc), inputKind, form.HasFlag(NativeNumberForm.UnsignedA));
             int b = op.TakesSecondOperand() ? Read(instruction.B, inputKind, form.HasFlag(NativeNumberForm.UnsignedB)) : -1;
             int result = values.Count;
             values.Add(new(instruction.Result, op.IsBoolResult() ? NativeKind.Bool : NativeKind.Number, code.Count, form.HasFlag(NativeNumberForm.UnsignedResult)));
@@ -171,7 +177,30 @@ internal static class NativeRegisterPlan
         return region;
     }
 
-    private static bool[] PendingSlots(NativeExecutionFunction function, NativeFastOperation[] operations, NativeRegisterPlanMetrics? metrics)
+    private static NativeInstruction[] EffectiveInstructions(NativeExecutionFunction function)
+    {
+        NativeInstruction[] effective = new NativeInstruction[function.Instructions.Length];
+        for (int pc = 0; pc < effective.Length;)
+        {
+            NativeExecutionInstruction lowered = function.Instructions[pc];
+            int end = pc + lowered.Span;
+            effective[pc++] = lowered.Handler == NativeInterpreter.NopHandler || lowered.Op == NativeOp.Nop
+                ? new(NativeOp.Nop)
+                : function.Metadata[end - 1] with
+                {
+                    // These handlers read or write a named cell directly; the
+                    // original address slot is no longer live in the tier.
+                    Op = lowered.Handler == NativeInterpreter.FrameStoreHandler ||
+                         lowered.Handler == NativeInterpreter.FrameLoadHandler ? NativeOp.Copy : lowered.Op,
+                    Result = lowered.Result, A = lowered.A, B = lowered.B, C = lowered.C
+                };
+            while (pc < end) effective[pc++] = new(NativeOp.Nop);
+        }
+        return effective;
+    }
+
+    private static bool[] PendingSlots(NativeExecutionFunction function, NativeFastOperation[] operations,
+        NativeInstruction[] effective, NativeRegisterPlanMetrics? metrics)
     {
         bool[] pending = new bool[function.Definition.Slots.Count];
         Array.Fill(pending, true, 0, function.Definition.CaptureCount + function.Definition.ParameterCount);
@@ -183,10 +212,10 @@ internal static class NativeRegisterPlan
             for (int pc = 0; pc < function.Metadata.Length; pc += function.Instructions[pc].Span)
             {
                 if (metrics is not null) ++metrics.PendingVisits;
-                NativeExecutionInstruction lowered = function.Instructions[pc];
-                NativeInstruction instruction = function.Metadata[pc + lowered.Span - 1] with
-                { Op = lowered.Op, Result = lowered.Result, A = lowered.A, B = lowered.B, C = lowered.C };
-                bool mayDefer = operations[pc] == NativeFastOperation.Bridge
+                NativeInstruction instruction = effective[pc];
+                bool mayDefer = operations[pc] is NativeFastOperation.Bridge or NativeFastOperation.MachineCall
+                    or NativeFastOperation.MachineFusedCall or NativeFastOperation.SequenceNext
+                    || operations[pc].IsGuestAccess()
                     || instruction.Op != NativeOp.Constant && NativeInstructionFacts.ValueReads(instruction).Any(slot => pending[slot]);
                 if (!mayDefer) continue;
                 foreach (int slot in NativeInstructionFacts.Definitions(instruction))

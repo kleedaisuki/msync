@@ -26,17 +26,17 @@ public sealed partial class NativeInterpreter
         if (next is { } tail && tail.Arguments.Count != 0)
         {
             NativeExecutionFunction target = ExecutionFunction(selected, tail.Target);
-            NativeArguments snapshot = target.CopyTailArguments(tail.Arguments, memory, out bool allocated);
+            NativeArguments snapshot = target.CopyTailArguments(tail.Arguments, memory, guestHeap, activation.Work.Counters, out bool allocated);
             activation.Work.Counters.TailArguments(tail.Arguments.Count, allocated);
             next = tail with { Arguments = snapshot };
         }
         // Snapshot all next arguments before releasing either the caller frame
         // or its incoming tail buffer: self-tail calls may permute borrowed slots.
-        ReleaseActivation(activation, arguments);
+        ReleaseGuestActivation(activation, arguments);
         return next;
     }
 
-    private readonly record struct TailReturn(RuntimeProfile.NativeFrameCounters Counters,
+    internal readonly record struct TailReturn(RuntimeProfile.NativeFrameCounters Counters,
         NativeFunctionCode Function, int Pc, TailPlan Plan)
     {
         internal void Complete()
@@ -64,35 +64,27 @@ public sealed partial class NativeInterpreter
         TailPlan?[]? sites = Volatile.Read(ref selected.TailSites[activation.FunctionIndex]);
         if (sites is null)
         {
-            sites = TailSites(function);
+            sites = TailSites(activation.Execution);
             sites = Interlocked.CompareExchange(ref selected.TailSites[activation.FunctionIndex], sites, null) ?? sites;
         }
         return sites[pc];
     }
 
-    private static TailPlan?[] TailSites(NativeFunctionCode function)
+    private static TailPlan?[] TailSites(NativeExecutionFunction executable)
     {
+        NativeFunctionCode function = executable.Definition;
         TailPlan?[] sites = new TailPlan?[function.Instructions.Count];
-        HashSet<int> exposed = function.Instructions
-            .Where(instruction => instruction.Op is NativeOp.FrameAddress or NativeOp.BindLocation)
-            .Select(instruction => instruction.A).ToHashSet();
-        // Geometric access through another frame location can also observe a result slot.
-        if (exposed.Count != 0 && function.Instructions.Any(instruction => instruction.Op is
-            NativeOp.AddressOffset or NativeOp.IndexAddress or NativeOp.CopyMemory or NativeOp.ClearMemory))
-            return sites;
+        IReadOnlyList<bool> privateSlots = executable.RawWritable;
         for (int pc = 0; pc + 1 < sites.Length; pc++)
         {
             if (function.Instructions[pc] is { Op: NativeOp.Call, Result: >= 0 } call
-                && PrivateTemporary(function, call.Result, exposed))
-                sites[pc] = TailPath(function, pc + 1, call.Result, exposed);
+                && privateSlots[call.Result])
+                sites[pc] = TailPath(function, pc + 1, call.Result, privateSlots);
         }
         return sites;
     }
 
-    private static bool PrivateTemporary(NativeFunctionCode function, int slot, HashSet<int> exposed) =>
-        function.Slots[slot] is { Role: NativeSlotRole.Temporary, Escapes: false } && !exposed.Contains(slot);
-
-    private static TailPlan? TailPath(NativeFunctionCode function, int pc, int result, HashSet<int> exposed)
+    private static TailPlan? TailPath(NativeFunctionCode function, int pc, int result, IReadOnlyList<bool> privateSlots)
     {
         HashSet<int> values = [result];
         HashSet<int> visited = [];
@@ -107,7 +99,7 @@ public sealed partial class NativeInterpreter
             if (instruction.Op == NativeOp.Jump) { pc = instruction.A; continue; }
             if (instruction.Op == NativeOp.Nop) { pc++; continue; }
             if (instruction.Op is not (NativeOp.Copy or NativeOp.Move)
-                || !values.Contains(instruction.A) || !PrivateTemporary(function, instruction.Result, exposed)
+                || !values.Contains(instruction.A) || !privateSlots[instruction.Result]
                 || function.Slots[instruction.Result].Type != type) return null;
             if (instruction.Op == NativeOp.Move) values.Remove(instruction.A);
             values.Add(instruction.Result);

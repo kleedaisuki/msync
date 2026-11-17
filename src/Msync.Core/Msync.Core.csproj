@@ -1,8 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+  <PropertyGroup><TargetFramework>net10.0</TargetFramework><AllowUnsafeBlocks>true</AllowUnsafeBlocks></PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Msync.Runtime" />
+    <InternalsVisibleTo Include="Msync.Hir" />
     <InternalsVisibleTo Include="Msync.Optimization" />
     <InternalsVisibleTo Include="Msync.NativeOptimization.Tests" />
+    <InternalsVisibleTo Include="Msync.NativeTiering.Tests" />
   </ItemGroup>
 </Project>

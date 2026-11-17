@@ -134,7 +134,7 @@ internal static class NativeCommandPipeline
         RuntimeProfile? profile = telemetry?.CreateProfile();
         ExecutionOptions execution = RuntimeOptions(options, sourceFile, runtime?.RuntimeObserver, color, snapshot, input)
             with
-        { Profile = profile, Timeline = telemetry?.Timeline };
+        { Profile = profile, Timeline = telemetry?.Timeline, ScopedGuestValues = true };
         string profileOwner = runtime?.Id ?? "";
         try
         {
@@ -149,9 +149,10 @@ internal static class NativeCommandPipeline
             {
                 using TelemetrySpan? execute = runtime?.Begin("execute");
                 using IDisposable? owner = execute is null ? null : telemetry?.Timeline?.Attach(execute.Id);
+                execute?.SetAttribute("vm.driver", "inline");
                 profileOwner = execute?.Id ?? profileOwner;
                 ProcessCounters? before = execute?.MeasureProcess();
-                try { await interpreter.ExecuteAsync(token); }
+                try { interpreter.ExecuteEntry(token); }
                 catch (Exception error) { execute?.Fail(error); throw; }
                 finally
                 {

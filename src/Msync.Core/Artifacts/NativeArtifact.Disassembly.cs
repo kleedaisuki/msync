@@ -65,9 +65,42 @@ public static partial class NativeArtifact
                 output.WriteStartObject(); output.WriteNumber("function", plan.Function); output.WriteNumber("instruction", plan.Instruction);
                 output.WriteNumber("layout", plan.Layout); output.WriteString("placement", plan.Placement.ToString()); output.WriteEndObject();
             }
-            output.WriteEndArray(); WriteJsonPlans(output, program.ExecutionPlans ?? []); output.WriteEndObject();
+            output.WriteEndArray(); WriteJsonPlans(output, program.ExecutionPlans ?? []);
+            if (program.Backend is { } backend) WriteJsonBackend(output, backend);
+            output.WriteEndObject();
         }
         return Encoding.UTF8.GetString(stream.GetBuffer(), 0, checked((int)stream.Length));
+    }
+
+    private static void WriteJsonBackend(Utf8JsonWriter output, NativeBackendCode backend)
+    {
+        output.WriteStartArray("backend");
+        for (int index = 0; index < backend.Functions.Count; index++)
+        {
+            var body = backend.Functions[index];
+            output.WriteStartObject();
+            output.WriteNumber("function", index);
+            output.WriteStartArray("instructions");
+            for (int pc = 0; pc < body.Instructions.Count;)
+            {
+                var instruction = body.Instructions[pc];
+                output.WriteStartObject();
+                output.WriteNumber("pc", pc);
+                output.WriteNumber("span", instruction.Span);
+                output.WriteString("op", instruction.Op.ToString());
+                output.WriteString("handler", instruction.Handler.ToString());
+                output.WriteNumber("result", instruction.Result);
+                output.WriteNumber("a", instruction.A);
+                output.WriteNumber("b", instruction.B);
+                output.WriteNumber("c", instruction.C);
+                output.WriteNumber("operand", instruction.Operand);
+                output.WriteEndObject();
+                pc += Math.Max(instruction.Span, 1);
+            }
+            output.WriteEndArray();
+            output.WriteEndObject();
+        }
+        output.WriteEndArray();
     }
 
     public static string Disassemble(NativeProgram program)

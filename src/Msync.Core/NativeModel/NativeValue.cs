@@ -123,10 +123,14 @@ public readonly partial struct NativeValue : IEquatable<NativeValue>
         4 => root4,
         _ => throw new ArgumentOutOfRangeException(nameof(index))
     };
-    internal static NativeValue Restore(NativeKind kind, ulong bits, byte flags, ReadOnlySpan<NativeRoot> roots) =>
-        new(kind, bits, flags, roots.Length > 0 ? roots[0] : default,
-            roots.Length > 1 ? roots[1] : default, roots.Length > 2 ? roots[2] : default,
-            roots.Length > 3 ? roots[3] : default, roots.Length > 4 ? roots[4] : default);
+    internal static NativeValue Restore(NativeKind kind, ulong bits, byte flags, NativeRootBank roots, int start, int count) =>
+        new(kind, bits, flags, kind switch
+        {
+            NativeKind.Address => new() { Allocation = roots.ReadAllocation(start) },
+            NativeKind.Function => new() { Environment = roots.ReadEnvironment(start) },
+            _ => count > 0 ? roots.ReadHost(start) : default,
+        }, count > 1 ? roots.ReadHost(start + 1) : default, count > 2 ? roots.ReadHost(start + 2) : default,
+            count > 3 ? roots.ReadHost(start + 3) : default, count > 4 ? roots.ReadHost(start + 4) : default);
     internal static ulong Pack(NativeOffset offset) => unchecked((uint)offset.Bytes | ((ulong)(uint)offset.References << 32));
     internal static NativeOffset Unpack(ulong bits) => new(unchecked((int)(uint)bits), unchecked((int)(uint)(bits >> 32)));
 

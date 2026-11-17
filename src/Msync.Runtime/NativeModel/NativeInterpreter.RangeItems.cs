@@ -62,7 +62,7 @@ public sealed partial class NativeInterpreter
 
     private NativeDatum DatumRecord(NativeLayout layout, params NativeDatum[] values)
     {
-        NativeAllocation allocation = new(layout);
+        NativeAllocation allocation = guestHeap.NewObject(layout, -1, 1, 0, currentWork.Value?.Counters ?? default);
         for (int index = 0; index < values.Length; index++) memory.Write(allocation.Field(index), values[index]);
         return new(NativeValue.FromAddress(allocation.Address));
     }

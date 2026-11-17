@@ -24,10 +24,9 @@ internal static class PreparationSemanticChecks
         foreach (TypeKind target in targets)
         foreach (bool explicitly in new[] { false, true })
         {
-            NativeProgram program = Conversion(literal, target, explicitly, root);
+            NativeProgram program = WithUnoptimizedStorage(Conversion(literal, target, explicitly, root));
             NativeArtifact.Validate(program);
-            Outcome expected = await ExecuteAsync(program with
-                { Stage = ArtifactStage.Executable, Context = new(root, root, null) });
+            Outcome expected = await ExecuteAsync(Residual(program, root));
             if (literal.Kind == NativeKind.Number && target == TypeKind.String)
                 Require(explicitly ? expected.Value?.Kind == NativeKind.String
                     : expected.Error?.Contains("Cannot implicitly convert", StringComparison.Ordinal) == true,
@@ -43,11 +42,10 @@ internal static class PreparationSemanticChecks
         }
         foreach (bool reflected in new[] { false, true })
         {
-            NativeProgram program = CallableMetadata(root, reflected);
+            NativeProgram program = WithUnoptimizedStorage(CallableMetadata(root, reflected));
             NativeArtifact.Validate(program);
             Outcome expected = new(NativeValue.FromBool(!reflected), null);
-            Require(await ExecuteAsync(program with
-                { Stage = ArtifactStage.Executable, Context = new(root, root, null) }) == expected,
+            Require(await ExecuteAsync(Residual(program, root)) == expected,
                 "Callable metadata uses its public signature, unwrapping physical pointers only without reflection.");
             NativeProgram prepared = NativePreparation.Prepare(program, new BindingContext(root, root, null));
             using MemoryStream wire = new();
@@ -58,6 +56,23 @@ internal static class PreparationSemanticChecks
             checkedCases++;
         }
         Console.WriteLine($"PASS: {checkedCases} contextual conversion/diagnostic binary-roundtrip equivalences");
+    }
+
+    internal static NativeProgram WithUnoptimizedStorage(NativeProgram program) => program with
+    {
+        Functions = program.Functions.Select(function => function with
+        {
+            Storage = new(new NativeSlotStorage[function.Slots.Count],
+                new NativeInstructionStorage[function.Instructions.Count])
+        }).ToArray()
+    };
+
+    private static NativeProgram Residual(NativeProgram program, string root)
+    {
+        BindingContext binding = new(root, root, null);
+        // Compare the unfrozen operations with contextual preparation, not two prepared images.
+        return NativeBackendCompiler.Compile(program with { Stage = ArtifactStage.Executable, Context = binding },
+            new(null, binding));
     }
 
     private static NativeProgram CallableMetadata(string root, bool reflected)

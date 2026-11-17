@@ -23,6 +23,11 @@ internal unsafe struct NativeTierContext
     internal long* Hits;
     internal int Fuel;
     internal uint PendingMask;
+    internal nint Raw;
+    internal nint Initialization;
+    internal long MachineCalls;
+    internal nint GuestEdges;
+    internal nint GuestHostRoots;
 }
 
 internal unsafe sealed class NativeTierMemory : IDisposable
@@ -67,7 +72,9 @@ internal unsafe sealed class NativeTierMemory : IDisposable
         get => pendingRevision != 0;
     }
     internal bool HadGlobalPending { get; private set; }
-    internal bool HasRelevantPending => Context->PendingMask != 0;
+    internal bool HasRelevantPending => (Context->PendingMask & 1U) != 0;
+    internal bool TracksMachineClosures => layout.MachineClosures is not null;
+    private bool TracksGlobalPending => TracksMachineClosures || layout.GuestAccess;
     internal double SlotNumber(int slot) => pinnedBytes != 0 && layout.TryFixed(slot, out FixedTierSlot entry)
         ? *(double*)((byte*)pinnedBytes + entry.DataOffset)
         : *(double*)Context->Slots[layout.Scalars[slot]].Data;
@@ -108,15 +115,17 @@ internal unsafe sealed class NativeTierMemory : IDisposable
         {
             Context->Handle = Handle;
             Context->Observed = observed ? 1 : 0;
-            Context->Slots = (NativeTierSlot*)((byte*)Context + 56);
+            Context->Slots = (NativeTierSlot*)((byte*)Context + NativeTierLayout.HeaderBytes);
             Context->Hits = (long*)((byte*)Context->Slots + layout.ScalarCount * 32);
             if (observed) System.Runtime.InteropServices.NativeMemory.Clear(Context->Hits, (nuint)((layout.NativePcs.Length + layout.TrueHits.Count) * 8));
             Context->Fuel = 256;
             bool hasPending = HadGlobalPending = memory.HasAnyPending;
             bool framePending = hasPending && memory.HasPending(frame.Allocation);
-            Context->PendingMask = 0;
-            *(nint*)((byte*)Context + 40) = pinnedBytes;
-            *(nint*)((byte*)Context + 48) = pinnedFlags;
+            Context->PendingMask = hasPending && TracksGlobalPending ? 2U : 0U;
+            Context->Raw = pinnedBytes;
+            Context->Initialization = pinnedFlags;
+            Context->MachineCalls = 0;
+            if (layout.GuestAccess) Context->GuestEdges = frame.Allocation.Storage.roots.GuestAddress;
             if (pinnedFrame is not null)
             {
                 byte* raw = (byte*)pinnedBytes;
@@ -149,6 +158,8 @@ internal unsafe sealed class NativeTierMemory : IDisposable
                 foreach (int slot in layout.RefreshSlots) Refresh(slot);
                 if (hasPending || Context->PendingMask != 0) pendingRevision = memory.PendingRevision;
             }
+            if (TracksMachineClosures)
+                foreach (int slot in layout.RefreshSlots) RefreshMachineReference(slot);
         }
         catch { ReleasePins(); throw; }
     }
@@ -170,6 +181,17 @@ internal unsafe sealed class NativeTierMemory : IDisposable
         NativeType type = address.Type;
         uint flags = memory.HasAnyPending ? PendingFlag(slot, address) : 0U;
         if (flags != 0) MarkPending();
+        if (layout.BorrowedGuestBases is { } guest && guest[slot])
+        {
+            Context->Slots[scalar] = new() { Flags = flags };
+            nint edges = address.Allocation.Storage.roots.GuestAddress;
+            if (edges == 0) return;
+            GetPinnedPointers(address.Allocation, out nint raw, out _);
+            ref NativeTierSlot basis = ref Context->Slots[scalar];
+            basis.Data = (byte*)raw + address.Offset.Bytes;
+            basis.Tag = (byte*)((nint*)edges + address.Offset.References);
+            return;
+        }
         bool hasScalar = (type.Kinds & ScalarKindsMask) != 0;
         if (!hasScalar && !type.Accepts(NativeKind.Null) && !type.IsUnion)
         {
@@ -184,6 +206,35 @@ internal unsafe sealed class NativeTierMemory : IDisposable
             Tag = type.IsUnion ? (byte*)bytes + address.Offset.Bytes : null,
             Flags = flags
         };
+    }
+
+    internal void RefreshMachineReference(int slot)
+    {
+        if (slot < 0) return;
+        if (layout.MachineBases is { } bases && bases[slot])
+        {
+            RefreshMachineBase(slot);
+            return;
+        }
+        if (layout.MachineClosures is not { } closures || !closures[slot]) return;
+        NativeAddress address = frame.Location(slot);
+        NativeEnvironment? environment = address.Allocation.Storage.roots.ReadEnvironment(address.Offset.References);
+        Context->Slots[layout.Scalars[slot]].Data = (byte*)(environment?.MachineCaptures ?? 0);
+    }
+
+    private void RefreshMachineBase(int slot)
+    {
+        ref NativeTierSlot descriptor = ref Context->Slots[layout.Scalars[slot]];
+        descriptor.Data = null;
+        descriptor.Tag = null;
+        NativeAddress address = frame.Location(slot);
+        if (!address.IsInitialized) return;
+        NativeAddress target = NativeStorage.LoadAddressDirect(address);
+        if (target.Offset == default) descriptor.Tag = (byte*)Volatile.Read(ref target.Allocation.MachineCaptures);
+        ref NativeStorage.Data storage = ref target.Allocation.Storage;
+        if (storage.CallableCells == 0) return;
+        descriptor.Data = (byte*)((nint*)storage.CallableCells + target.Offset.References);
+        descriptor.Initialized = (byte*)storage.InitializationAddress + target.Offset.Bytes;
     }
 
     private void GetPinnedPointers(NativeAllocation allocation, out nint bytes, out nint initFlags)
@@ -215,6 +266,13 @@ internal unsafe sealed class NativeTierMemory : IDisposable
                 return;
             }
         }
+        ref NativeStorage.Data storage = ref allocation.Storage;
+        if (storage.RawAddress != 0)
+        {
+            bytes = storage.RawAddress;
+            initFlags = storage.InitializationAddress;
+            return;
+        }
         PinLease lease = new(allocation);
         extraOwners.Add((allocation, lease));
         bytes = lease.Bytes;
@@ -225,9 +283,11 @@ internal unsafe sealed class NativeTierMemory : IDisposable
     internal void RefreshPending(int result = -1, int consumed = -1)
     {
         bool hasPending = memory.HasAnyPending;
+        if (TracksGlobalPending)
+            Context->PendingMask = (Context->PendingMask & 1U) | (hasPending ? 2U : 0U);
         if (!hasPending)
         {
-            Context->PendingMask = 0;
+            Context->PendingMask &= ~1U;
             if (pendingRevision == 0) return;
             pendingRevision = 0;
             foreach (int slot in layout.RefreshSlots) Context->Slots[layout.Scalars[slot]].Flags &= ~2U;
@@ -251,7 +311,7 @@ internal unsafe sealed class NativeTierMemory : IDisposable
         do
         {
             revision = memory.PendingRevision;
-            Context->PendingMask = 0;
+            Context->PendingMask &= ~1U;
             foreach (int slot in layout.RefreshSlots) UpdatePending(slot);
         } while (revision != memory.PendingRevision);
         pendingRevision = revision;
@@ -270,25 +330,31 @@ internal unsafe sealed class NativeTierMemory : IDisposable
         if (!memory.TryPending(address, out NativeFuture? future)) return 0;
         if (!layout.TryFixed(slot, out _) || !future!.Completion.IsCompletedSuccessfully) return 2;
         memory.Write(address, new(future.Completion.Result));
+        if (TracksMachineClosures) RefreshMachineReference(slot);
         if (Context->Observed != 0) materializedFutures++;
         return 0;
     }
 
     private void MarkPending()
     {
-        if (Context->PendingMask != 0) return;
+        if ((Context->PendingMask & 1U) != 0) return;
         foreach (ref readonly FixedTierSlot entry in layout.FixedSlots.AsSpan())
             Context->Slots[entry.Scalar].Flags &= ~2U;
-        Context->PendingMask = 1;
+        Context->PendingMask |= 1U;
     }
 
     internal void Flush(RuntimeProfile.NativeFrameCounters profile, NativeTierCounters counters, int exitStatus)
     {
+        if (Context->MachineCalls != 0)
+        {
+            counters.MachineCalls(Context->MachineCalls);
+            Context->MachineCalls = 0;
+        }
         if (!profile.Observed)
         {
             long direct = 256L - Context->Fuel;
             if (direct != 0) counters.DirectBatch(direct);
-            if (exitStatus is -8 or -9) counters.BridgeBatch(1, 0);
+            if (exitStatus is -8 or -9 or -11) counters.BridgeBatch(1, 0);
             return;
         }
         if (materializedFutures != 0)
@@ -307,9 +373,21 @@ internal unsafe sealed class NativeTierMemory : IDisposable
                 if ((hits | taken) == 0) continue;
                 hitsPtr[entry.HitIndex] = 0;
                 hitsPtr[entry.TakenIndex] = 0;
-                profile.BatchVisit(entry.Pc, NativeOp.Branch, hits + taken);
-                if (taken != 0) profile.BatchEdge(entry.Pc, entry.TargetB, taken);
-                if (hits != 0) profile.BatchEdge(entry.Pc, entry.TargetC, hits);
+                profile.BatchVisit(entry.Pc, entry.Op, hits + taken);
+                if (entry.Op == NativeOp.NextIterator)
+                {
+                    if (taken != 0)
+                    {
+                        profile.BatchEdge(entry.Pc, entry.Pc + entry.Span, taken);
+                        profile.SequenceSteps(taken, machine: true);
+                    }
+                    if (hits != 0) profile.BatchEdge(entry.Pc, entry.TargetB, hits);
+                }
+                else
+                {
+                    if (taken != 0) profile.BatchEdge(entry.Pc, entry.TargetB, taken);
+                    if (hits != 0) profile.BatchEdge(entry.Pc, entry.TargetC, hits);
+                }
                 total += hits + taken;
                 continue;
             }
@@ -322,11 +400,33 @@ internal unsafe sealed class NativeTierMemory : IDisposable
                 profile.TierBridgeBatch(hits);
                 continue;
             }
+            if (entry.Op == NativeOp.Select) profile.DirectSelect(hits);
+            if (entry.GuestAccess)
+            {
+                if (entry.GuestView)
+                {
+                    profile.BatchCall(entry.Pc, entry.TargetB, hits);
+                    profile.GuestView(hits);
+                }
+                else if (entry.GuestCopy) profile.GuestCopy(hits);
+                else if (entry.Op == NativeOp.Unary) profile.GuestLayoutCheck(hits, entry.LayoutBranch);
+                else profile.GuestFieldAccess(entry.Op == NativeOp.Load, hits);
+            }
+            if (entry.MachineSource != NativeCallProducer.None)
+                profile.MachineSourceCalls(hits, entry.MachineSource != NativeCallProducer.Compose,
+                    entry.MachineSource == NativeCallProducer.FieldWithArgument);
+            if (entry.MachineCall)
+            {
+                profile.BatchCall(entry.Pc, entry.TargetB, hits);
+                profile.MachineCalls(hits, entry.MachineClosureCall, entry.MachinePointerCall);
+            }
             int end = entry.Pc + entry.Span;
             for (int original = entry.Pc; original < end; original++)
             {
-                profile.BatchVisit(original, function.Metadata[original].Op, hits);
+                NativeInstruction instruction = function.Metadata[original];
+                profile.BatchVisit(original, instruction.Op, hits);
                 profile.BatchEdge(original, entry.Op == NativeOp.Jump ? entry.TargetA : original + 1, hits);
+                if (instruction.Op == NativeOp.CallNative) profile.Native(instruction.Symbol!, hits);
             }
             total += hits * entry.Span;
         }

@@ -9,6 +9,7 @@ public sealed record ExecutionOptions(string? WorkingDirectory = null, string? S
     public TextReader? Input { get; init; }
     public Action<MsyncException>? ReportError { get; init; }
     public Action<string>? WorkingDirectoryChanged { get; init; }
+    internal bool ScopedGuestValues { get; init; }
     public RuntimeProfile? Profile { get; init; }
     public RuntimeTimeline? Timeline { get; init; }
     public Msync.Runtime.Native.NativeTierOptions? Tiers { get; init; }

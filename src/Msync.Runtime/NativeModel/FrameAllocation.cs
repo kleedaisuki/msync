@@ -7,7 +7,7 @@ internal readonly record struct NativeFrameRegion(NativeOffset Offset, NativeLay
 internal readonly record struct NativeFrameSlot(NativeOffset Offset, NativeType Type, NativeType? Pointee,
     int Binding, bool Persistent, bool ExactAddress, NativeSlotStorage Storage, NativeLayout? HeapLayout)
 {
-    internal bool Borrowable => !Persistent && Storage.HasFlag(NativeSlotStorage.ReadOnlyParameter);
+    internal bool Borrowable => !Persistent && (Storage & NativeSlotStorage.ReadOnlyParameter) != 0;
 }
 
 internal sealed class FrameAllocation
@@ -58,25 +58,25 @@ internal sealed class FrameAllocation
             int slot = BindingSlots[index];
             Slots[slot] = Slots[slot] with { Binding = index };
         }
-        if (candidates.Count == 0)
+        NativeAllocationPlan[] selected = candidates.Count == 0 ? []
+            : candidates.Where(plan => code.Storage!.Instructions[plan.Instruction].HasFlag(NativeInstructionStorage.FrameAllocation)).ToArray();
+        NativeLayout frame = registers;
+        if (selected.Length != 0)
         {
-            Layout = registers;
-            return;
+            NativeLayout[] parts = new NativeLayout[selected.Length + 1];
+            parts[0] = registers;
+            for (int index = 0; index < selected.Length; index++) parts[index + 1] = layout(selected[index].Layout);
+            frame = NativeLayout.Compose(parts, out IReadOnlyList<NativeOffset> offsets);
+            allocations = new(selected.Length);
+            for (int index = 0; index < selected.Length; index++)
+                allocations.Add(selected[index].Instruction, new(offsets[index + 1], selected[index].Layout));
         }
-        NativeAllocationPlan[] selected = candidates
-            .Where(plan => code.Storage!.Instructions[plan.Instruction].HasFlag(NativeInstructionStorage.FrameAllocation)).ToArray();
-        if (selected.Length == 0)
+        if (code.IteratorCount > 0)
         {
-            Layout = registers;
-            return;
+            frame = frame.AppendRaw(checked(code.IteratorCount * NativeSequenceCursor.Bytes), sizeof(double), out int iteratorOffset);
+            IteratorOffset = iteratorOffset;
         }
-        NativeLayout[] parts = new NativeLayout[selected.Length + 1];
-        parts[0] = registers;
-        for (int index = 0; index < selected.Length; index++) parts[index + 1] = layout(selected[index].Layout);
-        Layout = NativeLayout.Compose(parts, out IReadOnlyList<NativeOffset> offsets);
-        allocations = new(selected.Length);
-        for (int index = 0; index < selected.Length; index++)
-            allocations.Add(selected[index].Instruction, new(offsets[index + 1], selected[index].Layout));
+        Layout = frame;
     }
 
     internal NativeFunctionCode Code { get; }
@@ -87,6 +87,7 @@ internal sealed class FrameAllocation
     internal int[] BindingSlots { get; }
     internal NativeLayout Layout { get; }
     internal NativeLayout Registers { get; }
+    internal int IteratorOffset { get; }
     internal IEnumerable<NativeFrameAllocation> Regions => allocations is null ? [] : allocations.Values;
     internal NativeFrameAllocation? At(int instruction) => allocations is not null
         && allocations.TryGetValue(instruction, out var region) ? region : null;

@@ -288,7 +288,7 @@ internal static class Program
             Context = new(Environment.CurrentDirectory, Environment.CurrentDirectory),
             ExecutionPlans = [new(0, 1, 4, [], [], 0)]
         };
-        NativeProgram compact = Detached(NativeOptimizer.Optimize(program));
+        NativeProgram compact = Detached(NativeBackendCompiler.Compile(NativeOptimizer.Optimize(program), new()));
         Check(compact.ExecutionPlans![0].Start == 0 && compact.ExecutionPlans[0].End == 2,
             "Code compaction did not relocate the prepared plan's exclusive PC interval");
         await using NativeInterpreter interpreter = new(compact);
