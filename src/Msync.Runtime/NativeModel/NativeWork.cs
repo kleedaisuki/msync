@@ -134,12 +134,21 @@ internal sealed class NativeWorkScope(NativeWorkScope? parent, NativeWorkFrontie
     private async ValueTask<List<Exception>?> FinishBatchAsync(NativeFuture[] pending, NativeProcess[] running,
         NativeReachable reachable, Action failedTransfer, CancellationToken token, List<Exception>? failures)
     {
+        // A transfer's inputs remain live even when the enclosing expression
+        // discards the transfer's own result.
+        HashSet<NativeFuture>? required = null;
+        foreach (NativeFuture future in pending)
+            if (!future.Completion.IsCompleted && (future.IsTransfer || future.Submission?.Kind == NativeSubmissionKind.Process))
+                foreach (NativeFuture dependency in future.Dependencies)
+                    KeepDependency(dependency, required ??= new(ReferenceEqualityComparer.Instance));
         foreach (NativeFuture future in pending)
         {
             bool promote = parent is not null && reachable.Retains(future);
-            future.Submission?.RecordOwnership(promote, job is not null, reachable.Futures.Count, reachable.Processes.Count);
+            bool requiredByJob = required?.Contains(future) == true;
+            future.Submission?.RecordOwnership(promote, requiredByJob, job is not null, reachable.Futures.Count, reachable.Processes.Count);
             if (promote) { RecordEscape(future); parent!.Add(future); continue; }
-            if (future.Submission?.Kind is NativeSubmissionKind.Input or NativeSubmissionKind.FileRead or NativeSubmissionKind.Stream) future.Submission.Abort();
+            if (!requiredByJob && future.Submission?.Kind is NativeSubmissionKind.Input or NativeSubmissionKind.FileRead or NativeSubmissionKind.Stream)
+                future.Submission.Abort();
             // Pure values do not own external work; submissions retain their own lifetime.
             if (!future.IsTransfer && future.Submission is null) continue;
             try
@@ -158,6 +167,12 @@ internal sealed class NativeWorkScope(NativeWorkScope? parent, NativeWorkFrontie
             catch (Exception error) { (failures ??= []).Add(error); }
         }
         return failures;
+    }
+
+    private static void KeepDependency(NativeFuture future, HashSet<NativeFuture> required)
+    {
+        if (!required.Add(future) || future.Completion.IsCompleted) return;
+        foreach (NativeFuture dependency in future.Dependencies) KeepDependency(dependency, required);
     }
 
     internal void CountCompletedTransfers(Action failedTransfer)

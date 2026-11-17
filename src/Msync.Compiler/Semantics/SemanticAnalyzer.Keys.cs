@@ -33,19 +33,27 @@ internal sealed partial class SemanticAnalyzer
 
     private void AppendStaticMember(SemanticValue member, string path, SemanticContext context, StringBuilder key)
     {
+        HirTypeId? carrier = null;
         foreach (string field in path.Split('\0'))
         {
             if (member.Scope is not { } row) return;
             row = context.Objects.GetValueOrDefault(row.Region, row);
             if (!TryScopeField(row, field, context, out member)) return;
+            carrier = FieldCarrier(row, field, member, context);
         }
+        bool hasRefinement = !context.DeferredReads && carrier is { } storage
+            && hir.Types[storage.Value].TypeParameter < 0
+            && Runtime(member) != TypeRef.Null && hir.Types[storage.Value].RuntimeType != Runtime(member);
         if (member.DenotedType is null && member.TypeCandidates is null
-            && member.Callables.IsDefaultOrEmpty && member.FutureCallableDomain is null) return;
+            && member.Callables.IsDefaultOrEmpty && member.FutureCallableDomain is null && !hasRefinement) return;
         key.Append('{').Append(path.Replace('\0', '.')).Append(':');
         AppendStaticValue(key, member, context);
         key.Append('}');
         Trace?.Metric("key.static_members", 1);
     }
+
+    private HirTypeId? FieldCarrier(SemanticScope row, string name, SemanticValue member, SemanticContext context) =>
+        row.Locations.TryGetValue(name, out var location) ? StorageType(location, context) : member.StorageConstraint;
 
     private void AppendStaticValue(StringBuilder key, SemanticValue value, SemanticContext? context, bool capture = false)
     {

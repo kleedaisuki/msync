@@ -61,12 +61,13 @@ internal sealed class NativeSubmission(NativeSubmissionKind kind, CancellationTo
         }
     }
 
-    internal void RecordOwnership(bool promoted, bool job, int futures, int processes)
+    internal void RecordOwnership(bool promoted, bool requiredByJob, bool job, int futures, int processes)
     {
         using RuntimeTimelineScope? decision = timeline?.Begin("work.disposition");
         decision?.SetSource(source);
         decision?.SetAttribute("work.kind", kind.ToString());
         decision?.SetMetric("promoted", promoted ? 1 : 0);
+        decision?.SetMetric("required_by_job", requiredByJob ? 1 : 0);
         decision?.SetMetric("owner.job", job ? 1 : 0);
         decision?.SetMetric("reachable.futures", futures);
         decision?.SetMetric("reachable.processes", processes);

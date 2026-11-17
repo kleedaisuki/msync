@@ -102,8 +102,8 @@ def run_ssh(binary: Path) -> dict[str, dict[str, int]]:
         environment: dict[str, str] = fixture.environment()
         before_log = len(lines(fixture.log))
         scripts = {
-            "upload": f'let remote = ssh://Perf_Fixture; ./source-tree -> remote::"{remote}/";\n',
-            "download": f'let remote = ssh://Perf_Fixture; remote::"{remote}/source-tree" -> ./download/;\n',
+            "upload": f'let remote = ssh://Perf_Fixture; ./source-tree -> (remote @ "{remote}/");\n',
+            "download": f'let remote = ssh://Perf_Fixture; (remote @ "{remote}/source-tree") -> ./download/;\n',
         }
         for name, source in scripts.items():
             (root / f"{name}.msync").write_text(source, encoding="utf-8")

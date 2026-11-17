@@ -13,6 +13,7 @@ internal sealed record CommandOptions(string Command, string? File, string? Outp
 
     public bool ExplicitCommand { get; init; }
     public bool Json { get; init; }
+    public bool EditorJson { get; init; }
     public CompileEmission Emission { get; init; }
     public IReadOnlyList<string> SkillTopics { get; init; } = [];
     public int BufferSize { get; init; } = 65536;
@@ -27,6 +28,7 @@ internal sealed record CommandOptions(string Command, string? File, string? Outp
         List<string> skillTopics = [];
         int optimization = 2, jobs = 4;
         bool dryRun = false, formattingCheck = false, stdout = false, noConfig = false, noTelemetry = false, json = false;
+        bool editorJson = false;
         CompileEmission emission = CompileEmission.Bytecode;
         bool explicitEmission = false;
         int index = 0;
@@ -50,6 +52,7 @@ internal sealed record CommandOptions(string Command, string? File, string? Outp
                 case "--check": formattingCheck = true; break;
                 case "--stdout": stdout = true; break;
                 case "--json": json = true; break;
+                case "--editor-json": editorJson = true; break;
                 case "--emit": emission = ParseEmission(Next()); explicitEmission = true; break;
                 case "-O0": optimization = 0; break;
                 case "-O1": optimization = 1; break;
@@ -74,14 +77,15 @@ internal sealed record CommandOptions(string Command, string? File, string? Outp
                     file = arg; break;
             }
         }
-        if (json && command != "disassemble") throw new ArgumentException("--json is supported by 'msync disassemble'.");
+        if ((json || editorJson) && command != "disassemble")
+            throw new ArgumentException("--json and --editor-json are supported by 'msync disassemble'.");
         if (explicitEmission && command is not ("compile" or "emit-ir"))
             throw new ArgumentException("--emit is supported by 'msync compile'. Use '--emit hir' for typed HIR or '--emit bytecode' for relocatable bytecode.");
         if (!explicitEmission && command is ("compile" or "emit-ir")
             && output?.EndsWith(".mhir", StringComparison.OrdinalIgnoreCase) == true)
             emission = CompileEmission.Hir;
         return new(command, file, output, dryRun, optimization, source, jobs, formattingCheck, stdout, syntax, configPath, noConfig, overrides, tracePath, telemetryDatabase, noTelemetry)
-        { SkillTopics = skillTopics, ExplicitCommand = commandSeen, Json = json, Emission = emission };
+        { SkillTopics = skillTopics, ExplicitCommand = commandSeen, Json = json, EditorJson = editorJson, Emission = emission };
     }
 
     private static CompileEmission ParseEmission(string value) => value switch

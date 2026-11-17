@@ -20,6 +20,9 @@ public sealed class NativeExecutionSession : IAsyncDisposable
     public void ChangeWorkingDirectory(string path) => context.ChangeWorkingDirectory(NativeValue.FromString(path));
     public bool IsLocalInitialized(int slot) => interpreter?.IsLocalInitialized(slot) == true;
     public NativeValue? GetLocalValue(int slot) => interpreter?.GetLocalValue(slot);
+    internal NativeLayout ScopeLayout(NativeAddress address) => interpreter!.ScopeLayout(address);
+    internal ValueTask<NativeValue?> ObserveMemberAsync(NativeAddress address, CancellationToken token) =>
+        interpreter!.ObserveMemberAsync(address, token);
 
     public ValueTask<NativeValue> ExecuteAsync(NativeProgram program, CancellationToken cancellationToken = default) =>
         Prepare(program).ExecuteAsync(cancellationToken);

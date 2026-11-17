@@ -36,7 +36,7 @@ async function run({ workspace, runRoot, binary, port }) {
                 await fs.writeFile(source, '[' + constants.join(',\n') + ']\n');
                 await command('compile', source, '-O0', '-o', artifact);
             }
-            const disassembly = JSON.parse((await command('disassemble', artifact, '--json')).stdout).text;
+            const disassembly = JSON.parse((await command('disassemble', artifact, '--editor-json')).stdout).text;
             const lines = disassembly.split('\n');
             const expected = queries.map(query => query ? lines.filter(line => line.toLowerCase().includes(query.toLowerCase())).length : 0);
             assert.ok(expected[0] > 0 && expected[1] > 0 && expected[2] > 0 && expected[3] === 0);

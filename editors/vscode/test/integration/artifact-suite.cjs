@@ -66,7 +66,7 @@ async function run() {
         await fs.writeFile(sourcePath, source(marker, path.join(cwd, 'viewer-side-effect')));
         await bounded('compile inert artifact', command(['compile', sourcePath, '-O0', '-o', objectPath]));
     }
-    const model = async filename => JSON.parse((await command(['disassemble', filename, '--json'])).stdout);
+    const model = async filename => JSON.parse((await command(['disassemble', filename, '--editor-json'])).stdout);
     await compile('FIRST GENERATION');
     await bounded('bind inert executable', command(['bind-ir', objectPath, '--source-file', sourcePath, '-o', executablePath]));
     const initialHashes = { object: await digest(objectPath), executable: await digest(executablePath) };
@@ -196,18 +196,12 @@ async function run() {
     assert.equal(await digest(objectPath), generationTwoHash);
 
     const unsafePath = path.join(cwd, 'unsafe debug metadata.mso');
-    const needle = Buffer.from(sourcePath);
-    const prefix = Buffer.from('command:msync.test.artifactInjection#');
-    assert.ok(needle.length > prefix.length);
-    const replacement = Buffer.concat([prefix, Buffer.alloc(needle.length - prefix.length, 'x')]);
-    const unsafe = Buffer.from(generationTwo);
-    let offset = 0;
-    let replaced = 0;
-    while ((offset = unsafe.indexOf(needle, offset)) >= 0) {
-        replacement.copy(unsafe, offset); offset += needle.length; replaced += 1;
-    }
-    assert.ok(replaced > 0);
-    await fs.writeFile(unsafePath, unsafe);
+    // Native format 2 compresses source metadata. Compile the hostile text as
+    // valid data rather than relying on an uncompressed byte sequence.
+    await fs.writeFile(sourcePath, source('UNTRUSTED GENERATION', path.join(cwd, 'viewer-side-effect')));
+    await command(['compile', sourcePath, '-O0', '-o', unsafePath]);
+    await fs.unlink(sourcePath);
+    const unsafe = await fs.readFile(unsafePath);
     let injectedCommands = 0;
     const injection = vscode.commands.registerCommand('msync.test.artifactInjection', () => { injectedCommands += 1; });
     try {

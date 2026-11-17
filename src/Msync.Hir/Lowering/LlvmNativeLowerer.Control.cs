@@ -39,7 +39,7 @@ public static partial class LlvmNativeLowerer
         }
         private void PreparePhi(LlvmPhiInstruction phi)
         {
-            if (FoldLayoutPointerPhi(phi) || TryPrepareAggregatePhi(phi)) return;
+            if (PrepareLiteralPhi(phi) || FoldLayoutPointerPhi(phi) || TryPrepareAggregatePhi(phi)) return;
             int temporary = Register(SelectedValueType(phi));
             incoming.Add(phi, temporary);
             HashSet<LlvmBasicBlock> inserted = [];
@@ -56,6 +56,9 @@ public static partial class LlvmNativeLowerer
         private void EmitPhiSources(LlvmBasicBlock block)
         {
             EmitAggregatePhiSources(block);
+            if (literalPhiSources.TryGetValue(block, out var literals))
+                foreach (var (slot, value, origin) in literals)
+                    PhiCopy(slot, ConstantSlotValue(value, slots[slot].Type), origin);
             if (!phiSources.TryGetValue(block, out var copies)) return;
             foreach (var copy in copies)
                 PhiCopy(copy.Target, Slot(copy.Value, slots[copy.Target].Type), copy.Source);
@@ -78,8 +81,9 @@ public static partial class LlvmNativeLowerer
                 trace?.Metric("addresses.layout_branches_folded", 1);
                 return;
             }
+            int condition = OperandSlot(branch, 0, owner.Primitive(Msync.Core.TypeKind.Bool));
             branches.Add((code.Count, branch.GetSuccessor(0), branch.GetSuccessor(1)));
-            Add(new(NativeOp.Branch, A: OperandSlot(branch, 0, owner.Primitive(Msync.Core.TypeKind.Bool)), Source: branch.Source));
+            Add(new(NativeOp.Branch, A: condition, Source: branch.Source));
         }
         private void Emit(LlvmInstruction instruction, LlvmBasicBlock block)
         {
@@ -88,7 +92,8 @@ public static partial class LlvmNativeLowerer
             switch (instruction)
             {
                 case LlvmPhiInstruction phi:
-                    if (layoutPointerAliases?.ContainsKey(phi) == true || TryEmitAggregatePhi(phi)) break;
+                    if (literalPhis.ContainsKey(phi) || layoutPointerAliases?.ContainsKey(phi) == true
+                        || TryEmitAggregatePhi(phi)) break;
                     PhiCopy(Slot(phi), incoming[phi], phi.Source);
                     break;
                 case LlvmUncondBrInstruction branch: Jump(branch.Destination, instruction.Source); break;

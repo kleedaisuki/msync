@@ -151,14 +151,14 @@ internal sealed partial class SemanticAnalyzer
         {
             if (!owner.TryScopeField(source, name, caller, out var field)) return null;
             FieldLoads++;
-            HirTypeId? carrier = source.Locations.TryGetValue(name, out var location)
-                ? owner.StorageType(location, caller) : field.StorageConstraint;
+            HirTypeId? carrier = owner.FieldCarrier(source, name, field, caller);
             if (carrier is { } storage && owner.hir.Types[storage.Value].TypeParameter < 0)
             {
                 TypeRef stored = owner.hir.Types[storage.Value].RuntimeType;
-                if (owner.Runtime(field) == TypeRef.Null
-                    || (stored.Kind & (TypeKind.Scope | TypeKind.Range | TypeKind.Function | TypeKind.Type)) == 0)
+                if (owner.Runtime(field) == TypeRef.Null || caller.DeferredReads
+                    && (stored.Kind & (TypeKind.Scope | TypeKind.Range | TypeKind.Function | TypeKind.Type)) == 0)
                     field = field with { Type = storage };
+                field = field with { StorageConstraint = storage };
             }
             var value = Abstract(field, roles.Field(role, name));
             if (ScopePaths.TryGetValue(scope.Region, out var origin))

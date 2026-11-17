@@ -51,7 +51,7 @@ def run(binary: Path, cwd: Path) -> None:
     )
     assert "Expected '}'" in incomplete.stderr
     child = quoted(str(Path(sys.executable).resolve()))
-    failure = f'let waiting = ({child})("-c", "print(123)");'
+    failure = f'let waiting = ({child} as Path)("-c", "print(123)");'
     recovery = (
         "\n".join(
             [

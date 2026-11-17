@@ -97,6 +97,12 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
         return datum.Future!.Completion.IsCompletedSuccessfully ? ExportGuestValue(datum.Future.Completion.Result) : (NativeValue?)null;
     }
 
+    internal NativeLayout ScopeLayout(NativeAddress address) =>
+        image.TryRegionLayout(address, out NativeLayout layout) ? layout : address.Allocation.Layout;
+
+    internal async ValueTask<NativeValue?> ObserveMemberAsync(NativeAddress address, CancellationToken token) =>
+        memory.TryRead(address, out NativeDatum datum) ? await datum.ResolveAsync(token).ConfigureAwait(false) : (NativeValue?)null;
+
     public int FailedTransfers => Volatile.Read(ref failedTransfers);
 
     public ValueTask<NativeValue> ExecuteAsync(CancellationToken cancellationToken = default) =>

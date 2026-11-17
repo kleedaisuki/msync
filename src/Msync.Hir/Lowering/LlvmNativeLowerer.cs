@@ -256,6 +256,8 @@ public static partial class LlvmNativeLowerer
             trace?.Metric("phi.incoming_registers", incoming.Count);
             trace?.Metric("phi.source_copies", phiSources.Values.Sum(list => list.Count));
             trace?.Metric("phi.carrier_adaptations", phiCarrierAdaptations);
+            trace?.Metric("phi.literal_value_merges", literalPhis.Count);
+            trace?.Metric("phi.literal_loads_elided", literalPhiLoads);
             trace?.Metric("allocations", allocations.Count);
             if (trace is not null)
                 foreach (var group in instructions.GroupBy(instruction => instruction.Op))

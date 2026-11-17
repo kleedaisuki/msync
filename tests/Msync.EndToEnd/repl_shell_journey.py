@@ -21,18 +21,17 @@ ROOT: Path = Path(__file__).resolve().parents[2]
 
 def future_callables(evaluate: Callable[[str, str], float]) -> None:
     evaluate(
-        'let live_op = fn { [1] }; let deferred_op = live_op(); "OPEN_READY"',
+        'let live_op = fn { [1] }; let produced = live_op(); "OPEN_READY"',
         "OPEN_READY",
     )
     evaluate('live_op = fn { [2] }; "OPEN_CHANGED"', "OPEN_CHANGED")
     evaluate(
-        '$std::string::concat("OPEN_RESULT:", $std::ranges::first(deferred_op) as String)',
-        "OPEN_RESULT:2",
+        '$std::string::concat("OPEN_RESULT:", $std::ranges::first(produced) as String)',
+        "OPEN_RESULT:1",
     )
-    evaluate(
-        'let live_map = fn(value) { value + 1 }; let mapped = $std::ranges::transform([2], live_map); "MAP_READY"',
-        "MAP_READY",
-    )
+    evaluate('let live_map = fn(value) { value + 1 }; "MAP_FN"', "MAP_FN")
+    evaluate('let apply_live = fn(value: Number) { live_map(value) }; "MAP_CLOSURE"', "MAP_CLOSURE")
+    evaluate('let mapped = $std::ranges::transform([2], apply_live); "MAP_READY"', "MAP_READY")
     evaluate('live_map = fn(value) { value + 10 }; "MAP_CHANGED"', "MAP_CHANGED")
     evaluate(
         '$std::string::concat("MAP_RESULT:", $std::ranges::first(mapped) as String)',
@@ -80,10 +79,10 @@ pwd()
 /pwd
 let echo = fn(value: String) { $std::string::concat("user:", value) };
 echo("override")
-let live_op = fn { [1] }; let deferred_op = live_op();
+let live_op = fn { [1] }; let produced = live_op();
 live_op = fn { [2] };
-($std::ranges::first(deferred_op) as String) -> ./future-call.txt;
-let live_map = fn(value) { value + 1 }; let mapped = $std::ranges::transform([2], live_map);
+($std::ranges::first(produced) as String) -> ./range-factory.txt;
+let live_map = fn(value) { value + 1 }; let mapped = $std::ranges::transform([2], fn(value: Number) { live_map(value) });
 live_map = fn(value) { value + 10 };
 ($std::ranges::first(mapped) as String) -> ./future-callback.txt;
 /quit
@@ -144,7 +143,7 @@ live_map = fn(value) { value + 10 };
     assert "missing" in completed.stderr, completed.stderr
     assert (work / "created.txt").read_text(encoding="utf-8") == "created"
     assert not (directory / "created.txt").exists()
-    assert (directory / "future-call.txt").read_text(encoding="utf-8") == "2"
+    assert (directory / "range-factory.txt").read_text(encoding="utf-8") == "1"
     assert (directory / "future-callback.txt").read_text(encoding="utf-8") == "12"
     return {
         "direct_shell_functions": True,
@@ -155,7 +154,7 @@ live_map = fn(value) { value + 10 };
         "lazy_effects_accepted_after_display": True,
         "scope_field_values": True,
         "native_directory_error_and_recovery": True,
-        "future_callable_and_native_callback": True,
+        "eager_range_factory_and_live_deferred_callback": True,
         "redirected_journey_ms": elapsed_ms,
     }
 

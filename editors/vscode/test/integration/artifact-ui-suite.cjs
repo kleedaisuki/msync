@@ -44,7 +44,7 @@ async function run() {
     await command(['bind-ir', object, '-o', executable]);
     const files = [hir, object, executable];
     const hashes = await Promise.all(files.map(digest));
-    const decode = async file => JSON.parse((await command(['disassemble', file, '--json'])).stdout);
+    const decode = async file => JSON.parse((await command(['disassemble', file, '--editor-json'])).stdout);
     const browser = await connect(port);
     const workbench = vscode.workspace.getConfiguration('workbench');
     const previousTheme = workbench.get('colorTheme');

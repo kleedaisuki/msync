@@ -85,15 +85,21 @@ internal sealed partial class SemanticAnalyzer
             return MetaSignature(operation, arguments[0]);
         if (operation == "signature_of") return DescribeSignature(arguments[0]);
         if (operation == "members_of") return DescribeMembers(arguments[0], context);
-        var members = MetaMembers(arguments[0], context);
         if (operation == "member_names")
-            return MetaRange(members.Keys.Order(StringComparer.Ordinal).Select(name =>
+            return MetaRange(MetaMemberNames(arguments[0], context).Order(StringComparer.Ordinal).Select(name =>
                 MetaLiteral(TypeRef.String, new(HirLiteralKind.String, Text: name))), hir.Type(TypeRef.String));
-        if (operation == "member_count") return MetaLiteral(TypeRef.Number, new(HirLiteralKind.Number, Number: members.Count));
+        if (operation == "member_count")
+            return MetaLiteral(TypeRef.Number, new(HirLiteralKind.Number, Number: MetaMemberNames(arguments[0], context).Count()));
         if (arguments[1].Literal is not { Kind: HirLiteralKind.String, Text: { } member })
             throw Error(source, "A member query requires a statically inferred String name.", "E0222");
-        bool found = members.TryGetValue(member, out var value);
-        return operation == "has_member" ? MetaBoolean(found) : found ? MetaType(value!.Type) : MetaNull();
+        if (operation == "has_member")
+        {
+            bool present = MetaScope(arguments[0], context) is { } row ? FieldOffset(row.Layout, member) >= 0
+                : Runtime(arguments[0]) == TypeRef.Process && ProcessCapabilities.Members.ContainsKey(member);
+            Trace?.Metric("meta.member_present", present ? 1 : 0);
+            return MetaBoolean(present);
+        }
+        return MetaMember(arguments[0], member, context) is { } value ? MetaType(value.Type) : MetaNull();
     }
 
     private SemanticValue MetaInvocation(string operation, SemanticValue[] inputs,
@@ -169,14 +175,23 @@ internal sealed partial class SemanticAnalyzer
             : MetaRange(known.Select(MetaType), hir.Type(TypeRef.Type));
     }
 
-    private IReadOnlyDictionary<string, SemanticValue> MetaMembers(SemanticValue value, SemanticContext context)
+    private SemanticScope? MetaScope(SemanticValue value, SemanticContext context) =>
+        Runtime(value) == TypeRef.Scope && value.Scope is { } scope
+            ? context.Objects.GetValueOrDefault(scope.Region, scope) : null;
+
+    private IEnumerable<string> MetaMemberNames(SemanticValue value, SemanticContext context)
     {
-        if (Runtime(value).Nullable) return ImmutableDictionary<string, SemanticValue>.Empty;
-        if (Runtime(value) == TypeRef.Scope && value.Scope is { } scope)
-            return context.Objects.GetValueOrDefault(scope.Region, scope).Fields;
-        if (Runtime(value) == TypeRef.Process)
-            return ProcessCapabilities.Members.ToDictionary(pair => pair.Key, pair => ValueForType(hir.Type(pair.Value)), StringComparer.Ordinal);
-        return ImmutableDictionary<string, SemanticValue>.Empty;
+        if (MetaScope(value, context) is { } scope)
+            return hir.ScopeLayouts[scope.Layout].Fields.Select(field => field.Name);
+        return Runtime(value) == TypeRef.Process ? ProcessCapabilities.Members.Keys : [];
+    }
+
+    private SemanticValue? MetaMember(SemanticValue value, string name, SemanticContext context)
+    {
+        if (MetaScope(value, context) is { } scope
+            && TryScopeField(scope, name, context, out var field)) return field;
+        return Runtime(value) == TypeRef.Process && ProcessCapabilities.Members.TryGetValue(name, out var type)
+            ? ValueForType(hir.Type(type)) : null;
     }
 
     private SemanticValue MetaLiteral(TypeRef type, HirLiteral literal) => new(hir.Type(type), HirNodeId.None, literal);

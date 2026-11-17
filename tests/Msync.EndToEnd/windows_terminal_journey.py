@@ -230,7 +230,7 @@ class Terminal:
 
 
 def executable(path: Path) -> str:
-    return '$local::"' + str(path).replace('"', '""') + '"'
+    return '($local @ "' + str(path).replace('"', '""') + '")'
 
 
 def run(binary: Path, directory: Path, phases: list[str]) -> dict[str, object]:

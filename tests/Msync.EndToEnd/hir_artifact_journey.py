@@ -66,6 +66,16 @@ let callable = fn(value: Number) { value + 1 };
         {"concept.txt": b"HIR", "query.txt": b"true"},
     ),
     Case(
+        "generic_concept",
+        """concept Named { name: String, };
+concept Cell<T> { value: T, };
+concept Entry<T: Named> : Cell<T> {};
+fn name(entry: Entry) { entry::value::name };
+name(scope { value: scope { name: "Klee" } }) -> ./generic-concept.txt;
+""",
+        {"generic-concept.txt": b"Klee"},
+    ),
+    Case(
         "static_and_fresh_places",
         """scope Shared { count: 1 };
 let alias = Shared;
@@ -137,7 +147,7 @@ def run_case(binary: Path, directory: Path, case: Case, level: int) -> dict[str,
     executable = directory / "program.mexe"
     invoke(binary, directory, ["compile", str(source), "--emit", "hir", "-o", str(hir)])
     raw = hir.read_bytes()
-    if not raw.startswith(b"MSYNHIR\x00\x03\x00"):
+    if not raw.startswith(b"MSYNHIR\x00\x04\x00"):
         raise AssertionError("HIR export is not the semantic binary format")
     invoke(binary, directory, ["compile", str(source), f"-O{level}", "-o", str(direct)])
     no_outputs(directory, case)
@@ -146,7 +156,7 @@ def run_case(binary: Path, directory: Path, case: Case, level: int) -> dict[str,
     document: dict[str, Any] = json.loads(
         invoke(binary, directory, ["disassemble", str(hir), "--json"]).stdout
     )
-    if document["artifactKind"] != "hir" or document["formatVersion"] != 3:
+    if document["artifactKind"] != "hir" or document["formatVersion"] != 4:
         raise AssertionError(document)
     if document["schemaVersion"] != 1 or document["languageVersion"] != "0.8.0":
         raise AssertionError(document)

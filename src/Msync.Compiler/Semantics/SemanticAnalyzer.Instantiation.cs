@@ -123,7 +123,7 @@ internal sealed partial class SemanticAnalyzer
             if (hir.Types[value.Type.Value].TypeParameter >= 0) value = value with { Type = storage };
             value = EnrichFutureDomains(value, caller, capture.Source, rootStorage: capture.Mode == HirCaptureMode.Location);
             if (caller.DeferredReads && capture.Mode == HirCaptureMode.Location
-                && (!Stable(capture.Source) || value.Scope is not null))
+                && (!Stable(caller.Definitions.GetValueOrDefault(capture.Source, capture.Source)) || value.Scope is not null))
                 value = FutureRead(value, storage, caller, capture.Source);
             captureValues[index] = value;
         }
@@ -227,7 +227,11 @@ internal sealed partial class SemanticAnalyzer
                 context.Substitutions[parameterType] = argument.Type;
                 parameterType = argument.Type;
             }
-            else Require(argument, parameterType, source, true, context);
+            else
+            {
+                if (definition.AdmitsNull) parameterType = Nullable(parameterType);
+                Require(argument, parameterType, source, true, context);
+            }
             if (!AdmitsNull(original, parameterType) && Runtime(argument).Nullable)
                 throw Error(source, $"Nullable argument requires nullable parameter '{definition.Name}?'.", "E0201");
             HirLocationId incoming = target;

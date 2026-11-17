@@ -161,7 +161,16 @@ internal sealed class ReplSession
             try
             {
                 NativeValue result = execution.ExecuteEntry(module, cancellation.Token);
-                if (result.Kind != NativeKind.Null) await DisplayAsync(result, cancellation.Token);
+                if (result.Kind != NativeKind.Null)
+                {
+                    using TelemetrySpan? display = execute?.Begin("repl.display");
+                    try
+                    {
+                        await DisplayAsync(result, display, cancellation.Token);
+                        display?.Complete();
+                    }
+                    catch (Exception error) { display?.Fail(error); throw; }
+                }
                 compiler.AcceptSubmission(execution.GetLocalValue);
                 execution.CollectGuestHeap();
                 execute?.Complete();
@@ -184,26 +193,23 @@ internal sealed class ReplSession
         finally { lock (cancellationGate) active = null; }
     }
 
-    private static async ValueTask DisplayAsync(NativeValue value, CancellationToken cancellationToken)
+    private async ValueTask DisplayAsync(NativeValue value, TelemetrySpan? display, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (value.Kind == NativeKind.Range)
         {
             await foreach (NativeValue item in value.AsRange().Items.WithCancellation(cancellationToken))
-                await DisplayAsync(item, cancellationToken);
+                await DisplayAsync(item, display, cancellationToken);
             return;
         }
-        string text = FormatValue(value);
+        string text = value.Kind == NativeKind.Address
+            ? await FormatScopeAsync(value.AsAddress(), [], display, cancellationToken) : FormatValue(value);
         if (text.EndsWith('\n')) Console.Write(text);
         else Console.WriteLine(text);
     }
 
-    private static string FormatValue(NativeValue value, HashSet<NativeAddress>? path = null) => value.Kind switch
-    {
-        NativeKind.Address => FormatScope(value.AsAddress(), path ?? []),
-        NativeKind.Process => FormatProcess(value.AsProcess()),
-        _ => value.ToString()
-    };
+    private static string FormatValue(NativeValue value) =>
+        value.Kind == NativeKind.Process ? FormatProcess(value.AsProcess()) : value.ToString();
 
     private static string FormatProcess(NativeProcess process)
     {
@@ -214,21 +220,29 @@ internal sealed class ReplSession
         return process.ProcessId is { } id ? $"Process({state}, pid={id})" : $"Process({state})";
     }
 
-    private static string FormatScope(NativeAddress address, HashSet<NativeAddress> path)
+    private async ValueTask<string> FormatScopeAsync(NativeAddress address, HashSet<NativeAddress> path,
+        TelemetrySpan? display, CancellationToken token)
     {
         if (!path.Add(address)) return "scope { ...cycle... }";
+        using TelemetrySpan? span = display?.Begin("repl.display.scope");
+        var layout = execution.ScopeLayout(address);
+        span?.SetMetric("fields", layout.Fields.Count);
         List<string> members = [];
-        for (int index = 0; index < address.Allocation.Layout.Fields.Count; index++)
+        foreach (var field in layout.Fields)
         {
-            NativeAddress place = address.Field(index);
-            if (!place.IsInitialized) continue;
-            NativeValue member = place.Load();
-            string text = member.Kind == NativeKind.String
-                ? "\"" + member.AsString().Replace("\"", "\"\"", StringComparison.Ordinal) + "\""
-                : FormatValue(member, path);
-            members.Add(address.Allocation.Layout[index].Name + ": " + text);
+            var place = address.OffsetBy(field.Offset, field.Type);
+            if (await execution.ObserveMemberAsync(place, token) is not { } member) continue;
+            string text = member.Kind switch
+            {
+                NativeKind.String => "\"" + member.AsString().Replace("\"", "\"\"", StringComparison.Ordinal) + "\"",
+                NativeKind.Address => await FormatScopeAsync(member.AsAddress(), path, span, token),
+                _ => FormatValue(member)
+            };
+            members.Add(field.Name + ": " + text);
         }
         path.Remove(address);
+        span?.SetMetric("fields.displayed", members.Count);
+        span?.Complete();
         return "scope { " + string.Join(", ", members) + " }";
     }
 

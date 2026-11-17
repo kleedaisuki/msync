@@ -52,16 +52,15 @@ internal sealed partial class SemanticAnalyzer
 
     private MetaQueryResult DescribeMembers(SemanticValue value, SemanticContext context)
     {
-        SemanticScope? scope = Runtime(value) == TypeRef.Scope && value.Scope is { } origin
-            ? context.Objects.GetValueOrDefault(origin.Region, origin) : null;
+        SemanticScope? scope = MetaScope(value, context);
         var fields = scope is null ? null : hir.ScopeLayouts[scope.Layout].Fields
             .ToDictionary(field => field.Name, StringComparer.Ordinal);
-        var members = MetaMembers(value, context).OrderBy(pair => pair.Key, StringComparer.Ordinal);
-        var rows = members.Select(pair =>
+        var members = MetaMemberNames(value, context).Order(StringComparer.Ordinal);
+        var rows = members.Select(name =>
         {
-            string name = pair.Key;
             var declared = fields?.GetValueOrDefault(name);
-            SemanticValue current = pair.Value;
+            SemanticValue current = MetaMember(value, name, context)
+                ?? ValueForType(declared!.AdmitsNull ? Nullable(declared.StorageType) : declared.StorageType);
             HirTypeId storage = declared?.StorageType ?? current.Type;
             if (scope is not null && scope.Locations.TryGetValue(name, out var location))
             {

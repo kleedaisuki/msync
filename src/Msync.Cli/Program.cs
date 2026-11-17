@@ -43,7 +43,7 @@ internal static class Program
                 string artifact = options.File ?? throw new ArgumentException("An artifact filename is required; use 'msync disassemble --help'.");
                 byte[] bytes = artifact == "-" ? await ReadArtifactInput() : await File.ReadAllBytesAsync(artifact);
                 string identity = artifact == "-" ? "<stdin>" : new Uri(Path.GetFullPath(artifact)).AbsoluteUri;
-                if (NativeArtifact.HasMagic(bytes))
+                if (!options.EditorJson && NativeArtifact.HasMagic(bytes))
                 {
                     using MemoryStream stream = new(bytes, writable: false);
                     NativeProgram native = NativeCommandPipeline.Read(stream);
@@ -52,7 +52,7 @@ internal static class Program
                     return 0;
                 }
                 ArtifactDisassemblyResult document = ArtifactDisassembly.Read(bytes, identity);
-                if (options.Json) Console.WriteLine(document.ToJson().ToJsonString());
+                if (options.Json || options.EditorJson) Console.WriteLine(document.ToJson().ToJsonString());
                 else Console.Write(TerminalPresentation.Syntax(document.Text, TerminalPresentation.Colors(color)));
                 return 0;
             }

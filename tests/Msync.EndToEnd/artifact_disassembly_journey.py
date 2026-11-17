@@ -115,6 +115,7 @@ def main() -> None:
             "Counter::value = 8;\n"
             "let remainder = first::count % (local::count + Counter::value);\n",
             encoding="utf-8",
+            newline="\n",
         )
         relocatable = cwd / "readable.mso"
         executable = cwd / "readable.mexe"

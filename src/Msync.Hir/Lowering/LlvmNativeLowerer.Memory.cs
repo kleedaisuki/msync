@@ -42,6 +42,13 @@ public static partial class LlvmNativeLowerer
         {
             if (StaticLoad(load)) return;
             if (FunctionComponentLoad(load)) return;
+            if (load.PointerOperand is LlvmPhiInstruction phi && literalPhis.TryGetValue(phi, out int literalSlot))
+            {
+                if (load.LogicalType < 0) SetSelectedValueType(load, slots[literalSlot].Type);
+                PhiCopy(Slot(load), literalSlot, load.Source);
+                ++literalPhiLoads;
+                return;
+            }
             if (load.PointerOperand is LlvmSelectInstruction select &&
                 TryLiteralAddressSelect(select, out var literal))
             {
@@ -66,6 +73,9 @@ public static partial class LlvmNativeLowerer
         }
 
         private readonly record struct LiteralAddressSelect(NativeConstant True, NativeConstant False, int Type);
+        private readonly Dictionary<LlvmPhiInstruction, int> literalPhis = [];
+        private readonly Dictionary<LlvmBasicBlock, List<(int Slot, NativeConstant Value, SourceSpan? Source)>> literalPhiSources = [];
+        private int literalPhiLoads;
 
         // SimplifyCFG can sink an entire literal load through a branch. Literal
         // globals encode source values, not addressable Native storage.
@@ -80,14 +90,49 @@ public static partial class LlvmNativeLowerer
             int type = owner.Types[whenTrue.LogicalType].Pointee;
             int other = owner.Types[whenFalse.LogicalType].Pointee;
             if (type < 0 || other < 0 || !NativeTypeRelations.SameStorageRepresentation(owner.Types, type, other)) return false;
-            foreach (var use in select.Uses)
+            if (!HasOnlyLiteralLoads(select, whenTrue.ValueType, type)) return false;
+            literal = new(trueValue, falseValue, type);
+            return true;
+        }
+
+        private bool HasOnlyLiteralLoads(LlvmInstruction pointer, LlvmType valueType, int type)
+        {
+            foreach (var use in pointer.Uses)
             {
                 if (use.User is not LlvmLoadInstruction { IsSimple: true } load ||
-                    !ReferenceEquals(load.PointerOperand, select) || !ReferenceEquals(load.Type, whenTrue.ValueType) ||
+                    !ReferenceEquals(load.PointerOperand, pointer) || !ReferenceEquals(load.Type, valueType) ||
                     load.LogicalType >= 0 && !NativeTypeRelations.SameStorageRepresentation(owner.Types, type, load.LogicalType))
                     return false;
             }
-            literal = new(trueValue, falseValue, type);
+            return true;
+        }
+
+        private bool PrepareLiteralPhi(LlvmPhiInstruction phi)
+        {
+            if (!phi.Type.IsPointerTy() || phi.IncomingCount == 0
+                || phi.GetIncomingValue(0) is not LlvmGlobalVariable { IsConstant: true, LogicalType: >= 0 } first
+                || !owner.Input.Constants.ContainsKey(first)) return false;
+            int type = owner.Types[first.LogicalType].Pointee;
+            if (type < 0 || !HasOnlyLiteralLoads(phi, first.ValueType, type)) return false;
+            var literals = new NativeConstant[phi.IncomingCount];
+            for (int i = 0; i < literals.Length; i++)
+            {
+                if (phi.GetIncomingValue(i) is not LlvmGlobalVariable { IsConstant: true, LogicalType: >= 0 } candidate
+                    || !ReferenceEquals(first.ValueType, candidate.ValueType)
+                    || !owner.Input.Constants.TryGetValue(candidate, out var literal)) return false;
+                int other = owner.Types[candidate.LogicalType].Pointee;
+                if (other < 0 || !NativeTypeRelations.SameStorageRepresentation(owner.Types, type, other)) return false;
+                literals[i] = literal;
+            }
+            int slot = Register(type);
+            literalPhis.Add(phi, slot);
+            for (int i = 0; i < literals.Length; i++)
+            {
+                var predecessor = phi.GetIncomingBlock(i);
+                if (!literalPhiSources.TryGetValue(predecessor, out var copies))
+                    literalPhiSources.Add(predecessor, copies = []);
+                copies.Add((slot, literals[i], phi.Source));
+            }
             return true;
         }
         private void FileIn(LlvmFileInInst input)

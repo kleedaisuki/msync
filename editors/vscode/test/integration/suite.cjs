@@ -40,7 +40,7 @@ async function run() {
             'let label="可莉🌟";',
             'fn identity(item) { item };',
             'let answer = identity(true);',
-            'let file? = if true { ~/.codex } else { null };',
+            'let file? = if exists ./preserved.txt { ~/.codex } else { null };',
             'let invalid = file;',
             `"must never execute" -> $local @ ${quotedOutput};`,
             '',
