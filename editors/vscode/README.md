@@ -1,7 +1,7 @@
 # msync for Visual Studio Code
 
 This extension provides native TextMate highlighting for `.msync` files and an
-LSP client for **msync 0.8**. The lexical grammar remains available while the
+LSP client for **msync 0.9**. The lexical grammar remains available while the
 server starts or when the executable is missing. Type diagnostics, completion,
 inferred signatures on hover, navigation, document symbols, formatting and
 semantic tokens are negotiated with the installed compiler, not reimplemented
@@ -10,11 +10,11 @@ by the extension.
 ## Install and develop
 
 Requires VS Code 1.91 or newer and the matching msync executable on PATH.
-Install `msync-language-0.8.6.vsix` with **Extensions: Install
+Install `msync-language-0.9.0.vsix` with **Extensions: Install
 from VSIX**, or:
 
 ```sh
-code --install-extension msync-language-0.8.6.vsix
+code --install-extension msync-language-0.9.0.vsix
 ```
 
 The VSIX does not bundle the executable. Set `msync.serverPath` to its absolute

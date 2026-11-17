@@ -8,6 +8,10 @@ not in the current checkout or distribution.
 
 ## Build and run
 
+Download the complete Native AOT package for your platform from
+[GitHub Releases](https://github.com/kleedaisuki/msync/releases) and use the
+matching VSIX for VS Code.
+
 Development requires the .NET SDK pinned in `global.json` (currently 10.0.403).
 A published executable does not require an
 installed .NET runtime. Native AOT publishing additionally requires the platform
@@ -440,10 +444,8 @@ The current checkout and packages contain only the C# implementation. Historical
 Rust sources, standard modules and tests remain available at the immutable
 [`v0.7.3` tag](https://github.com/kleedaisuki/msync/tree/v0.7.3); they are not a
 build or execution dependency. There is no legacy command or executable routing.
-New `.mso`/`.mexe` artifacts use native IR format 1. Historical bytecode format 6
-is read as closed portable data and imported into the same native pipeline;
-there is no second VM or source replay. Earlier binary formats require
-recompilation from source. Typed HIR uses its independently versioned format 3;
+New `.mso`/`.mexe` artifacts use Native IR format 2. Typed HIR uses its
+independently versioned format 4. Recompile older artifacts from source;
 language semantics and stdlib URIs remain versioned separately at 0.8.0. Scripts use
 `fn`, `let`, brace blocks and semicolons instead of
 `symbol`/`boolean`/`macro`, indentation, `:=`, and `=>` bindings. `async`, `await`,

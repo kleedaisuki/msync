@@ -74,7 +74,6 @@ before printing the graph, without executing transfer writes. Planning may read
 the selected filesystem. `msync plan FILE.mexe` prints its already prepared
 operations without refreshing them. Use `disassemble` for passive inspection.
 
-Current commands use native IR format 1 and accept historical bytecode format 6
-through a closed importer into the same native pipeline. Earlier binary formats
-require recompilation. Typed HIR has its independent format 3; language semantics
-and embedded stdlib URIs remain versioned at 0.8.0.
+Current commands use Native IR format 2 for `.mso` and `.mexe`, and HIR format
+4 for `.mhir`. Recompile older artifacts from source. Language semantics and
+embedded stdlib URIs remain versioned at 0.8.0.
