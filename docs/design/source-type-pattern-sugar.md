@@ -1,8 +1,8 @@
 # Source proposal: type operators, logical patterns, and closed ranges
 
-Status: partially implemented on the v0.9.1 working tree, not released. See
-the [language contract](language-v080.md) and [native model](native-model-v090.md)
-for the released semantics.
+Status: implemented for the v0.9.1 source contract. See the
+[language contract](language-v080.md), [native model](native-model-v090.md), and
+[release notes](../releases/0.9.1.md).
 
 The source/formatter/artifact slice covers field-led anonymous Scope literals,
 explicit field shorthand, expression bodies, null operators, inclusive
