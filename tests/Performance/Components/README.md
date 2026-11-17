@@ -24,16 +24,16 @@ contextual metadata queries may occur and are part of that stage's cost.
 | --- | --- |
 | `parse` | Source to syntax document |
 | `analyze` | Source to immutable semantic HIR, including parsing/binding |
-| `lower_native` | Already analyzed HIR to unoptimized native IR |
+| `lower_native` | Already analyzed HIR through the production LLVM pipeline at O0 |
 | `compile_o0` / `compile_o1` | Complete source compilation at that level |
-| `optimize_o1` | Native portable optimizer on the same O0 input |
 | `artifact_validate` | Native portable contract validation |
 | `artifact_encode` / `artifact_decode` | Production codec including its validation boundary |
 | `prepare_native` | Context-selected computation and native I/O planning |
 | `runtime_initialize_dispose` | Native execution image construction and idle disposal, no guest execution |
 | `vm_no_io` | Fresh interpreter construction, execution and cleanup of the prepared program |
 
-Retired `form_blocks` and `execution_lower` stages are rejected, not assigned
+Retired `form_blocks`, `execution_lower` and direct-native `optimize_o1` stages
+are rejected, not assigned
 fabricated timings. `Blocks` is JSON null: the native register program has no
 old materialized block table. Shapes report actual slots, instructions, native
 opcodes and encoded bytes. Cumulative stages overlap; neither sum them nor

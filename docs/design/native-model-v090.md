@@ -972,15 +972,14 @@ the native payload manifest SHA-256 is
 
 The historical production backend is removed, not retained as a fallback:
 
-- Old HIR lowering/session, object bytecode and optimizer tiers are gone. The
-  canonical compiler and persistent session lower through `NativeHirLowerer`
-  and the native optimizer only.
+- The direct HIR-to-native lowerer and its session are gone. The canonical
+  compiler and persistent session use the typed HIR → LLVM → native pipeline.
 - The old Interpreter, scheduling/planning implementation, Value-based native
   registry and TransferEngine are gone. `RuntimeProfile` drains native counters
   only; no retired-tier counters are fabricated.
 - The `Value` hierarchy, generic Scope/Cell/Storage owners and language-shaped
-  bytecode/artifact implementation are gone. Accepted format-6 input is closed
-  portable recipe data imported to native IR, never source replay or a second VM.
+  bytecode/artifact implementation are gone. Format-6 bytes are rejected;
+  the previous importer and historical allocator binding tables are removed.
 - The runtime project depends on Core only, not Optimization. Native contextual
   preparation is an explicit phase; execution does not invoke an optimizer.
 
@@ -1017,12 +1016,12 @@ source cases and filesystem/process oracles must be retained.
 ### Read-only native artifact inspection
 
 The LSP `msync/artifact` request receives bytes and a display URI, not a source
-path to load. Binary inspection decodes and validates portable native data (or
-imports accepted format-6 portable data), then renders it without constructing a
+path to load. Binary inspection decodes and validates the current portable
+native format, then renders it without constructing a
 runtime image, running source, contextual preparation or filesystem operations.
 The editor schema remains version 1; binary artifacts keep the `bytecode` kind,
-actual input format version and stage. The text identifies `native-v1`, including
-when the input is accepted format 6. HIR retains its distinct `hir` representation.
+actual input format version and stage. The text identifies `native-v1`;
+HIR retains its distinct `hir` representation.
 
 Native rendering gives functions, registers, static layouts, projections,
 constants and instruction targets selectable definitions. Internal references are

@@ -2,7 +2,7 @@
 
 This real-source test binds and analyzes query expressions, compares executable
 payload/location/function tables with the bound input, serializes the semantic
-module, reads it without source binding, and executes the pure lowerer's output.
+module, reads it without source binding, and executes the production compiler's output.
 It covers structured Match/For/Scope queries, recursive signatures and isolated
 location/object writes. Direct context checks verify that query and flow-fork
 contexts cannot acquire an output capability and that query construction does

@@ -26,23 +26,23 @@ Finalized callable bodies are closed. An unused generic value has an explicit
 
 ## Lowering boundary
 
-The native path uses `NativeHirLowerer` and `NativeHirLoweringSession`.
+The native path lowers typed HIR with `LlvmHirLowerer`, then emits native IR
+with `LlvmNativeLowerer`. The compiler owns LLVM optimization between them.
 `HirLoweringMap` owns only stable callable, lexical-slot and allocation-site
 identities; `HirLoweringLayout` is its immutable public snapshot. Neither shared
-contract depends on bytecode, old runtime values or the historical lowerer.
+contract depends on old runtime values or a legacy lowerer.
 Native physical type/layout tables, persistent storage ABIs and capture
-provenance belong to `NativeHirLoweringSession`. The historical bytecode lowerer
-and its session are removed.
+provenance belong to `LlvmHirLoweringSession`.
 
-`NativeHirLowerer.Lower` returns the native program and explicit
-logical-to-physical `HirLoweringLayout`. The lowerer does not bind names, infer types, execute
+`LlvmHirLoweringSession.Emit` returns the native program and explicit
+logical-to-physical `HirLoweringLayout` for session submissions.
+Lowering does not bind names, infer types, execute
 expressions or call back into the compiler. It selects local/capture slots,
 branch offsets, iterator temporaries, Scope allocation sites and constant-table
 indices. It consumes resolved conversions and call targets without searching
-for additional specializations. The caller chooses whether to optimize the
-resulting relocatable native IR.
+for additional semantic specializations.
 
-`NativeHirLoweringSession` retains layout identities across REPL generations. Captures
+`LlvmHirLoweringSession` retains layout identities across REPL generations. Captures
 and parameters precede local slots; declaration initialization reserves a cell
 before constructing recursive closures and stores back through that same cell.
 Session roots are mapped from explicit exports rather than guessed from local

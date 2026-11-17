@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using Msync.Core;
+using Msync.Core.Native;
 using Msync.Hir;
 
 int checks = 0;
@@ -78,7 +79,7 @@ static byte[] Encode(HirModule module)
 static byte[] Lower(HirModule module)
 {
     using MemoryStream stream = new();
-    Artifact.Write(HirLowerer.Lower(module, new(0)).Module, stream);
+    NativeArtifact.Write(LlvmNativeLowerer.Lower(LlvmHirLowerer.Lower(module)), stream);
     return stream.ToArray();
 }
 static HirModule Fixture()
@@ -94,10 +95,11 @@ static HirModule Fixture()
     builder.Literals.Add(new(HirLiteralKind.Number, Number: -999));
     builder.Add(HirKind.Literal, number, source, data: 0);
     var literal = builder.Literal(new(HirLiteralKind.Number, Number: 42), number, source);
-    var captured = builder.Literal(new(HirLiteralKind.Number, Number: 7), number, source);
-    var genericCaptured = builder.Literal(new(HirLiteralKind.Number, Number: 8), number, source);
-    var closureCaptured = builder.Literal(new(HirLiteralKind.Number, Number: 9), number, source);
-    var templateCaptured = builder.Literal(new(HirLiteralKind.Number, Number: 10), number, source);
+    var initializers = new List<HirNodeId>();
+    var captured = SourceSlot("function_value", 7);
+    var genericCaptured = SourceSlot("generic_value", 8);
+    var closureCaptured = SourceSlot("closure_value", 9);
+    var templateCaptured = SourceSlot("template_value", 10);
     var read = builder.Add(HirKind.ReadLocation, number, source, data: 0);
     builder.Functions.Add(new("main", [], [], number, HirNodeId.None));
     builder.Functions.Add(new("unused_closed", [], [new(new(0), HirCaptureMode.Value, new(-1), captured)], number, read));
@@ -115,9 +117,18 @@ static HirModule Fixture()
     var match = builder.Add(HirKind.Match, number, source, [literal], data: 1);
     var discardClosure = builder.Add(HirKind.Discard, builder.Type(TypeRef.Null), source, [closure]);
     var discardTemplate = builder.Add(HirKind.Discard, builder.Type(TypeRef.Null), source, [templateClosure]);
-    var body = builder.Add(HirKind.Block, number, source, [discardClosure, discardTemplate, match]);
+    var body = builder.Add(HirKind.Block, number, source, [.. initializers, discardClosure, discardTemplate, match]);
     builder.Functions[0] = builder.Functions[0] with { Body = body };
     return builder.Freeze(new(0));
+
+    HirNodeId SourceSlot(string name, double value)
+    {
+        int id = builder.Locations.Count;
+        builder.Locations.Add(new(name, number, source, new(0)));
+        var initializer = builder.Literal(new(HirLiteralKind.Number, Number: value), number, source);
+        initializers.Add(builder.Add(HirKind.Declare, builder.Type(TypeRef.Null), source, [initializer], data: id));
+        return builder.Add(HirKind.ReadLocation, number, source, data: id);
+    }
 }
 
 static HirModule PayloadFixture()

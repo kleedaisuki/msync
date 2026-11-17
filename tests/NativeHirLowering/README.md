@@ -1,7 +1,7 @@
-# Direct native HIR lowering
+# Typed HIR through LLVM to native IR
 
 `dotnet run --project tests/NativeHirLowering -c Release` analyzes real source,
-exports HIR without source text, lowers both forms directly to native IR, and
+exports HIR without source text, lowers both forms through the production LLVM pipeline, and
 passes each result through the actual artifact validator/codec and native VM,
 checking independent numerical/path results at O0 and O2. Generic closures are
 instantiated with unrelated builtin and namespace capture ABIs, and shared
@@ -11,8 +11,9 @@ finite mixed-field projections and captured-parameter location ownership.
 These are source-to-native execution checks, not a claim of complete installed
 product acceptance. The CLI journey owns host integration and platform coverage.
 
-`NativeHirLowerer.Lower` returns `NativeHirLoweringResult(Program, Layout)`.
-`NativeHirLoweringSession` retains callable, local, allocation-site, type/layout
+`Compiler.LowerNative` emits relocatable native IR.
+`LlvmHirLoweringSession.Emit` returns the native program and local-slot mapping.
+The LLVM session retains callable, local, allocation-site, type/layout
 and static declaration identities across persistent submissions. Field names
 are resolved here; the emitted runtime operations use addresses and finite
 layout/ordinal tables. Captures occupy the first slots, followed by parameters.

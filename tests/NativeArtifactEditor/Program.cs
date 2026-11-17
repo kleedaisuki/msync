@@ -5,9 +5,17 @@ using Msync.Core.Native;
 
 if (args is ["produce", var path])
 {
-    NativeArtifact.Write(Fixtures.Plan(), path);
+    NativeArtifact.Write(WithStorage(Fixtures.Plan()), path);
     return;
 }
+static NativeProgram WithStorage(NativeProgram program) => program with
+{
+    Functions = program.Functions.Select(function => function with
+    {
+        Storage = new(new NativeSlotStorage[function.Slots.Count],
+            new NativeInstructionStorage[function.Instructions.Count])
+    }).ToArray()
+};
 int checks = 0;
 void Check(bool condition, string message)
 {
@@ -52,7 +60,7 @@ void Inspect(JsonObject document)
             "Hover metadata is empty.");
 }
 
-NativeProgram plan = Fixtures.Plan();
+NativeProgram plan = WithStorage(Fixtures.Plan());
 using MemoryStream bytes = new();
 NativeArtifact.Write(plan, bytes);
 JsonObject model = ArtifactDisassembly.Read(bytes.ToArray(), "memfs:/missing/project.mexe").ToJson();
@@ -66,7 +74,7 @@ Check(prepared["transfers"]![1]!["predecessors"]!.ToJsonString() == "[0]", "Plan
 Check(prepared["batches"]!.AsArray().Count == 2, "Plan batches were lost.");
 using (MemoryStream literalBytes = new())
 {
-    NativeArtifact.Write(Fixtures.Literal(new(NativeKind.String, "@f0 @c0 %f0_0")), literalBytes);
+    NativeArtifact.Write(WithStorage(Fixtures.Literal(new(NativeKind.String, "@f0 @c0 %f0_0"))), literalBytes);
     JsonObject literal = ArtifactDisassembly.Read(literalBytes.ToArray(), "memfs:/literal.mso").ToJson();
     Inspect(literal);
     string[] rows = literal["text"]!.GetValue<string>().Split('\n');
@@ -74,11 +82,20 @@ using (MemoryStream literalBytes = new())
     Check(!literal["references"]!.AsArray().Any(reference => reference!["range"]!["start"]!["line"]!.GetValue<int>() == constantRow),
         "Quoted literal identifiers became actionable internal references.");
 }
-foreach (string legacy in new[] { "tests/LegacyV6Native/Fixtures/aliases.mso", "tests/LegacyV6Native/Fixtures/aliases.mexe" })
+foreach (string suffix in new[] { "mso", "mexe" })
 {
-    JsonObject imported = ArtifactDisassembly.Read(File.ReadAllBytes(legacy), new Uri(Path.GetFullPath(legacy)).AbsoluteUri).ToJson();
-    Check(imported["formatVersion"]!.GetValue<int>() == 6, "Accepted format-6 identity was lost.");
-    Inspect(imported);
+    string uri = $"memfs:/format-six.{suffix}";
+    try
+    {
+        _ = ArtifactDisassembly.Read("MSYNCBC\0\u0006\0"u8.ToArray(), uri);
+        throw new InvalidOperationException("Historical bytecode was accepted as native IR.");
+    }
+    catch (MsyncException error)
+    {
+        Check(error.Message.Contains(uri, StringComparison.Ordinal) &&
+            error.Message.Contains("Not an msync native IR artifact", StringComparison.Ordinal),
+            "Historical bytecode rejection lost its artifact URI or cause.");
+    }
 }
 using CancellationTokenSource cancellation = new();
 cancellation.Cancel();
@@ -97,4 +114,4 @@ catch (MsyncException error)
 {
     Check(error.Message.Contains("memfs:/invalid.mso", StringComparison.Ordinal), "Artifact error lost its source URI.");
 }
-Console.WriteLine($"{checks} native/closed-format6 artifact editor contracts passed");
+Console.WriteLine($"{checks} native artifact editor contracts passed");

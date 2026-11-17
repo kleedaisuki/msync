@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using System.Text;
 using Msync.Core;
+using Msync.Core.Native;
 using Msync.Hir;
 
 int checks = 0;
@@ -14,13 +15,14 @@ foreach (long bits in new[] { 0L, long.MinValue, 0x3ff0000000000000L, 0x7ff80000
     Check(first.AsSpan().SequenceEqual(Encode(decoded)), "Canonical byte roundtrip");
     Check(decoded.Sources[0].Name == "file:///workspace/空间 𐐀.msync", "Unicode source identity");
     HirModule diagnosticOnly = decoded with { Sources = [decoded.Sources[0] with { Text = "This is diagnostic text, not parsable msync source." }] };
-    Module lowered = HirLowerer.Lower(Decode(Encode(diagnosticOnly))).Module;
-    Check(lowered.Constants.OfType<NumberValue>().Any(number => BitConverter.DoubleToInt64Bits(number.Data) == bits), "Loaded HIR lowers without parsing source text");
+    NativeProgram lowered = Lower(Decode(Encode(diagnosticOnly)));
+    Check(lowered.Constants.Any(number => number.Kind == NativeKind.Number
+        && BitConverter.DoubleToInt64Bits(number.Number) == bits), "Loaded HIR lowers without parsing source text");
     using MemoryStream firstBytecode = new();
     using MemoryStream secondBytecode = new();
-    Artifact.Write(lowered, firstBytecode);
-    Artifact.Write(HirLowerer.Lower(diagnosticOnly).Module, secondBytecode);
-    Check(firstBytecode.ToArray().AsSpan().SequenceEqual(secondBytecode.ToArray()), "Two pure lowerings assign deterministic bytecode layout");
+    NativeArtifact.Write(lowered, firstBytecode);
+    NativeArtifact.Write(Lower(diagnosticOnly), secondBytecode);
+    Check(firstBytecode.ToArray().AsSpan().SequenceEqual(secondBytecode.ToArray()), "Two pure lowerings assign deterministic native layouts");
 }
 
 HirModule rich = Tables();
@@ -142,19 +144,12 @@ Check(openSessionView.Definitions.Any(definition => definition.Identifier == "@d
     "Session call and callback adaptation resolve to a visible semantic dispatch contract");
 RejectModule(openSession with { IsSession = false }, "Closed artifacts cannot claim open session dispatch");
 RejectModule(openSession with { SessionDispatches = [] }, "Session call and adaptation require a declared slot");
-bool requiresSession = false;
-try { _ = HirLowerer.Lower(openSessionRead); }
-catch (InvalidOperationException error)
-{
-    requiresSession = error.Message.Contains("active HIR session", StringComparison.Ordinal);
-}
-Check(requiresSession, "Source-free lowering explains its live session requirement");
 
 byte[] tiny = Encode(Scalar(42));
 for (int length = 0; length < tiny.Length; length++) Reject(tiny[..length], "Truncation rejected");
 byte[] badMagic = (byte[])tiny.Clone(); badMagic[0] ^= 0xff; Reject(badMagic, "Bad magic rejected");
 byte[] badVersion = (byte[])tiny.Clone(); badVersion[8] = 255; Reject(badVersion, "Unknown container version rejected");
-byte[] oldVersion = (byte[])tiny.Clone(); oldVersion[8] = 1; Reject(oldVersion, "Superseded HIR encoding rejected");
+byte[] oldVersion = (byte[])tiny.Clone(); oldVersion[8] = 3; Reject(oldVersion, "Superseded HIR encoding rejected");
 byte[] badLanguage = (byte[])tiny.Clone(); badLanguage[11] = (byte)'9'; Reject(badLanguage, "Unknown semantic version rejected");
 byte[] badCount = (byte[])tiny.Clone();
 int sourceCount = 8 + sizeof(ushort) + 1 + HirArtifact.LanguageVersion.Length + sizeof(int) + 1;
@@ -197,7 +192,13 @@ try
     Check(HirArtifact.Read(path).Literals[0].Number == 2, "Owned atomic replacement publishes the next module");
     Check(Directory.EnumerateFiles(directory).Count() == 1, "No staging files retained");
     byte[] before = File.ReadAllBytes(path);
-    try { HirArtifact.Write(Scalar(3) with { Entry = new(55) }, path); throw new InvalidOperationException("Invalid module accepted"); }
+    try
+    {
+        var invalid = Scalar(3) with { Entry = new(55) };
+        HirValidation.Validate(invalid);
+        HirArtifact.Write(invalid, path);
+        throw new InvalidOperationException("Invalid module accepted");
+    }
     catch (MsyncException) { checks++; }
     Check(File.ReadAllBytes(path).AsSpan().SequenceEqual(before), "Invalid export does not replace the previous file");
 }
@@ -212,14 +213,14 @@ void Check(bool condition, string message)
 
 void Reject(byte[] bytes, string message)
 {
-    try { _ = Decode(bytes); }
+    try { HirValidation.Validate(Decode(bytes)); }
     catch (MsyncException) { checks++; return; }
     throw new InvalidOperationException(message);
 }
 
 void RejectModule(HirModule module, string message)
 {
-    try { _ = Encode(module); }
+    try { HirValidation.Validate(module); }
     catch (MsyncException) { checks++; return; }
     throw new InvalidOperationException(message);
 }
@@ -241,6 +242,8 @@ HirModule Decode(byte[] bytes)
 {
     using MemoryStream stream = new(bytes); return HirArtifact.Read(stream);
 }
+
+static NativeProgram Lower(HirModule module) => LlvmNativeLowerer.Lower(LlvmHirLowerer.Lower(module));
 
 static HirModule Scalar(double value)
 {

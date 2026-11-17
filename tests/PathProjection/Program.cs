@@ -73,16 +73,6 @@ NativeProgram closure = new([Constant(relative)],
         new([], 0, [new(0, NativeCaptureMode.Value)]), CaptureCount: 1)],
     [new(TypeKind.Path), new(TypeKind.Function)], []);
 Equal(relative, (await Run(Codec(closure))).AsFunction().Environment![0].Read().AsPath(), "Current format lost captured path projection");
-using (Stream fixture = System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("Msync.PathProjection.Tests.Fixtures.path-v1.mso")!)
-{
-    try { LegacyV6Reader.Read(fixture); throw new InvalidOperationException("Obsolete artifact format was accepted"); }
-    catch (MsyncException error)
-    {
-        Equal(true, error.Message.Contains("format 1", StringComparison.Ordinal), "Rejected artifact lost its format diagnostic");
-        Equal(true, error.Message.Contains("Recompile", StringComparison.Ordinal), "Rejected artifact omitted migration guidance");
-    }
-}
-
 string root = Path.Combine(Environment.CurrentDirectory, ".temp", "path-projection-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
 try

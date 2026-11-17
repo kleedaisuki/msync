@@ -2,7 +2,6 @@ using Msync.Compiler.Semantics;
 using Msync.Core;
 using Msync.Core.Native;
 using Msync.Hir;
-using Msync.Optimization;
 using Msync.Runtime;
 using Msync.Runtime.Native;
 
@@ -12,9 +11,7 @@ if (args is ["--allocations", var path])
     return;
 }
 
-int checks = CanonicalAliasChecks.Run();
-checks += FormalAliasImportChecks.Run();
-checks += AliasEffectChecks.Run();
+int checks = AliasEffectChecks.Run();
 checks += TransactionChecks.Run();
 checks += SessionSnapshotChecks.Run();
 BindingRollback();
@@ -67,8 +64,8 @@ async Task Query(string source, double expected, int emittedScopes = 0)
     HirArtifact.Write(analyzed, bytes);
     bytes.Position = 0;
     HirModule restored = HirArtifact.Read(bytes);
-    NativeProgram lowered = NativeHirLowerer.Lower(restored, new(OptimizationLevel: 0)).Program;
-    await using NativeInterpreter interpreter = new(NativeOptimizer.PlanStorage(lowered));
+    NativeProgram lowered = Msync.Compiler.Compiler.LowerNative(restored, 0);
+    await using NativeInterpreter interpreter = new(lowered);
     NativeValue result = await interpreter.ExecuteAsync();
     Check(result.AsNumber() == expected,
         $"Unexpected result for {source}: {result}");

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read real source-free bytecode without executing, rebinding or modifying it."""
+"""Read real source-free native IR without executing, rebinding or modifying it."""
 
 from __future__ import annotations
 
@@ -40,118 +40,55 @@ def success(binary: Path, cwd: Path, arguments: list[str]) -> bytes:
     return result.stdout
 
 
-def text_range(lines: list[str], span: dict[str, Any]) -> str:
-    start, end = span["start"], span["end"]
-    assert 0 <= start["line"] <= end["line"] < len(lines), span
-    for point in (start, end):
-        assert (
-            0
-            <= point["character"]
-            <= len(lines[point["line"]].encode("utf-16-le")) // 2
-        ), (point, lines[point["line"]])
-    if start["line"] != end["line"]:
-        return ""
-    row: int = start["line"]
-    encoded = lines[row].encode("utf-16-le")
-    first: int = start["character"]
-    last: int = end["character"]
-    return encoded[2 * first : 2 * last].decode("utf-16-le")
-
-
 def validate_model(document: dict[str, Any], stage: str) -> dict[str, int]:
-    assert document["schemaVersion"] == 1
-    assert document["formatVersion"] == 6
+    assert document["representation"] == "native-v1", document["representation"]
+    assert document["formatVersion"] == 2
     assert document["languageVersion"] == "0.8.0"
     assert document["stage"] == stage
     assert document["optimizationLevel"] == 0
-    text: str = document["text"]
-    assert "read-only disassembly" in text
-    assert "does not bind, optimize or execute" in text
-    assert "@c" in text and "@f" in text and "block @b" in text
-    assert "Transfer" in text
-    assert "arguments" in text and "captures" in text and "Path" in text
-    assert "世界" in text and "\\n" in text
-    assert re.search(r"^type @t\d+ = Scope layouts \[@l\d+\];$", text, re.MULTILINE)
-    assert re.search(r'^layout @l\d+ = \{ #\d+ "count": @t\d+ \};$', text, re.MULTILINE)
-    assert re.search(r'^place @d\d+ = "count" \[@l\d+\.#\d+\];$', text, re.MULTILINE)
-    assert re.search(r"^static @s\d+ = @l\d+;$", text, re.MULTILINE)
-    assert "Remainder" in text
-    lines = text.splitlines()
-    symbols = 0
-
-    def symbol(item: dict[str, Any]) -> None:
-        nonlocal symbols
-        symbols += 1
-        text_range(lines, item["range"])
-        assert text_range(lines, item["selectionRange"]), item
+    functions: list[dict[str, Any]] = document["functions"]
+    layouts: list[dict[str, Any]] = document["layouts"]
+    types: list[dict[str, Any]] = document["types"]
+    instructions: list[dict[str, Any]] = [
+        instruction
+        for function in functions
+        for instruction in function["instructions"]
+    ]
+    opcodes: set[str] = {instruction["op"] for instruction in instructions}
+    assert {"Allocate", "Load", "Store", "Binary"} <= opcodes, opcodes
+    assert {"Path", "Scope", "Number"} <= {value["kind"] for value in types}
+    assert any(value["text"] == 'hello "Klee"\n世界' for value in document["constants"])
+    assert any(
+        field["name"] == "count" for layout in layouts for field in layout["fields"]
+    )
+    for function in functions:
+        assert function["signature"]["result"] in range(len(types)), function[
+            "signature"
+        ]
+    for instruction in instructions:
+        if instruction["op"] == "Allocate":
+            assert instruction["a"] in range(len(layouts)), instruction
+        if instruction["op"] == "AddressOffset":
+            layout: dict[str, Any] = layouts[instruction["b"]]
+            assert instruction["c"] in range(len(layout["fields"])), instruction
+    spans: list[dict[str, Any]] = [
+        instruction["source"] for instruction in instructions if "source" in instruction
+    ]
+    assert spans and all(
+        span["file"] and span["start"] >= 0 and span["length"] >= 0 for span in spans
+    )
+    if stage == "Executable":
         assert (
-            item["range"]["start"]["line"]
-            <= item["selectionRange"]["start"]["line"]
-            <= item["range"]["end"]["line"]
-        ), item
-        for child in item.get("children", []):
-            symbol(child)
-
-    for item in document["symbols"]:
-        symbol(item)
-    targets: int = 0
-    sources: int = 0
-    typed_targets: set[str] = set()
-    for item in document["references"]:
-        spelling = text_range(lines, item["range"])
-        assert spelling, item
-        if "targetLine" in item:
-            targets += 1
-            target = lines[item["targetLine"]]
-            assert target[item["targetCharacter"] :].startswith(spelling), (
-                item,
-                spelling,
-                target,
-            )
-            if spelling.startswith("@l"):
-                assert target.startswith("layout " + spelling + " = "), target
-                typed_targets.add("layout")
-            elif spelling.startswith("@d"):
-                assert target.startswith("place " + spelling + " = "), target
-                typed_targets.add("place")
-            elif spelling.startswith("@s"):
-                assert target.startswith("static " + spelling + " = "), target
-                typed_targets.add("static")
-        else:
-            sources += 1
-            assert item["sourceStart"] >= 0 and item["sourceLength"] >= 0
-            assert item["sourceName"]
-    for item in document["hovers"]:
-        assert text_range(lines, item["range"]) and item["markdown"]
-    for opcode, explanation in (
-        ("NewScope", "field initializers in ordinal order"),
-        ("LoadField", "typed field projection"),
-        ("StoreField", "selected field projection"),
-        ("JumpIfStaticReady", "already published its fields"),
-        ("PublishStatic", "first selected initialization"),
-        ("LoadStaticScope", "Expose the static declaration's identity"),
-        ("LoadStaticField", "without materializing its Scope identity"),
-        ("StoreStaticField", "initialized static slot"),
-        ("Remainder", "truncating remainder"),
-    ):
-        assert any(
-            text_range(lines, item["range"]) == opcode
-            and explanation in item["markdown"]
-            for item in document["hovers"]
-        ), (opcode, document["hovers"])
-    assert targets > 0 and sources > 0
-    assert typed_targets == {"layout", "place", "static"}, typed_targets
-    if stage == "executable":
-        assert "context {" in text and "cwd =" in text and "home =" in text
-        assert "ExecutePlan" in text
+            document["context"]["workingDirectory"]
+            and document["context"]["homeDirectory"]
+        )
     else:
-        assert "context {" not in text
-        assert "fs.exists" in text
+        assert "context" not in document
+        assert "Transfer" in opcodes
     return {
-        "symbols": symbols,
-        "internal_references": targets,
-        "source_spans": sources,
-        "typed_table_kinds": len(typed_targets),
+        "functions": len(functions),
+        "layouts": len(layouts),
+        "source_spans": len(spans),
     }
 
 
@@ -162,7 +99,7 @@ def main() -> None:
     binary = arguments.binary.resolve()
     parent = ROOT / ".temp" / "artifact-disassembly"
     parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="查看 bytecode ", dir=parent) as directory:
+    with tempfile.TemporaryDirectory(prefix="查看 native IR ", dir=parent) as directory:
         cwd = Path(directory)
         source = cwd / "source with spaces.msync"
         source.write_text(
@@ -196,7 +133,7 @@ def main() -> None:
         broken_config = cwd / "broken.toml"
         broken_config.write_text("broken = [", encoding="utf-8")
         report: dict[str, Any] = {}
-        for path, stage in [(relocatable, "relocatable"), (executable, "executable")]:
+        for path, stage in [(relocatable, "Relocatable"), (executable, "Executable")]:
             before = hashlib.sha256(path.read_bytes()).hexdigest()
             raw = success(
                 binary,
@@ -220,7 +157,7 @@ def main() -> None:
             color = success(
                 binary, cwd, ["--color", "always", "disassemble", str(path)]
             ).decode("utf-8")
-            assert plain == document["text"] and ANSI.search(color)
+            assert plain.startswith(f"native-v1 {stage} entry=") and ANSI.search(color)
             assert ANSI.sub("", color) == plain
             assert hashlib.sha256(path.read_bytes()).hexdigest() == before
             stdin = invoke(
@@ -234,13 +171,17 @@ def main() -> None:
             success(binary, cwd, ["disassemble", str(disguised), "--json"])
         invalid: tuple[tuple[str, bytes, str], ...] = (
             ("not-bytecode.mso", b"plain text", "Not an msync"),
-            ("truncated.mexe", relocatable.read_bytes()[:14], "disassemble"),
+            (
+                "truncated.mexe",
+                relocatable.read_bytes()[:14],
+                "Native IR artifact at byte",
+            ),
             (
                 "future.mso",
                 relocatable.read_bytes()[:8]
                 + struct.pack("<H", 65535)
                 + relocatable.read_bytes()[10:],
-                "Unsupported msync bytecode format",
+                "Unsupported native IR format",
             ),
         )
         for name, data, expected in invalid:

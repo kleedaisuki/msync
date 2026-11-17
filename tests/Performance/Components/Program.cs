@@ -1,4 +1,3 @@
-using Msync.Optimization;
 using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
@@ -40,7 +39,7 @@ internal sealed record Options(string Root, string Output, int[] Sizes, int Samp
                 default: throw new ArgumentException($"Unknown option '{args[i - 1]}'");
             }
         }
-        string[] available = ["parse", "analyze", "lower_native", "compile_o0", "compile_o1", "optimize_o1",
+        string[] available = ["parse", "analyze", "lower_native", "compile_o0", "compile_o1",
             "artifact_validate", "artifact_encode", "artifact_decode", "prepare_native", "runtime_initialize_dispose", "vm_no_io",
             "at_end", "at_start"];
         if (stages is not null && stages.Any(stage => !available.Contains(stage, StringComparer.Ordinal)))
@@ -120,10 +119,9 @@ internal static class Program
         [
             ("parse", () => Parser.Parse(source, sourceName)),
             ("analyze", () => SourceCompiler.Analyze(source, sourceName)),
-            ("lower_native", () => NativeHirLowerer.Lower(hir).Program),
+            ("lower_native", () => SourceCompiler.LowerNative(hir, 0)),
             ("compile_o0", () => SourceCompiler.Compile(source, sourceName, 0)),
             ("compile_o1", () => SourceCompiler.Compile(source, sourceName, 1)),
-            ("optimize_o1", () => NativeOptimizer.Optimize(raw, 1)),
             ("artifact_validate", () => { NativeArtifact.Validate(optimized); return optimized; }),
             ("artifact_encode", () => Encode(optimized)),
             ("artifact_decode", () => Decode(encoded)),

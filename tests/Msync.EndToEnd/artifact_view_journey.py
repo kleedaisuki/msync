@@ -80,7 +80,7 @@ def checked_range(
 def inspect_model(model: Json, stage: str) -> dict[str, int]:
     assert model["schemaVersion"] == 1, model
     assert model["languageVersion"] == "0.8.0", model
-    assert model["formatVersion"] == 1
+    assert model["formatVersion"] == 2, model["formatVersion"]
     assert model["stage"] == stage, model["stage"]
     assert model["optimizationLevel"] == 0, model["optimizationLevel"]
     text = str(model["text"])
@@ -92,7 +92,7 @@ def inspect_model(model: Json, stage: str) -> dict[str, int]:
         "MUST NOT EXECUTE",
         "native-v1",
         "Allocate",
-        "ProjectAddress",
+        "AddressOffset",
         "Load",
         "Store",
         "StaticAddress",
@@ -140,7 +140,10 @@ def inspect_model(model: Json, stage: str) -> dict[str, int]:
             assert reference["sourceStart"] >= 0 and reference["sourceLength"] >= 0
             counts["source_references"] += 1
     assert counts["internal_references"] > 0
-    assert typed_targets == {"layout", "place", "static"}, typed_targets
+    expected_tables = {"layout", "static"}
+    if "ProjectAddress" in text:
+        expected_tables.add("place")
+    assert typed_targets == expected_tables, typed_targets
     counts["typed_table_kinds"] = len(typed_targets)
     for hover in cast(list[Json], model["hovers"]):
         checked_range(cast(Json, hover["range"]), lines)
@@ -166,8 +169,10 @@ def main() -> None:
         source.write_text(
             "fn select(file: Path, ready: Bool) -> Path { if ready { file } else { ./unused } };\n"
             "let local = scope { count: 2 }; local::count = 3;\n"
+            'let alternate = scope { count: 4, label: "other layout" };\n'
             "scope Counter { expected: 0 }; Counter::expected = 3;\n"
-            "let chosen = select(./input, exists ./not-present and local::count == Counter::expected);\n"
+            "let view = if exists ./not-present { local } else { alternate };\n"
+            "let chosen = select(./input, view::count == Counter::expected);\n"
             f'"MUST NOT EXECUTE <script>alert(""artifact"")</script> command:msync.test.artifactInjection \u0001" -> "{effect_path}";\n'
             "chosen\n",
             encoding="utf-8",
@@ -228,14 +233,20 @@ def main() -> None:
                 summaries[stage] = inspect_model(model, stage)
 
             for suffix in ("mso", "mexe"):
-                legacy = ROOT / f"tests/LegacyV6Native/Fixtures/aliases.{suffix}"
-                legacy_response = request(client, "msync/artifact", payload(legacy))
-                assert "error" not in legacy_response, legacy_response
-                legacy_model = cast(Json, legacy_response["result"])
-                assert legacy_model["formatVersion"] == 6, legacy_model
-                assert "native-v1" in legacy_model["text"], legacy_model
-                assert legacy_model["symbols"] and legacy_model["references"] and legacy_model["hovers"]
-            summaries["closed_format6_views"] = 2
+                legacy_response = request(
+                    client,
+                    "msync/artifact",
+                    {
+                        "uri": f"memfs:/format-six.{suffix}",
+                        "data": base64.b64encode(b"MSYNCBC\0\x06\0").decode("ascii"),
+                    },
+                )
+                assert legacy_response["error"]["code"] == -32001, legacy_response
+                assert (
+                    "Not an msync native IR artifact"
+                    in legacy_response["error"]["message"]
+                )
+            summaries["rejected_format6_views"] = 2
             if arguments.plan_artifact:
                 prepared = arguments.plan_artifact.resolve()
                 prepared_hash = hashlib.sha256(prepared.read_bytes()).hexdigest()

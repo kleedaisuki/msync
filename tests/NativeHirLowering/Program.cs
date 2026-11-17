@@ -5,7 +5,6 @@ using Msync.Runtime.Native;
 using SourceCompiler = Msync.Compiler.Compiler;
 
 int checks = 0;
-await NativeStaticFieldLoweringChecks.Run(Require);
 CheckScopeAllocationContracts();
 await CheckSeparatedInitialization();
 (string Name, string Source)[] examples =
@@ -411,7 +410,7 @@ void CheckLiteralBits()
         Number: BitConverter.Int64BitsToDouble(bit)), number, source)).ToArray();
     var body = hir.Add(HirKind.Range, range, source, values);
     hir.Functions.Add(new("entry", [], [], range, body));
-    NativeProgram program = NativeHirLowerer.Lower(hir.Freeze(new(0))).Program;
+    NativeProgram program = SourceCompiler.LowerNative(hir.Freeze(new(0)), 0);
     NativeArtifact.Validate(program);
     Require(program.Constants.Where(value => value.Kind == NativeKind.Number)
         .Select(value => BitConverter.DoubleToInt64Bits(value.Number)).SequenceEqual(bits),
@@ -421,7 +420,7 @@ void CheckLiteralBits()
 void CheckEmptyFreshness()
 {
     var hir = SourceCompiler.Analyze("let first = scope {}; let second = scope {}; [first, second]", "empty.msync");
-    var program = NativeHirLowerer.Lower(hir).Program;
+    var program = SourceCompiler.LowerNative(hir, 0);
     NativeArtifact.Validate(program);
     Require(program.Functions.SelectMany(function => function.Instructions)
         .Count(instruction => instruction.Op == NativeOp.Allocate && program.Layouts[instruction.A].Fields.Count == 0) == 2,
@@ -510,16 +509,16 @@ void CheckScopeAllocationContracts()
 void RejectScope(HirModule module, string reason)
 {
     bool writeRejected = false;
-    try { using MemoryStream strict = new(); HirArtifact.Write(module, strict); }
+    try { HirValidation.Validate(module); }
     catch (MsyncException error) when (error.Message.Contains("semantic node expects", StringComparison.Ordinal)) { writeRejected = true; }
     Require(writeRejected, reason);
     using MemoryStream malformed = new();
     HirArtifact.WriteProduced(module, malformed);
     malformed.Position = 0;
     bool readRejected = false;
-    try { _ = HirArtifact.Read(malformed); }
+    try { HirValidation.Validate(HirArtifact.Read(malformed)); }
     catch (MsyncException error) when (error.Message.Contains("semantic node expects", StringComparison.Ordinal)) { readRejected = true; }
-    Require(readRejected, reason + " on the read boundary");
+    Require(readRejected, reason + " after decoding");
 }
 
 async Task CheckSeparatedInitialization()

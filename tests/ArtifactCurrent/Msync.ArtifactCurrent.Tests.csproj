@@ -1,5 +1,0 @@
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
-  <ItemGroup><ProjectReference Include="../../src/Msync.Runtime/Msync.Runtime.csproj" /></ItemGroup>
-  <ItemGroup><ProjectReference Include="../../src/Msync.Optimization/Msync.Optimization.csproj" /></ItemGroup>
-</Project>

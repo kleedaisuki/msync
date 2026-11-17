@@ -84,7 +84,7 @@ public static partial class LlvmHirLowerer
             { LogicalType = resultLogical });
         }
 
-        // NativeHirLowerer.Function Pair evaluates source children before reversing
+        // Evaluate source children before reversing
         // Qualify's operands. Preserve that order rather than swapping child visits.
         private LlvmValue ValuePair(HirNode node)
         {
