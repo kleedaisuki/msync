@@ -43,6 +43,103 @@ UNICODE_SIGMA_SOURCE: str = "ΟΣ ΟΣΑ ΟΣ́ ΟΣ́Α Σ ΟΣ’ ΟΣ’Α Ο
 
 JOURNEYS: tuple[Journey, ...] = (
     Journey(
+        "generic_concept_constraints",
+        """
+        concept Named { label: fn() -> String, };
+        concept Cell<T> { value: T, };
+        concept Entry<T: Named> : Cell<T> { source: Path, };
+        concept Wrapped<T> { cell: Cell<T>, };
+        concept Input<T: Path | String> { value: T, };
+        scope Addition {
+            identity: 0,
+            combine: fn(left: Number, right: Number) -> Number { left + right },
+        };
+        fn sum(algebra: $std::concepts::Monoid<Number>) {
+            algebra::combine(algebra::identity, 7)
+        };
+        fn inferred(algebra: $std::concepts::Monoid) { algebra::identity };
+        fn name(entry: Entry) { entry::value::label() };
+        fn unwrap(box: Wrapped) { box::cell::value };
+        fn payload(input: Input<String>) { input::value };
+        (sum(Addition) as String) -> sum.txt;
+        (inferred(Addition) as String) -> identity.txt;
+        name(scope { value: scope { label: fn() { "Klee" }, extra: true }, source: ./input }) -> name.txt;
+        unwrap(scope { cell: scope { value: "nested" } }) -> nested.txt;
+        payload(scope { value: "explicit" }) -> payload.txt;
+        """,
+        {
+            "sum.txt": b"7",
+            "identity.txt": b"0",
+            "name.txt": b"Klee",
+            "nested.txt": b"nested",
+            "payload.txt": b"explicit",
+        },
+        artifacts=True,
+    ),
+    Journey(
+        "generic_concept_invalid_explicit_bound",
+        """
+        concept Input<T: Path | String> { value: T, };
+        fn unused(input: Input<Number>) { input };
+        """,
+        {},
+        accepted=False,
+        diagnostic="E0214",
+    ),
+    Journey(
+        "generic_concept_invalid_inferred_bound",
+        """
+        concept Named { name: String, };
+        concept Entry<T: Named> { item: T, };
+        fn use(entry: Entry) { entry::item };
+        use(scope { item: scope { other: "missing" } });
+        """,
+        {},
+        accepted=False,
+        diagnostic="E0214",
+    ),
+    Journey(
+        "generic_concept_writable_carrier_does_not_widen",
+        """
+        concept Cell<T> { value: T, };
+        fn overwrite(cell: Cell<Number | String>) { cell::value = "different"; };
+        overwrite(scope { value: 1 });
+        """,
+        {},
+        accepted=False,
+        diagnostic="E0214",
+    ),
+    Journey(
+        "continue_nested_loop_and_for",
+        """
+        let total = 0;
+        for outer in [1, 2, 3] {
+            if outer == 2 { continue; };
+            for item in [1, 2, 3] {
+                acquire { match item == 2 { true => { continue; }, false => {} }; };
+                total = total + outer * 10 + item;
+            };
+        };
+        let step = 0;
+        let result = loop {
+            step = step + 1;
+            if step < 3 { continue; };
+            break step * 100 + total;
+        };
+        (result as String) -> total.txt;
+        """,
+        {"total.txt": b"388"},
+        artifacts=True,
+    ),
+    Journey("continue_outside_loop", "continue;", {}, accepted=False),
+    Journey("continue_with_value", "loop { continue 1; };", {}, accepted=False),
+    Journey(
+        "continue_across_function",
+        "loop { let skip = fn() { continue; }; break; };",
+        {},
+        accepted=False,
+    ),
+    Journey(
         "unicode_scalar_order_constant_and_runtime",
         'if "𐀀" > "\ue000" and "\ue000" < "𐀀" and not ("𐀀" < "\ue000") '
         '{ "scalar constants" -> constants.txt; } else { "wrong" -> constants.txt; }; '
@@ -674,6 +771,8 @@ def run_journey(
         if not journey.accepted:
             if not checked.stderr.strip():
                 raise AssertionError("rejected source supplied no diagnostic on stderr")
+            if journey.diagnostic and journey.diagnostic not in checked.stderr:
+                raise AssertionError(f"missing {journey.diagnostic}: {checked.stderr}")
             report["passed"] = True
             return report
         ran = execute([*cli, "run", str(source)], directory)

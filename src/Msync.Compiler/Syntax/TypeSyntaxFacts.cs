@@ -7,7 +7,7 @@ public static class TypeSyntaxFacts
         LetStatement { Type: { } type } => [type],
         FunctionExpr function => function.Parameters.Select(parameter => parameter.Type).Append(function.ReturnType).OfType<TypeSyntax>(),
         NativeDeclaration native => native.Parameters.Select(parameter => parameter.Type).Append(native.ReturnType).OfType<TypeSyntax>(),
-        ConceptDeclaration concept => concept.Bases,
+        ConceptDeclaration concept => concept.Bases.Concat(concept.Parameters.Select(parameter => parameter.Bound).OfType<TypeSyntax>()),
         ConceptMember requirement => new[] { requirement.Type, requirement.ReturnType }
             .Concat(requirement.Parameters?.Select(parameter => parameter.Type) ?? []).OfType<TypeSyntax>(),
         TypeExpr value => [value.Type],

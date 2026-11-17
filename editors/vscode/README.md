@@ -103,9 +103,11 @@ come from your VS Code theme; the extension does not impose a dark-only palette.
 Semantic highlighting is enabled by default for msync and can still be disabled
 in your language-specific editor settings. Before inference finishes, direct
 `fn` and `scope` declarations retain matching TextMate fallback roles.
-`if`, `else`, `match`, `as`, `acquire`, `release`, `acqrel` and the null-test `?`
-use the theme's separate
-**control-flow keyword** role; no RGB colors are hardcoded. Every Scope member
+`if`, `else`, `match`, loop controls (including `continue`), synchronization
+keywords and `?` use the theme's **control-flow** role. `let`, `is`, `as`,
+`null`, `true`, and `false` use the ordinary **keyword** role in semantic
+highlighting. The control role maps directly to TextMate's `keyword.control`
+without inheriting the theme's general semantic keyword rule. Every Scope member
 can be inspected, including scalar and Connection-valued members.
 
 Hover a name to inspect its actual inferred type, function signature or Scope

@@ -30,28 +30,29 @@ internal sealed partial class SemanticAnalyzer
         if (value.Scope is not { } shape)
             throw ConceptError(conceptId, source, "a structural Scope", Runtime(value).ToString());
         if (context.Objects.TryGetValue(shape.Region, out var current)) shape = current;
+        var definition = program.Concepts[conceptId];
         var associated = ImmutableDictionary.CreateBuilder<HirTypeId, HirTypeId>();
-        var definition = hir.Concepts[conceptId];
-        if (conceptId < program.Concepts.Count)
-            foreach (var (name, parameter) in program.Concepts[conceptId].AssociatedTypes)
-                if (TryScopeField(shape, name, context, out var witness) && witness.DenotedType is { } type)
-                    associated[parameter] = type;
+        Dictionary<HirTypeId, SemanticValue>? witnesses = definition.HasBounds ? [] : null;
+        foreach (var (name, parameter) in definition.AssociatedTypes)
+            if (TryScopeField(shape, name, context, out var witness) && witness.DenotedType is { } type)
+                associated[parameter] = type;
 
         List<(HirTypeId Type, SemanticValue Value)>? nullOnly = null;
         foreach (var (_, member) in ConceptRequirements(conceptId))
         {
             var actual = RequiredMember(shape, member, conceptId, source, context);
-            if (member.Signature >= 0) InferOperationParameters(member, actual, associated);
-            else if (InferAssociated(member.Type, actual, associated, includeNull: false) is { } candidate)
+            if (member.Signature >= 0) InferOperationParameters(member, actual, associated, context, witnesses);
+            else if (InferAssociated(member.Type, actual, associated, context, witnesses, includeNull: false) is { } candidate)
                 (nullOnly ??= []).Add(candidate);
         }
         // Null-only evidence is a fallback, after fields and operation
         // parameters have both contributed their non-null evidence.
         if (nullOnly is not null)
             foreach (var (type, evidence) in nullOnly)
-                InferAssociated(type, evidence, associated, includeNull: true);
+                InferAssociated(type, evidence, associated, context, witnesses, includeNull: true);
 
         var substitutions = associated.ToImmutable();
+        CheckConceptBounds(conceptId, substitutions, source, context, witnesses);
         foreach (var (owner, member) in ConceptRequirements(conceptId))
         {
             try { shape = EstablishConceptStorage(shape, member, substitutions, source, context); }
@@ -68,6 +69,58 @@ internal sealed partial class SemanticAnalyzer
             }
         }
     }
+
+    private void CheckConceptBounds(int concept, ImmutableDictionary<HirTypeId, HirTypeId> associated,
+        HirSourceRange source, SemanticContext context, Dictionary<HirTypeId, SemanticValue>? witnesses)
+    {
+        var definition = program.Concepts[concept];
+        if (!definition.ChecksArguments) return;
+        foreach (int parent in definition.Bases)
+            CheckConceptBounds(parent, associated, source, context, witnesses);
+        if (definition.Parameters.IsEmpty && definition.Bounds.IsEmpty) return;
+        if (Trace is null) CheckOwnConceptBounds(definition, associated, source, context, witnesses);
+        else Trace.Run("compiler.semantic.concept_arguments", (self: this, definition, associated, source, context, witnesses),
+            static state => state.self.CheckOwnConceptBounds(state.definition, state.associated, state.source, state.context, state.witnesses),
+            new Dictionary<string, string>(HirTelemetry.Source(hir.Sources, source)) { ["concept"] = definition.Name });
+    }
+
+    private void CheckOwnConceptBounds(BoundConcept definition, ImmutableDictionary<HirTypeId, HirTypeId> associated,
+        HirSourceRange source, SemanticContext context, Dictionary<HirTypeId, SemanticValue>? witnesses)
+    {
+        Trace?.Metric("concept.parameters.inferred", definition.Parameters.Length);
+        Trace?.Metric("concept.bounds", definition.Bounds.Length);
+        var probe = context.QueryFork();
+        foreach (var pair in associated) probe.Substitutions[pair.Key] = pair.Value;
+        foreach (var parameter in definition.Parameters)
+        {
+            var resolved = ResolveHirType(parameter, probe);
+            if (hir.Types[resolved.Value].TypeParameter >= 0)
+                throw ConceptError(definition.Id, source, "a concrete type argument", "no type evidence");
+        }
+        foreach (var (parameter, bound) in definition.Bounds)
+        {
+            var argument = ResolveHirType(parameter, probe);
+            var constraint = ResolveHirType(bound, probe);
+            try
+            {
+                var actual = hir.Types[argument.Value];
+                var expected = hir.Types[constraint.Value];
+                if (actual.Concept < 0 || expected.Concept < 0
+                    || !expected.RuntimeType.Accepts(actual.RuntimeType)
+                    || !DerivesConcept(actual.Concept, expected.Concept))
+                    Require(witnesses?.GetValueOrDefault(argument) ?? ValueForType(argument), constraint, source, context: probe);
+            }
+            catch (CompileException error)
+            {
+                Trace?.Metric("concept.bounds.rejected", 1);
+                throw ConceptError(definition.Id, source, $"type argument satisfying {hir.Types[constraint.Value].RuntimeType}",
+                    error.Diagnostic.Message);
+            }
+        }
+    }
+
+    private bool DerivesConcept(int concept, int expected) => concept == expected
+        || program.Concepts[concept].Bases.Any(parent => DerivesConcept(parent, expected));
 
     private IEnumerable<(int Concept, HirConceptMember Member)> ConceptRequirements(int concept)
     {
@@ -161,7 +214,8 @@ internal sealed partial class SemanticAnalyzer
     }
 
     private (HirTypeId Type, SemanticValue Value)? InferAssociated(HirTypeId requirement, SemanticValue actual,
-        ImmutableDictionary<HirTypeId, HirTypeId>.Builder associated, bool includeNull)
+        ImmutableDictionary<HirTypeId, HirTypeId>.Builder associated, SemanticContext context,
+        Dictionary<HirTypeId, SemanticValue>? witnesses, bool includeNull)
     {
         var type = hir.Types[requirement.Value];
         if (hir.Types[actual.Type.Value].TypeParameter >= 0) return null;
@@ -175,16 +229,26 @@ internal sealed partial class SemanticAnalyzer
             // A sample's writable carrier can be Scope-only while its logical witness has fields.
             if (actual.Scope is { } scope && hir.Types[witness.Value].Shape < 0)
                 witness = hir.Type(hir.Types[witness.Value] with { Shape = scope.Layout });
-            associated[requirement] = runtime != TypeRef.Null && (type.Nullable || type.RuntimeType.Nullable)
-                ? NonNullable(witness) : witness;
+            if (runtime != TypeRef.Null && (type.Nullable || type.RuntimeType.Nullable)) witness = NonNullable(witness);
+            associated[requirement] = witness;
+            if (actual.Scope is not null) witnesses?.TryAdd(witness, actual with { Type = witness });
             return null;
         }
-        return type.Element >= 0 && actual.Element is { } element
-            ? InferAssociated(new(type.Element), element, associated, includeNull) : null;
+        if (type.Element >= 0 && actual.Element is { } element)
+            return InferAssociated(new(type.Element), element, associated, context, witnesses, includeNull);
+        if (type.Concept >= 0 && actual.Scope is { } row && !program.Concepts[type.Concept].Arguments.IsEmpty)
+            foreach (var (_, member) in ConceptRequirements(type.Concept))
+            {
+                if (!TryScopeField(row, member.Name, context, out var field)) continue;
+                if (member.Signature >= 0) InferOperationParameters(member, field, associated, context, witnesses);
+                else InferAssociated(member.Type, field, associated, context, witnesses, includeNull);
+            }
+        return null;
     }
 
     private void InferOperationParameters(HirConceptMember member, SemanticValue actual,
-        ImmutableDictionary<HirTypeId, HirTypeId>.Builder associated)
+        ImmutableDictionary<HirTypeId, HirTypeId>.Builder associated, SemanticContext context,
+        Dictionary<HirTypeId, SemanticValue>? witnesses)
     {
         var signature = hir.Signatures[member.Signature];
         foreach (var callable in Choices(actual))
@@ -195,8 +259,10 @@ internal sealed partial class SemanticAnalyzer
             {
                 var parameter = hir.Locations[template.Parameters[index].Value];
                 if (hir.Types[parameter.StorageType.Value].TypeParameter >= 0) continue;
-                InferAssociated(signature.Parameters[index], ValueForType(parameter.StorageType), associated, false);
+                InferAssociated(signature.Parameters[index], ValueForType(parameter.StorageType), associated, context, witnesses, false);
             }
+            if (template.ResultAnnotation is { } result)
+                InferAssociated(signature.Result, ValueForType(result), associated, context, witnesses, false);
         }
     }
 
@@ -218,7 +284,19 @@ internal sealed partial class SemanticAnalyzer
                     if (!hir.Types[target.Value].RuntimeType.Accepts(storage.RuntimeType) || storage.Shape >= 0)
                         Require(ValueForType(carrier), target, source, context: probe);
                 }
-                Require(actual, target, source, context: probe);
+                Require(hir.Types[target.Value].Shape >= 0 && actual.Scope is not null
+                    ? actual with { Type = PlanType(actual) } : actual, target, source, context: probe);
+                if (program.Concepts[concept].InvariantFields.Contains(member.Name) && actual.StorageConstraint is { } declaredStorage
+                    && hir.Types[declaredStorage.Value].TypeParameter < 0)
+                {
+                    var expected = hir.Types[target.Value];
+                    var supplied = hir.Types[declaredStorage.Value];
+                    if (!expected.RuntimeType.Accepts(supplied.RuntimeType) || !supplied.RuntimeType.Accepts(expected.RuntimeType)
+                        || expected.Concept >= 0 && supplied.Concept >= 0 && expected.Concept != supplied.Concept)
+                        throw Error(source, $"Writable member '{member.Name}' must keep its declared storage type.", "E0214");
+                    if (expected.Shape >= 0 && supplied.Shape >= 0 && expected.Shape != supplied.Shape)
+                        RequireStructure(ValueForType(target), declaredStorage, source, false, [], probe);
+                }
             }
             catch (CompileException error)
             {

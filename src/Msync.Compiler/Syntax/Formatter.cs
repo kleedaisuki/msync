@@ -55,6 +55,8 @@ public static class Formatter
                 if (token.Kind == TokenKind.End) break;
                 Emit(token);
                 previous = token;
+                if (token.Kind == TokenKind.RightBrace && hints.DeclarationEnds.Contains(token.Span.End))
+                    Emit(new Token(TokenKind.Semicolon, ";", new(token.Span.End, 0)));
             }
             Newline();
             while (output.Length > 1 && output[^1] == '\n' && output[^2] == '\n') output.Length--;
@@ -104,7 +106,9 @@ public static class Formatter
                     if (nesting.TryPeek(out var kind) && (kind.Kind == TokenKind.LeftBrace || kind.Expanded)) Newline(); else Space();
                     break;
                 case TokenKind.Colon:
-                    Trim(); Text(":"); Space(); break;
+                    if (previous is { } prior && hints.ConceptHeaders.Contains(prior.Span.End)) Space();
+                    else Trim();
+                    Text(":"); Space(); break;
                 case TokenKind.Select:
                 case TokenKind.Slash:
                 case TokenKind.Question:
@@ -291,6 +295,8 @@ public static class Formatter
         public Dictionary<int, SourceSpan> Chains { get; } = [];
         public List<SourceSpan> Paths { get; } = [];
         public List<SourceSpan> Types { get; } = [];
+        public HashSet<int> DeclarationEnds { get; } = [];
+        public HashSet<int> ConceptHeaders { get; } = [];
         public static LayoutHints Collect(Document document)
         {
             LayoutHints hints = new();
@@ -301,7 +307,15 @@ public static class Formatter
         }
         private void Visit(Node node, SourceSpan? chain)
         {
-            Types.AddRange(TypeSyntaxFacts.Annotations(node).Select(type => type.Span));
+            if (node is ConceptDeclaration { ParameterList: { } parameters } concept)
+            {
+                Types.Add(parameters);
+                Types.AddRange(concept.Bases.Select(type => type.Span));
+            }
+            else Types.AddRange(TypeSyntaxFacts.Annotations(node).Select(type => type.Span));
+            if (node is ConceptDeclaration { NameSpan: { } name } declaration)
+                ConceptHeaders.Add(declaration.ParameterList?.End ?? name.End);
+            if (node is FunctionDeclaration or ScopeDeclaration) DeclarationEnds.Add(node.Span.End);
             if (node is PathExpr path) Paths.Add(path.Span);
             if (node is UnaryExpr { Operator: "+" or "-" } unary) UnaryOperators.Add(unary.Span.Start);
             if (node is CastExpr { OperatorSpan: { } cast }) Operators.Add(cast.Start);

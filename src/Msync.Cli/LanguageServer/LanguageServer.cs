@@ -16,7 +16,7 @@ internal sealed partial class LanguageServer(Func<string, string> format, Langua
     private bool hierarchicalDocumentSymbols;
     private bool completionResolveDocumentation;
     private long serverRequest;
-    private static readonly string[] Keywords = ["let", "global", "fn", "scope", "concept", "typename", "as", "native", "if", "else", "for", "in", "match", "return", "break", "loop", "release", "acquire", "acqrel", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", .. LanguageTypes.Names];
+    private static readonly string[] Keywords = ["let", "global", "fn", "scope", "concept", "typename", "as", "native", "if", "else", "for", "in", "match", "return", "break", "continue", "loop", "release", "acquire", "acqrel", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", .. LanguageTypes.Names];
 
     private JsonNode? Handle(string method, JsonElement p)
     {

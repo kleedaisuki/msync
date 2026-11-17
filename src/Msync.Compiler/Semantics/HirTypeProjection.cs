@@ -49,6 +49,8 @@ internal sealed partial class HirTypeProjection(BoundProgram program, SemanticAr
             case HirKind.Return:
             case HirKind.Break:
                 return children.Length == 0 ? Fact(hir.Type(TypeRef.Null)) : Project(children[0], facts);
+            case HirKind.Continue:
+                return Fact(hir.Type(new TypeRef(TypeKind.Never)));
             case HirKind.If:
                 {
                     FlowFact condition = Project(children[0], facts);

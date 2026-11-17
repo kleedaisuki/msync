@@ -58,6 +58,12 @@ internal sealed partial class SourceBinder
             [Expression(broken.Value)], loop.Value);
     }
 
+    private HirNodeId Continue(ContinueExpr next)
+    {
+        if (!loops.TryPeek(out var loop)) throw Error("continue requires an enclosing loop.", next.Span, "E0207");
+        return Node(HirKind.Continue, hir.Type(new TypeRef(TypeKind.Never)), next.Span, data: loop.Value);
+    }
+
     private HirNodeId Barrier(BarrierExpr barrier)
     {
         int descriptor = hir.Barriers.Count;

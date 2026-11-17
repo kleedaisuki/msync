@@ -411,12 +411,15 @@ internal sealed partial class SemanticObservationBuilder
         BoundConcept concept = program.Concepts[id];
         var members = Requirements(id).Select(requirement => new SemanticMember(requirement.Name,
             program.Hir.Types[requirement.Type.Value].RuntimeType.ToString(),
-            requirement.DeclarationSource is { } written ? Text(written)
+            concept.GenericDefinition < 0 && requirement.DeclarationSource is { } written ? Text(written)
                 : requirement.Parameters.IsDefault ? $"{requirement.Name}: {TypeName(requirement.Type)}"
                     : $"{requirement.Name}: fn({string.Join(", ", requirement.Parameters.Select(parameter => TypeName(parameter)))}) -> {TypeName(requirement.Result!.Value)}",
             "A required member of this structural concept.",
             SemanticRole: requirement.Parameters.IsDefault ? "variable" : "function")).ToImmutableArray();
-        return new(concept.Name, concept.Source, $"concept {concept.Name}",
+        var name = concept.GenericDefinition >= 0 ? ConceptNames()[id] : concept.Name;
+        if (!concept.Parameters.IsEmpty)
+            name += $"<{string.Join(", ", concept.Parameters.Select(parameter => TypeName(parameter)))}>";
+        return new(concept.Name, concept.Source, $"concept {name}",
             Documentation(concept.Source)
                 + "\n\nA named structural constraint. Required fields and callable signatures are checked at specialization."
                 + (members.Length == 0 ? "" : "\n\nRequired members:\n" + string.Join('\n', members.Select(member => $"- `{member.Signature}`"))), members);
@@ -426,8 +429,15 @@ internal sealed partial class SemanticObservationBuilder
     {
         if (!conceptNames.IsDefault) return conceptNames;
         var standard = program.StandardModules.GetValueOrDefault("concepts");
-        conceptNames = program.Concepts.Select(concept => standard?.Source == concept.Source.Source
-            ? "$std::concepts::" + concept.Name : concept.Name).ToImmutableArray();
+        string[] names = new string[program.Concepts.Count];
+        foreach (var concept in program.Concepts)
+        {
+            string name = standard?.Source == concept.Source.Source ? "$std::concepts::" + concept.Name : concept.Name;
+            names[concept.Id] = concept.Arguments.IsEmpty ? name
+                : $"{name}<{string.Join(", ", concept.Arguments.Select(argument =>
+                    SemanticTypeNames.Format(argument, program.Hir.Types, names, AssociatedTypes())))}>";
+        }
+        conceptNames = [.. names];
         return conceptNames;
     }
 

@@ -175,7 +175,7 @@ public static class HirPrinter
                 HirKind.Barrier => "@z" + node.Data,
                 HirKind.Unary => ((HirUnaryOperator)node.Data).ToString(),
                 HirKind.Binary => ((HirBinaryOperator)node.Data).ToString(),
-                HirKind.Loop or HirKind.Break => "loop " + node.Data,
+                HirKind.Loop or HirKind.Break or HirKind.Continue => "loop " + node.Data,
                 _ => node.Data == 0 ? "" : "data " + node.Data
             };
             if (node.Text is { } text) operand += (operand.Length == 0 ? "" : " ") + Quote(text);

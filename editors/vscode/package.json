@@ -168,8 +168,7 @@
       },
       {
         "id": "controlKeyword",
-        "superType": "keyword",
-        "description": "Conditional and matching control flow, including the null-test question mark."
+        "description": "Branching, loop and synchronization control, including the question mark."
       }
     ],
     "semanticTokenScopes": [
@@ -190,6 +189,9 @@
           ],
           "variable": [
             "variable.other.readwrite.msync"
+          ],
+          "keyword": [
+            "keyword.other.msync"
           ],
           "controlKeyword": [
             "keyword.control.msync"

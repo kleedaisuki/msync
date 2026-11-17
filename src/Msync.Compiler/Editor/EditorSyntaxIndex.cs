@@ -34,9 +34,9 @@ internal sealed record EditorSyntaxIndex(
         {
             if (node is ConceptDeclaration concept)
             {
-                var declarations = concept.Types.Where(type => type.NameSpan is { Length: > 0 }).DistinctBy(type => type.Name).ToDictionary(type => type.Name,
+                var declarations = concept.Parameters.Concat(concept.Types).Where(type => type.NameSpan is { Length: > 0 }).DistinctBy(type => type.Name).ToDictionary(type => type.Name,
                     type => new EditorLocation(sourceName, source, type.NameSpan!.Value), StringComparer.Ordinal);
-                foreach (TypeSyntax type in RequirementTypes(concept.Members))
+                foreach (TypeSyntax type in RequirementTypes(concept.Members.Prepend<Node>(concept)))
                     if (declarations.TryGetValue(type.Name, out var target))
                         yield return (EditorTypeNames.Parts(source, type).Last().Span, target);
             }
@@ -65,8 +65,8 @@ internal sealed record EditorSyntaxIndex(
         foreach (Node node in nodes)
         {
             if (node is ConceptDeclaration concept)
-                yield return (concept.Span, concept.Types.Where(type => type.NameSpan is { Length: > 0 })
-                    .Select(type => new SemanticMember(type.Name, "Type", $"typename {type.Name}",
+                yield return (concept.Span, concept.Parameters.Concat(concept.Types).Where(type => type.NameSpan is { Length: > 0 })
+                    .Select(type => new SemanticMember(type.Name, "Type", concept.Parameters.Contains(type) ? type.Name : $"typename {type.Name}",
                     "An associated type selected from the constrained Scope.", SemanticRole: "type")
                     { IsConstraint = true }).ToArray());
             foreach (var scope in ConceptTypeScopes(SyntaxTraversal.Children(node))) yield return scope;
@@ -91,7 +91,7 @@ internal sealed record EditorSyntaxIndex(
             if (node is TypeExpr valueType) AddType(valueType.Type);
             if (node is CastExpr cast) AddType(cast.Type);
             if (node is ConceptDeclaration conceptType)
-                foreach (TypeSyntax inherited in conceptType.Bases) AddType(inherited);
+                foreach (TypeSyntax annotation in TypeSyntaxFacts.Annotations(conceptType)) AddType(annotation);
             if (node is ConceptMember requirement)
             {
                 AddType(requirement.Type);
@@ -111,7 +111,8 @@ internal sealed record EditorSyntaxIndex(
                 case ScopeDeclaration scope: Add(scope.NameSpan, "Scope", $"{scope.Name}: Scope", "type"); break;
                 case ScopeExpr { Name: { } name } scope: Add(scope.NameSpan, "Scope", $"scope {name}", "type"); break;
                 case ConceptDeclaration concept:
-                    Add(concept.NameSpan, "Concept", $"concept {concept.Name}", "type");
+                    var header = concept.ParameterList is { } parametersSpan ? Slice(source, parametersSpan) : "";
+                    Add(concept.NameSpan, "Concept", $"concept {concept.Name}{header}", "type");
                     if (concept.NameSpan is { } conceptName)
                         occurrences[conceptName] = occurrences[conceptName] with
                         {
@@ -120,6 +121,9 @@ internal sealed record EditorSyntaxIndex(
                                     + string.Join("\n", concept.Members.Select(member => $"- `{Slice(source, member.Span)}`")))
                         };
                     Seed(concept.Types, source, occurrences, typeSpans);
+                    foreach (var parameter in concept.Parameters)
+                        Add(parameter.NameSpan, "Type", parameter.Bound is { } bound
+                            ? $"{parameter.Name}: {Slice(source, bound.Span)}" : parameter.Name, "type");
                     Seed(concept.Members, source, occurrences, typeSpans);
                     break;
                 case ConceptAssociatedType associated:

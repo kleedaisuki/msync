@@ -33,7 +33,16 @@ internal sealed record BoundStandardUse(HirNodeId Node, HirSourceRange ReceiverS
 
 internal sealed record BoundConcept(int Id, string Name, HirSourceRange Source,
     ImmutableArray<int> Bases, ImmutableArray<BoundRequirement> Requirements,
-    ImmutableDictionary<string, HirTypeId> AssociatedTypes);
+    ImmutableDictionary<string, HirTypeId> AssociatedTypes)
+{
+    internal ImmutableArray<HirTypeId> Parameters { get; init; } = [];
+    internal ImmutableArray<(HirTypeId Argument, HirTypeId Bound)> Bounds { get; init; } = [];
+    internal bool HasBounds { get; init; }
+    internal bool ChecksArguments { get; init; }
+    internal int GenericDefinition { get; init; } = -1;
+    internal ImmutableArray<HirTypeId> Arguments { get; init; } = [];
+    internal ImmutableHashSet<string> InvariantFields { get; init; } = [];
+}
 internal sealed record BoundRequirement(string Name, HirTypeId Type, bool Nullable,
     HirSourceRange Source, ImmutableArray<HirTypeId> Parameters = default,
     HirTypeId? Result = null, ImmutableArray<string> ParameterNames = default,
@@ -78,6 +87,7 @@ internal sealed class BoundProgram(HirBuilder hir)
     public Dictionary<string, BoundNativeSignature> NativeSignatures { get; } = new(StringComparer.Ordinal);
     public Dictionary<HirNodeId, HirTypeId> TypeAnnotations { get; } = [];
     public Dictionary<HirNodeId, int> ConceptUses { get; } = [];
+    public Dictionary<(int Definition, string Arguments), int> ConceptApplications { get; } = [];
     public Dictionary<int, string> TypeParameterNames { get; } = [];
     public Dictionary<int, BoundTypeWitness> TypeWitnesses { get; } = [];
     public HashSet<HirLocationId> WrittenLocations { get; } = [];
@@ -99,6 +109,7 @@ internal sealed class BoundProgram(HirBuilder hir)
         foreach (var pair in previous.NativeSignatures) NativeSignatures.Add(pair.Key, pair.Value);
         foreach (var pair in previous.TypeAnnotations) TypeAnnotations.Add(pair.Key, pair.Value);
         foreach (var pair in previous.ConceptUses) ConceptUses.Add(pair.Key, pair.Value);
+        foreach (var pair in previous.ConceptApplications) ConceptApplications.Add(pair.Key, pair.Value);
         foreach (var pair in previous.TypeParameterNames) TypeParameterNames.Add(pair.Key, pair.Value);
         foreach (var pair in previous.TypeWitnesses) TypeWitnesses.Add(pair.Key, pair.Value);
         foreach (var pair in previous.StandardModules) StandardModules.Add(pair.Key, pair.Value);

@@ -421,11 +421,11 @@
           "name": "constant.language.null.msync"
         },
         {
-          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:and|or|not|exists|is)(?![\\p{L}\\p{N}_./\\\\-])",
+          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:and|or|not|exists)(?![\\p{L}\\p{N}_./\\\\-])",
           "name": "keyword.operator.logical.msync"
         },
         {
-          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:native|let|global|drop|include|execute|decltype)(?![\\p{L}\\p{N}_./\\\\-])",
+          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:native|let|global|drop|include|execute|decltype|is)(?![\\p{L}\\p{N}_./\\\\-])",
           "name": "keyword.other.msync"
         },
         {
@@ -437,7 +437,7 @@
           "name": "keyword.declaration.scope.msync"
         },
         {
-          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:if|else|match|for|in|loop|break|return|release|acquire|acqrel)(?![\\p{L}\\p{N}_./\\\\-])",
+          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:if|else|match|for|in|loop|break|continue|return|release|acquire|acqrel)(?![\\p{L}\\p{N}_./\\\\-])",
           "name": "keyword.control.msync"
         },
         {
@@ -554,7 +554,7 @@
       }
     },
     "concept-declarations": {
-      "begin": "(?<![\\p{L}\\p{N}_./\\\\:-])(concept)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)(\\s*\\{)",
+      "begin": "(?<![\\p{L}\\p{N}_./\\\\:-])(concept)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)(?=\\s*(?:[<:{]|$))",
       "end": "\\}",
       "name": "meta.concept.msync",
       "beginCaptures": {
@@ -563,9 +563,6 @@
         },
         "3": {
           "name": "entity.name.type.msync"
-        },
-        "4": {
-          "name": "punctuation.section.block.begin.msync"
         }
       },
       "endCaptures": {
@@ -574,6 +571,21 @@
         }
       },
       "patterns": [
+        {
+          "begin": "\\G",
+          "end": "(?=\\{)",
+          "patterns": [
+            { "include": "#comments" },
+            { "match": "\\$|::", "name": "keyword.operator.msync" },
+            { "match": "[<>,:?]", "name": "punctuation.separator.msync" },
+            { "match": "[\\p{L}_][\\p{L}\\p{N}_]*", "name": "entity.name.type.msync" },
+            { "include": "#operators" }
+          ]
+        },
+        {
+          "match": "\\{",
+          "name": "punctuation.section.block.begin.msync"
+        },
         {
           "include": "#comments"
         },
@@ -628,7 +640,7 @@
       "begin": "(?<![\\p{L}\\p{N}_./\\\\:-])(as)(?![\\p{L}\\p{N}_./\\\\-])",
       "beginCaptures": {
         "1": {
-          "name": "keyword.control.msync"
+          "name": "keyword.other.msync"
         }
       },
       "end": "(?=[^\\s\\p{L}\\p{N}_?|])|(?=$)|(?=\\s+(?:and|or|is|as)\\b)",

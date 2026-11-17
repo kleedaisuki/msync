@@ -37,6 +37,7 @@ internal sealed partial class SourceBinder
         ReturnExpr returned => Node(HirKind.Return, hir.Type(new TypeRef(TypeKind.Never)), returned.Span,
             [returned.Value is null ? Null(returned.Span) : Expression(returned.Value)]),
         BreakExpr broken => Break(broken),
+        ContinueExpr next => Continue(next),
         BarrierExpr barrier => Barrier(barrier),
         _ => throw Error("Unsupported expression.", expression.Span)
     };

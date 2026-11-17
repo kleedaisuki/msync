@@ -7,7 +7,7 @@ namespace Msync.Cli;
 
 internal static class PromptSyntax
 {
-    internal static readonly string[] Keywords = ["let", "global", "fn", "scope", "concept", "typename", "as", "native", "if", "else", "for", "in", "match", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "return", "break", "loop", "release", "acquire", "acqrel", .. LanguageTypes.Names];
+    internal static readonly string[] Keywords = ["let", "global", "fn", "scope", "concept", "typename", "as", "native", "if", "else", "for", "in", "match", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "return", "break", "continue", "loop", "release", "acquire", "acqrel", .. LanguageTypes.Names];
     internal static readonly string[] Builtins = ["$std", "$local", "$wsl", "$pwd", "$file", "$path", "$env"];
     internal static readonly string[] Commands = ["/help", "/?", "/syntax", "/quit", "/exit", "/clear", "/pwd", "/cd"];
 
@@ -61,7 +61,7 @@ internal static class PromptSyntax
                 }
                 string selected = previous == "$" ? "$" + word : previous == "::" && chain.Length != 0 ? chain + "::" + word : word;
                 style = Commands.Contains(word, StringComparer.Ordinal) ? AnsiColor.Cyan
-                    : word is "if" or "else" or "match" or "for" or "in" or "loop" or "return" or "break" or "release" or "acquire" or "acqrel" or "as" ? AnsiColor.Magenta
+                    : word is "if" or "else" or "match" or "for" or "in" or "loop" or "return" or "break" or "continue" or "release" or "acquire" or "acqrel" ? AnsiColor.Magenta
                     : word == "type" || Keywords.Contains(word, StringComparer.Ordinal) ? char.IsUpper(word[0]) ? AnsiColor.Magenta : AnsiColor.Cyan
                     : previous == "fn" ? AnsiColor.Yellow
                     : previous is "scope" or "concept" or "typename" or "type" ? AnsiColor.Magenta

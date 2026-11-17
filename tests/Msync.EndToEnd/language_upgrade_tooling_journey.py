@@ -69,6 +69,8 @@ let power = 2**3**2;
 let converted = "42" as Number;
 let qualified = $local @ ./marker.txt;
 let trimmed = $std::string::trim(" x ");
+for item in [1] { if item is Number { continue; }; };
+if null? { match true { true => {}, false => {} }; };
 """
     client = Client(binary, cwd=directory)
     try:
@@ -102,10 +104,15 @@ let trimmed = $std::string::trim(" x ");
         for word in ("HasItem", "Named", "std", "string"):
             assert roles.get(word) and set(roles[word]) == {"type"}, (word, roles)
         assert set(roles["value"]) == {"variable"}, roles
-        assert roles["as"] == ["controlKeyword"]
+        assert roles["as"] == ["keyword"]
         assert roles["@"] == ["operator"]
         assert set(roles["fn"]) == {"keyword"}
         assert set(roles["scope"]) == {"keyword"}
+        for word in ("for", "if", "match", "?", "continue"):
+            assert set(roles[word]) == {"controlKeyword"}, (word, roles)
+        for word in ("let", "is", "null", "true"):
+            assert set(roles[word]) == {"keyword"}, (word, roles)
+        assert set(roles["item"]) == {"variable"}, roles
         hover = request_at(
             client,
             "textDocument/hover",
@@ -163,9 +170,33 @@ let trimmed = $std::string::trim(" x ");
             unary["textEdit"]["range"]["start"]["character"]
             == unary_text.index("-val") + 1
         ), unary
+        generic_text = (
+            "concept Named { name: String, };\n"
+            "concept Cell<Payload> { value: Payload, };\n"
+            "concept Entry<Item: Named> : Cell<Item> {};\n"
+            "fn unwrap(cell: Cell<String>) { cell::value };\n"
+            'unwrap(scope { value: "ok" });\n'
+        )
+        notify(client, uri, 5, generic_text)
+        assert not diagnostics(client, uri, 5)["diagnostics"]
+        generic_tokens, _ = client.request(
+            "textDocument/semanticTokens/full", {"textDocument": {"uri": uri}}
+        )
+        generic_roles = token_roles(generic_text, generic_tokens["data"], legend)
+        for word in ("Payload", "Named", "Entry", "Item"):
+            assert set(generic_roles[word]) == {"type"}, generic_roles
+        reference = request_at(
+            client, "textDocument/definition", uri, generic_text,
+            generic_text.index("Payload", generic_text.index("value:")),
+        )
+        target = reference[0] if isinstance(reference, list) else reference
+        assert target["range"]["start"] == position(
+            generic_text, generic_text.index("Payload")
+        ), reference
         return {
             "semantic_roles": roles,
             "concept_hover_definition_completion": True,
+            "generic_concept_headers_and_parameter_definition": True,
             "qualified_path_completion": item,
         }
     finally:
@@ -217,7 +248,7 @@ def terminal_palette(binary: Path, directory: Path) -> dict[str, object]:
             for pattern in (
                 r"\x1b\[[0-9;]*35m0xff",
                 r"\x1b\[[0-9;]*35m1e-3",
-                r"\x1b\[[0-9;]*35mas",
+                r"\x1b\[[0-9;]*36mas",
                 r"\x1b\[[0-9;]*36mconcept",
                 r"\x1b\[[0-9;]*36m@",
                 r"\x1b\[[0-9;]*36m\*\*",
@@ -247,7 +278,7 @@ def terminal_palette(binary: Path, directory: Path) -> dict[str, object]:
             for pattern in (
                 rb"\x1b\[[0-9;]*35m0xff",
                 rb"\x1b\[[0-9;]*35m1e-3",
-                rb"\x1b\[[0-9;]*35mas",
+                rb"\x1b\[[0-9;]*36mas",
                 rb"\x1b\[[0-9;]*36mconcept",
                 rb"\x1b\[[0-9;]*36m@",
                 rb"\x1b\[[0-9;]*36m\*\*",

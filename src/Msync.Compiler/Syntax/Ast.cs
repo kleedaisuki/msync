@@ -26,10 +26,13 @@ public sealed record ScopeDeclaration(string Name, ScopeExpr Scope, SourceSpan S
 public sealed record ConceptDeclaration(string Name, IReadOnlyList<TypeSyntax> Bases, IReadOnlyList<ConceptAssociatedType> Types, IReadOnlyList<ConceptMember> Members, SourceSpan Span) : Statement(Span)
 {
     public SourceSpan? NameSpan { get; init; }
+    public IReadOnlyList<ConceptAssociatedType> Parameters { get; init; } = [];
+    public SourceSpan? ParameterList { get; init; }
 }
 public sealed record ConceptAssociatedType(string Name, SourceSpan Span) : Node(Span)
 {
     public SourceSpan? NameSpan { get; init; }
+    public TypeSyntax? Bound { get; init; }
 }
 public sealed record ConceptMember(string Name, TypeSyntax? Type, IReadOnlyList<Parameter>? Parameters, TypeSyntax? ReturnType, SourceSpan Span) : Node(Span)
 {
@@ -85,6 +88,7 @@ public sealed record TypeExpr(TypeSyntax Type, SourceSpan Span) : Expr(Span);
 public sealed record LoopExpr(BlockExpr Body, SourceSpan Span) : Expr(Span);
 public sealed record ReturnExpr(Expr? Value, SourceSpan Span) : Expr(Span);
 public sealed record BreakExpr(Expr? Value, SourceSpan Span) : Expr(Span);
+public sealed record ContinueExpr(SourceSpan Span) : Expr(Span);
 public sealed record Parameter(string Name, TypeSyntax? Type, bool Nullable, SourceSpan Span) : Node(Span);
 public sealed record ScopeMember(string Name, Expr Value, SourceSpan Span) : Node(Span)
 {

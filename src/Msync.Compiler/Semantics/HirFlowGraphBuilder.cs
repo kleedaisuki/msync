@@ -28,7 +28,7 @@ internal sealed class HirFlowGraphBuilder(IFlowProgramView module,
     }
 
     private readonly List<Block> blocks = [new()];
-    private readonly Dictionary<HirLoopId, FlowBlockId> exits = [];
+    private readonly Dictionary<HirLoopId, (FlowBlockId Head, FlowBlockId End)> loops = [];
     private readonly Dictionary<HirLocationId, FlowLocationDomain> temporaries = [];
     private int current;
     private int nextTemporary;
@@ -127,7 +127,11 @@ internal sealed class HirFlowGraphBuilder(IFlowProgramView module,
                 return;
             case HirKind.Break:
                 foreach (var child in children) Visit(child);
-                Edge(exits[new(node.Data)]);
+                Edge(loops[new(node.Data)].End);
+                current = -1;
+                return;
+            case HirKind.Continue:
+                Edge(loops[new(node.Data)].Head);
                 current = -1;
                 return;
             case HirKind.Closure:
@@ -237,11 +241,11 @@ internal sealed class HirFlowGraphBuilder(IFlowProgramView module,
     {
         FlowBlockId head = NewBlock(), end = NewBlock();
         Edge(head);
-        exits.Add(new(node.Data), end);
+        loops.Add(new(node.Data), (head, end));
         current = head.Value;
         Visit(children[0]);
         Edge(head);
-        exits.Remove(new(node.Data));
+        loops.Remove(new(node.Data));
         current = end.Value;
     }
 
@@ -261,10 +265,10 @@ internal sealed class HirFlowGraphBuilder(IFlowProgramView module,
         Edge(body); Edge(end);
         current = body.Value;
         Operation(FlowOperation.ElementOf(Location(iteration.Item), sequence));
-        exits.Add(iteration.Loop, end);
+        loops.Add(iteration.Loop, (head, end));
         Visit(children[1]);
         Edge(head);
-        exits.Remove(iteration.Loop);
+        loops.Remove(iteration.Loop);
         current = end.Value;
     }
 

@@ -225,8 +225,24 @@ public sealed class Parser
     private ConceptDeclaration ConceptBody(SourceSpan start)
     {
         Token name = Require(TokenKind.Atom, "Expected a concept name.");
-        Require(TokenKind.LeftBrace, "Expected '{' after the concept name.");
         List<TypeSyntax> bases = [];
+        List<ConceptAssociatedType> parameters = [];
+        SourceSpan? parameterList = null;
+        if (Take(TokenKind.Less))
+        {
+            var open = Previous.Span;
+            do
+            {
+                Token parameter = Require(TokenKind.Atom, "Expected a concept type parameter.");
+                TypeSyntax? bound = Take(TokenKind.Colon) ? ParseType() : null;
+                parameters.Add(new(parameter.Text, parameter.Span) { NameSpan = parameter.Span, Bound = bound });
+            } while (Take(TokenKind.Comma));
+            var closeParameters = Require(TokenKind.Greater, "Expected '>' after concept type parameters.");
+            parameterList = SourceSpan.Cover(open, closeParameters.Span);
+        }
+        if (Take(TokenKind.Colon))
+            do { bases.Add(ParseType()); } while (Take(TokenKind.Comma));
+        Require(TokenKind.LeftBrace, "Expected '{' after the concept header.");
         List<ConceptAssociatedType> types = conceptTypes!;
         List<ConceptMember> members = [];
         while (!At(TokenKind.RightBrace) && !At(TokenKind.End))
@@ -244,15 +260,15 @@ public sealed class Parser
                 bool nullable = Take(TokenKind.Question);
                 Require(TokenKind.Colon, "Expected ':' after the required member name.");
                 TypeSyntax? type = null, result = null;
-                IReadOnlyList<Parameter>? parameters = null;
+                IReadOnlyList<Parameter>? operationParameters = null;
                 if (TakeWord("fn"))
                 {
-                    parameters = At(TokenKind.LeftParen) ? Parameters() : [];
+                    operationParameters = At(TokenKind.LeftParen) ? Parameters() : [];
                     Require(TokenKind.Arrow, "Expected '->' and the required result type.");
                     result = ParseType();
                 }
                 else type = ParseType();
-                members.Add(new(member.Text, type, parameters, result, SourceSpan.Cover(member.Span, Previous.Span))
+                members.Add(new(member.Text, type, operationParameters, result, SourceSpan.Cover(member.Span, Previous.Span))
                 { Nullable = nullable, NameSpan = member.Span });
             }
             else bases.Add(ParseType());
@@ -262,7 +278,8 @@ public sealed class Parser
         }
         Token close = Require(TokenKind.RightBrace, "Expected '}' after concept requirements.");
         Require(TokenKind.Semicolon, "Expected ';' after the concept declaration.");
-        return new(name.Text, bases, types, members, SourceSpan.Cover(start, close.Span)) { NameSpan = name.Span };
+        return new(name.Text, bases, types, members, SourceSpan.Cover(start, close.Span))
+        { NameSpan = name.Span, Parameters = parameters, ParameterList = parameterList };
     }
 
     private GlobalStatement Global(SourceSpan start)
@@ -397,6 +414,11 @@ public sealed class Parser
         if (TakeWord("loop")) { var body = Block(); return new LoopExpr(body, SourceSpan.Cover(token.Span, body.Span)); }
         if (TakeWord("return")) { Expr? value = IsExpressionEnd() ? null : Expression(header: header); return new ReturnExpr(value, SourceSpan.Cover(token.Span, value?.Span ?? token.Span)); }
         if (TakeWord("break")) { Expr? value = IsExpressionEnd() ? null : Expression(header: header); return new BreakExpr(value, SourceSpan.Cover(token.Span, value?.Span ?? token.Span)); }
+        if (TakeWord("continue"))
+        {
+            if (!IsExpressionEnd(header)) throw Error("continue does not take a value.");
+            return new ContinueExpr(token.Span);
+        }
         if (TakeWord("exists") || TakeWord("not"))
         {
             var operand = Expression(token.Text == "not" ? 5 : 8, header);
@@ -640,5 +662,5 @@ public sealed class Parser
             new(start.Start, Math.Max(name.Span.End, Previous.Span.End) - start.Start)) { DeclaresAssociatedType = declares };
     }
     private bool ContinuesBarePath() => source[Previous.Span.End..Current.Span.Start].All(c => c is ' ' or '\t');
-    private static bool CanContinuePath(string text) => text is not ("+" or "-" or "*" or "**" or "%" or "as" or "concept" or "true" or "false" or "null" or "and" or "or" or "is" or "not" or "in" or "else" or "if" or "fn" or "scope" or "let" or "match" or "for" or "exists" or "return" or "break" or "loop" or "native" or "release" or "acquire" or "acqrel") && !LanguageTypes.Contains(text);
+    private static bool CanContinuePath(string text) => text is not ("+" or "-" or "*" or "**" or "%" or "as" or "concept" or "true" or "false" or "null" or "and" or "or" or "is" or "not" or "in" or "else" or "if" or "fn" or "scope" or "let" or "match" or "for" or "exists" or "return" or "break" or "continue" or "loop" or "native" or "release" or "acquire" or "acqrel") && !LanguageTypes.Contains(text);
 }

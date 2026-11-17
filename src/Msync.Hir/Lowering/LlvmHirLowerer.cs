@@ -193,6 +193,7 @@ public static partial class LlvmHirLowerer
             owner.trace?.Metric("locations", locations.Count);
             owner.trace?.Metric("control.loops", loopCount);
             owner.trace?.Metric("control.breaks", breakCount);
+            owner.trace?.Metric("control.continues", continueCount);
             owner.trace?.Metric("control.fors", forCount);
             owner.trace?.Metric("control.iterator_closes", iteratorCloseCount);
             owner.trace?.Metric("closures", closureCount);
@@ -285,6 +286,7 @@ public static partial class LlvmHirLowerer
                 HirKind.Return => Return(node),
                 HirKind.Loop => Loop(node),
                 HirKind.Break => Break(node),
+                HirKind.Continue => Continue(node),
                 HirKind.For => For(node),
                 HirKind.Scope or HirKind.AllocateScope => Scope(node),
                 HirKind.MemberRead or HirKind.MemberAssign => Member(node),

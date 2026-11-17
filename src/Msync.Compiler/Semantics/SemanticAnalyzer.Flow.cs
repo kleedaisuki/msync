@@ -4,6 +4,20 @@ using Msync.Hir;
 
 namespace Msync.Compiler.Semantics;
 
+internal sealed class SemanticLoopEdges
+{
+    private List<ImmutableArray<SemanticWriteEvent>>? continues;
+    internal List<SemanticExit> Breaks { get; } = [];
+    internal IReadOnlyList<ImmutableArray<SemanticWriteEvent>> Continues => continues is null ? [] : continues;
+    internal void AddContinue(ImmutableArray<SemanticWriteEvent> events) => (continues ??= []).Add(events);
+
+    internal void Merge(SemanticLoopEdges other)
+    {
+        Breaks.AddRange(other.Breaks);
+        if (other.continues is { } backedges) (continues ??= []).AddRange(backedges);
+    }
+}
+
 internal sealed partial class SemanticAnalyzer
 {
     private SemanticValue Control(HirNodeId id, HirNode node, ReadOnlySpan<HirNodeId> children,
@@ -14,6 +28,7 @@ internal sealed partial class SemanticAnalyzer
             HirKind.For => For(id, node, children, context),
             HirKind.Loop => Loop(id, node, children, context),
             HirKind.Break => Break(node, children, context),
+            HirKind.Continue => Continue(node, context),
             HirKind.Return => Return(node, children, context),
             HirKind.Barrier => Barrier(node, children, context),
             _ => throw new InvalidOperationException($"Not a control expression: {node.Kind}")
@@ -159,9 +174,11 @@ internal sealed partial class SemanticAnalyzer
         bodyContext.Storage[item] = element.Type;
         if (context.Publish)
             context.Output!.SetLocation(item, hir.Locations[item.Value] with { StorageType = element.Type });
-        bodyContext.Breaks[iteration.Loop] = [];
+        SemanticLoopEdges edges = new();
+        bodyContext.Loops.Add(iteration.Loop, edges);
         SemanticValue body = Analyze(children[1], bodyContext);
-        var exits = bodyContext.Breaks[iteration.Loop].Select(exit => exit.Events).ToList();
+        var exits = edges.Breaks.Select(exit => exit.Events).ToList();
+        exits.AddRange(edges.Continues);
         if (Runtime(body).Kind != TypeKind.Never) exits.Add(bodyContext.WriteEvents?.ToImmutableArray() ?? []);
         MergeLoopExits(context, bodyContext, exits, node.Source, maySkip: true);
         context.Returns.AddRange(bodyContext.Returns);
@@ -182,15 +199,17 @@ internal sealed partial class SemanticAnalyzer
         ActivateLoopWrites(node, context);
         SemanticContext bodyContext = ForkFlow(context);
         bodyContext.FlowAnalysis = PrepareFlow(id, context);
-        bodyContext.Breaks[loop] = [];
+        SemanticLoopEdges edges = new();
+        bodyContext.Loops.Add(loop, edges);
         SemanticValue body = Analyze(children[0], bodyContext);
         context.Returns.AddRange(bodyContext.Returns);
-        var exits = bodyContext.Breaks[loop];
+        var exits = edges.Breaks;
         SemanticValue result = exits.Count == 0
             ? new(hir.Type(new TypeRef(TypeKind.Never)), HirNodeId.None)
             : exits.Select(exit => exit.Value).Aggregate(Join);
         if (exits.Count != 0)
-            MergeLoopExits(context, bodyContext, exits.Select(exit => exit.Events).ToArray(), node.Source, maySkip: false);
+            MergeLoopExits(context, bodyContext, exits.Select(exit => exit.Events).ToArray(), node.Source,
+                maySkip: false, backedges: edges.Continues);
         return result with { Node = Add(node, result.Type, [body.Node], context) };
     }
 
@@ -206,7 +225,8 @@ internal sealed partial class SemanticAnalyzer
     }
 
     private void MergeLoopExits(SemanticContext context, SemanticContext body,
-        IReadOnlyList<ImmutableArray<SemanticWriteEvent>> exits, HirSourceRange source, bool maySkip)
+        IReadOnlyList<ImmutableArray<SemanticWriteEvent>> exits, HirSourceRange source, bool maySkip,
+        IReadOnlyList<ImmutableArray<SemanticWriteEvent>>? backedges = null)
     {
         int prefix = context.WriteEvents?.Count ?? 0;
         var sequences = exits.Select(events => events.Skip(prefix).ToImmutableArray()).ToList();
@@ -224,6 +244,13 @@ internal sealed partial class SemanticAnalyzer
             context.MemberContracts[pair.Key] = context.MemberContracts.GetValueOrDefault(pair.Key, [])
                 .AddRange(pair.Value).Distinct().ToImmutableArray();
         MergeSessionContracts(context, [body]);
+        if (backedges is { Count: > 0 })
+        {
+            // A continue may precede the final break, but does not replace it.
+            var iterations = backedges.Select(events => events.Skip(prefix).ToImmutableArray()).ToList();
+            iterations.Add([]);
+            ApplyEventPlan(MergeEventSequences(iterations).ToImmutableArray(), context, source);
+        }
         ApplyEventPlan(MergeEventSequences(sequences).ToImmutableArray(), context, source);
     }
 
@@ -231,15 +258,26 @@ internal sealed partial class SemanticAnalyzer
         SemanticContext context)
     {
         HirLoopId loop = new(node.Data);
-        if (!context.Breaks.TryGetValue(loop, out var values))
+        if (!context.Loops.TryGetValue(loop, out var edges))
             throw Error(node.Source, "break requires an enclosing loop in this function.", "E0207");
         bool iteration = hir.Fors.Any(item => item.Loop == loop);
         if (iteration && children.Length != 0)
             throw Error(node.Source, "A for expression cannot return a break value.", "E0207");
         SemanticValue value = children.Length == 0 ? Null(node.Source, context) : Analyze(children[0], context);
-        values.Add(new(value, context.WriteEvents?.ToImmutableArray() ?? []));
+        edges.Breaks.Add(new(value, context.WriteEvents?.ToImmutableArray() ?? []));
         HirTypeId never = hir.Type(new TypeRef(TypeKind.Never));
         return new(never, Add(node, never, children.Length == 0 ? [] : [value.Node], context));
+    }
+
+    private SemanticValue Continue(HirNode node, SemanticContext context)
+    {
+        if (!context.Loops.TryGetValue(new(node.Data), out var edges))
+            throw Error(node.Source, "continue requires an enclosing loop in this function.", "E0207");
+        var events = context.WriteEvents?.ToImmutableArray() ?? [];
+        edges.AddContinue(events);
+        Trace?.Metric("loop.continue_edges", 1);
+        Trace?.Metric("loop.continue_write_events", events.Length);
+        return new(node.Type, Add(node, node.Type, [], context));
     }
 
     private SemanticValue Return(HirNode node, ReadOnlySpan<HirNodeId> children,
@@ -579,15 +617,15 @@ internal sealed partial class SemanticAnalyzer
         foreach (SemanticContext branch in branches)
         {
             destination.Returns.AddRange(branch.Returns);
-            foreach (var (loop, values) in branch.Breaks)
-                if (destination.Breaks.TryGetValue(loop, out var target)) target.AddRange(values);
+            foreach (var (loop, edges) in branch.Loops)
+                if (destination.Loops.TryGetValue(loop, out var target)) target.Merge(edges);
         }
     }
 
     private static SemanticContext ForkFlow(SemanticContext context)
     {
         SemanticContext result = context.Fork();
-        foreach (HirLoopId loop in context.Breaks.Keys) result.Breaks.Add(loop, []);
+        foreach (HirLoopId loop in context.Loops.Keys) result.Loops.Add(loop, new());
         return result;
     }
 }

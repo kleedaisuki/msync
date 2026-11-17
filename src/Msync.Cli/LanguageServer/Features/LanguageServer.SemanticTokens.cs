@@ -128,8 +128,8 @@ internal sealed partial class LanguageServer
 
     private static bool ControlFlow(ReadOnlySpan<char> token) => token.SequenceEqual("if") || token.SequenceEqual("else")
         || token.SequenceEqual("match") || token.SequenceEqual("for") || token.SequenceEqual("in")
-        || token.SequenceEqual("return") || token.SequenceEqual("break") || token.SequenceEqual("loop")
-        || token.SequenceEqual("release") || token.SequenceEqual("acquire") || token.SequenceEqual("acqrel") || token.SequenceEqual("as");
+        || token.SequenceEqual("return") || token.SequenceEqual("break") || token.SequenceEqual("continue") || token.SequenceEqual("loop")
+        || token.SequenceEqual("release") || token.SequenceEqual("acquire") || token.SequenceEqual("acqrel");
 
     private static bool IsKeyword(ReadOnlySpan<char> token)
     {

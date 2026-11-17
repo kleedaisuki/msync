@@ -12,7 +12,7 @@ from this language contract.
 
 Braces, not indentation, delimit a block. An expression without a final `;` is
 the block result; `;` discards that value and produces `Null`. Empty blocks and
-declarations also produce `Null`. A terminating `return` or `break` has internal
+declarations also produce `Null`. A terminating `return`, `break` or `continue` has internal
 `Never` type, so an unreachable block tail does not widen a function result with
 an artificial Null case.
 
@@ -49,8 +49,11 @@ that case from the following catch-all. Conditions remain strictly Bool.
 
 `for` retains its Null result and accepts bare `break`; value-producing exits
 belong to `loop { ... break value; }`. Nested exits select the nearest loop.
-Break edges carry their own flow facts, rather than borrowing a surviving
-fallthrough refinement. Abrupt exits close the active iterators they leave,
+Bare `continue` skips the rest of the current iteration of the nearest `for`
+or `loop` in the same function. It takes no value. A `for` resumes its current
+iterator at the next element; `loop` resumes at the top of its body.
+Break edges and backedges carry their own flow facts, rather than borrowing a
+surviving fallthrough refinement. Abrupt exits close the active iterators they leave,
 then close acquire regions; ordinary exhaustion needs no extra operation.
 Iterator close is an internal native capability, not a new source type or
 bytecode format.
@@ -183,28 +186,42 @@ There is no runtime source parsing or generic type inference.
 
 ### Named structural concepts
 
+Named `fn`, `scope`, and `concept` declarations end with `};` in
+formatted source. Omitting the terminator on a named `fn` or `scope`
+is accepted in existing source. Anonymous functions and scopes are expressions
+and use the surrounding expression's delimiters.
+
 Concepts express requirements over existing Scope values while keeping the
 runtime type universe closed:
 
 ```msync
-concept Semigroup {
-    type Self;
-    combine: fn(left: Self, right: Self) -> Self,
+concept Semigroup<T> {
+    combine: fn(left: T, right: T) -> T,
 };
-concept Monoid {
-    Semigroup,
-    identity: Self,
+concept Monoid<T> : Semigroup<T> {
+    identity: T,
 };
-fn use_identity(algebra: Monoid) -> Monoid {
+fn use_identity(algebra: Monoid<Number>) -> Monoid<Number> {
     algebra::combine(algebra::identity, algebra::identity);
     algebra
 };
+
+concept Named { name: String, };
+concept Entry<T: Named> { item: T, };
+concept Input<T: Path | String> { value: T, };
 ```
 
-A body contains required members, operation signatures, associated type
-declarations and previously declared base concepts. Associated types are local
-or inherited; matching Type-valued members (for example `Self: String`), value
-members and concrete operation parameter annotations supply their carrier.
+Concept type parameters can be bounded by a type or a structural concept.
+The colon after the name or the parameter list composes previously declared
+concepts. Multiple bases are comma-separated and all their requirements apply.
+`Monoid<Number>` fixes the argument; a bare `Monoid` infers it from a
+Type-valued member, a payload member, or concrete operation annotations.
+Type arguments affect compile-time checking only. An application does not
+add a runtime tag or change a Scope's layout. Parameter-dependent writable
+members do not silently widen their declared storage types.
+
+Body-local associated declarations (`type Self;` and `typename Self`) and
+body-local bases remain accepted. Associated types are local or inherited.
 Associated Scope carriers retain deep field shape rather than discarding it
 to the broad Scope kind. Implementing functions may remain generic.
 

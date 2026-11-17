@@ -147,18 +147,15 @@ concept StrictOrder {
 };
 
 # One binary operation closed over Self; no additional algebraic law.
-concept Magma {
-    combine: fn(left: typename Self, right: Self) -> Self,
+concept Magma<Self> {
+    combine: fn(left: Self, right: Self) -> Self,
 };
 
 # Associativity: combine(combine(a, b), c) = combine(a, combine(b, c)).
-concept Semigroup {
-    Magma,
-};
+concept Semigroup<Self> : Magma<Self> {};
 
 # Semigroup with a two-sided identity: identity * a = a = a * identity.
-concept Monoid {
-    Semigroup,
+concept Monoid<Self> : Semigroup<Self> {
     identity: Self,
 };
 

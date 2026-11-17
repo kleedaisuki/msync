@@ -50,6 +50,22 @@ def run(binary: Path, directory: Path) -> None:
     assert "$std::bool::both(\n" in result, result
     assert max(map(len, result.splitlines())) <= 80, result
 
+    declarations = (
+        "concept Cell<T>{value:T,};\n"
+        "concept Text<T:String>:Cell<T>{};\n"
+        "scope Named { value: \"ok\" }\n"
+        "fn get(value:Text<String>) { value::value }\n"
+        "let apply = fn(f) { f(Named) };\n"
+        "apply(fn(cell) { get(cell) }) -> result.txt;\n"
+    )
+    result = formatted(binary, directory, "declarations", declarations)
+    assert "concept Text<T: String> : Cell<T> {" in result, result
+    assert "scope Named {\n    value: \"ok\"\n};" in result, result
+    assert "fn get(value: Text<String>) {\n    value::value\n};" in result, result
+    assert "\n}) -> result.txt;" in result, result
+    invoke(binary, ["run", str(directory / "declarations.msync")], directory)
+    assert (directory / "result.txt").read_bytes() == b"ok"
+
     for depth in (0, 3, 8, 12):
         nested = "scope { child: " * depth
         source = (

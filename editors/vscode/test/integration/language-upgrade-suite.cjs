@@ -52,6 +52,8 @@ async function run() {
         'let absolute = $std::math::abs(-0);',
         'let decision = true and true and true and true and true and true and true and true and true and true and true and true;',
         'let untouched = "literal \\target and doubled ""quotes""";',
+        'for number in [1] { if number is Number { continue; }; };',
+        'if null? { match true { true => {}, false => {} }; };',
         '',
     ].join('\n');
     const filename = path.join(workspace, 'language upgrade 工作.msync');
@@ -91,8 +93,11 @@ async function run() {
         ['Catalog {', 'type'], ['instance =', 'variable'], ['scope { name', 'keyword'],
         ['1.5,', 'number'], [' .5,', 'number', 1], ['1e3,', 'number'], ['0xFF,', 'number'],
         ['0b10_01,', 'number'], ['0o77,', 'number'], ['1_000,', 'number'],
-        ['**3**2', 'operator'], ['as String', 'controlKeyword'], ['@ $local', 'operator'],
+        ['**3**2', 'operator'], ['as String', 'keyword'], ['@ ./input', 'operator'],
         ['std::math', 'type'], ['math::abs', 'type'], ['abs(-0)', 'function'],
+        ['for number', 'controlKeyword'], ['number in', 'variable'], ['if number', 'controlKeyword'],
+        ['is Number', 'keyword'], ['continue;', 'controlKeyword'], ['null?', 'keyword'],
+        ['? { match', 'controlKeyword'], ['match true', 'controlKeyword'], ['true =>', 'keyword'],
     ];
     const themes = [];
     for (const theme of ['Default Dark Modern', 'Default Light Modern']) {

@@ -195,6 +195,7 @@ public static class HirValidation
             case HirKind.For: Id(node.Data, module.Fors.Length, "for node"); Arity(count, 2, 2); break;
             case HirKind.Loop: if (node.Data < 0) Fail("loop identity is negative"); Arity(count, 1, 1); break;
             case HirKind.Break: if (node.Data < 0) Fail("break loop identity is negative"); Arity(count, 0, 1); break;
+            case HirKind.Continue: if (node.Data < 0) Fail("continue loop identity is negative"); Arity(count, 0, 0); break;
             case HirKind.Return: Arity(count, 0, 1); break;
             case HirKind.Unary: if (!Enum.IsDefined((HirUnaryOperator)node.Data)) Fail("unknown unary operator"); Arity(count, 1, 1); break;
             case HirKind.Binary: if (!Enum.IsDefined((HirBinaryOperator)node.Data)) Fail("unknown binary operator"); Arity(count, 2, 2); break;

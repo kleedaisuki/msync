@@ -61,12 +61,33 @@ test('let bindings, nullable tests and types have independent scopes', () => {
     for (const type of ['Range', 'String', 'Function', 'Scope', 'Path', 'Process', 'Connection', 'Null', 'Bool']) {
         hasScope(`let value: ${type} = input;`, type, 'entity.name.type.msync');
     }
-    hasScope('if file is not null { file -> target };', 'is', 'keyword.operator.logical.msync');
+    hasScope('if file is not null { file -> target };', 'is', 'keyword.other.msync');
     hasScope('if file? {} else { file -> target };', '?', 'keyword.control.msync');
+    hasScope('for item in [1] { continue; };', 'continue', 'keyword.control.msync');
+    hasScope('let converted = file as Path;', 'as', 'keyword.other.msync');
     hasScope('let kind = decltype(file);', 'decltype', 'keyword.other.msync');
     for (const word of ['async', 'await', 'delete', 'macro', 'symbol', 'boolean']) {
         assert.ok(!scopes(`${word} item;`, word).some(scope => /keyword|storage.type/.test(scope)));
     }
+});
+
+test('generic concept headers keep parameter, bound, base and field roles distinct', () => {
+    const line = 'concept Entry<Item: Named> : Base<Item> { value: Item, };';
+    for (const name of ['Entry', 'Item', 'Named', 'Base'])
+        hasScope(line, name, 'entity.name.type.msync');
+    hasScope(line, 'concept', 'keyword.declaration.concept.msync');
+    hasScope(line, 'value', 'variable.other.property.msync');
+    hasScope(line, '{', 'punctuation.section.block.begin.msync');
+});
+
+test('semantic roles preserve the separate TextMate fallback for control flow', () => {
+    const contributes = require('../package.json').contributes;
+    const control = contributes.semanticTokenTypes.find(type => type.id === 'controlKeyword');
+    const { scopes } = contributes.semanticTokenScopes.find(map => map.language === 'msync');
+    assert.equal(control.superType, undefined);
+    assert.deepEqual(scopes.controlKeyword, ['keyword.control.msync']);
+    assert.deepEqual(scopes.keyword, ['keyword.other.msync']);
+    assert.deepEqual(scopes.variable, ['variable.other.readwrite.msync']);
 });
 
 test('blocks and match arms remain expressions independent of indentation', () => {
@@ -109,7 +130,7 @@ test('paths preserve namespace, lookup, composition and callback roles', () => {
     hasScope('items | $std::ranges::filter(present)', 'filter', 'entity.name.function.msync');
     for (const namespace of ['$view', '$views', '$ranges', 'view', 'views', 'ranges'])
         assert.ok(!scopes(`items | ${namespace}::filter(present)`, 'filter').includes('support.function.range.msync'));
-    for (const word of ['or', 'not', 'and', 'delete', 'true', 'fn', 'match', 'Path']) {
+    for (const word of ['or', 'not', 'and', 'delete', 'true', 'fn', 'match', 'continue', 'Path']) {
         assert.ok(!scopes(`root/${word}/file -> output;`, word).some(scope => /keyword|constant\.language|support.type/.test(scope)));
     }
 });
@@ -260,7 +281,6 @@ test('declaration keywords stay keywords while names retain inferred roles', () 
     hasScope('let value? = null;', '?', 'keyword.control.msync');
     hasScope('fn pass(value?: Path) { value }', '?', 'keyword.control.msync');
     const manifest = require('../package.json');
-    assert.ok(manifest.contributes.semanticTokenTypes.some(type => type.id === 'controlKeyword' && type.superType === 'keyword'));
     const mappings = manifest.contributes.semanticTokenScopes[0].scopes;
     assert.deepEqual(mappings.variable, ['variable.other.readwrite.msync']);
     assert.deepEqual(mappings.controlKeyword, ['keyword.control.msync']);
@@ -293,7 +313,7 @@ test('Number literals preserve complete lexical forms without coloring filename 
     hasScope('let value = 1+2;', '2', 'constant.numeric.msync');
 });
 
-test('concept contracts and explicit conversions use type and control roles', () => {
+test('concept contracts and explicit conversions use type and keyword roles', () => {
     const lines = [
         'concept Monoid {',
         '    Semigroup,',
@@ -322,7 +342,7 @@ test('concept contracts and explicit conversions use type and control roles', ()
         [4, 'fn', 'keyword.declaration.function.msync'],
         [4, 'left', 'variable.parameter.msync'],
         [4, 'Self', 'entity.name.type.msync'],
-        [6, 'as', 'keyword.control.msync'],
+        [6, 'as', 'keyword.other.msync'],
         [6, 'String', 'entity.name.type.msync'],
     ]) assert.ok(roles[index].some(token => token.text === word && token.scopes.includes(role)), JSON.stringify({index,word,role,tokens:roles[index]}));
     hasScope('fn fold(value: Monoid | Semigroup) {', 'Monoid', 'entity.name.type.msync');

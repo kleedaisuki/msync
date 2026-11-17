@@ -92,7 +92,7 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
             HirKind.Range => Range(node, children, context),
             HirKind.Call => Call(node, children, context),
             HirKind.If or HirKind.Match or HirKind.For or HirKind.Loop
-                or HirKind.Break or HirKind.Return or HirKind.Barrier => Control(id, node, children, context),
+                or HirKind.Break or HirKind.Continue or HirKind.Return or HirKind.Barrier => Control(id, node, children, context),
             _ => Operation(id, node, children, context)
         };
         observations?.RecordNode(id, value, context);

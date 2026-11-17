@@ -15,15 +15,17 @@ public static partial class LlvmHirLowerer
         private long iteratorCloseCount;
         private long loopCount;
         private long breakCount;
+        private long continueCount;
         private int loopDepth;
 
-        private sealed class LoopState(HirLoopId id, LlvmBasicBlock exit, int iteratorDepth, int acquireDepth, bool producesValue = true)
+        private sealed class LoopState(HirLoopId id, LlvmBasicBlock header, LlvmBasicBlock exit, int iteratorDepth, int acquireDepth, bool producesValue = true)
         {
             internal HirLoopId Id { get; } = id;
             internal HirTypeId ResultType { get; init; }
             internal int IteratorDepth { get; } = iteratorDepth;
             internal int AcquireDepth { get; } = acquireDepth;
             internal bool ProducesValue { get; } = producesValue;
+            internal LlvmBasicBlock Header { get; } = header;
             internal LlvmBasicBlock Exit { get; } = exit;
             internal List<(LlvmValue Value, LlvmBasicBlock Block)> Incoming { get; } = [];
         }
@@ -32,7 +34,7 @@ public static partial class LlvmHirLowerer
         {
             var header = new LlvmBasicBlock(owner.context, "loop.header", function);
             var exit = new LlvmBasicBlock(owner.context, "loop.exit", function);
-            var state = new LoopState(new(node.Data), exit, iterators.Count, acquireRegions.Count) { ResultType = node.Type };
+            var state = new LoopState(new(node.Data), header, exit, iterators.Count, acquireRegions.Count) { ResultType = node.Type };
             loops.Add(state);
             loopCount++;
             loopDepth = Math.Max(loopDepth, loops.Count);
@@ -61,6 +63,15 @@ public static partial class LlvmHirLowerer
             return owner.Null;
         }
 
+        private LlvmValue Continue(HirNode node)
+        {
+            var state = loops.Last(item => item.Id.Value == node.Data);
+            CloseAcquire(state.AcquireDepth);
+            continueCount++;
+            Add(new LlvmUncondBrInstruction(state.Header));
+            return owner.Null;
+        }
+
         private LlvmValue For(HirNode node)
         {
             var iteration = Hir.Fors[node.Data];
@@ -76,7 +87,7 @@ public static partial class LlvmHirLowerer
             var body = new LlvmBasicBlock(owner.context, "for.body", function);
             var exhausted = new LlvmBasicBlock(owner.context, "for.exhausted", function);
             var exit = new LlvmBasicBlock(owner.context, "for.exit", function);
-            var state = new LoopState(iteration.Loop, exit, iterators.Count, acquireRegions.Count, false);
+            var state = new LoopState(iteration.Loop, header, exit, iterators.Count, acquireRegions.Count, false);
             loops.Add(state);
             iterators.Add(capability);
             forCount++;

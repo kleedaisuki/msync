@@ -287,7 +287,7 @@ internal sealed partial class SemanticAnalyzer
             }
             return result;
         }
-        if (node.Kind == HirKind.Break) return Shape(hir.Type(new TypeRef(TypeKind.Never)));
+        if (node.Kind is HirKind.Break or HirKind.Continue) return Shape(hir.Type(new TypeRef(TypeKind.Never)));
         if (node.Kind == HirKind.MemberRead)
         {
             ReturnShape receiver = ProjectReturn(children[0], context, ref facts, returns);

@@ -119,7 +119,7 @@ internal sealed partial class SemanticContext(HirFunctionId function, SemanticOu
     public HashSet<HirLocationId> CellWrites { get; init; } = [];
     public HashSet<(int Region, string Field)> FieldWrites { get; init; } = [];
     public List<SemanticExit> Returns { get; } = [];
-    public Dictionary<HirLoopId, List<SemanticExit>> Breaks { get; } = [];
+    public Dictionary<HirLoopId, SemanticLoopEdges> Loops { get; } = [];
 
     public SemanticContext Fork() => Borrow(Output);
     public SemanticContext QueryFork() => Borrow(null);

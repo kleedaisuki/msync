@@ -24,7 +24,7 @@ internal sealed partial class SourceBinder
         if (context.Associated.TryGetValue(syntax.Name, out var associated)) result = associated;
         else if (context.Concepts.TryGetValue(syntax.Name, out int concept))
         {
-            result = hir.Type(new HirType(TypeRef.Scope, Concept: concept));
+            result = ConceptType(concept, syntax);
         }
         else if (LanguageTypes.TryResolve(syntax.Name, out var builtin))
         {
@@ -51,7 +51,7 @@ internal sealed partial class SourceBinder
             string name = syntax.Name["$std::concepts::".Length..];
             if (!concepts.Concepts.TryGetValue(name, out int declared))
                 throw Error($"Unknown concept '{syntax.Name}'.", syntax.Span, "E0202");
-            result = hir.Type(new HirType(TypeRef.Scope, Concept: declared));
+            result = ConceptType(declared, syntax);
         }
         else if (context.Values.TryGetValue(syntax.Name, out var witness))
         {
@@ -80,6 +80,29 @@ internal sealed partial class SourceBinder
     private HirNodeId Concept(ConceptDeclaration declaration)
     {
         var before = scope.Associated;
+        try
+        {
+            var parameters = ImmutableArray.CreateBuilder<HirTypeId>(declaration.Parameters.Count);
+            foreach (var parameter in declaration.Parameters)
+            {
+                if (scope.Associated.ContainsKey(parameter.Name) || LanguageTypes.Contains(parameter.Name))
+                    throw Error($"Duplicate or reserved concept parameter '{parameter.Name}'.", parameter.Span, "E0214");
+                var type = OpenType(parameter.Name);
+                scope.Associated = scope.Associated.Add(parameter.Name, type);
+                parameters.Add(type);
+                if (observations) program.TypeUses.Add(new(Range(parameter.Span), type));
+            }
+            var bounds = declaration.Parameters.Select((parameter, index) => (parameter, index))
+                .Where(item => item.parameter.Bound is not null)
+                .Select(item => (parameters[item.index], Type(item.parameter.Bound!))).ToImmutableArray();
+            return BindConcept(declaration, parameters.MoveToImmutable(), bounds);
+        }
+        finally { scope.Associated = before; }
+    }
+
+    private HirNodeId BindConcept(ConceptDeclaration declaration, ImmutableArray<HirTypeId> parameters,
+        ImmutableArray<(HirTypeId, HirTypeId)> bounds)
+    {
         List<int> bases = [];
         foreach (var parent in declaration.Bases)
         {
@@ -89,7 +112,7 @@ internal sealed partial class SourceBinder
                 throw Error($"Unknown concept '{parent.Name}'.", parent.Span, "E0214");
             bases.Add(inherited);
             foreach (var (name, type) in program.Concepts[inherited].AssociatedTypes)
-                scope.Associated = scope.Associated.SetItem(name, type);
+                if (!scope.Associated.ContainsKey(name)) scope.Associated = scope.Associated.Add(name, type);
         }
         foreach (var declared in declaration.Types)
         {
@@ -124,13 +147,15 @@ internal sealed partial class SourceBinder
                 member.Parameters!.Select(parameter => parameter.Name).ToImmutableArray(), Range(member.Span)));
             members.Add(new(member.Name, functionType, origin, signature, member.Nullable));
         }
-        int id = hir.Concepts.Count;
         var own = scope.Associated;
-        hir.Concepts.Add(new(declaration.Name, Range(declaration.NameSpan ?? declaration.Span),
-            bases.ToImmutableArray(), own.Values.ToImmutableArray(), members.ToImmutableArray()));
-        program.Concepts.Add(new(id, declaration.Name, Range(declaration.NameSpan ?? declaration.Span),
-            bases.ToImmutableArray(), requirements.ToImmutableArray(), own));
-        scope.Associated = before;
+        int id = AddConcept(new(hir.Concepts.Count, declaration.Name, Range(declaration.NameSpan ?? declaration.Span),
+            bases.ToImmutableArray(), requirements.ToImmutableArray(), own)
+        {
+            Parameters = parameters,
+            Bounds = bounds,
+            InvariantFields = members.Where(member => member.Signature < 0 && DependsOn(member.Type, parameters))
+                .Select(member => member.Name).ToImmutableHashSet(StringComparer.Ordinal)
+        }, members.ToImmutableArray());
         scope.Concepts = scope.Concepts.SetItem(declaration.Name, id);
         return Null(declaration.Span);
     }
