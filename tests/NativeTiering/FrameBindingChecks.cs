@@ -12,6 +12,7 @@ internal static class FrameBindingChecks
                  new(NativeOp.FrameAddress, 2, 1), new(NativeOp.BindLocation, A: 0, B: 2),
                  new(NativeOp.Return, A: 0)], new([], 0, []))],
             [new(TypeKind.Number), new(TypeKind.Never, Pointee: 0)], []);
+        program = TierFixture.Plan(program);
         NativeArtifact.Validate(program);
         NativeImage image = new(program, new());
         if (!image.Frame(0).BindingSlots.SequenceEqual([0]))

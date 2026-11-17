@@ -2987,6 +2987,13 @@ of runtime-inline-ready on original and modified .mexe files, stdin EOF, CPU 0,
 one warmup and six measured pairs; inputs and stdout expectations are the existing
 calls-100000 and storage-contract B+ fixtures.
 
+Public storage writes can set the physical initialization bit after the VM
+has registered a Future for the same cell. In that case the VM's pending
+entry wins. The typed and same-carrier copies forward the Future before
+reading bytes, and only consult the pending table for allocations that have
+outstanding entries. The `vm.storage.initialization` sample distinguishes
+`pending_copies` from physical copies.
+
 ready-hint-pinned.json still regresses (+6.77% calls, +4.41% B+ paired medians),
 so the ready-bit fast path alone does not establish performance recovery. Frame
 slot size was checked against the former boolean-field declaration: both are

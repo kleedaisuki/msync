@@ -197,9 +197,6 @@ internal sealed class NativeMemory(RuntimeProfile.NativeStorageCounters? storage
         storageCounters?.CopyKind(source.Type, destination.Type, kind);
     }
 
-    internal bool TryCopyReady(NativeAddress source, NativeAddress destination)
-        => source.IsInitialized && TryCopyValue(source, destination);
-
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryCopyValue(NativeAddress source, NativeAddress destination)
     {
@@ -266,7 +263,7 @@ internal sealed class NativeMemory(RuntimeProfile.NativeStorageCounters? storage
 
     internal void CopyCompiled(NativeAddress source, NativeAddress destination)
     {
-        if (TryPending(source, out NativeFuture? future)) { Write(destination, new(future!)); return; }
+        if (TryCopyPending(source, destination)) return;
         RemovePending(destination);
         // Initialization and kind admission are compiled facts; carrier adaptation is still needed.
         if (source.Type.Equals(destination.Type)) CopyValue(source.Type, source, destination);
@@ -279,21 +276,32 @@ internal sealed class NativeMemory(RuntimeProfile.NativeStorageCounters? storage
 
     internal void Copy(NativeAddress source, NativeAddress destination)
     {
-        if (!TryCopyReady(source, destination)) Write(destination, Read(source));
+        if (TryCopyPending(source, destination)) return;
+        if (!source.IsInitialized || !TryCopyValue(source, destination))
+            Write(destination, new(NativeStorage.LoadTrusted(source.Type, source)));
     }
 
     internal void CopyCompiled(NativeType type, NativeAddress source, NativeAddress destination)
     {
-        if (TryPending(source, out NativeFuture? future)) { Write(destination, new(future!)); return; }
+        if (TryCopyPending(source, destination)) return;
         RemovePending(destination);
         CopyValue(type, source, destination);
     }
 
     internal void Copy(NativeType type, NativeAddress source, NativeAddress destination)
     {
-        if (!source.IsInitialized) { Write(destination, Read(source)); return; }
+        if (TryCopyPending(source, destination)) return;
+        if (!source.IsInitialized) { Write(destination, new(NativeStorage.LoadTrusted(source.Type, source))); return; }
         RemovePending(destination);
         CopyValue(type, source, destination);
+    }
+
+    private bool TryCopyPending(NativeAddress source, NativeAddress destination)
+    {
+        if (!TryPending(source, out NativeFuture? future)) return false;
+        storageCounters?.PendingCopy(destination.Type);
+        Write(destination, new(future!));
+        return true;
     }
 
     internal void CopyRegionTrusted(NativeAddress source, NativeAddress destination, NativeLayout layout, int count)

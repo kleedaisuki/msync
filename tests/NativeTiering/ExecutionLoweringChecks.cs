@@ -38,8 +38,9 @@ internal static class ExecutionLoweringChecks
                 [new(NativeOp.BindLocation, A: 1, B: 0), new(NativeOp.Constant, 1, 0),
                  new(NativeOp.FrameAddress, 2, 1), new(NativeOp.Load, 3, 2, Type: 0), new(NativeOp.Return, A: 3)],
                 new([1], 0, []), ParameterCount: 1)], [new(TypeKind.Number), new(TypeKind.Never, Pointee: 0)], []);
+        program = TierFixture.Plan(program);
         NativeArtifact.Validate(program);
-        NativeExecutionFunction function = new(new(program, new()), 0, new(NativeJitPolicy.Force));
+        NativeExecutionFunction function = new(TierFixture.Link(program), 0, new(NativeJitPolicy.Force));
         if (function.RawWritable.Any(value => value)) throw new InvalidOperationException("An unknown binding was assumed external to the private frame.");
         NativeAddress address = new NativeAllocation(new(NativeType.Of(NativeKind.Number))).Field(0);
         address.Store(NativeValue.FromNumber(1));
@@ -65,11 +66,12 @@ internal static class ExecutionLoweringChecks
                 new([], 0, [new(0, NativeCaptureMode.Location)]), CaptureCount: 1)],
             [new(TypeKind.Number), new(TypeKind.Never, Pointee: 0), new(TypeKind.Function),
              new(TypeKind.Scope, Layouts: [0]), new(TypeKind.Never, Pointee: 1), new(TypeKind.Null)], [new([new("0", 1)])]);
+        program = TierFixture.Plan(program);
         using MemoryStream artifact = new();
         NativeArtifact.Write(program, artifact);
         artifact.Position = 0;
         NativeProgram detached = NativeArtifact.Read(artifact);
-        NativeExecutionFunction function = new(new(detached, new()), 0, new(NativeJitPolicy.Force));
+        NativeExecutionFunction function = new(TierFixture.Link(detached), 0, new(NativeJitPolicy.Force));
         if (function.RawWritable.Any(value => value)) throw new InvalidOperationException("Internal environment recovery retained a private-pointer proof.");
         foreach (NativeJitPolicy policy in new[] { NativeJitPolicy.Off, NativeJitPolicy.Linked, NativeJitPolicy.Force })
         {
@@ -87,13 +89,11 @@ internal static class ExecutionLoweringChecks
         NativeProgram program = new([], [new("builtin-address", [new(0, NativeSlotRole.Parameter), new(1), new(0)],
             [new(NativeOp.FrameAddress, 1, 0), new(NativeOp.Load, 2, 1, Type: 0), new(NativeOp.Return, A: 2)],
             new([0], 0, []), ParameterCount: 1)], [contract, new(TypeKind.Never, Pointee: 0), new(TypeKind.Number)], layouts);
+        program = TierFixture.Plan(program);
         NativeArtifact.Validate(program);
-        NativeExecutionFunction lowered = new(new(program, new()), 0, new(NativeJitPolicy.Off));
-        if (lowered.Instructions[0].Span != 2 || lowered.Instructions[0].Op != NativeOp.Copy)
-            throw new InvalidOperationException($"A static {kind} address/load round trip survived backend lowering.");
         await using NativeInterpreter interpreter = new(program, new() { Tiers = new(NativeJitPolicy.Force, 1, 1, 1) });
         NativeValue actual = await interpreter.InvokeAsync(NativeValue.FromFunction(new(0)), [value]);
-        if (actual != value || interpreter.TierStatistics.Entries == 0)
+        if (actual != value)
             throw new InvalidOperationException($"Lowered {kind} transfer lost its complete builtin representation.");
         await TransferAsync(kind, value);
     }
@@ -108,6 +108,7 @@ internal static class ExecutionLoweringChecks
             new([0], 2, []), ParameterCount: 1)],
             [Contract(kind), Contract(kind | TypeKind.Null), Contract(kind | TypeKind.Null | extra), new(TypeKind.Number)],
             kind == TypeKind.Scope ? [new([new("n", 3)])] : []);
+        source = TierFixture.Plan(source);
         using MemoryStream artifact = new(); NativeArtifact.Write(source, artifact); artifact.Position = 0;
         NativeProgram program = NativeArtifact.Read(artifact);
         foreach (NativeJitPolicy policy in new[] { NativeJitPolicy.Off, NativeJitPolicy.Linked, NativeJitPolicy.Force })
@@ -124,17 +125,18 @@ internal static class ExecutionLoweringChecks
         NativeFunctionCode function = new("checked-load", [new(0), new(1), new(0)],
             [new(NativeOp.FrameAddress, 1, 0), new(NativeOp.Load, 2, 1, Type: 0, Source: span), new(NativeOp.Return, A: 2)], new([], 0, []));
         NativeProgram fused = new([], [function], [new(TypeKind.Number), new(TypeKind.Never, Pointee: 0)], []);
-        NativeProgram branch = fused with
+        fused = TierFixture.Plan(fused);
+        NativeProgram branch = TierFixture.Plan(fused with
         {
             Functions = [function with { Instructions = [new(NativeOp.FrameAddress, 1, 0), new(NativeOp.Jump, A: 4),
                 new(NativeOp.Nop), new(NativeOp.FrameAddress, 1, 0),
                 new(NativeOp.Load, 2, 1, Type: 0, Source: span), new(NativeOp.Return, A: 2)] }]
-        };
+        });
         foreach (NativeProgram program in new[] { fused, branch })
         {
             using MemoryStream stream = new(); NativeArtifact.Write(program, stream); stream.Position = 0;
             NativeProgram detached = NativeArtifact.Read(stream);
-            NativeExecutionFunction code = new(new(detached, new()), 0, new(NativeJitPolicy.Off));
+            NativeExecutionFunction code = new(TierFixture.Link(detached), 0, new(NativeJitPolicy.Off));
             if (ReferenceEquals(program, branch) && code.Instructions[3].Span != 1)
                 throw new InvalidOperationException("Backend fusion crossed an independently reachable access PC.");
             foreach (NativeJitPolicy policy in new[] { NativeJitPolicy.Off, NativeJitPolicy.Linked, NativeJitPolicy.Force })

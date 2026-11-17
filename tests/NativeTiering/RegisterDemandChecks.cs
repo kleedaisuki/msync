@@ -14,7 +14,7 @@ internal static class RegisterDemandChecks
         {
             NativeProgram program = NativePreparation.Prepare(Compiler.Compile(source, "register-demand.msync", optimization));
             int index = Enumerable.Range(0, program.Functions.Count).Single(i => program.Functions[i] is { ParameterCount: 2, IsTemplate: false });
-            NativeImage image = new(program, new());
+            NativeImage image = TierFixture.Link(program);
             using NativeExecutionFunction function = new(image, index, new(NativeJitPolicy.Force));
             using NativeCompiledFunction compiled = NativeCompiledFunction.Compile(image, function, NativeJitPolicy.Force,
                 observeRegisterPlanning: true)!;
@@ -48,7 +48,7 @@ internal static class RegisterDemandChecks
             {
                 Functions = program.Backend.Functions.Select((value, i) => i == index ? value with { RawWritable = writable } : value).ToArray()
             } };
-            NativeImage eligibleImage = new(eligibleProgram, new());
+            NativeImage eligibleImage = TierFixture.Link(eligibleProgram);
             using NativeExecutionFunction eligibleFunction = new(eligibleImage, index, new(NativeJitPolicy.Force));
             var metrics = new NativeRegisterPlanMetrics();
             var regions = NativeRegisterPlan.Create(eligibleFunction, compiled.Operations, metrics);

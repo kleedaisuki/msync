@@ -5,6 +5,10 @@ including `Off`, consume the same lowered `NativeExecutionImage`; `Force`
 allocates/seals and enters native code. Every builtin retains complete typed
 helpers. No source replay or second VM is involved.
 
+Source fixtures use the current compiler and artifact path. Narrowly scoped
+instruction fixtures call the storage planner explicitly and link through the
+same backend as the product; none relies on the reader or VM to fill in plans.
+
 ```sh
 dotnet run --project tests/NativeTiering -c Release
 dotnet publish tests/NativeTiering -c Release -r linux-x64 \

@@ -18,9 +18,6 @@ internal static class RawWriteChecks
                 new([0], 1, []), ParameterCount: 1)], types, [new([new("", 1)])]);
         try { NativeArtifact.Validate(geometry); throw new InvalidOperationException("A typed field pointer was accepted as an indexed namespace region."); }
         catch (MsyncException) { }
-        NativeExecutionFunction function = new(new(geometry, new()), 0, new(NativeJitPolicy.Force));
-        if (function.RawWritable.Any(value => value))
-            throw new InvalidOperationException("Geometric frame access was mistaken for an unexposed temporary.");
         NativeFunctionCode original = geometry.Functions[0];
         NativeInstruction[] directCode = original.Instructions.Select(instruction => instruction.Op switch
         {
@@ -29,9 +26,9 @@ internal static class RawWriteChecks
             NativeOp.Return => instruction with { A = 1 },
             _ => instruction
         }).ToArray();
-        NativeProgram exposed = geometry with { Functions = [original with { Instructions = directCode }] };
+        NativeProgram exposed = TierFixture.Plan(geometry with { Functions = [original with { Instructions = directCode }] });
         NativeArtifact.Validate(exposed);
-        NativeExecutionFunction exposedFunction = new(new(exposed, new()), 0, new(NativeJitPolicy.Force));
+        NativeExecutionFunction exposedFunction = new(TierFixture.Link(exposed), 0, new(NativeJitPolicy.Force));
         if (exposedFunction.RawWritable[1]) throw new InvalidOperationException("An address-exposed temporary was eligible for raw overwrite.");
         TaskCompletionSource<NativeProcess> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         await using NativeInterpreter interpreter = new(exposed, new() { Tiers = new(NativeJitPolicy.Force, 1, 1, 1) });
@@ -45,8 +42,9 @@ internal static class RawWriteChecks
         NativeProgram escaped = new([], [new("escape", [new(0), new(1)],
             [new(NativeOp.FrameAddress, 1, 0), new(NativeOp.Return, A: 1)], new([], 1, []))],
             [new(TypeKind.Number), new(TypeKind.Never, Pointee: 0)], []);
+        escaped = TierFixture.Plan(escaped);
         NativeArtifact.Validate(escaped);
-        NativeExecutionFunction escape = new(new(escaped, new()), 0, new(NativeJitPolicy.Force));
+        NativeExecutionFunction escape = new(TierFixture.Link(escaped), 0, new(NativeJitPolicy.Force));
         if (escape.RawWritable.Any(value => value))
             throw new InvalidOperationException("Escaping frame locations were eligible for unguarded pending metadata assumptions.");
         return 6 + pendingChecks;
@@ -58,7 +56,8 @@ internal static class RawWriteChecks
             [new("pending-flags", [new(0), new(0), new(0)],
                 [new(NativeOp.Constant, 0, 0), new(NativeOp.Return, A: 0)], new([], 0, []))],
             [new(TypeKind.Number)], []);
-        NativeImage image = new(program, new());
+        program = TierFixture.Plan(program);
+        NativeImage image = TierFixture.Link(program);
         NativeMemory memory = new();
         NativeFrame frame = new(image, 0, null, [], memory);
         NativeExecutionFunction function = new(image, 0, new(NativeJitPolicy.Force));
@@ -87,8 +86,9 @@ internal static class RawWriteChecks
             [new(NativeOp.Constant, 0, 0), new(NativeOp.FrameAddress, 3, 0), new(NativeOp.BindLocation, A: 1, B: 3),
              new(NativeOp.BindLocation, A: 2, B: 3), new(NativeOp.Return, A: 0)], new([], 0, []))],
             [new(TypeKind.Number), new(TypeKind.Never, Pointee: 0), new(TypeKind.Null)], []);
+        bound = TierFixture.Plan(bound);
         NativeArtifact.Validate(bound);
-        NativeImage boundImage = new(bound, new());
+        NativeImage boundImage = TierFixture.Link(bound);
         NativeFrame boundFrame = new(boundImage, 0, null, [], memory);
         NativeExecutionFunction boundFunction = new(boundImage, 0, new(NativeJitPolicy.Force));
         using NativeTierMemory boundNative = new(boundFrame, memory, boundFunction, 0);

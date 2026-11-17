@@ -97,7 +97,7 @@ internal static class PrivateInitializationChecks
 
     private static (int Bytes, int Elisions, int Writes) Emit(NativeProgram program, Architecture architecture, bool windows)
     {
-        NativeImage image = new(program, new());
+        NativeImage image = TierFixture.Link(program);
         using NativeExecutionFunction function = new(image, program.EntryPoint, new(NativeJitPolicy.Force));
         NativeBackendFunction backend = program.Backend!.Functions[program.EntryPoint];
         if (!ReferenceEquals(function.RawWritable, backend.RawWritable) || !ReferenceEquals(function.ExportBackend(), backend))

@@ -22,7 +22,7 @@ internal static class RegionCopyChecks
             NativeAllocation owner = new(layout, elementCount: 4);
             NativeAddress At(int index) => owner.AddressAt(layout.Extent * index, type);
             NativeMemory memory = new();
-            NativeFuture future = new(Task.FromResult(value), logicalType: value.Type);
+            NativeFuture future = new(new TaskCompletionSource<NativeValue>().Task, logicalType: value.Type);
             memory.Write(At(0), new(future));
             At(0).Store(value);
             memory.Write(At(1), new(value));

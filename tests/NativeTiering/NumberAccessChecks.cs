@@ -14,8 +14,9 @@ internal static class NumberAccessChecks
                 new(0, NativeSlotRole.Parameter), new(result)],
                 [new(NativeOp.Binary, 2, 0, 1, Immediate: (long)operation), new(NativeOp.Return, A: 2)],
                 new([0, 0], result, []), ParameterCount: 2)], [new(TypeKind.Number), new(TypeKind.Bool)], []);
+            program = TierFixture.Plan(program);
             NativeArtifact.Validate(program);
-            NativeExecutionFunction linked = new(new(program, new()), 0, new(NativeJitPolicy.Off));
+            NativeExecutionFunction linked = new(TierFixture.Link(program), 0, new(NativeJitPolicy.Off));
             if (linked.Instructions[0].Handler != NativeInterpreter.ExecutionHandlerAddress(NativeOp.Binary, number: true))
                 throw new InvalidOperationException("Monomorphic arithmetic kept the generic value handler.");
             foreach (NativeJitPolicy policy in new[] { NativeJitPolicy.Off, NativeJitPolicy.Linked, NativeJitPolicy.Force })
@@ -48,6 +49,7 @@ internal static class NumberAccessChecks
                  new(NativeOp.Binary, 3, 0, 2, Immediate: (long)NativeBinary.Add), new(NativeOp.Constant, 0, 0),
                  new(NativeOp.Return, A: 3)], new([0, 1], 0, []), ParameterCount: 2)],
             [new(TypeKind.Number), new(TypeKind.Process)], []);
+        pending = TierFixture.Plan(pending);
         NativeArtifact.Validate(pending);
         using MemoryStream bytes = new(); NativeArtifact.Write(pending, bytes); bytes.Position = 0;
         pending = NativeArtifact.Read(bytes);

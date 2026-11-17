@@ -19,8 +19,9 @@ internal static class ProducerLoweringChecks
             [new(TypeKind.Number), new(TypeKind.Scope, Layouts: [0]), new(TypeKind.Function),
              new(TypeKind.Never, Pointee: 0)], [new([new("item", 0)])])
         { Projections = [new([new(0, 0)])] };
+        program = TierFixture.Plan(program);
         NativeArtifact.Validate(program);
-        NativeImage image = new(program, new());
+        NativeImage image = TierFixture.Link(program);
         NativeExecutionFunction execution = new(image, 0, new(NativeJitPolicy.Force));
         if (execution.Operands[3].Projection is not { Length: 1 } || !execution.RawWritable[0] || !execution.RawWritable[4])
             throw new Exception("Backend lowering failed to consume the shared actual producer proof.");

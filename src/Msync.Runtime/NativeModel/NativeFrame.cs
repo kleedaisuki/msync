@@ -194,7 +194,7 @@ internal sealed class NativeFrame
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool IsReady(int slot, NativeAddress address) =>
-        address.IsInitialized || IsPrivate(slot) && !memory.IsPending(address);
+        (address.IsInitialized || IsPrivate(slot)) && !memory.IsPending(address);
 
     internal bool TryCopyReady(int source, NativeAddress destination)
     {

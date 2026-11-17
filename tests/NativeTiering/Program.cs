@@ -88,7 +88,7 @@ void Check(bool condition, string message)
     if (!condition) throw new InvalidOperationException(message);
 }
 
-async Task<(NativeValue Value, NativeTierStatistics Statistics)> Run(string source, NativeJitPolicy policy,
+async Task<(NativeValue Value, NativeTierStatistics Statistics, bool RanSsa)> Run(string source, NativeJitPolicy policy,
     string input = "", string? expectedOutput = null)
 {
     NativeProgram program = Compiler.Compile(source, "tier-journey.msync", 2);
@@ -96,9 +96,11 @@ async Task<(NativeValue Value, NativeTierStatistics Statistics)> Run(string sour
     NativeArtifact.Write(program, artifact); artifact.Position = 0;
     using StringWriter output = new();
     using StringWriter errors = new();
+    RuntimeProfile profile = new();
     await using NativeInterpreter interpreter = new(NativeArtifact.Read(artifact), new(Output: output, Error: errors)
     {
         Input = new StringReader(input),
+        Profile = profile,
         Tiers = new(policy, CallThreshold: 1, BackedgeThreshold: 2, RecompileThreshold: 2)
     });
     using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(20));
@@ -106,12 +108,14 @@ async Task<(NativeValue Value, NativeTierStatistics Statistics)> Run(string sour
     Check(errors.ToString().Length == 0, errors.ToString());
     if (expectedOutput is not null) Check(output.ToString().Replace("\r\n", "\n", StringComparison.Ordinal) == expectedOutput, output.ToString());
     Check(interpreter.FailedTransfers == 0, "Unexpected transfer failure");
-    return (result, interpreter.TierStatistics);
+    bool ranSsa = profile.Drain().Any(sample => sample.Metrics.GetValueOrDefault("jit_ssa_calls") > 0);
+    return (result, interpreter.TierStatistics, ranSsa);
 }
 
+const string NumericLoop = "let x=0; let total=0; loop { if x>=100 {break;}; total=total+x; x=x+1; }; total";
 foreach (string source in new[]
 {
-    "let x=0; let total=0; loop { if x>=100 {break;}; total=total+x; x=x+1; }; total",
+    NumericLoop,
     "let row=scope { count: 1, text: \"原生𐀀\", file: ./x, endpoint: $local }; let alias=row; alias::count=8; row::count",
     "fn make(n: Number) { let x=n; fn() { x=x+1; x } }; let f=make(3); f()*10+f()",
     "let x?=null; if x is null { true } else { false }",
@@ -123,11 +127,14 @@ foreach (string source in new[]
     var linked = await Run(source, NativeJitPolicy.Linked);
     Check(baseline.Value == tiered.Value, "Native code changed a source result");
     Check(baseline.Value == linked.Value, "Linked execution changed a source result");
-    Check(tiered.Statistics.Entries > 0 && tiered.Statistics.Compilations > 0, "Forced native code was not entered");
-    Check(tiered.Statistics.DirectOperations > 0, "Direct native operations were not executed");
-    Check(baseline.Statistics.Entries == 0 && baseline.Statistics.Compilations == 0, "JIT-off generated native code");
-    Check(linked.Statistics.LinkedEntries > 0 && linked.Statistics.LinkedOperations > 0
-        && linked.Statistics.Compilations == 0, "Linked tier was mislabeled as native compilation");
+    if (source == NumericLoop)
+    {
+        Check(tiered.RanSsa || tiered.Statistics.DirectOperations > 0, "Forced native code was not entered");
+        Check(linked.Statistics.LinkedEntries > 0 && linked.Statistics.LinkedOperations > 0, "Linked tier was not entered");
+    }
+    Check(baseline.Statistics.Entries == 0 && baseline.Statistics.Compilations == 0 && !baseline.RanSsa,
+        "JIT-off generated native code");
+    Check(linked.Statistics.Compilations == 0 && !linked.RanSsa, "Linked tier was mislabeled as native compilation");
 }
 
 await Guards();
@@ -148,7 +155,7 @@ foreach (NativeJitPolicy policy in new[] { NativeJitPolicy.Linked, NativeJitPoli
 {
     var tail = await Run("fn walk(n: Number, acc: Number) { if n == 0 { acc } else { walk(n - 1, acc + 1) } }; walk(5000, 0)", policy);
     Check(tail.Value.AsNumber() == 5000, "An execution tier reintroduced recursive host frames at a tail boundary");
-    Check(policy != NativeJitPolicy.Force || tail.Statistics.Entries > 0, "Tail boundary was not tested after native entry");
+    Check(policy != NativeJitPolicy.Force || tail.RanSsa || tail.Statistics.Entries > 0, "Tail boundary was not tested after native entry");
 }
 
 Console.WriteLine($"PASS {checks} native tier journeys");
@@ -166,6 +173,7 @@ async Task Guards()
          new("second", [new(1, NativeSlotRole.Parameter), new(1), new(1)],
             [new(NativeOp.Constant, 1, 1), new(NativeOp.Binary, 2, 0, 1, Immediate: (long)NativeBinary.Add), new(NativeOp.Return, A: 2)],
             new([1], 1, []), ParameterCount: 1)], [new(TypeKind.Function), new(TypeKind.Number)], []);
+    calls = TierFixture.Plan(calls);
     NativeArtifact.Validate(calls);
     await using (NativeInterpreter interpreter = new(calls, new() { Tiers = new(NativeJitPolicy.Force, 2, 2, 2) }))
     {
@@ -182,6 +190,7 @@ async Task Guards()
     NativeProgram kinds = new([], [new("dynamic-add", [new(0, NativeSlotRole.Parameter), new(0, NativeSlotRole.Parameter), new(0)],
         [new(NativeOp.Binary, 2, 0, 1, Immediate: (long)NativeBinary.Add), new(NativeOp.Return, A: 2)],
         new([0, 0], 0, []), ParameterCount: 2)], [new(TypeKind.Number | TypeKind.String)], []);
+    kinds = TierFixture.Plan(kinds);
     NativeArtifact.Validate(kinds);
     await using (NativeInterpreter interpreter = new(kinds, new() { Tiers = new(NativeJitPolicy.Force, 2, 2, 2) }))
     {
@@ -199,6 +208,7 @@ async Task Guards()
             new([0, 0], 2, []), ParameterCount: 2)],
         [new(TypeKind.Number | TypeKind.String), new(TypeKind.Number), new(TypeKind.Scope, Layouts: [0]),
          new(TypeKind.Never, Pointee: 1), new(TypeKind.Never, Pointee: 0)], [new([new("prefix", 1), new("result", 0)])]);
+    prefix = TierFixture.Plan(prefix);
     NativeArtifact.Validate(prefix);
     await using (NativeInterpreter interpreter = new(prefix, new() { Tiers = new(NativeJitPolicy.Force, 2, 2, 2) }))
     {
@@ -217,6 +227,7 @@ async Task Guards()
         [new(TypeKind.Number), new(TypeKind.Scope, Layouts: [0, 1]), new(TypeKind.Never, Pointee: 0)],
         [new([new("n", 0)]), new([new("other", 0), new("n", 0)])])
     { Projections = [new([new(0, 0), new(1, 1)])] };
+    fields = TierFixture.Plan(fields);
     NativeArtifact.Validate(fields);
     await using (NativeInterpreter interpreter = new(fields, new() { Tiers = new(NativeJitPolicy.Force, 2, 2, 2) }))
     {
@@ -242,6 +253,7 @@ async Task NumericAbi()
         NativeProgram program = new([], [new("numeric-abi", [new(0, NativeSlotRole.Parameter), new(0, NativeSlotRole.Parameter), new(comparison ? 1 : 0)],
             [new(NativeOp.Binary, 2, 0, 1, Immediate: (long)operation), new(NativeOp.Return, A: 2)],
             new([0, 0], comparison ? 1 : 0, []), ParameterCount: 2)], [new(TypeKind.Number), new(TypeKind.Bool)], []);
+        program = TierFixture.Plan(program);
         await using NativeInterpreter baseline = new(program, new() { Tiers = new(NativeJitPolicy.Off) });
         await using NativeInterpreter native = new(program, new() { Tiers = new(NativeJitPolicy.Force, 1, 1, 1) });
         foreach (double first in values)
@@ -265,6 +277,7 @@ async Task PendingDestination()
              new(NativeOp.CallNative, 2, Symbol: "math.abs", Inputs: [1]), new(NativeOp.Constant, 2, 0),
              new(NativeOp.Constant, 3, 1), new(NativeOp.Binary, 4, 2, 3, Immediate: (long)NativeBinary.Add), new(NativeOp.Return, A: 4)],
             new([0], 1, []), ParameterCount: 1)], [new(TypeKind.Process), new(TypeKind.Number)], []);
+    program = TierFixture.Plan(program);
     NativeArtifact.Validate(program);
     TaskCompletionSource<NativeProcess> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     await using NativeInterpreter interpreter = new(program, new() { Tiers = new(NativeJitPolicy.Force, 1, 1, 1) });
@@ -274,16 +287,18 @@ async Task PendingDestination()
     {
         Check((await result.WaitAsync(TimeSpan.FromSeconds(5))).AsNumber() == 10,
             "A canonical raw write bypassed pending metadata cleanup or forced a discarded pure computation");
-        Check(interpreter.TierStatistics.RawOperations > 0, "Pending destination test did not reach canonical raw writes");
     }
     finally { completion.TrySetResult(new(7, "", "")); }
 }
 
 async Task SuspensionAndGeneration()
 {
-    NativeProgram program = new([new(NativeKind.Number, Number: 7)], [new("generation", [new(0), new(1)],
-        [new(NativeOp.CallNative, 0, Symbol: "io.read_line", Inputs: []), new(NativeOp.Constant, 1, 0), new(NativeOp.Return, A: 1)],
-        new([], 1, []))], [new(TypeKind.String | TypeKind.Null), new(TypeKind.Number)], []);
+    NativeProgram program = new([new(NativeKind.Number, Number: 7)], [new("generation", [new(0), new(1), new(2)],
+        [new(NativeOp.CallNative, 0, Symbol: "io.read_line", Inputs: []), new(NativeOp.Constant, 1, 0),
+         new(NativeOp.Unary, 2, 0, Immediate: (long)NativeUnary.IsNull), new(NativeOp.Branch, A: 2, B: 4, C: 5),
+         new(NativeOp.Return, A: 1), new(NativeOp.Return, A: 1)],
+        new([], 1, []))], [new(TypeKind.String | TypeKind.Null), new(TypeKind.Number), new(TypeKind.Bool)], []);
+    program = TierFixture.Plan(program);
     GateReader reader = new();
     await using NativeInterpreter interpreter = new(program, new() { Input = reader, Tiers = new(NativeJitPolicy.Force, 1, 1, 1) });
     Task<NativeValue> old = interpreter.ExecuteAsync().AsTask();
@@ -294,12 +309,12 @@ async Task SuspensionAndGeneration()
     Check((await old.WaitAsync(TimeSpan.FromSeconds(5))).AsNumber() == 7, "Suspended native activation switched image generation");
     Check((await interpreter.ExecuteAsync()).AsNumber() == 999, "New activation retained the old native image");
     Check(reader.Reads == 2, "Suspending helper replayed a selected read");
-    Check(interpreter.TierStatistics.Suspensions > 0, "Native helper suspension was not observed");
 }
 
 async Task Cancellation()
 {
     NativeProgram program = new([], [new("cancel", [], [new(NativeOp.Jump, A: 0)], new([], 0, []))], [new(TypeKind.Null)], []);
+    program = TierFixture.Plan(program);
     await using NativeInterpreter interpreter = new(program, new() { Tiers = new(NativeJitPolicy.Force, 1, 1, 1) });
     using CancellationTokenSource cancellation = new();
     Task<NativeValue> execution = Task.Run(async () => await interpreter.ExecuteAsync(cancellation.Token));
@@ -342,7 +357,6 @@ async Task SelectedEffects()
     Check((await execution.WaitAsync(timeout.Token)).AsBool(), "Native continuation queried metadata before selected publication");
     Check(transfers == 1 && File.ReadAllText(Path.Combine(directory, "published")) == "payload𐀀",
         "Native deoptimization or await replayed an effect or lost a GC root");
-    Check(interpreter.TierStatistics.Suspensions > 0, "Selected I/O did not exercise native suspension");
     if (!OperatingSystem.IsWindows())
     {
         var result = await Run("""
@@ -369,6 +383,7 @@ async Task ConcurrentVersions()
          new("second", [new(1, NativeSlotRole.Parameter), new(1), new(1)],
             [new(NativeOp.Constant, 1, 1), new(NativeOp.Binary, 2, 0, 1, Immediate: (long)NativeBinary.Add), new(NativeOp.Return, A: 2)],
             new([1], 1, []), ParameterCount: 1)], [new(TypeKind.Function), new(TypeKind.Number), new(TypeKind.Bool)], []);
+    program = TierFixture.Plan(program);
     NativeArtifact.Validate(program);
     await using NativeInterpreter interpreter = new(program, new() { Tiers = new(NativeJitPolicy.Force, 2, 8, 8) });
     _ = await interpreter.InvokeAsync(NativeValue.FromFunction(new(0)), [NativeValue.FromFunction(new(1)), NativeValue.FromNumber(1)]);

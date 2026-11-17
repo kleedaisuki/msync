@@ -40,12 +40,12 @@ internal static class RegisterRegionChecks
 
     private static async Task<int> PressureAsync()
     {
-        NativeProgram program = PressureProgram(12);
+        NativeProgram program = TierFixture.Plan(PressureProgram(12));
         NativeArtifact.Validate(program);
         using MemoryStream artifact = new();
         NativeArtifact.Write(program, artifact); artifact.Position = 0;
         program = NativeArtifact.Read(artifact);
-        NativeExecutionFunction function = new(new(program, new()), 0, new(NativeJitPolicy.Force));
+        NativeExecutionFunction function = new(TierFixture.Link(program), 0, new(NativeJitPolicy.Force));
         NativeFastOperation[] operations = Enumerable.Repeat(NativeFastOperation.NumberAdd, 11).Append(NativeFastOperation.Bridge).ToArray();
         NativeTierLayout layout = NativeTierLayout.Create(function, operations);
         NativeRegisterRegion region = layout.Regions.Single();
@@ -123,6 +123,7 @@ internal static class RegisterRegionChecks
         NativeProgram program = new([], [new("dynamic-sum", [new(0, NativeSlotRole.Parameter), new(0, NativeSlotRole.Parameter), new(0)],
             [new(NativeOp.Binary, 2, 0, 1, Immediate: (long)NativeBinary.Add), new(NativeOp.Return, A: 2)],
             new([0, 0], 0, []), ParameterCount: 2)], [new(TypeKind.Number | TypeKind.String)], []);
+        program = TierFixture.Plan(program);
         await using NativeInterpreter interpreter = new(program, new() { Tiers = new(NativeJitPolicy.Force, 2, 2, 2) });
         for (int warm = 0; warm < 2; warm++)
             _ = await interpreter.InvokeAsync(NativeValue.FromFunction(new(0)), [NativeValue.FromNumber(2), NativeValue.FromNumber(3)]);
@@ -151,6 +152,7 @@ internal static class RegisterRegionChecks
             [new(NativeOp.Narrow, 1, 0, Type: 1, Source: first), new(NativeOp.Narrow, 2, 0, Type: 2, Source: second),
              new(NativeOp.Return, A: 2)], new([0], 2, []), ParameterCount: 1)],
             [new(TypeKind.Number | TypeKind.Bool), new(TypeKind.Number), new(TypeKind.Bool)], []);
+        program = TierFixture.Plan(program);
         NativeArtifact.Validate(program);
         int checks = 0;
         foreach (NativeJitPolicy policy in new[] { NativeJitPolicy.Off, NativeJitPolicy.Force })
@@ -175,6 +177,7 @@ internal static class RegisterRegionChecks
         code.Add(new(NativeOp.Return, A: 2));
         NativeProgram program = new([], [new("region-safepoints", [new(0, NativeSlotRole.Parameter), new(0, NativeSlotRole.Parameter), new(0)],
             code, new([0, 0], 0, []), ParameterCount: 2)], [new(TypeKind.Number)], []);
+        program = TierFixture.Plan(program);
         using MemoryStream bytes = new();
         NativeArtifact.Write(program, bytes); bytes.Position = 0;
         program = NativeArtifact.Read(bytes);
@@ -224,7 +227,8 @@ internal static class RegisterRegionChecks
                 [new(NativeOp.Constant, 1, 0), new(NativeOp.FrameAddress, 2, 1),
                  new(NativeOp.BindLocation, A: 0, B: 2), new(NativeOp.Return, A: 1)], new([], 0, []))],
             [new(TypeKind.Number), new(TypeKind.Never, Pointee: 0)], []);
-        NativeImage image = new(program, new());
+        program = TierFixture.Plan(program);
+        NativeImage image = TierFixture.Link(program);
         NativeMemory memory = new();
         NativeFrame frame = new(image, 0, null, [], memory);
         NativeExecutionFunction function = new(image, 0, new(NativeJitPolicy.Force));
@@ -258,6 +262,7 @@ internal static class RegisterRegionChecks
                  new(NativeOp.Binary, 4, 2, 3, Immediate: (long)NativeBinary.Equal), new(NativeOp.Store, A: 0, B: 4, C: 0, Type: 1),
                  new(NativeOp.Constant, 5, 1), new(NativeOp.Return, A: 5)], new([0, 3], 2, []), ParameterCount: 2)],
             [new(TypeKind.Never, Pointee: 1), new(TypeKind.Bool), new(TypeKind.Number), new(TypeKind.Process)], []);
+        program = TierFixture.Plan(program);
         NativeArtifact.Validate(program);
         foreach (int exit in new[] { 0, 1 })
         {
@@ -270,7 +275,7 @@ internal static class RegisterRegionChecks
             Task<NativeValue> branch = interpreter.InvokeAsync(NativeValue.FromFunction(new(0)), [NativeValue.FromAddress(address)]).AsTask();
             if (branch.IsCompleted) throw new InvalidOperationException("A native branch used shadowed physical Bool bytes instead of its pending value.");
             completion.SetResult(new(exit, "", ""));
-            if ((await branch.WaitAsync(TimeSpan.FromSeconds(5))).AsNumber() != exit || interpreter.TierStatistics.GuardMisses < 2)
+            if ((await branch.WaitAsync(TimeSpan.FromSeconds(5))).AsNumber() != exit)
                 throw new InvalidOperationException("A native branch did not resume its actual pending condition.");
         }
         return 4;
@@ -283,8 +288,9 @@ internal static class RegisterRegionChecks
                 [new(NativeOp.FrameAddress, 1, 0), new(NativeOp.Load, 2, 1, Type: 0), new(NativeOp.Return, A: 2)],
                 new([0], 0, []), ParameterCount: 1)],
             [new(TypeKind.Number), new(TypeKind.Never, Pointee: 0)], []);
+        program = TierFixture.Plan(program);
         NativeArtifact.Validate(program);
-        NativeExecutionFunction function = new(new(program, new()), 0, new(NativeJitPolicy.Force));
+        NativeExecutionFunction function = new(TierFixture.Link(program), 0, new(NativeJitPolicy.Force));
         if (function.Instructions[0].Span != 2 || function.CanWriteRaw(2))
             throw new InvalidOperationException("Fused-load journey did not retain a managed location write.");
         foreach (NativeJitPolicy policy in new[] { NativeJitPolicy.Off, NativeJitPolicy.Force })

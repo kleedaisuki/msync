@@ -7,7 +7,7 @@ internal static class ReadyMaterializationChecks
     internal static unsafe int Run()
     {
         NativeProgram program = NativePreparation.Prepare(Compiler.Compile("let n=1; n+1", "materialization.msync", 0));
-        NativeImage image = new(program, new());
+        NativeImage image = TierFixture.Link(program);
         using NativeExecutionFunction function = new(image, program.EntryPoint, new(NativeJitPolicy.Force));
         using NativeCompiledFunction version = NativeCompiledFunction.Compile(image, function, NativeJitPolicy.Force)!;
         int slot = version.Layout.FixedSlots.First(entry => function.IsPrivateTemporary(entry.Slot)
@@ -42,7 +42,7 @@ internal static class ReadyMaterializationChecks
 
         NativeProgram borrowed = NativePreparation.Prepare(Compiler.Compile("fn identity(n: Number) { n }; identity(1)", "borrowed-materialization.msync", 0));
         int target = Enumerable.Range(0, borrowed.Functions.Count).First(index => borrowed.Functions[index].ParameterCount == 1);
-        NativeImage borrowedImage = new(borrowed, new());
+        NativeImage borrowedImage = TierFixture.Link(borrowed);
         using NativeExecutionFunction borrowedFunction = new(borrowedImage, target, new(NativeJitPolicy.Force));
         using NativeCompiledFunction borrowedVersion = NativeCompiledFunction.Compile(borrowedImage, borrowedFunction, NativeJitPolicy.Force)!;
         int parameter = borrowed.Functions[target].CaptureCount;
