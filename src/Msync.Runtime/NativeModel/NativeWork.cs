@@ -153,7 +153,10 @@ internal sealed class NativeWorkScope(NativeWorkScope? parent, NativeWorkFrontie
             if (!future.IsTransfer && future.Submission is null) continue;
             try
             {
-                NativeValue value = await future.CompleteAsync(token).ConfigureAwait(false);
+                // A submission receives cancellation itself. Join its cleanup
+                // before the owner returns; cancelling this wait would detach it.
+                NativeValue value = await future.CompleteAsync(future.Submission is null
+                    ? token : CancellationToken.None).ConfigureAwait(false);
                 if (future.Submission?.Kind == NativeSubmissionKind.Process) await value.AsProcess().WaitAsync(token).ConfigureAwait(false);
                 future.CountFailure(failedTransfer);
             }
