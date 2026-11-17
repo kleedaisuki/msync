@@ -41,21 +41,27 @@ public sealed partial class NativeInterpreter
             long count = RangeOrdinal(await args[1].ResolveAsync(token), operation, operation is "stride" or "step");
             if (operation == "take" && count == 0)
                 return new NativeDatum(NativeValue.FromRange(DatumSnapshot([], source.ItemType, source.PhysicalItemType)));
-            return new NativeDatum(NativeValue.FromRange(DatumRangeValue(CountedDatums(source, operation, count, token), source.ItemType, args, source.PhysicalItemType)));
+            var selected = AdaptDatumSelection(source, operation, count,
+                static (owner, input, op, limit, cancellation) => owner.CountedDatums(input, op, limit, cancellation));
+            return new NativeDatum(NativeValue.FromRange(DatumRangeValue(CountedDatums(source, operation, count, token),
+                source.ItemType, args, source.PhysicalItemType, selected)));
         }
         IAsyncEnumerable<NativeDatum> items;
         TypeRef itemType = source.ItemType;
         NativeType physicalType = source.PhysicalItemType;
+        NativePathSelection? selection = null;
         switch (operation)
         {
             case "transform":
             case "filter":
             case "take_while":
             case "drop_while":
-                items = CallbackDatums(source, operation, await args[1].ResolveAsync(token), token);
+                NativeValue callbackValue = await args[1].ResolveAsync(token);
+                items = CallbackDatums(source, operation, callbackValue, token);
+                selection = AdaptDatumSelection(source, operation, callbackValue,
+                    static (owner, input, op, callable, cancellation) => owner.CallbackDatums(input, op, callable, cancellation));
                 if (operation == "transform")
                 {
-                    NativeValue callbackValue = await args[1].ResolveAsync(token);
                     itemType = DescribeFunction(callbackValue.AsFunction())?.Result ?? TypeRef.Any;
                     physicalType = resultPhysical ?? CallbackPhysical(callbackValue);
                 }
@@ -110,7 +116,7 @@ public sealed partial class NativeInterpreter
                 break;
             default: return new(await InvokeNativeAsync(signature.Name, await ResolveArguments(args, token), context, token));
         }
-        return new NativeDatum(NativeValue.FromRange(DatumRangeValue(items, itemType, args, physicalType)));
+        return new NativeDatum(NativeValue.FromRange(DatumRangeValue(items, itemType, args, physicalType, selection)));
     }
 
     private static bool HasLogicalMetadata(TypeRef type) => (type.Kind & ~TypeKind.Any) != 0
@@ -170,11 +176,24 @@ public sealed partial class NativeInterpreter
         await Task.CompletedTask;
     }
 
-    private NativeRange DatumRangeValue(IAsyncEnumerable<NativeDatum> items, TypeRef itemType, IReadOnlyList<NativeDatum> roots, NativeType physicalItemType)
+    private NativePathSelection? AdaptDatumSelection<T>(NativeRange source, string operation, T operand,
+        Func<NativeInterpreter, NativeRange, string, T, CancellationToken, IAsyncEnumerable<NativeDatum>> adapt)
+    {
+        if (source.Selection is not { } selection) return null;
+        using var observation = context.Timeline?.Begin("range.selection.adapt");
+        observation?.SetAttribute("range.operation", operation);
+        observation?.SetAttribute("range.endpoint", selection.Directory.Connection?.ToString() ?? "local");
+        NativeRuntimeContext origin = context.CaptureDirectory();
+        return NativeBuiltins.AdaptSelection(source, (input, token) =>
+            ResolveDatumItems(new ContextDatums(this, adapt(this, input, operation, operand, token), origin), token));
+    }
+
+    private NativeRange DatumRangeValue(IAsyncEnumerable<NativeDatum> items, TypeRef itemType, IReadOnlyList<NativeDatum> roots,
+        NativeType physicalItemType, NativePathSelection? selection = null)
     {
         items = CaptureDatums(items);
         NativeRange range = new(ResolveDatumItems(items, CancellationToken.None), itemType,
-            roots.Where(static value => value.IsReady).Select(static value => value.Value).ToArray(), physicalItemType: physicalItemType);
+            roots.Where(static value => value.IsReady).Select(static value => value.Value).ToArray(), selection, physicalItemType: physicalItemType);
         rangeRoots.Add(range, new(roots.ToArray()));
         datumRanges.Add(range, new(items, roots.Any(DatumExecutionMayDefer)));
         return range;

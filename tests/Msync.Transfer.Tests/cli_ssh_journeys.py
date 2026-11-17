@@ -55,7 +55,7 @@ def main() -> None:
                     "b.pick": remote / "b.pick",
                 }
                 (remote / "skip.pick").write_bytes(b"must remain unselected")
-                body: str = f"remote::{quoted(str(remote))}/<(?s)^(?!skip).+\\.pick$>"
+                body: str = f"remote @ {quoted(str(remote))}/<(?s)^(?!skip).+\\.pick$>"
             else:
                 (remote / "nested" / "deeper").mkdir(parents=True)
                 inputs = {
@@ -65,7 +65,7 @@ def main() -> None:
                 (remote / "nested" / "deeper" / "z.pick").write_bytes(
                     b"beyond demanded prefix"
                 )
-                body = f"$std::fs::recursive_directory_iterator(remote::{quoted(str(remote))})"
+                body = f"$std::fs::recursive_directory_iterator(remote @ {quoted(str(remote))})"
             for target in inputs.values():
                 target.write_bytes(b"initial")
             source: Path = directory / "main.msync"

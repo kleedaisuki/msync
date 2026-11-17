@@ -243,6 +243,8 @@ internal sealed partial class SourceBinder
             locationKind, AdmitsNull: nullable, TemplateOwner: scope.Template));
         program.Declare(new(id, name, kind, Range(span), annotation, Template: scope.Template));
         if (nativeModule is not null && scope.Template is null) program.WrittenLocations.Add(id);
+        if (program.IsSession && scope.Parent is null && scope.IncludesEnd && scope.Values.TryGetValue(name, out var shadow))
+            program.SessionShadows.Add(new(name, shadow));
         scope.Values = scope.Values.SetItem(name, id);
         Observe(span, id, declaration: true, parameter: kind == DeclarationKind.Parameter);
         return id;

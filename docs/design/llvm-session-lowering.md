@@ -144,6 +144,14 @@ or a copy from one cell into another. The declaration store, later assignments
 and all capture environments name the same original location.
 
 
+On a failed submission, a name resolves to the newest lexical declaration
+whose slot was actually initialized, including a declaration superseded
+earlier in the same submission. Lowering reserves the same canonical session
+cells for these shadow candidates and emits their priority paths as live
+session metadata, not as portable IR. Work cleanup retains only the selected
+root on failure and only the final visible root on success; an otherwise
+unreachable shadow does not keep a child process or an input alive.
+
 The production acceptance cohort was rerun after late InstSimplify and per-use
 address ABI views were integrated. Both O0 and O2 again passed the same 12
 submissions (9 accepted, 3 reconciled failures), 6 numeric expectations,

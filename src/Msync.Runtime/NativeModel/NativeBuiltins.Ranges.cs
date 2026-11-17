@@ -51,16 +51,21 @@ public static partial class NativeBuiltins
         CancellationToken token, IReadOnlyList<NativeValue>? captures = null, NativeType? physicalItemType = null)
     {
         physicalItemType ??= source.PhysicalItemType;
-        NativePathSelection? selection = source.Selection;
-        NativePathSelection? adapted = selection is null ? null : selection with
+        NativeValue[] roots = [NativeValue.FromRange(source), .. captures ?? []];
+        return new(operation(source, token), itemType, roots, AdaptSelection(source, operation),
+            source.Resolve is null ? null : async cancellation => Adapt(await source.Resolve(cancellation), itemType, operation, cancellation, captures, physicalItemType),
+            physicalItemType: physicalItemType);
+    }
+
+    internal static NativePathSelection? AdaptSelection(NativeRange source,
+        Func<NativeRange, CancellationToken, IAsyncEnumerable<NativeValue>> operation)
+    {
+        if (source.Selection is not { } selection) return null;
+        return selection with
         {
             Apply = (items, cancellation) => operation(new NativeRange(
                 selection.Apply is null ? items : selection.Apply(items, cancellation), source.ItemType, physicalItemType: source.PhysicalItemType), cancellation)
         };
-        NativeValue[] roots = [NativeValue.FromRange(source), .. captures ?? []];
-        return new(operation(source, token), itemType, roots, adapted,
-            source.Resolve is null ? null : async cancellation => Adapt(await source.Resolve(cancellation), itemType, operation, cancellation, captures, physicalItemType),
-            physicalItemType: physicalItemType);
     }
 
     private static async IAsyncEnumerable<NativeValue> Repeated(NativeValue value, long count,

@@ -96,6 +96,7 @@ internal sealed class BoundProgram(HirBuilder hir)
     public Dictionary<string, HirLocationId> StandardLocations { get; } = new(StringComparer.Ordinal);
     public ImmutableDictionary<string, HirLocationId> Exports { get; set; }
         = ImmutableDictionary<string, HirLocationId>.Empty;
+    public List<HirExport> SessionShadows { get; } = [];
     public ImmutableDictionary<string, int> RootConcepts { get; set; }
         = ImmutableDictionary<string, int>.Empty;
 
@@ -145,7 +146,8 @@ internal sealed class BoundProgram(HirBuilder hir)
         if (declaration.Template is not null) return true;
         foreach (BoundModule module in StandardModules.Values)
             if (module.Source == declaration.Source.Source && module.Exports.Values.Contains(location)) return false;
-        return !IsSession || !Exports.Values.Contains(location);
+        return !IsSession || !Exports.Values.Contains(location)
+            && !SessionShadows.Any(shadow => shadow.Location == location);
     }
     public void Declare(BoundDeclaration declaration)
     {

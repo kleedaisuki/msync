@@ -1,4 +1,5 @@
 using System.Runtime.ExceptionServices;
+using Msync.Core;
 using Msync.Core.Native;
 
 namespace Msync.Runtime.Native;
@@ -199,24 +200,33 @@ public sealed partial class NativeInterpreter
     }
 
     private void FinishInvocation(Activation activation, NativeEnvironment? environment,
-        NativeArguments arguments, NativeDatum result, CancellationToken token)
+        NativeArguments arguments, NativeDatum result, CancellationToken token, bool recovering = false)
     {
         if (activation.OwnsWork && (activation.Work.HasWork || activation.HasActiveIterators))
-            Demand(FinishOwnedWorkAsync(activation, environment, arguments, result, token));
+            Demand(FinishOwnedWorkAsync(activation, environment, arguments, result, token, recovering));
     }
 
     private Exception FinishFailedInvocation(Activation activation, NativeEnvironment? environment,
         NativeArguments arguments, Exception error, CancellationToken token)
     {
-        try { FinishInvocation(activation, environment, arguments, new(NativeValue.Null), token); }
+        try { FinishInvocation(activation, environment, arguments, new(NativeValue.Null), token, recovering: true); }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { }
         catch (Exception cleanup)
         {
             // Demand and ownership cleanup may observe the same failed job.
-            if (!ReferenceEquals(error, cleanup))
-                return new AggregateException("Guest execution and cleanup failed.", error, cleanup);
+            if (ReferenceEquals(RootCause(error), RootCause(cleanup))) return error;
+            var failures = new AggregateException("Guest execution and cleanup failed.", error, cleanup);
+            return error is MsyncException primary && cleanup is MsyncException
+                ? new MsyncException("Guest execution and cleanup failed.", primary.Span, failures)
+                : failures;
         }
         return error;
+
+        static Exception RootCause(Exception failure)
+        {
+            while (failure is MsyncException { InnerException: { } cause }) failure = cause;
+            return failure;
+        }
     }
 
     private Exception UnwindGuest(Activation activation, Exception error, CancellationToken token)

@@ -95,6 +95,7 @@ public static partial class LlvmNativeLowerer
                 SessionRoots = Session is { } active
                     ? active.Exports.Select(location => active.Roots[location].Slot).Concat(active.ImportSlots).Distinct().ToArray()
                     : null,
+                SessionShadowPaths = Session?.ShadowPaths,
                 SessionDispatches = DispatchTables()
             };
             return Session is null ? program : program with { Backend = Backend(program, trace) };

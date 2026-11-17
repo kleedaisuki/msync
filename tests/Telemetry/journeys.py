@@ -315,10 +315,14 @@ $std::io::println(result as String);
         ).fetchone() == (len(routes) + 4,)
         assert (
             connection.execute(
-                """SELECT count(*) FROM events AS e
-               JOIN spans AS p ON p.trace_id=e.trace_id AND p.span_id=e.span_id
-               JOIN metrics AS m ON m.record_id=e.id AND m.key='invocations'
-               WHERE e.name GLOB 'optimizer.*' AND p.name='compile' AND m.value_int>0"""
+                """SELECT count(*) FROM spans AS pass
+               JOIN spans AS fn ON fn.trace_id=pass.trace_id AND fn.span_id=pass.parent_span_id
+               JOIN spans AS optimize ON optimize.trace_id=fn.trace_id AND optimize.span_id=fn.parent_span_id
+               JOIN spans AS compile ON compile.trace_id=optimize.trace_id AND compile.span_id=optimize.parent_span_id
+               JOIN metrics AS m ON m.record_id=pass.id AND m.key='invocations'
+               WHERE pass.name='optimizer.pass.llvm-adce' AND pass.status='ok'
+                 AND fn.name='optimizer.llvm.function' AND optimize.name='compiler.optimize'
+                 AND compile.name='compile' AND m.value_int>0"""
             ).fetchone()[0]
             > 0
         )

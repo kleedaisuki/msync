@@ -1,5 +1,21 @@
 # Contextual transfer batches and native channel ownership
 
+## OpenSSH client ownership
+
+An ordinary CLI transfer uses the configured SSH client without creating a
+private control master or launching a second client to close it. Unix REPLs
+retain the private master across submissions. Win32 OpenSSH runs without
+multiplexing, including when `ssh_config` sets a ControlPath: the native client
+cannot pass redirected standard streams over the Unix control protocol
+([Win32 OpenSSH tracking issue](https://github.com/PowerShell/Win32-OpenSSH/issues/1328)).
+
+Remote path selection stays deferred through callback and counted Range
+adapters. The adapter runs over the selected channel's discovered paths, so
+its same-endpoint metadata queries use that channel instead of authenticating
+again. The compiled CLI SSH journey checks both regex selection and recursive
+iteration through source, object and bound images, with one client,
+authentication and exec session per run.
+
 ## Execution contract
 
 `TransferEngine.CopyBatchAsync` accepts an independent frontier selected by the
