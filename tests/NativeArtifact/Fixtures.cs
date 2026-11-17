@@ -101,6 +101,6 @@ static class Fixtures
             : [new(NativeOp.Allocate, 0, 0), new(NativeOp.Constant, 1, 0), new(NativeOp.Return, A: 1)];
         return new([new(NativeKind.Null)], [new("placement", [new(1), new(0)], code,
             new([], escape ? 1 : 0, []))], [new(TypeKind.Null), new(TypeKind.Scope, Layouts: [0])], [new([])])
-        { Allocations = [new(0, 0, NativeAllocationPlacement.Frame)] };
+        { Allocations = [new(0, 0, escape ? NativeAllocationPlacement.LogicalHeap : NativeAllocationPlacement.Frame)] };
     }
 }

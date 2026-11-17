@@ -1,6 +1,7 @@
 using System.Text;
 using Msync.Core;
 using Msync.Core.Native;
+using Msync.Optimization;
 
 internal static class CompactEncodingChecks
 {
@@ -8,21 +9,6 @@ internal static class CompactEncodingChecks
 
     internal static void Run(Action<bool, string> check)
     {
-        string fixture = Path.Combine(AppContext.BaseDirectory, "Fixtures", "unpooled-v1.mexe");
-        NativeProgram old = NativeArtifact.Read(fixture);
-        check(NativeArtifact.ToJson(old) == NativeArtifact.ToJson(Fixtures.Plan()), "Unpooled native-v1 compatibility changed portable plans");
-        byte[] compactPlan = Encode(old);
-        check(compactPlan.Length < new FileInfo(fixture).Length, "Pooled plan encoding did not reduce the original fixture");
-        string earlier = Path.Combine(AppContext.BaseDirectory, "Fixtures", "unpooled-v1-prereflection.mso");
-        NativeProgram prereflection = NativeArtifact.Read(earlier);
-        check(prereflection.Functions.Count > 1 && prereflection.Functions.All(function => function.ReflectionSignature is null),
-            "Earlier unpooled-v1 function layout requires no invented reflection data");
-        using (ReadPipe oldPipe = new(File.ReadAllBytes(earlier)))
-            check(NativeArtifact.ToJson(NativeArtifact.Read(oldPipe)) == NativeArtifact.ToJson(prereflection),
-                "Nonseekable earlier native-v1 decoding changed the program");
-        check(NativeArtifact.ToJson(NativeArtifact.Read(new MemoryStream(Encode(prereflection)))) == NativeArtifact.ToJson(prereflection),
-            "Earlier native-v1 program changed through compact re-encoding");
-
         const string filename = "repeated-source-𐀀-\ud800.msync";
         SourceSpan source = new(filename, 9, 3);
         NativeInstruction[] code = Enumerable.Repeat(new NativeInstruction(NativeOp.Nop, Source: source), 1000)
@@ -46,10 +32,11 @@ internal static class CompactEncodingChecks
         NativeInstruction roundtrip = NativeArtifact.Read(new MemoryStream(Encode(extensions))).Functions[0].Instructions[0];
         check(roundtrip.A == unusual.A && roundtrip.B == unusual.B && roundtrip.C == 0 && roundtrip.Type == 0 && roundtrip.Immediate == long.MinValue
             && roundtrip.Symbol == unusual.Symbol && roundtrip.Inputs is { Count: 0 }, "Optional operands lost exact signed values/null-versus-empty data");
-        NativeProgram extraResult = old with
+        NativeProgram plan = Fixtures.Plan();
+        NativeProgram extraResult = plan with
         {
-            Functions = [old.Functions[0] with
-            { Instructions = old.Functions[0].Instructions.Select((instruction, pc) => pc == 0 ? instruction with { Result = 0 } : instruction).ToArray() }]
+            Functions = [plan.Functions[0] with
+            { Instructions = plan.Functions[0].Instructions.Select((instruction, pc) => pc == 0 ? instruction with { Result = 0 } : instruction).ToArray() }]
         };
         check(NativeArtifact.Read(new MemoryStream(Encode(extraResult))).Functions[0].Instructions[0].Result == 0,
             "Optional result register outside an opcode's usual schema was lost");
@@ -98,7 +85,7 @@ internal static class CompactEncodingChecks
 
     private static byte[] Encode(NativeProgram program)
     {
-        using MemoryStream output = new(); NativeArtifact.Write(program, output); return output.ToArray();
+        using MemoryStream output = new(); NativeArtifact.Write(NativeOptimizer.PlanStorage(program), output); return output.ToArray();
     }
 
     private static void Reject(byte[] bytes, string message, Action<bool, string> check)

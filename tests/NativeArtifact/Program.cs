@@ -1,28 +1,7 @@
 using System.Text.Json;
 using Msync.Core;
 using Msync.Core.Native;
-
-if (args is ["measure", var measureInput, var measureOutput])
-{
-    EncodingMeasurements.Run(measureInput, measureOutput);
-    return;
-}
-if (args is ["produce", var producePath])
-{
-    NativeArtifact.Write(Fixtures.Plan(), producePath);
-    Console.WriteLine("produced native-v1");
-    return;
-}
-if (args is ["consume", var consumePath])
-{
-    NativeProgram loaded = NativeArtifact.Read(consumePath);
-    using JsonDocument json = JsonDocument.Parse(NativeArtifact.ToJson(loaded));
-    if (json.RootElement.GetProperty("representation").GetString() != "native-v1"
-        || loaded.ExecutionPlans![0].Transfers[1].Source.Kind != NativeKind.Range)
-        throw new InvalidOperationException("Standalone native artifact lost its execution representation.");
-    Console.WriteLine("consumed native-v1 without source or HIR");
-    return;
-}
+using Msync.Optimization;
 
 int checks = 0;
 void Require(bool condition, string message)
@@ -30,31 +9,27 @@ void Require(bool condition, string message)
     checks++;
     if (!condition) throw new InvalidOperationException(message);
 }
-NativeProgram Roundtrip(NativeProgram program, bool identical = true)
+NativeProgram Roundtrip(NativeProgram program)
 {
     using MemoryStream first = new();
-    NativeArtifact.Write(program, first);
+    NativeArtifact.Write(NativeOptimizer.PlanStorage(program), first);
     byte[] bytes = first.ToArray();
     first.Position = 0;
     NativeProgram decoded = NativeArtifact.Read(first);
     Require(first.CanRead && first.Position == first.Length, "Reader closed or failed to consume caller stream");
     using MemoryStream second = new();
     NativeArtifact.Write(decoded, second);
-    if (identical) Require(second.ToArray().SequenceEqual(bytes), "Native encoding is not deterministic");
+    Require(second.ToArray().SequenceEqual(bytes), "Native encoding is not deterministic");
     using ReadPipe pipe = new(bytes);
     Require(NativeArtifact.Read(pipe).Functions.Count == program.Functions.Count, "Nonseekable reader changed program");
     return decoded;
 }
 void Reject(NativeProgram program, string message)
 {
-    using MemoryStream bytes = new();
-    NativeArtifact.WriteProduced(program, bytes);
-    bytes.Position = 0;
-    try { NativeArtifact.Read(bytes); throw new InvalidOperationException("Accepted invalid native IR: " + message); }
+    try { NativeArtifact.Validate(program); throw new InvalidOperationException("Accepted invalid native IR: " + message); }
     catch (MsyncException error)
     {
-        Require(error.Message.Contains("byte", StringComparison.Ordinal)
-            && error.Message.Contains(message, StringComparison.OrdinalIgnoreCase), error.Message);
+        Require(error.Message.Contains(message, StringComparison.OrdinalIgnoreCase), error.Message);
     }
 }
 
@@ -246,12 +221,12 @@ NativeProgram pointerCarrier = Fixtures.ScopeCarrierStore();
 Reject(pointerCarrier with { Types = pointerCarrier.Types.Select((type, index) => index == 1 ? new NativeCodeType(TypeKind.Never, Pointee: 0) : type).ToArray() }, "fixed type");
 Require(Roundtrip(Fixtures.Hint(escape: false)).Allocations[0].Placement == NativeAllocationPlacement.Frame,
     "Proved frame hint was discarded");
-Require(Roundtrip(Fixtures.Hint(escape: true), identical: false).Allocations[0].Placement == NativeAllocationPlacement.LogicalHeap,
-    "Escaping allocation trusted an external frame hint");
+Require(Roundtrip(Fixtures.Hint(escape: true)).Allocations[0].Placement == NativeAllocationPlacement.LogicalHeap,
+    "Artifact changed the producer's heap placement");
 
 using (MemoryStream original = new())
 {
-    NativeArtifact.Write(scalar, original);
+    NativeArtifact.Write(NativeOptimizer.PlanStorage(scalar), original);
     byte[] bytes = original.ToArray();
     for (int length = 0; length < bytes.Length; length++)
     {

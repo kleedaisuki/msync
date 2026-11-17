@@ -1,6 +1,6 @@
 # Native artifact contracts
 
-The v0.9 release reads Native format 2 (compact revision 2) and HIR format 4.
+The v0.9 release reads Native format 2 (compact revision 4) and HIR format 4.
 Old artifacts must be rebuilt from source. Readers decode the compiler's storage
 and call plans; they do not repeat semantic verification, alias/escape analysis,
 or allocation-hint normalization. The explicit `NativeArtifact.Validate` API is
@@ -26,13 +26,13 @@ Hand-constructed Native IR must be finalized with `NativeOptimizer.PlanStorage`
 already produces these plans. See the
 [compiled storage contract](../../docs/design/native-execution-lowering-v090.md#v09-compiled-storage-contract-2026-11-13).
 
-## Historical codec diagnostics
+## Current codec properties
 
-The older C# codec fixture/measurement harness describes the pre-contract codec:
-unpooled-v1 acceptance, malformed semantic inputs, and parse + validation + hint
-normalization timings. Those acceptance expectations are superseded by the v0.9
-contract above, not runtime compatibility requirements. Frozen files in `Fixtures/`
-remain useful as rejection inputs and must not be regenerated with the new writer.
+`dotnet run --project tests/NativeArtifact -c Release` exercises current
+Native format 2 encoding, exact literals, malformed wire sections and detachment
+through nonseekable streams. Semantic rejection cases call the explicit verifier;
+the decoder does not verify semantics or normalize producer storage plans. The
+frozen Native format 1 input is used only by the CLI rejection journey.
 
 The 2026-11-12 historical receipt reduced a record stream from 29,197 to 6,088
 bytes and a Set artifact from 4,091,313 to 653,033 bytes. Those are historical
