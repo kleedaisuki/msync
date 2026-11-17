@@ -36,14 +36,7 @@ internal sealed partial class SemanticAnalyzer
             HirTypeId resolved = ResolveHirType(fixedAnnotation, caller);
             if (ScalarReturn(hir.Types[resolved.Value].RuntimeType)) return Shape(resolved);
         }
-        var key = caller.QueryBinding is not null ? "observation:" + templateId.Value : templateId.Value + (caller.DeferredReads ? "d:" : "i:") + string.Join(",", arguments.Select(argument =>
-            (argument.Fact.SemanticType ?? hir.Type(argument.Fact.Type)).Value + (argument.Eager ? "!" : ".")
-                + "T" + string.Join(".", argument.Fact.Denotations?.Types.Select(type => type.Value) ?? [])
-                + argument.Fact.Boolean + (argument.Value is { } value ? ValueKey(value) + PolicyKey(value, caller) : "")))
-            + ":" + string.Join(",", callable.Captures.IsDefault ? [] : callable.Captures.Select(capture =>
-                caller.Storage.GetValueOrDefault(capture.Source, capture.Value.Type).Value + ":"
-                    + ValueKey(caller.Values.GetValueOrDefault(capture.Source, capture.Value))
-                    + PolicyKey(caller.Values.GetValueOrDefault(capture.Source, capture.Value), caller)));
+        var key = caller.QueryBinding is not null ? "observation:" + templateId.Value : SchemeKey();
         if (caller.QueryBinding is null && returnSchemes.TryGetValue(key, out var cached)) return cached;
         SemanticContext context = caller.QueryFork();
         context.FlowAnalysis = null;
@@ -58,8 +51,8 @@ internal sealed partial class SemanticAnalyzer
             context.Locations[parameter] = parameter;
             SemanticValue supplied = argument.Value is { } value
                 ? value with { Type = type, Literal = caller.QueryBinding is null ? null : value.Literal, Node = HirNodeId.None } : ValueForType(type);
-            if (argument.Fact.Denotations is { Types.Length: 1 } denotations)
-                supplied = supplied with { DenotedType = denotations.Types[0] };
+            if (argument.Fact.Denotations is { } denotations)
+                supplied = WithDenotations(supplied, denotations.Types);
             context.Values[parameter] = supplied with { EagerRange = argument.Eager };
             context.Storage[parameter] = type;
         }
@@ -124,6 +117,33 @@ internal sealed partial class SemanticAnalyzer
         }
         finally { activeReturnSchemes.Remove(key); }
 
+        string SchemeKey()
+        {
+            StringBuilder fingerprint = new();
+            fingerprint.Append(templateId.Value).Append(caller.DeferredReads ? "d:" : "i:");
+            for (int i = 0; i < arguments.Count; i++)
+            {
+                var argument = arguments[i];
+                fingerprint.Append((argument.Fact.SemanticType ?? hir.Type(argument.Fact.Type)).Value)
+                    .Append(argument.Eager ? '!' : '.').Append(argument.Fact.Boolean).Append('T');
+                if (argument.Fact.Denotations is { } denotations)
+                    foreach (var type in denotations.Types) fingerprint.Append(type.Value).Append(',');
+                if (argument.Value is { } value)
+                    AppendStaticInput(fingerprint, templateId, template.Parameters[i], value, caller, capture: false);
+                else fingerprint.Append(';');
+            }
+            fingerprint.Append('|');
+            for (int i = 0; i < callable.Captures.AsSpan().Length; i++)
+            {
+                var slot = callable.Captures[i];
+                fingerprint.Append(caller.Storage.GetValueOrDefault(slot.Source, slot.Value.Type).Value).Append(':');
+                var value = slot.Mode == HirCaptureMode.Value ? slot.Value
+                    : caller.Values.GetValueOrDefault(slot.Source, slot.Value);
+                AppendStaticInput(fingerprint, templateId, template.Captures[i].Target, value, caller, capture: true);
+            }
+            return fingerprint.ToString();
+        }
+
         static bool ScalarReturn(TypeRef type) => (type.Kind & ~TypeKind.Null) is
             TypeKind.Number or TypeKind.Bool or TypeKind.String or TypeKind.Path or TypeKind.Process
                 or TypeKind.Connection or TypeKind.Type;
@@ -152,7 +172,9 @@ internal sealed partial class SemanticAnalyzer
             SemanticValue value = context.Values.GetValueOrDefault(location) ?? binding(new(node.Data));
             context.Values[location] = value;
             FlowFact fact = facts.Contains(location) ? facts.Read(location) : HirTypeProjection.ValueFact(hir, value);
-            return new(fact, fact.Eager, value with { Type = fact.SemanticType ?? value.Type, Node = id });
+            value = value with { Type = fact.SemanticType ?? value.Type, Node = id };
+            if (fact.Denotations is { } denotations) value = WithDenotations(value, denotations.Types);
+            return new(fact, fact.Eager, value);
         }
         if (node.Kind == HirKind.Block)
         {
@@ -185,9 +207,8 @@ internal sealed partial class SemanticAnalyzer
                     ? StorageTypeFor(location, assigned, context) : declared
                 : context.Storage.GetValueOrDefault(location, type);
             context.Storage[location] = storage;
-            context.Values[location] = assigned with
-            { StorageConstraint = storage,
-                DenotedType = value.Fact.Denotations is { Types.Length: 1 } types ? types.Types[0] : assigned.DenotedType };
+            if (value.Fact.Denotations is { } denotations) assigned = WithDenotations(assigned, denotations.Types);
+            context.Values[location] = assigned with { StorageConstraint = storage };
             return Shape(hir.Type(TypeRef.Null));
         }
         if (node.Kind == HirKind.Return)
@@ -215,12 +236,37 @@ internal sealed partial class SemanticAnalyzer
         }
         if (node.Kind == HirKind.Match)
         {
+            ReturnShape subject = ProjectReturn(children[0], context, ref facts, returns);
+            var remaining = subject.Fact.Type == TypeRef.Type ? subject.Fact.Denotations : null;
+            HirLocationId? place = SchemePlace(children[0], context);
             ReturnShape result = Shape(hir.Type(new TypeRef(TypeKind.Never)));
             foreach (HirMatchArm arm in hir.Matches[node.Data].Arms)
             {
                 FlowFacts branch = facts;
-                ReturnShape value = ProjectReturn(arm.Value, context.QueryFork(), ref branch, returns);
+                SemanticContext selected = context.QueryFork();
+                bool last = arm.Pattern.Kind == HirPatternKind.Any;
+                if (remaining is not null)
+                {
+                    var types = MatchingDenotations(remaining, arm.Pattern, selected);
+                    if (types.IsEmpty) continue;
+                    var fact = subject.Fact with { Denotations = new(types) };
+                    if (place is { } original && branch.Contains(selected.Location(original)))
+                        branch = branch.Assign(selected.Location(original), fact);
+                    if (arm.Pattern.Binding is { } armBinding)
+                    {
+                        var location = selected.Location(armBinding);
+                        if (!branch.Contains(location)) branch = branch.Extend([new(location,
+                            new(TypeRef.Type, TypeRef.Type, StorageSemanticType: hir.Type(TypeRef.Type)))]);
+                        branch = branch.Assign(location, fact);
+                        selected.Values[location] = WithDenotations(subject.Value ?? ValueForType(hir.Type(TypeRef.Type)), types)
+                            with { Location = location };
+                    }
+                    last |= types.Length == remaining.Types.Length;
+                    if (!last) remaining = new(remaining.Types.Except(types));
+                }
+                ReturnShape value = ProjectReturn(arm.Value, selected, ref branch, returns);
                 result = JoinShape(result, value, new(hir), context.QueryBinding is not null);
+                if (last) break;
             }
             return result;
         }
@@ -248,7 +294,7 @@ internal sealed partial class SemanticAnalyzer
             if (receiver.Value?.Scope is { } row && node.Text is { } name)
             {
                 row = context.Objects.GetValueOrDefault(row.Region, row);
-                if (row.Fields.TryGetValue(name, out SemanticValue? member))
+                if (TryScopeField(row, name, context, out var member))
                 {
                     HirFlowTypeAlgebra algebra = new(hir);
                     HirTypeId fieldType = algebra.Member(receiver.Fact.SemanticType ?? hir.Type(receiver.Fact.Type), name);
@@ -262,7 +308,8 @@ internal sealed partial class SemanticAnalyzer
                         HirTypeId narrowed = algebra.Narrow(fieldType, selected.Type, true);
                         fact = selected with { Type = hir.Types[narrowed.Value].RuntimeType, SemanticType = narrowed };
                     }
-                    else fact = fact with { Boolean = member.KnownBool, Eager = member.EagerRange };
+                    else fact = fact with { Boolean = member.KnownBool, Denotations = member.DenotationDomain,
+                        Eager = member.EagerRange };
                     if (receiver.Value.RuntimeDependentMetadata) member = member with { RuntimeDependentMetadata = true };
                     return new(fact, fact.Eager || member.EagerRange || member.IndexedRegion is not null
                         || !member.IndexedAliases.IsDefaultOrEmpty, member);
@@ -529,33 +576,6 @@ internal sealed partial class SemanticAnalyzer
         }
         HirLocationId? field = (futureCallableWrites ??= new(program)).Field(receiver, node.Text);
         return field is { } definition ? context.Location(definition) : null;
-    }
-
-    private string PolicyKey(SemanticValue value, SemanticContext context)
-    {
-        StringBuilder key = new();
-        HashSet<SemanticValue> active = new(ReferenceEqualityComparer.Instance);
-        Append(value);
-        return key.ToString();
-
-        void Append(SemanticValue current)
-        {
-            if (!active.Add(current)) { key.Append('^'); return; }
-            key.Append(current.EagerRange ? '!' : '.').Append(current.KnownBool switch
-            { true => 't', false => 'f', null => '?' }).Append(current.DenotedType?.Value ?? -1);
-            if (current.Scope is { } row)
-            {
-                row = context.Objects.GetValueOrDefault(row.Region, row);
-                foreach (var pair in row.Fields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
-                {
-                    key.Append(pair.Key).Append(':');
-                    Append(row.Locations.TryGetValue(pair.Key, out HirLocationId location)
-                        ? context.Values.GetValueOrDefault(location, pair.Value) : pair.Value);
-                }
-            }
-            if (current.Element is { } element) Append(element);
-            active.Remove(current);
-        }
     }
 
     private static NativePath? ProjectionPath(SemanticValue? value) => value?.RuntimeDependentMetadata == true ? null

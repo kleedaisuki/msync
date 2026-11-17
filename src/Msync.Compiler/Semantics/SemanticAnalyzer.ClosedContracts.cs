@@ -21,7 +21,7 @@ internal sealed partial class SemanticAnalyzer
         var current = domain.Current.IsDefault ? callee.Callables : domain.Current;
         if (current.IsDefaultOrEmpty || domain.Choices.All(candidate =>
             current.Contains(candidate, SemanticCallableIdentity.Instance))) return null;
-        var query = QueryContext(context, callee, arguments);
+        var query = QueryContext(context);
         query.DeferredReads = true;
         SemanticValue initial = enriched with { Node = HirNodeId.None, Callables = current, FutureCallableDomain = null };
         SemanticValue promise = InvokeType(initial, arguments, source, query);

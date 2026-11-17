@@ -117,7 +117,7 @@ foreach (int level in new[] { 0, 2, 3 })
     using MemoryStream bytes = new();
     NativeArtifact.Write(module, bytes); bytes.Position = 0;
     NativeProgram relocatable = NativeArtifact.Read(bytes);
-    NativeProgram bound = relocatable with { Context = new(Environment.CurrentDirectory, Environment.CurrentDirectory), Stage = ArtifactStage.Executable };
+    NativeProgram bound = NativePreparation.Prepare(relocatable);
     using MemoryStream executableBytes = new();
     NativeArtifact.Write(bound, executableBytes); executableBytes.Position = 0;
     NativeProgram executable = NativeArtifact.Read(executableBytes);
@@ -142,4 +142,145 @@ try
     throw new InvalidOperationException("A value was accepted where a Type is required");
 }
 catch (CompileException error) { Check(error.Diagnostic.Code == "E0203", "non-Type diagnostic"); }
+
+const string finiteMatch = """
+    fn render(T: Type) {
+        match T {
+            Number => { let value: T = 7; value as String },
+            String => { let value: T = "text"; value as String }
+        }
+    };
+    fn render_pair(pair) {
+        let T = pair::Item;
+        let value: T = pair::value;
+        value as String
+    };
+    let io = $std::io;
+    let input? = io::read_line();
+    let tag = if input is null { Number } else { String };
+    io::println(render(tag));
+    let pair = match input is null {
+        true => { scope { Item: Number, value: 19 } },
+        false => { scope { Item: String, value: "stored" } }
+    };
+    io::println(match pair::Item {
+        Number => { render_pair(pair) },
+        String => { render_pair(pair) }
+    });
+    io::println(render_pair(pair));
+    io::println(render_pair(match input is null {
+        true => { scope { Item: Number, value: 23 } },
+        false => { scope { Item: String, value: "inline" } }
+    }));
+    """;
+foreach (int level in new[] { 0, 2 })
+{
+    var module = NativePreparation.Prepare(Compiler.CompileNative(finiteMatch, "finite-match.msync", level));
+    using MemoryStream bytes = new();
+    NativeArtifact.Write(module, bytes);
+    bytes.Position = 0;
+    var executable = NativeArtifact.Read(bytes);
+    foreach (var (input, expected) in new[] { ("", "7\n19\n19\n23\n"), ("x\n", "text\nstored\nstored\ninline\n") })
+    {
+        using var reader = new StringReader(input);
+        using var output = new StringWriter { NewLine = "\n" };
+        await using var interpreter = new NativeInterpreter(executable, new(Output: output) { Input = reader });
+        await interpreter.ExecuteAsync();
+        Check(output.ToString() == expected, "finite match and its correlated payload at O" + level);
+    }
+}
+try
+{
+    Compiler.CompileNative(finiteMatch[..finiteMatch.IndexOf("io::println(render(tag));", StringComparison.Ordinal)]
+        + "match tag { Number => { 1 } };", "finite-match-incomplete.msync");
+    throw new InvalidOperationException("A finite match omitted a reachable type");
+}
+catch (CompileException error)
+{
+    Check(error.Diagnostic.Code == "E0209", "missing denoted Type case");
+}
+
+const string forwardedWitness = """
+    fn read_item(source) { source::Item };
+    fn transform(view, original) {
+        WRITE_FIRST
+        let Item = read_item(original);
+        WRITE_LAST
+        let n: Item = 7;
+        n
+    };
+    let a = scope { Item: Number };
+    let b = scope { Item: Number };
+    let view? = $std::ranges::first([a, b]);
+    if view is null { 0 } else { transform(view, a) }
+    """;
+const string writeItem = "view::Item = String;";
+var beforeStore = forwardedWitness.Replace("WRITE_FIRST", "").Replace("WRITE_LAST", writeItem);
+await using (var interpreter = new NativeInterpreter(Compiler.CompileNative(beforeStore, "type-read-before-store.msync")))
+    Check((await interpreter.ExecuteAsync()).AsNumber() == 7, "forwarded Type retains the value read before a later store");
+try
+{
+    var afterStore = forwardedWitness.Replace("WRITE_FIRST", writeItem).Replace("WRITE_LAST", "");
+    Compiler.CompileNative(afterStore, "type-read-after-store.msync");
+    throw new InvalidOperationException("An aliased caller reused a stale forwarded Type witness");
+}
+catch (CompileException error)
+{
+    Check(error.Diagnostic.Code == "E0202", "stale forwarded Type is rejected at the annotation");
+}
+
+const string recursivePath = """
+    fn make() { scope { Item: Number, next?: null } };
+    fn write(node) {
+        let next? = node::next;
+        if next is not null {
+            let following? = next::next;
+            if following is not null { following::Item = String; };
+        };
+    };
+    let self = make();
+    self::next = self;
+    write(self);
+    let a = make();
+    let b = make();
+    let c = make();
+    a::next = b;
+    b::next = c;
+    c::next = a;
+    write(a);
+    let T = c::Item;
+    let result: T = "path";
+    result
+    """;
+var recursiveHir = Compiler.Analyze(recursivePath, "recursive-effect-path.msync");
+Check(recursiveHir.Functions.Count(function => function.Name == "write") == 1,
+    "shared and distinct recursive edges reuse one specialization");
+var recursiveImage = Compiler.LowerNative(recursiveHir);
+await using (var interpreter = new NativeInterpreter(recursiveImage))
+    Check((await interpreter.ExecuteAsync()).AsString() == "path", "recursive write binds the complete formal path");
+
+const string writeBeforeFieldDemand = """
+    fn alter(a, b) {
+        let view? = $std::ranges::first([a, b]);
+        if view is not null {
+            view::Item = String;
+            let T = a::Item;
+            let n: T = 7;
+            n
+        } else { 0 }
+    };
+    let a = scope { Item: Number };
+    let b = scope { Item: Number };
+    alter(a, b)
+    """;
+try
+{
+    Compiler.CompileNative(writeBeforeFieldDemand, "type-write-before-field-demand.msync");
+    throw new InvalidOperationException("The first field demand restored a stale entry Type");
+}
+catch (CompileException error)
+{
+    Check(error.Diagnostic.Code == "E0202", "a write before field demand invalidates the entry Type");
+}
+
 Console.WriteLine($"PASS {checks} closed-Type metaprogramming contracts");

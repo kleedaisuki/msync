@@ -44,13 +44,19 @@ internal sealed record SemanticMemberContract(int Concept, HirConceptMember Requ
 
 internal sealed record SemanticOrigin(HirLocationId Root, ImmutableArray<string> Fields = default);
 
+internal sealed record SemanticBranchValue(ImmutableArray<SemanticValue> Arms, HirLocationId? Selector = null,
+    ImmutableArray<int> Ordinals = default)
+{
+    public int Ordinal(int index) => Ordinals.IsDefault ? index : Ordinals[index];
+}
+
 internal sealed record SemanticIndexed(SemanticValue Element, HirTypeId? FixedCarrier = null,
     ImmutableArray<HirTypeId> CarrierConstraints = default);
 
 internal enum SemanticWriteKind : byte { Location, Field, Indexed }
 internal sealed record SemanticDeferredWrite(SemanticWriteKind Kind, SemanticValue After,
     HirLocationId Location = default, int Region = -1, string? Field = null,
-    SemanticIndexed? IndexedStorage = null);
+    SemanticIndexed? IndexedStorage = null, SemanticOrigin? Target = null);
 
 internal sealed record SemanticValue(HirTypeId Type, HirNodeId Node,
     HirLiteral? Literal = null, ImmutableArray<SemanticCallable> Callables = default,
@@ -63,9 +69,13 @@ internal sealed record SemanticValue(HirTypeId Type, HirNodeId Node,
     ImmutableArray<int> IndexedAliases = default,
     ImmutableArray<SessionCallBinding> OpenSessionCalls = default,
     SemanticCallableDomain? FutureCallableDomain = null,
-    HirTypeId? StorageConstraint = null, bool RuntimeDependentMetadata = false, HirTypeId? CheckedType = null)
+    HirTypeId? StorageConstraint = null, bool RuntimeDependentMetadata = false, HirTypeId? CheckedType = null,
+    FlowDenotationDomain? TypeCandidates = null, SemanticBranchValue? BranchValue = null,
+    SemanticTypeRead? TypeRead = null)
 {
     public bool? KnownBool => Literal is { Kind: HirLiteralKind.Bool } literal ? literal.Boolean : null;
+    public FlowDenotationDomain? DenotationDomain =>
+        DenotedType is { } known ? new([known]) : TypeCandidates;
 }
 
 internal sealed partial class SemanticContext(HirFunctionId function, SemanticOutput? output = null, SemanticContext? parent = null)
@@ -100,6 +110,7 @@ internal sealed partial class SemanticContext(HirFunctionId function, SemanticOu
     public SemanticFacts<HirLocationId, SemanticValue> Values { get; } = new(parent?.Values);
     public SemanticFacts<HirLocationId, HirTypeId> Storage { get; } = new(parent?.Storage);
     public SemanticFacts<int, SemanticScope> Objects { get; } = new(parent?.Objects);
+    public SemanticAnalyzer.FormalInput? InputFields { get; set; } = parent?.InputFields;
     public SemanticFacts<int, SemanticIndexed> Indexed { get; } = new(parent?.Indexed);
     public SemanticFacts<int, ImmutableHashSet<int>> AliasViews { get; } = new(parent?.AliasViews);
     public SemanticFacts<(int Region, string Field), ImmutableArray<SemanticMemberContract>> MemberContracts { get; } = new(parent?.MemberContracts);

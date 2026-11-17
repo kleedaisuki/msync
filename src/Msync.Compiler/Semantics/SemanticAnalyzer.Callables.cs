@@ -25,11 +25,12 @@ internal sealed partial class SemanticAnalyzer
         for (int index = 0; index < inputs.Length; index++) inputs[index] = Analyze(children[index + 1], context);
         if (hir.Calls[node.Data] is { Kind: HirCallKind.Native } native)
             return InvokeNative(native.NativeName!, inputs, node.Source, context, callee);
+        if (TryFiniteCall(callee, inputs, children[1..], node.Source, context, out var finite)) return finite;
         return Invoke(callee, inputs, node.Source, context);
     }
 
     private SemanticValue InvokeType(SemanticValue callee, IReadOnlyList<SemanticValue> arguments,
-        HirSourceRange source, SemanticContext context) => Invoke(callee, arguments, source, QueryContext(context, callee, arguments));
+        HirSourceRange source, SemanticContext context) => Invoke(callee, arguments, source, QueryContext(context));
 
     private SemanticValue Invoke(SemanticValue callee, IReadOnlyList<SemanticValue> arguments,
         HirSourceRange source, SemanticContext context)

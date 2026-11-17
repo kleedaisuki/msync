@@ -243,7 +243,8 @@ internal sealed partial class SemanticAnalyzer
         receiver = receiver with { Type = receiverType };
         var scope = receiver.Scope ?? ValueForType(receiver.Type).Scope;
         if (scope is not null && context.Objects.TryGetValue(scope.Region, out var latest)) scope = latest;
-        if (scope is null || !scope.Fields.ContainsKey(node.Text!))
+        SemanticValue? selected = null;
+        if (scope is null || !TryScopeField(scope, node.Text!, context, out selected))
         {
             SemanticScope? schema = ValueForType(receiver.Type).Scope;
             if (scope is null) scope = schema;
@@ -253,14 +254,15 @@ internal sealed partial class SemanticAnalyzer
                 if (declared is not null) scope = scope with
                 {
                     Fields = scope.Fields.SetItem(node.Text!,
-                    ValueForType(declared.AdmitsNull ? Nullable(declared.StorageType) : declared.StorageType))
+                    selected = ValueForType(declared.AdmitsNull ? Nullable(declared.StorageType) : declared.StorageType))
                 };
                 else scope = schema ?? scope;
             }
         }
-        if (scope is null || !scope.Fields.TryGetValue(node.Text!, out var value))
+        if (scope is null || selected is null && !TryScopeField(scope, node.Text!, context, out selected))
             throw SemanticDiagnosticFactory.MissingMember(hir.Sources[node.Source.Source.Value],
                 new(node.Source.Start, node.Source.Length), node.Text!, scope?.Fields.Keys ?? []);
+        var value = selected!;
         int offset = FieldOffset(scope.Layout, node.Text!);
         HirLocationId? location = scope.Locations.TryGetValue(node.Text!, out var member) ? member : null;
         if (location is { } fieldLocation && context.Values.TryGetValue(fieldLocation, out var actual)) value = actual;
@@ -279,13 +281,34 @@ internal sealed partial class SemanticAnalyzer
         HirTypeId constraint = location is { } stored ? StorageType(stored, context)
             : value.StorageConstraint is { } carrier ? InferredStorageType(carrier)
             : InferredStorageType(storageField.AdmitsNull ? Nullable(storageField.StorageType) : storageField.StorageType);
+        // Recursive type records can share a symbolic row. Each load still owns
+        // its own source path, unless the slot was replaced by a different value.
+        if (value.Origin is not null && receiver.Origin is { } input
+            && !context.FieldWrites.Contains((scope.Region, node.Text!)))
+            value = value with { Origin = new(input.Root, [.. input.Fields.AsSpan(), node.Text!]) };
+        SemanticTypeRead? typeRead = value.TypeRead;
+        if (value.DenotedType is { } denoted && scope.Region >= 0 && context.WriteEvents is { } events)
+        {
+            typeRead = new(scope.Region, node.Text!, denoted) { Target = receiver.Origin };
+            events.Add(new(null, context.ActiveSingletonGuards, TypeRead: typeRead));
+        }
         return value with
         {
             Node = Add(node with { Data = offset }, value.Type, [receiver.Node], context),
             Location = location,
-            StorageConstraint = constraint
+            StorageConstraint = constraint,
+            TypeRead = typeRead
         };
 
+    }
+
+    private bool TryScopeField(SemanticScope scope, string name, SemanticContext context, out SemanticValue value)
+    {
+        scope = context.Objects.GetValueOrDefault(scope.Region, scope);
+        if (scope.Locations.TryGetValue(name, out var location) && context.Values.TryGetValue(location, out value!))
+            return true;
+        if (scope.Fields.TryGetValue(name, out value!)) return true;
+        return context.InputFields?.TryField(scope, name, context, out value!) == true;
     }
 
     private SemanticValue MemberAssign(HirNode node, HirNodeId receiverExpression, SemanticValue receiver, SemanticValue value,
@@ -340,6 +363,7 @@ internal sealed partial class SemanticAnalyzer
         }
         value = Convert(value, target, valueSource, context);
         value = value with { StorageConstraint = target };
+        context.InputFields?.AdmitMemberContract(scope.Region, node.Text!, context);
         CheckMemberContracts(scope, node.Text!, value, valueSource, context);
         CheckSessionMemberAssignment(scope, node.Text!, value, valueSource, context);
         CheckClosedMemberAssignment(scope, node.Text!, value, valueSource, context);
@@ -347,7 +371,7 @@ internal sealed partial class SemanticAnalyzer
         var updated = scope with { Fields = scope.Fields.SetItem(node.Text!, value) };
         context.Objects[scope.Region] = updated;
         context.FieldWrites.Add((scope.Region, node.Text!));
-        context.RecordWrite(new(SemanticWriteKind.Field, value, Region: scope.Region, Field: node.Text!));
+        context.RecordWrite(new(SemanticWriteKind.Field, value, Region: scope.Region, Field: node.Text!, Target: receiver.Origin));
         if (scope.Locations.TryGetValue(node.Text!, out var location))
         {
             context.Values[location] = value;

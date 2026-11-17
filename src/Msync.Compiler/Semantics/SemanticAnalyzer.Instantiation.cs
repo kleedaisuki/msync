@@ -22,13 +22,14 @@ internal sealed partial class SemanticAnalyzer
         public ImmutableArray<SemanticValue> Arguments { get; set; } = [];
         public ImmutableArray<SemanticValue> Captures { get; set; } = [];
         public ImmutableArray<HirLocationId> CaptureTargets { get; set; } = [];
+        public IReadOnlyDictionary<int, SemanticOrigin> InputScopePaths { get; init; } = null!;
+        public IReadOnlyList<(SemanticOrigin Path, SemanticValue Value)> NestedInputs { get; init; } = null!;
         public ImmutableDictionary<int, ImmutableHashSet<int>> AliasEffects { get; set; } = ImmutableDictionary<int, ImmutableHashSet<int>>.Empty;
         public ImmutableDictionary<int, SemanticScope> Objects { get; set; } = ImmutableDictionary<int, SemanticScope>.Empty;
         public ImmutableDictionary<int, SemanticIndexed> Indexed { get; set; } = ImmutableDictionary<int, SemanticIndexed>.Empty;
         public ImmutableDictionary<HirLocationId, SemanticValue> Cells { get; set; } = ImmutableDictionary<HirLocationId, SemanticValue>.Empty;
         public ImmutableDictionary<HirLocationId, HirTypeId> Storage { get; set; } = ImmutableDictionary<HirLocationId, HirTypeId>.Empty;
         public ImmutableHashSet<HirLocationId> NamedCells { get; set; } = [];
-        public ImmutableDictionary<int, ImmutableHashSet<int>> AliasViews { get; set; } = ImmutableDictionary<int, ImmutableHashSet<int>>.Empty;
         public ImmutableDictionary<(int Region, string Field), ImmutableArray<SemanticMemberContract>> MemberContracts { get; set; }
             = ImmutableDictionary<(int Region, string Field), ImmutableArray<SemanticMemberContract>>.Empty;
         public ImmutableDictionary<HirLocationId, HirLocationId> Definitions { get; set; } = ImmutableDictionary<HirLocationId, HirLocationId>.Empty;
@@ -43,93 +44,9 @@ internal sealed partial class SemanticAnalyzer
     private readonly SemanticInstanceCache instances = codeCache ?? new();
     private readonly Dictionary<int, SemanticScope> projectedSingletons = [];
 
-    private SemanticContext QueryContext(SemanticContext context, SemanticValue callee,
-        IReadOnlyList<SemanticValue> arguments)
-    {
-        SemanticContext query = new(context.Function)
-        { Queries = context.Queries ?? queries, DeferredReads = context.DeferredReads };
-        HashSet<SemanticValue> visited = new(ReferenceEqualityComparer.Instance);
-        HashSet<int> importedRegions = [];
-        Import(callee);
-        foreach (var argument in arguments) Import(argument);
-        return query;
+    private SemanticContext QueryContext(SemanticContext context) => new(context.Function, parent: context)
+    { Queries = context.Queries ?? queries, DeferredReads = context.DeferredReads };
 
-        void Import(SemanticValue value)
-        {
-            if (!visited.Add(value)) return;
-            if (value.Scope is { } scope)
-            {
-                if (scope.Region >= 0)
-                {
-                    if (!importedRegions.Add(scope.Region)) return;
-                    scope = context.Objects.GetValueOrDefault(scope.Region, scope);
-                    query.Objects[scope.Region] = scope;
-                    foreach (var field in scope.Fields.Keys)
-                        if (context.MemberContracts.TryGetValue((scope.Region, field), out var contracts))
-                            query.MemberContracts[(scope.Region, field)] = contracts;
-                    if (context.AliasViews.TryGetValue(scope.Region, out var views))
-                    {
-                        query.AliasViews[scope.Region] = views;
-                        foreach (var view in views)
-                            if (context.Objects.TryGetValue(view, out var viewScope))
-                                Import(new(hir.Type(new HirType(TypeRef.Scope, Shape: viewScope.Layout)), HirNodeId.None, Scope: viewScope));
-                    }
-                }
-                if (!scope.Aliases.IsDefault)
-                    foreach (var alias in scope.Aliases)
-                        if (context.Objects.TryGetValue(alias, out var aliasScope))
-                            Import(new(hir.Type(new HirType(TypeRef.Scope, Shape: aliasScope.Layout)), HirNodeId.None, Scope: aliasScope));
-                foreach (var field in scope.Fields.Values) Import(field);
-                foreach (var location in scope.Locations.Values) ImportLocation(location);
-            }
-            if (value.IndexedRegion is { } region && context.Indexed.TryGetValue(region, out var indexed))
-            {
-                query.Indexed[region] = indexed;
-                Import(indexed.Element);
-            }
-            if (!value.IndexedAliases.IsDefaultOrEmpty)
-                foreach (int alias in value.IndexedAliases)
-                    if (context.Indexed.TryGetValue(alias, out var storage))
-                    {
-                        query.Indexed[alias] = storage;
-                        Import(storage.Element);
-                    }
-            if (value.Element is { } element) Import(element);
-            if (!value.DeferredEffects.IsDefault)
-                foreach (var write in value.DeferredEffects)
-                {
-                    Import(write.After);
-                    if (write.Kind == SemanticWriteKind.Location) ImportLocation(write.Location);
-                    else if (write.Kind == SemanticWriteKind.Field && context.Objects.TryGetValue(write.Region, out var target))
-                        Import(new(hir.Type(new HirType(TypeRef.Scope, Shape: target.Layout)), HirNodeId.None, Scope: target));
-                    else if (write.Kind == SemanticWriteKind.Indexed && context.Indexed.TryGetValue(write.Region, out var storage))
-                        query.Indexed[write.Region] = storage;
-                }
-            if (value.FutureCallableDomain is { } future)
-            {
-                ImportLocation(future.Owner);
-                foreach (var callable in future.Current.IsDefault ? future.Choices : future.Choices.AddRange(future.Current))
-                    if (!callable.Captures.IsDefault)
-                        foreach (var capture in callable.Captures) { ImportLocation(capture.Source); Import(capture.Value); }
-            }
-            foreach (var callable in Choices(value))
-                if (!callable.Captures.IsDefault)
-                    foreach (var capture in callable.Captures)
-                    {
-                        Import(capture.Value);
-                        ImportLocation(capture.Source);
-                    }
-        }
-
-        void ImportLocation(HirLocationId location)
-        {
-            if (context.Definitions.TryGetValue(location, out var definition)) query.Definitions[location] = definition;
-            if (context.Storage.TryGetValue(location, out var type)) query.Storage[location] = type;
-            if (!context.Values.TryGetValue(location, out var value)) return;
-            query.Values[location] = value;
-            Import(value);
-        }
-    }
     private SemanticValue TemplateClosure(HirNode node, SemanticContext context)
     {
         var closure = hir.TemplateClosures[node.Data];
@@ -210,8 +127,8 @@ internal sealed partial class SemanticAnalyzer
                 value = FutureRead(value, storage, caller, capture.Source);
             captureValues[index] = value;
         }
-        SemanticInputSchema? schema = null;
-        string key = InstanceKey(id, arguments, captureValues, caller, ref schema);
+        string key = InstanceKey(id, arguments, captureValues, caller);
+        Trace?.Metric("key.characters", key.Length);
         var cache = caller.Publish ? instances : (caller.Queries ??= queries).Instances;
         if (!cache.TryGetValue(key, out var instance))
         {
@@ -236,9 +153,7 @@ internal sealed partial class SemanticAnalyzer
             && (futureCallableWrites ??= new(program)).MayReenter(id)
             && ContainsCallableInput(captureValues, arguments, id, caller))
         {
-            SemanticValue callable = new(hir.Type(TypeRef.Function), HirNodeId.None,
-                Callables: [new(id, Captures: captured)]);
-            var query = QueryContext(caller, callable, arguments);
+            var query = QueryContext(caller);
             recursiveSignature = Instantiate(id, captured, arguments, source, query).Result;
         }
         HirFunctionId function = new(caller.Publish ? hir.Functions.Count : -1);
@@ -269,6 +184,7 @@ internal sealed partial class SemanticAnalyzer
             context.Definitions[target] = program.Original(declaration.Location);
         }
         FormalInput input = new(this, caller, context);
+        context.InputFields = input;
         foreach (var pair in context.Locations) input.Locations[pair.Key] = pair.Value;
         for (int index = 0; index < template.Captures.Length; index++)
             input.Locations[captured[index].Source] = context.Location(template.Captures[index].Target);
@@ -369,6 +285,8 @@ internal sealed partial class SemanticAnalyzer
                 : input.Abstract(recursiveSignature),
             Arguments = formalArguments.ToImmutable(),
             Captures = formalCaptures.ToImmutable(),
+            InputScopePaths = input.ScopePaths,
+            NestedInputs = input.NestedInputs,
             CaptureTargets = captureTargets.ToImmutable()
         };
         // Both query and code generation reserve before examining a recursive body.
@@ -397,13 +315,20 @@ internal sealed partial class SemanticAnalyzer
             }
             var observation = context.Publish && Runtime(result) == TypeRef.Path
                 ? observations?.ReturnedPath(body, context) : null;
-            result = ResolveSummaryTypes(result, context);
+            result = Trace?.Detail is { } exportTrace
+                ? exportTrace.Measure("compiler.semantic.export_type", (Self: this, result, context),
+                    static state => state.Self.ResolveExportValue(state.result, state.context))
+                : ResolveExportValue(result, context);
             instance.Result = result with { Node = HirNodeId.None, Location = null, Observation = observation ?? result.Observation };
             var exits = context.Returns.Select(exit => exit.Events).ToList();
             if (Runtime(body).Kind != TypeKind.Never) exits.Add(context.WriteEvents?.ToImmutableArray() ?? []);
             Trace?.Metric("plan.exits", exits.Count);
             context.WriteEvents = MergeEventSequences(exits);
-            FreezeSummary(instance, context, entryAliases);
+            if (Trace?.Detail is { } summaryTrace)
+                summaryTrace.Run("compiler.semantic.freeze_summary", (Self: this, instance, context, entryAliases),
+                    static state => state.Self.FreezeSummary(state.instance, state.context, state.entryAliases));
+            else FreezeSummary(instance, context, entryAliases);
+            Trace?.Metric("input.fields.loaded", input.FieldLoads);
             instance.Complete = true;
             caller.Output?.SealFunction(function, new(template.Name,
                 parameters.ToImmutable(), captures.ToImmutable(), result.Type, body.Node, id)
@@ -447,7 +372,7 @@ internal sealed partial class SemanticAnalyzer
         instance.NamedCells = namedCells?.ToImmutableHashSet() ?? [];
         instance.WriteEvents = ExportEvents(context.WriteEvents ?? []);
         Trace?.Metric("plan.writes.exported", exported.Count);
-        instance.MemberContracts = context.MemberContracts.Where(pair => objects.ContainsKey(pair.Key.Region))
+        instance.MemberContracts = context.MemberContracts.Where(pair => ExportedScope(pair.Key.Region))
             .ToImmutableDictionary(pair => pair.Key, pair => pair.Value);
         HashSet<HirLocationId> reachedLocations = [.. cells.Keys, .. instance.CaptureTargets];
         foreach (var argument in instance.Arguments)
@@ -459,15 +384,12 @@ internal sealed partial class SemanticAnalyzer
             .ToImmutableDictionary(pair => pair.Key, pair => pair.Value);
         instance.CallableContracts = context.EstablishedCallableContracts.Where(pair => reachedLocations.Contains(pair.Key))
             .ToImmutableDictionary(pair => pair.Key, pair => pair.Value);
-        instance.AliasViews = context.AliasViews.Where(pair => objects.ContainsKey(pair.Key))
-            .ToImmutableDictionary(pair => pair.Key, pair => pair.Value);
-
         // Entry aliases are premises, not creations. Replaying them would give
         // borrowed external families fresh identities on every invocation.
         var aliasEffects = ImmutableDictionary.CreateBuilder<int, ImmutableHashSet<int>>();
         foreach (var pair in context.AliasViews)
         {
-            if (!objects.ContainsKey(pair.Key)) continue;
+            if (!ExportedScope(pair.Key)) continue;
             var introduced = pair.Value.Except(entryAliases.GetValueOrDefault(pair.Key, ImmutableHashSet<int>.Empty));
             if (!introduced.IsEmpty) aliasEffects.Add(pair.Key, introduced);
         }
@@ -490,9 +412,11 @@ internal sealed partial class SemanticAnalyzer
         bool Escapes(SemanticDeferredWrite write) => write.Kind switch
         {
             SemanticWriteKind.Location => cells.ContainsKey(write.Location),
-            SemanticWriteKind.Field => objects.ContainsKey(write.Region),
+            SemanticWriteKind.Field => write.Target is not null || ExportedScope(write.Region),
             _ => indexed.ContainsKey(write.Region)
         };
+
+        bool ExportedScope(int region) => instance.InputScopePaths.ContainsKey(region) || objects.ContainsKey(region);
 
         ImmutableArray<SemanticWriteEvent> ExportEvents(IEnumerable<SemanticWriteEvent> events)
         {
@@ -502,9 +426,15 @@ internal sealed partial class SemanticAnalyzer
                 var branches = item.Branches.IsDefaultOrEmpty ? default
                     : item.Branches.Select(branch => ExportEvents(branch)).ToImmutableArray();
                 bool hasBranches = !branches.IsDefaultOrEmpty && branches.Any(branch => !branch.IsEmpty);
-                var write = exported.Contains(item) ? item.Write : null;
-                if (write is null && item.InitializeSingleton is null && !hasBranches) continue;
-                result.Add(item with { Write = write, Branches = hasBranches ? branches : default });
+                var write = exported.Contains(item) && item.Write is { } original
+                    ? original with { After = ResolveExportValue(original.After, context) } : null;
+                var read = item.TypeRead is { } observed
+                    && (observed.RequiredAt is not null || ReferenceEquals(observed, instance.Result.TypeRead))
+                    && (observed.Target is not null || (observed.Alternatives.IsDefault
+                        ? ExportedScope(observed.Region) : observed.Alternatives.All(ExportedScope)))
+                    ? observed : null;
+                if (write is null && read is null && item.InitializeSingleton is null && !hasBranches) continue;
+                result.Add(item with { Write = write, Branches = hasBranches ? branches : default, TypeRead = read });
             }
             return result.ToImmutable();
         }
@@ -517,7 +447,7 @@ internal sealed partial class SemanticAnalyzer
         void VisitCell(HirLocationId location)
         {
             if (cells.ContainsKey(location) || StorageValue(location, context) is not { } value) return;
-            cells[location] = value;
+            cells[location] = ResolveExportValue(value, context);
             var owner = StorageOwner(location, context);
             if (hir.Types[hir.Locations[owner.Value].StorageType.Value].TypeParameter >= 0)
                 foreach (var scope in context.Objects.Values)
@@ -534,9 +464,17 @@ internal sealed partial class SemanticAnalyzer
             if (value.Scope is { } scope)
             {
                 scope = context.Objects.GetValueOrDefault(scope.Region, scope);
-                if (scope.Region < 0 || objects.TryAdd(scope.Region, scope))
+                if (scope.Region < 0 || !instance.InputScopePaths.ContainsKey(scope.Region) && objects.TryAdd(scope.Region, scope))
                 {
-                    foreach (var field in scope.Fields.Values) Visit(field);
+                    var fields = scope.Fields;
+                    foreach (var (name, field) in scope.Fields)
+                    {
+                        var exportedField = ResolveExportValue(field, context);
+                        if (!ReferenceEquals(exportedField, field)) fields = fields.SetItem(name, exportedField);
+                        Visit(field);
+                    }
+                    if (scope.Region >= 0 && !ReferenceEquals(fields, scope.Fields))
+                        objects[scope.Region] = scope with { Fields = fields };
                     if (!scope.Aliases.IsDefault)
                         foreach (var alias in scope.Aliases) VisitRegion(alias);
                     if (context.AliasViews.TryGetValue(scope.Region, out var views))

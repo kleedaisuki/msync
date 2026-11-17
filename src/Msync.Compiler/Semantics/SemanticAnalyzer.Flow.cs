@@ -34,6 +34,7 @@ internal sealed partial class SemanticAnalyzer
             HirNodeId ignored = Null(node.Source, context).Node;
             return value with
             {
+                BranchValue = null,
                 Node = Add(node, value.Type,
                 known ? [condition.Node, value.Node, ignored] : [condition.Node, ignored, value.Node], context)
             };
@@ -51,8 +52,19 @@ internal sealed partial class SemanticAnalyzer
         return result with
         {
             Node = Add(node, result.Type,
-            [condition.Node, accepted.Node, rejected.Node], context)
+            [condition.Node, accepted.Node, rejected.Node], context),
+            BranchValue = CorrelatedBranches(accepted, rejected) ? new([accepted, rejected]) : null
         };
+    }
+
+    private bool CorrelatedBranches(SemanticValue yes, SemanticValue no)
+    {
+        if (yes.DenotedType is { } first && no.DenotedType is { } second) return first != second;
+        if (yes.Scope is not { } left || no.Scope is not { } right) return false;
+        foreach (var field in left.Fields)
+            if (field.Value.DenotedType is { } known && right.Fields.TryGetValue(field.Key, out var other)
+                && other.DenotedType is { } different && known != different) return true;
+        return false;
     }
 
     private SemanticValue Match(HirNode node, ReadOnlySpan<HirNodeId> children,
@@ -62,29 +74,48 @@ internal sealed partial class SemanticAnalyzer
         HirMatch match = hir.Matches[node.Data];
         CheckExhaustive(subject, match, node.Source, context);
         List<HirMatchArm> arms = [];
+        List<SemanticValue> armValues = [];
         List<SemanticContext> branches = [];
         SemanticValue? result = null;
         TypeRef remaining = Runtime(subject);
+        var denotations = remaining == TypeRef.Type ? subject.DenotationDomain : null;
         foreach (HirMatchArm arm in match.Arms)
         {
             bool? known = PatternMatch(subject, arm.Pattern, context);
+            var typeCases = denotations?.Types ?? [];
+            if (denotations is not null && arm.Pattern.Kind == HirPatternKind.Type)
+            {
+                typeCases = MatchingDenotations(denotations, arm.Pattern, context);
+                if (typeCases.IsEmpty) continue;
+                if (typeCases.Length == denotations.Types.Length) known = true;
+            }
             if (known == false) continue;
             SemanticContext branch = ForkFlow(context);
             TypeRef narrowed = PatternType(arm.Pattern, remaining, context);
             if (arm.Pattern.Kind == HirPatternKind.Type)
                 RefineTypeSubject(children[0], ResolveHirType(new(arm.Pattern.Data), branch), true, branch);
             else RefineSubject(children[0], narrowed, branch);
+            if (denotations is not null && !typeCases.IsEmpty
+                && Subject(children[0], branch) is { } narrowedValue)
+            {
+                NarrowLayoutChoice(children[0], typeCases, branch);
+                SetSubject(children[0], WithDenotations(narrowedValue, typeCases), branch);
+            }
             if (arm.Pattern.Binding is { } source)
             {
                 HirLocationId location = branch.Location(source);
-                var value = (Subject(children[0], branch) ?? Retype(subject, narrowed)) with { Location = location };
+                var value = Subject(children[0], branch) ?? Retype(subject, narrowed);
+                if (denotations is not null && !typeCases.IsEmpty) value = WithDenotations(value, typeCases);
+                value = value with { Location = location };
                 branch.Values[location] = value;
                 branch.Storage[location] = value.Type;
                 if (context.Publish)
                     context.Output!.SetLocation(location, hir.Locations[location.Value] with { StorageType = value.Type });
             }
             SemanticValue valueResult = Analyze(arm.Value, branch);
-            arms.Add(arm with { Value = valueResult.Node });
+            var pattern = known == true ? new HirPattern(HirPatternKind.Any, Binding: arm.Pattern.Binding) : arm.Pattern;
+            arms.Add(new(pattern, valueResult.Node));
+            armValues.Add(valueResult);
             result = result is null ? valueResult : Join(result, valueResult);
             if (Runtime(valueResult).Kind != TypeKind.Never) branches.Add(branch);
             AppendExits(context, branch);
@@ -94,6 +125,8 @@ internal sealed partial class SemanticAnalyzer
                 remaining = new(remaining.Kind & ~covered, remaining.Element);
             }
             if (known == true) break;
+            if (denotations is not null && arm.Pattern.Kind == HirPatternKind.Type)
+                denotations = new(denotations.Types.Except(typeCases));
         }
         if (branches.Count != 0) MergeContexts(context, branches.ToArray());
         result ??= Null(node.Source, context);
@@ -103,7 +136,11 @@ internal sealed partial class SemanticAnalyzer
             index = hir.Matches.Count;
             context.Output!.AddMatch(new(arms.ToImmutableArray()));
         }
-        return result with { Node = Add(node with { Data = index }, result.Type, [subject.Node], context) };
+        var branchValue = armValues.Count > 1 && armValues.All(value => Runtime(value).Kind != TypeKind.Never)
+            && armValues.Skip(1).Any(value => CorrelatedBranches(armValues[0], value))
+            ? new SemanticBranchValue([.. armValues]) : null;
+        return result with { Node = Add(node with { Data = index }, result.Type, [subject.Node], context),
+            BranchValue = branchValue };
     }
 
     private SemanticValue For(HirNodeId id, HirNode node, ReadOnlySpan<HirNodeId> children,
@@ -304,12 +341,38 @@ internal sealed partial class SemanticAnalyzer
         if ((actual.Kind & TypeKind.Type) != 0)
         {
             refined = refined with { Kind = refined.Kind | TypeKind.Type };
+            if (actual == TypeRef.Type && value.TypeCandidates is { } domain)
+            {
+                var remaining = domain.Types.Where(candidate =>
+                    expected.Accepts(hir.Types[candidate.Value].RuntimeType) == positive).ToArray();
+                if (remaining.Length != 0)
+                {
+                    NarrowLayoutChoice(expression, remaining, context);
+                    SetSubject(expression, WithDenotations(value, remaining), context);
+                    return;
+                }
+            }
             bool exact = expected.Kind is not (TypeKind.Range or TypeKind.Never)
                 && ((ushort)expected.Kind & ((ushort)expected.Kind - 1)) == 0;
             if (positive && refined.Kind == TypeKind.Type && exact)
-                value = value with { DenotedType = target, Literal = new(HirLiteralKind.Type, Type: expected) };
+                value = WithDenotations(value, [target]);
         }
         SetSubject(expression, Retype(value, refined), context);
+    }
+
+    private SemanticValue WithDenotations(SemanticValue value, IReadOnlyList<HirTypeId> candidates) =>
+        candidates.Count == 1
+            ? value with { DenotedType = candidates[0], TypeCandidates = null,
+                Literal = new(HirLiteralKind.Type, Type: hir.Types[candidates[0].Value].RuntimeType) }
+            : value with { DenotedType = null, TypeCandidates = new(candidates), Literal = null };
+
+    private ImmutableArray<HirTypeId> MatchingDenotations(FlowDenotationDomain domain,
+        HirPattern pattern, SemanticContext context)
+    {
+        if (pattern.Kind == HirPatternKind.Any) return domain.Types;
+        if (pattern.Kind != HirPatternKind.Type) return [];
+        var expected = hir.Types[ResolveHirType(new(pattern.Data), context).Value].RuntimeType;
+        return [.. domain.Types.Where(type => expected.Accepts(hir.Types[type.Value].RuntimeType))];
     }
 
     private SemanticValue? Subject(HirNodeId expression, SemanticContext context)
@@ -321,7 +384,7 @@ internal sealed partial class SemanticAnalyzer
             return null;
         if (context.Objects.TryGetValue(scope.Region, out var latest)) scope = latest;
         if (scope.Locations.TryGetValue(node.Text!, out var location) && context.Values.TryGetValue(location, out var value)) return value;
-        return scope.Fields.GetValueOrDefault(node.Text!);
+        return TryScopeField(scope, node.Text!, context, out var member) ? member : null;
     }
 
     private void SetSubject(HirNodeId expression, SemanticValue value, SemanticContext context)
@@ -390,6 +453,14 @@ internal sealed partial class SemanticAnalyzer
     private void CheckExhaustive(SemanticValue value, HirMatch match, HirSourceRange source,
         SemanticContext context)
     {
+        if (Runtime(value) == TypeRef.Type && value.TypeCandidates is { } domain)
+        {
+            var coveredTypes = match.Arms.SelectMany(arm => MatchingDenotations(domain, arm.Pattern, context)).ToHashSet();
+            var missingTypes = domain.Types.Where(type => !coveredTypes.Contains(type)).ToArray();
+            if (missingTypes.Length == 0) return;
+            var missingNames = string.Join(", ", missingTypes.Select(type => hir.Types[type.Value].RuntimeType));
+            throw Error(source, $"Non-exhaustive match for Type; missing {missingNames} or a final '_'.", "E0209");
+        }
         TypeKind covered = TypeKind.Never;
         bool hasTrue = false, hasFalse = false;
         foreach (HirMatchArm arm in match.Arms)
@@ -473,7 +544,14 @@ internal sealed partial class SemanticAnalyzer
                 SemanticValue? merged = null;
                 foreach (SemanticContext branch in branches)
                     if (branch.Values.TryGetValue(location, out var value)) merged = merged is null ? value : Join(merged, value);
-                if (merged is not null) destination.Values[location] = merged;
+                if (merged is not null)
+                {
+                    if (merged.BranchValue is null && Runtime(merged) == TypeRef.Scope
+                        && destination.Values.GetValueOrDefault(location)?.BranchValue is { Selector: not null } original
+                        && branches.All(branch => !branch.CellWrites.Contains(location)))
+                        merged = merged with { BranchValue = original };
+                    destination.Values[location] = merged;
+                }
             }
         if (storage is not null)
             foreach (HirLocationId location in storage)

@@ -17,6 +17,8 @@ internal sealed partial class SemanticAnalyzer
             HirType type = hir.Types[current.Type.Value];
             if (current.Scope is not { } initial)
                 return current.Element is { } element ? hir.Type(type with { Element = Project(element).Value }) : current.Type;
+            if (context.InputFields?.OwnsScope(initial.Region) == true)
+                return ResolveHirType(current.Type, context);
             SemanticScope scope = context.Objects.GetValueOrDefault(initial.Region, initial);
             var identity = (scope.Region, scope.Region >= 0 ? -1 : scope.Layout);
             if (scopes.TryGetValue(identity, out var recursive))

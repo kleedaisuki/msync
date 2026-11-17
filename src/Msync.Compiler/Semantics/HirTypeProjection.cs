@@ -346,7 +346,7 @@ internal sealed partial class HirTypeProjection(BoundProgram program, SemanticAr
 
     internal static FlowFact ValueFact(SemanticArena arena, SemanticValue value) =>
         new(arena.Types[value.Type.Value].RuntimeType, Boolean: value.KnownBool, SemanticType: value.Type,
-            Eager: value.EagerRange);
+            Denotations: value.DenotationDomain, Eager: value.EagerRange);
 
     private FlowFact Fact(HirTypeId type, bool? boolean = null) =>
         new(hir.Types[type.Value].RuntimeType, Boolean: boolean, SemanticType: type);

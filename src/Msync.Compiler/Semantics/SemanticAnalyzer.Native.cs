@@ -432,6 +432,8 @@ internal sealed partial class SemanticAnalyzer
             Element = element,
             Literal = null,
             DenotedType = null,
+            TypeCandidates = null,
+            BranchValue = null,
             Location = null,
             Node = HirNodeId.None
         };

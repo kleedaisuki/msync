@@ -6,29 +6,44 @@ namespace Msync.Compiler.Semantics;
 
 internal sealed partial class SemanticAnalyzer
 {
-    private SemanticValue ResolveSummaryTypes(SemanticValue value, SemanticContext context)
-    {
-        foreach (var pair in context.Values.ToArray())
-            context.Values[pair.Key] = ResolveValue(pair.Value);
-        foreach (var pair in context.Objects.ToArray())
-        {
-            SemanticScope scope = pair.Value;
-            HirTypeId type = ResolveHirType(hir.Type(new HirType(Msync.Core.TypeRef.Scope, Shape: scope.Layout)), context);
-            context.Objects[pair.Key] = scope with
-            {
-                Layout = hir.Types[type.Value].Shape,
-                Fields = scope.Fields.ToImmutableDictionary(field => field.Key, field => ResolveValue(field.Value), StringComparer.Ordinal)
-            };
-        }
-        return ResolveValue(value);
+    private readonly Dictionary<HirTypeId, bool> exportTypeParameters = [];
 
-        SemanticValue ResolveValue(SemanticValue current) => current with
+    private SemanticValue ResolveExportValue(SemanticValue value, SemanticContext context)
+    {
+        var type = ExportType(value.Type);
+        var storage = value.StorageConstraint is { } constraint ? ExportType(constraint) : value.StorageConstraint;
+        return type == value.Type && storage == value.StorageConstraint ? value
+            : value with { Type = type, StorageConstraint = storage };
+
+        HirTypeId ExportType(HirTypeId type)
         {
-            Type = current.Scope is not null || current.Element is not null ? FlowType(current, context)
-                : TypeWitnessAvailable(current.Type, context) ? ResolveHirType(current.Type, context) : current.Type,
-            StorageConstraint = current.StorageConstraint is { } constraint && TypeWitnessAvailable(constraint, context)
-                ? ResolveHirType(constraint, context) : current.StorageConstraint
-        };
+            if (!HasExportTypeParameters(type) || !TypeWitnessAvailable(type, context)) return type;
+            Trace?.Metric("export.dependent_types", 1);
+            return ResolveHirType(type, context);
+        }
+    }
+
+    private bool HasExportTypeParameters(HirTypeId type)
+    {
+        var description = hir.Types[type.Value];
+        if (description.TypeParameter >= 0) return true;
+        if (description.Shape < 0 && description.Element < 0 && description.Alternatives.IsDefaultOrEmpty) return false;
+        if (exportTypeParameters.TryGetValue(type, out bool open)) return open;
+        HashSet<HirTypeId> seen = [];
+        open = Visit(type);
+        exportTypeParameters.Add(type, open);
+        return open;
+
+        bool Visit(HirTypeId id)
+        {
+            if (!seen.Add(id)) return false;
+            if (exportTypeParameters.TryGetValue(id, out bool open)) return open;
+            var candidate = hir.Types[id.Value];
+            return candidate.TypeParameter >= 0
+                || candidate.Element >= 0 && Visit(new(candidate.Element))
+                || candidate.Shape >= 0 && hir.ScopeLayouts[candidate.Shape].Fields.Any(field => Visit(field.StorageType))
+                || !candidate.Alternatives.IsDefaultOrEmpty && candidate.Alternatives.Any(Visit);
+        }
     }
 
     private HirTypeId ResolveHirType(HirTypeId type, SemanticContext context)

@@ -67,6 +67,22 @@ internal sealed partial class SemanticAnalyzer
                 ApplyPlanWrite(write with { After = after }, destination, source);
                 destination.ActiveSingletonGuards = saved;
             }
+            if (item.TypeRead is { } read)
+            {
+                Trace?.Metric("effects.type_reads", 1);
+                bool matches = read.Alternatives.IsDefault
+                    ? Matches(read.Region) : read.Alternatives.All(Matches);
+                if (!matches)
+                {
+                    read.Changed = true;
+                    Trace?.Metric("effects.type_reads.changed", 1);
+                    if (read.RequiredAt is { } required)
+                        throw Error(required, "This Type annotation requires a statically known Type value consistent with the preceding writes.", "E0202");
+                }
+
+                bool Matches(int region) => destination.ReadWriteTarget(
+                    new(SemanticWriteKind.Field, Region: region, Field: read.Field))?.DenotedType == read.Type;
+            }
             if (item.InitializeSingleton is { } singleton)
             {
                 Trace?.Metric("effects.singletons", 1);

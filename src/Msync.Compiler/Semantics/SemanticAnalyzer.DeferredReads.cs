@@ -15,8 +15,8 @@ internal sealed partial class SemanticAnalyzer
         value = FutureCallables(value, location, context);
         if (value.Scope is not null || value.Element is not null) return FutureRead(value, storage, context, []);
         return value.Type == storage && value.Literal is null && value.Observation is null
-            && value.DenotedType is null ? value : value with
-            { Type = storage, Literal = null, Observation = null, DenotedType = null };
+            && value.DenotedType is null && value.TypeCandidates is null && value.BranchValue is null ? value : value with
+            { Type = storage, Literal = null, Observation = null, DenotedType = null, TypeCandidates = null, BranchValue = null };
     }
 
     private SemanticValue FutureRead(SemanticValue value, HirTypeId storage,
@@ -27,7 +27,9 @@ internal sealed partial class SemanticAnalyzer
             Type = storage,
             Literal = null,
             Observation = null,
-            DenotedType = null
+            DenotedType = null,
+            TypeCandidates = null,
+            BranchValue = null
         };
         if (value.Element is { } element)
         {

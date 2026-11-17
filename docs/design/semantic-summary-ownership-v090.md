@@ -606,3 +606,144 @@ Return-recipe properties alone therefore cannot certify the SCC write footprint.
 The complete typed write and static-observation certificate, original 745 trace
 and unchanged deadline remain required; no recursive admission was enabled by
 this review.
+
+## Existing collection workload attribution (2026-11-16)
+
+On `artifacts/native/native-set-stdin-repl/msync`, the standard seed-17
+collection sources were compiled only to HIR. Five phases-only processes per
+fixture gave analyze medians of 1,193 ms (B+), 792 ms (Set), 230 ms (Heap)
+and 2.5 ms (numeric record stream control). Median allocation on the compiler
+thread was 298, 200, 65 and 0.54 MB respectively. HIR from the phases and
+profile runs passed the existing independent stdout oracles.
+
+One separate, lossless profile per workload gives the following exclusive
+span accounting (direct child durations subtracted; not telemetry-off time):
+
+| Workload | Analyze ms | Instantiate ms excluding children | Flow solve ms excluding children | Published instance misses / calls |
+| --- | ---: | ---: | ---: | ---: |
+| B+ | 1,925 | 963 | 413 | 156 / 413 |
+| Set | 1,045 | 758 | 34 | 137 / 178 |
+| Heap | 322 | 103 | 71 | 39 / 55 |
+
+Set's `_set_ref`, `_set_child` and `_set_link` alone account for 37, 18
+and 20 published instances. Each family uses one builtin carrier signature,
+despite different semantic graph keys. This is evidence to inspect
+specialization boundaries, not proof that all emitted bodies are interchangeable.
+The instance span includes key construction and uninstrumented miss work:
+formalization, body checking, type resolution and summary construction. It is
+not a measurement of hash-map lookup. In B+, 315 of 354 flow preparations
+occur inside another flow solve: return-shape projection can run a callee
+flow analysis while supplying a caller transfer. One outer solve performs
+28 transfers over 270 ms elapsed, 55 ms after child spans. The solver spans
+therefore include interprocedural projection as well as local CFG work.
+Uninstrumented debugger stacks also show key construction, graph reconstruction
+and GC. Treat those stack samples as qualitative corroboration.
+
+First separate instance key, input formalization, summary resolution/freezing
+and invocation projection in the instrumented path. Then test stable schema
+IDs and symbolic place/effect summaries on Set; instrument return-shape cache
+work separately for B+ before changing the worklist. Rust's
+[query evaluation model](https://rustc-dev-guide.rust-lang.org/queries/query-evaluation-model-in-detail.html)
+is an engineering comparison for inexpensive cache reuse;
+[demand interprocedural dataflow](https://research.cs.wisc.edu/wpis/papers/fse95a.pdf)
+is a research comparison, not an assumption that this language fits its domain.
+Receipts: `.temp/semantic-cost/`, including the lossless profile databases,
+`inventory.log`, phase repeats and stack samples.
+
+After the layout/path specialization change, three Native AOT phase-only
+compiles on CPU 12 gave analyze medians of 630 ms for standard Set and 802 ms
+for B+ inventory (seed 17). Three separate instrumented runs gave exclusive
+Set medians of 199 ms resolving summary types, 126 ms replaying effects,
+67 ms constructing formal inputs, 24 ms attaching origins, 36 ms freezing
+summaries, and 1.34 ms building keys. Formal construction visited roughly
+13,500 fields per compile. B+ spent 123 ms resolving summary types, 102 ms
+freezing, and 73 ms constructing formal inputs. Both profiled HIR outputs
+passed their existing stdout oracles.
+
+The expensive reconstruction is now downstream of key selection.
+`ResolveSummaryTypes` scans all context values and object fields; aggregate
+projection calls `FlowType`, which starts a new scope map and serializes a
+reachable shape before interning it again. Carry closed type IDs through
+publication and resolve only exported dependent types. Build and bind
+symbolic effects from accessed paths rather than freezing a complete formal
+object snapshot. Receipts: `.temp/semantic-attribution/`.
+
+The following implementation removed whole-context export resolution.
+Exported values retain closed type IDs; parameterized types are resolved
+from their HIR definitions when exported. Formal Scope rows borrow a source
+during analysis and materialize only requested fields. Queries borrow a
+semantic overlay instead of importing the reachable caller graph. Effects
+on input objects use formal paths; input objects themselves do not go into
+the frozen result graph. Fresh exported allocations still carry their own
+descriptions.
+
+Paired Native AOT measurements (CPU 12, standard seed 17, three fresh
+processes per image) showed phase-only analyze medians of 630 to 83 ms for
+Set and 749 to 304 ms for B+ inventory. Managed allocations fell from 168
+to 22 MB and from 207 to 95 MB. In separate detailed runs, the formal-field
+visits fell from 13,516 to 183 and from 10,869 to 857; the old full summary
+type reconstruction was replaced by under 0.1 ms of result-type export in
+both workloads. The exact compiler stage receipts and workload output
+oracles are under `.temp/demand-formal/`.
+
+### Alias-independent instance admission
+
+Instance selection no longer classifies templates for alias observation,
+encodes caller alias edges, or imports those edges into the formal body.
+The caller binds and applies the ordered effect plan to its actual objects;
+runtime object identity and field storage are unchanged. A Type member load
+used by a static annotation records the required denotation at the load's
+position, not after all function writes. The caller's effect replay checks that
+requirement against the actual object. A failed requirement is a compile-time
+diagnostic, not a different specialization or a VM branch. The schema walker
+does not serialize graph-local backreferences. An executable or return-scheme
+key records interned types, physical layouts, and static choices used by the
+bound program, including denoted Types and callable contracts reached through
+source field paths. Recursive type edges already refer to interned IDs.
+Formal writes and Type reads retain the path of the expression that accessed
+the object. Instantiation binds each relevant path to the actual input before
+applying the ordered events. In particular, a recursive symbolic row can stand
+for both `p` and `p::next::next` without conflating their effects in a caller
+where those paths reach different objects.
+
+Anonymous construction remains one interned storage layout per declared field
+row. The LLVM member lowering uses the actual allocation layout before
+consulting the candidate catalogue and keeps the checked field ordinal in
+the direct path. Binding the native executable resolves the field's constant
+offset; execution does not search layouts for fixed-offset access. This is the
+typed address computation described by [LLVM GEP](https://llvm.org/docs/GetElementPtr.html).
+
+In the earlier intermediate implementation, the standard Set workload
+(seed 17) Native AOT comparison
+reduced phases-only analyze P50 from 718 to 570 ms and allocation from 198 to
+153 MB (five processes per image). The detailed run had 130 alias-independent
+and 51 alias-sensitive selections. All 21 `_set_link` selections were
+independent; none of its 20 published keys encoded an alias graph (19 did
+before). `_set_ref` fell from 37 to 20 instances. Five telemetry-off
+source-route pairs all improved, with median paired elapsed -3.8%; bound
+execution was mixed at +0.8% paired. All timed invocations passed the existing
+output oracle. Receipts: `.temp/scope-layout-symbolic/` and the baseline
+phase profiles in `.temp/scope-layout-keys/`.
+
+### Finite Type witnesses and correlated scope alternatives
+
+Carry a finite set of denoted type IDs through control-flow joins; the carrier
+of each value is still `Type`. A correlated Scope alternative keeps its whole
+row rather than joining its witness and payload independently. This follows
+the correlation principle in [TypeScript's narrowing of discriminated unions](https://www.typescriptlang.org/docs/handbook/2/narrowing.html#discriminated-unions),
+but here selecting a row also selects concrete native storage.
+
+A dependent call in an existing `if` or `match` arm uses the corresponding
+direct specialization. If a result has already been stored in a local, HIR
+carries the original arm ordinal separately from the object. Matching the
+associated Type member can narrow that row before the call; otherwise only
+the dependent call consumes the ordinal. One finite scalar Type argument can
+instead dispatch on its existing encoded value. Neither representation
+queries the runtime object for its type. A common field with equal native
+offset and carrier across layouts binds to one fixed offset; the per-row
+payload is likewise addressed at its known offset.
+
+Equal allocation byte counts do not imply equal native layouts: String has a
+reference lane where Number has a byte payload. LLVM heap allocation
+equivalence must retain native layout and allocation-site identity, so a
+control-flow hoist cannot replace one allocation with the other.

@@ -16,6 +16,12 @@ internal static class AliasWitnessChecks
                     let value: Item = 7;
                     value
                 };
+                fn snapshot(view, original) {
+                    let Item = original::Item;
+                    view::Item = String;
+                    let value: Item = 9;
+                    value
+                };
                 """);
             if (legalFirst) await Legal();
             bool rejected = false;
@@ -34,6 +40,14 @@ internal static class AliasWitnessChecks
             }
             if (!rejected) throw new InvalidOperationException("An aliased call reused a disjoint static Type witness.");
             await Legal();
+            var snapshot = await Submit("""
+                let snapshot_a = scope { Item: Number };
+                let snapshot_b = scope { Item: Number };
+                let snapshot_view? = $std::ranges::first([snapshot_a, snapshot_b]);
+                if snapshot_view is null { 0 } else { snapshot(snapshot_view, snapshot_a) }
+                """);
+            if (snapshot.AsNumber() != 9)
+                throw new InvalidOperationException("A later write changed the Type already loaded by the function.");
 
             async Task Legal()
             {

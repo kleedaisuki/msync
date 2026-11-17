@@ -97,7 +97,7 @@ internal sealed partial class SemanticAnalyzer
                 facts = facts.Assign(pair.Key, new(Runtime(value), Boolean: value.KnownBool, SemanticType: initialType?.Invoke(value) ?? FlowType(value, context),
                     Callables: value.Callables.IsDefaultOrEmpty ? null : new(value.Callables.Select(choice =>
                         new FlowCallableIdentity(choice.Template, choice.NativeName))),
-                    Denotations: value.DenotedType is { } denoted ? new([denoted]) : null,
+                    Denotations: value.DenotationDomain,
                     Eager: value.EagerRange));
         facts = facts.Freeze();
         var projection = new HirTypeProjection(program, hir, context, algebra,
@@ -142,6 +142,7 @@ internal sealed partial class SemanticAnalyzer
             Literal = fact.Boolean is { } boolean
             ? new(HirLiteralKind.Bool, Boolean: boolean) : stable && Runtime(value) != TypeRef.Type ? value.Literal : null,
             DenotedType = fact.Denotations is { Types.Length: 1 } denotations ? denotations.Types[0] : null,
+            TypeCandidates = fact.Denotations is { Types.Length: > 1 } candidates ? candidates : null,
             Observation = stable ? value.Observation : null,
             EagerRange = fact.Eager
         };
@@ -167,6 +168,7 @@ internal sealed partial class SemanticAnalyzer
                     Type = readType,
                     Literal = fieldFact.Boolean is { } fieldBoolean ? new(HirLiteralKind.Bool, Boolean: fieldBoolean) : null,
                     DenotedType = fieldFact.Denotations is { Types.Length: 1 } fieldTypes ? fieldTypes.Types[0] : null,
+                    TypeCandidates = fieldFact.Denotations is { Types.Length: > 1 } fieldCandidates ? fieldCandidates : null,
                     Observation = null,
                     EagerRange = fieldFact.Eager
                 };
@@ -262,7 +264,8 @@ internal sealed partial class SemanticAnalyzer
         }
         SemanticValue projected = ValueForType(type);
         if (projected.Scope is not { } shape)
-            return value with { Type = type, Literal = null, DenotedType = null, Observation = null };
+            return value with { Type = type, Literal = null, DenotedType = null, TypeCandidates = null,
+                BranchValue = null, Observation = null };
         if (value.Scope is not { } existing)
             return projected with { Location = value.Location, Origin = value.Origin };
         existing = context.Objects.GetValueOrDefault(existing.Region, existing);
@@ -279,6 +282,8 @@ internal sealed partial class SemanticAnalyzer
             Type = type,
             Literal = null,
             DenotedType = null,
+            TypeCandidates = null,
+            BranchValue = null,
             Observation = null,
             Scope = existing with
             {

@@ -22,7 +22,7 @@ internal sealed partial class SemanticAnalyzer
             {
                 var fields = a.Fields.Where(pair => b.Fields.ContainsKey(pair.Key)).ToImmutableDictionary(
                     pair => pair.Key, pair => Join(pair.Value, b.Fields[pair.Key]), StringComparer.Ordinal);
-                scope = new(-1, Shape(fields), fields, ImmutableDictionary<string, HirLocationId>.Empty,
+                scope = new(-1, JoinScopeLayouts(a.Layout, b.Layout), fields, ImmutableDictionary<string, HirLocationId>.Empty,
                     Named: a.Named && b.Named, Dynamic: a.Dynamic || b.Dynamic, Aliases: ScopeAliases(a).Concat(ScopeAliases(b)).Distinct().ToImmutableArray(),
                     FieldDefinitions: JoinFieldDefinitions(a, b, fields.Keys));
             }
@@ -43,6 +43,8 @@ internal sealed partial class SemanticAnalyzer
             callables, scope, element, EagerRange: first.EagerRange && second.EagerRange,
             IndexedRegion: payload?.IndexedRegion ?? (first.IndexedRegion == second.IndexedRegion ? first.IndexedRegion : null),
             DenotedType: first.DenotedType == second.DenotedType ? first.DenotedType : null,
+            TypeCandidates: runtime == TypeRef.Type && (first.DenotedType is null || first.DenotedType != second.DenotedType)
+                ? FlowDenotationDomain.Join(first.DenotationDomain, second.DenotationDomain) : null,
             DeferredEffects: CombineDeferredEffects(first.DeferredEffects, second.DeferredEffects),
             IndexedAliases: payload?.IndexedAliases ?? JoinIndexedResources(first, second),
             OpenSessionCalls: CombineSessionCalls(first.OpenSessionCalls, second.OpenSessionCalls),
@@ -52,6 +54,23 @@ internal sealed partial class SemanticAnalyzer
             RuntimeDependentMetadata: first.RuntimeDependentMetadata || second.RuntimeDependentMetadata,
             CheckedType: first.CheckedType is { } checkedFirst && second.CheckedType is { } checkedSecond
                 ? new HirFlowTypeAlgebra(hir).Union(checkedFirst, checkedSecond) : payload?.CheckedType);
+    }
+
+    private int JoinScopeLayouts(int left, int right)
+    {
+        if (left == right) return left;
+        var rightFields = hir.ScopeLayouts[right].Fields.ToDictionary(field => field.Name, StringComparer.Ordinal);
+        HirFlowTypeAlgebra algebra = new(hir);
+        return InternShape([.. hir.ScopeLayouts[left].Fields.Where(field => rightFields.ContainsKey(field.Name))
+            .Select(field =>
+            {
+                var other = rightFields[field.Name];
+                return field with
+                {
+                    StorageType = algebra.Union(field.StorageType, other.StorageType),
+                    AdmitsNull = field.AdmitsNull || other.AdmitsNull
+                };
+            })]);
     }
 
     private HirTypeId SchemaType(SemanticValue value)
@@ -168,6 +187,7 @@ internal sealed partial class SemanticAnalyzer
             SemanticValue? value = context.Values.GetValueOrDefault(location);
             if (value?.DenotedType is not { } denoted)
                 throw Error(witness.Source, $"Type annotation '{witness.Name}' requires a statically known Type value.", "E0202");
+            if (value.TypeRead is { } observed) observed.RequiredAt ??= witness.Source;
             HirType represented = hir.Types[ResolveHirType(denoted, context).Value];
             return hir.Type(represented with
             {

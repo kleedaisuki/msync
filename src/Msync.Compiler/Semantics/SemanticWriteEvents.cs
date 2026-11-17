@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using Msync.Core;
 using Msync.Hir;
 
 namespace Msync.Compiler.Semantics;
@@ -7,7 +8,21 @@ internal sealed record SemanticExit(SemanticValue Value, ImmutableArray<Semantic
 
 internal sealed record SemanticWriteEvent(SemanticDeferredWrite? Write,
     ImmutableArray<int> Guards, int? InitializeSingleton = null,
-    ImmutableArray<ImmutableArray<SemanticWriteEvent>> Branches = default);
+    ImmutableArray<ImmutableArray<SemanticWriteEvent>> Branches = default,
+    SemanticTypeRead? TypeRead = null);
+
+internal sealed class SemanticTypeRead(int region, string field, HirTypeId type)
+{
+    public int Region { get; } = region;
+    public string Field { get; } = field;
+    public HirTypeId Type { get; } = type;
+    public SemanticOrigin? Target { get; init; }
+    public ImmutableArray<int> Alternatives { get; init; }
+    public bool Changed { get; set; }
+    // Record the load's position; an annotation can consume the loaded value
+    // after another write to the same field.
+    public HirSourceRange? RequiredAt { get; set; }
+}
 
 internal readonly record struct SemanticWriteTarget(SemanticWriteKind Kind,
     HirLocationId Location = default, int Region = -1, string? Field = null);

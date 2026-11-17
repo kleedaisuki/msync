@@ -34,7 +34,7 @@ internal sealed partial class SemanticAnalyzer
         var definition = hir.Concepts[conceptId];
         if (conceptId < program.Concepts.Count)
             foreach (var (name, parameter) in program.Concepts[conceptId].AssociatedTypes)
-                if (shape.Fields.TryGetValue(name, out var witness) && witness.DenotedType is { } type)
+                if (TryScopeField(shape, name, context, out var witness) && witness.DenotedType is { } type)
                     associated[parameter] = type;
 
         List<(HirTypeId Type, SemanticValue Value)>? nullOnly = null;
@@ -80,7 +80,7 @@ internal sealed partial class SemanticAnalyzer
     private SemanticValue RequiredMember(SemanticScope scope, HirConceptMember requirement,
         int concept, HirSourceRange source, SemanticContext context)
     {
-        if (!scope.Fields.TryGetValue(requirement.Name, out var actual))
+        if (!TryScopeField(scope, requirement.Name, context, out var actual))
             throw ConceptError(concept, source, $"member '{requirement.Name}'", "missing member");
         int field = FieldOffset(scope.Layout, requirement.Name);
         if (field >= 0)
@@ -98,8 +98,9 @@ internal sealed partial class SemanticAnalyzer
     private SemanticScope EstablishConceptStorage(SemanticScope scope, HirConceptMember member,
         ImmutableDictionary<HirTypeId, HirTypeId> associated, HirSourceRange source, SemanticContext context)
     {
-        if (member.Signature >= 0 || !scope.Fields.TryGetValue(member.Name, out var current)
+        if (member.Signature >= 0 || !TryScopeField(scope, member.Name, context, out var current)
             || Runtime(current) != TypeRef.Null) return scope;
+        scope = context.Objects.GetValueOrDefault(scope.Region, scope);
         int offset = FieldOffset(scope.Layout, member.Name);
         if (offset < 0) return scope;
         var field = hir.ScopeLayouts[scope.Layout].Fields[offset];
@@ -272,8 +273,10 @@ internal sealed partial class SemanticAnalyzer
         foreach (int region in affected)
         {
             if (region == written.Region || !context.Objects.TryGetValue(region, out var candidate)) continue;
-            if (!candidate.Fields.TryGetValue(field, out var current)) continue;
-            var value = Join(current, assigned) with { Literal = null, DenotedType = null, Observation = null };
+            if (!TryScopeField(candidate, field, context, out var current)) continue;
+            candidate = context.Objects.GetValueOrDefault(region, candidate);
+            var value = Join(current, assigned) with { Literal = null, DenotedType = null,
+                TypeCandidates = null, BranchValue = null, Observation = null };
             context.Objects[region] = candidate with { Fields = candidate.Fields.SetItem(field, value) };
             if (candidate.Locations.TryGetValue(field, out var location)) context.Values[location] = value;
         }

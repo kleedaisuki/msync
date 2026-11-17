@@ -23,7 +23,7 @@ internal sealed partial class SemanticAnalyzer
                 {
                     if (scope is null) continue;
                     string member = field.Name(template).ToString();
-                    if (!scope.Fields.TryGetValue(member, out var known))
+                    if (!TryScopeField(scope, member, context, out var known))
                     {
                         if (scope.Dynamic) continue;
                         throw TextFormat.Error(template, field.Offset, $"Scope has no member '{member}'");

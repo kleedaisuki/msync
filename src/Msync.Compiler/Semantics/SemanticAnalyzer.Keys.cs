@@ -6,52 +6,86 @@ namespace Msync.Compiler.Semantics;
 
 internal sealed partial class SemanticAnalyzer
 {
-    private string InstanceKey(HirTemplateId id, IReadOnlyList<SemanticValue> arguments,
-        IReadOnlyList<SemanticValue> captures, SemanticContext caller, ref SemanticInputSchema? schema)
+    private string InstanceKey(HirTemplateId template, IReadOnlyList<SemanticValue> arguments,
+        IReadOnlyList<SemanticValue> captures, SemanticContext caller)
     {
         StringBuilder key = new();
-        key.Append(id.Value).Append(caller.DeferredReads ? 'd' : 'i').Append(':');
-        int prefix = key.Length;
-        if (AppendInputKey(key, id, arguments, captures, caller, new(readOnlyInput: true)))
-            return key.ToString();
-        key.Length = prefix;
-        schema ??= CodeSchema(arguments, captures, caller);
-        AppendInputKey(key, id, schema.Arguments, schema.Captures, schema.Context, new());
+        key.Append(template.Value).Append(caller.DeferredReads ? 'd' : 'i').Append(':');
+        var definition = hir.Templates[template.Value];
+        for (int i = 0; i < arguments.Count; i++)
+            AppendStaticInput(key, template, definition.Parameters[i], arguments[i], caller, capture: false);
+        key.Append('|');
+        for (int i = 0; i < captures.Count; i++)
+            AppendStaticInput(key, template, definition.Captures[i].Target, captures[i], caller, capture: true);
+        Trace?.Metric("key.static_inputs", arguments.Count + captures.Count);
         return key.ToString();
-
     }
 
-    private bool AppendInputKey(StringBuilder key, HirTemplateId template, IReadOnlyList<SemanticValue> arguments,
-        IReadOnlyList<SemanticValue> captures, SemanticContext context, KeyProvenance provenance)
+    private void AppendStaticInput(StringBuilder key, HirTemplateId template, HirLocationId input,
+        SemanticValue value, SemanticContext caller, bool capture)
     {
-        // The direct projection cuts cycles at concrete scope, indexed-resource,
-        // and cell references. The fallback also admits structural Scope views.
-        HashSet<SemanticValue>? active = provenance.ReadOnlyInput ? null : new(ReferenceEqualityComparer.Instance);
-        for (int index = 0; index < arguments.Count && provenance.Supported; index++)
+        AppendStaticValue(key, value, caller, capture);
+        if (Usage(template).FieldReads.TryGetValue(program.Original(input), out var fields))
+            foreach (var field in fields.Order(StringComparer.Ordinal))
+                AppendStaticMember(value, field, caller, key);
+        key.Append(';');
+    }
+
+    private void AppendStaticMember(SemanticValue member, string path, SemanticContext context, StringBuilder key)
+    {
+        foreach (string field in path.Split('\0'))
         {
-            SemanticValue argument = arguments[index];
-            var usage = Usage(template);
-            var target = program.Original(hir.Templates[template.Value].Parameters[index]);
-            HashSet<string>? usedFields = usage.WholeReads.Contains(target)
-                ? null : usage.FieldReads.GetValueOrDefault(target) ?? [];
-            AppendValueKey(key, argument with { StorageConstraint = null },
-                context, active, provenance, usedFields);
-            key.Append(';');
+            if (member.Scope is not { } row) return;
+            row = context.Objects.GetValueOrDefault(row.Region, row);
+            if (!TryScopeField(row, field, context, out member)) return;
         }
-        key.Append('|');
-        for (int index = 0; index < captures.Count && provenance.Supported; index++)
+        if (member.DenotedType is null && member.TypeCandidates is null
+            && member.Callables.IsDefaultOrEmpty && member.FutureCallableDomain is null) return;
+        key.Append('{').Append(path.Replace('\0', '.')).Append(':');
+        AppendStaticValue(key, member, context);
+        key.Append('}');
+        Trace?.Metric("key.static_members", 1);
+    }
+
+    private void AppendStaticValue(StringBuilder key, SemanticValue value, SemanticContext? context, bool capture = false)
+    {
+        key.Append(PlanType(value).Value).Append(value.EagerRange ? '!' : '.');
+        var layouts = hir.Types[value.Type.Value].ScopeDomain;
+        for (int i = 0; i < layouts.Count; i++) key.Append('L').Append(layouts[i]);
+        if (capture && value.StorageConstraint is { } storage) key.Append('S').Append(storage.Value);
+        if (value.DenotedType is { } denoted) key.Append('T').Append(denoted.Value);
+        else if (value.TypeCandidates is { } candidates)
         {
-            if (ReadsCapture(template, index, out var usedFields))
-                AppendValueKey(key, captures[index], context, active, provenance, usedFields);
-            else
+            key.Append('D');
+            foreach (var type in candidates.Types) key.Append(type.Value).Append(',');
+        }
+        AppendCallables(value.Callables);
+        if (value.FutureCallableDomain is { } future && !RedundantFutureDomain(value, future))
+        {
+            key.Append('U');
+            AppendCallables(future.Choices);
+            key.Append('C');
+            AppendCallables(future.Current);
+        }
+        if (value.IndexedRegion is { } region && context?.Indexed.TryGetValue(region, out var indexed) == true)
+            key.Append('I').Append(indexed.FixedCarrier?.Value ?? indexed.Element.Type.Value);
+
+        void AppendCallables(System.Collections.Immutable.ImmutableArray<SemanticCallable> choices)
+        {
+            if (choices.IsDefaultOrEmpty) return;
+            foreach (var callable in choices)
             {
-                provenance.Skip(captures[index]);
-                key.Append(captures[index].StorageConstraint?.Value ?? captures[index].Type.Value);
+                key.Append('F').Append(callable.NativeName ?? callable.Template?.Value.ToString()).Append('(');
+                if (!callable.Captures.IsDefaultOrEmpty)
+                    foreach (var slot in callable.Captures)
+                    {
+                        var captured = slot.Mode == HirCaptureMode.Location
+                            ? context?.Values.GetValueOrDefault(slot.Source, slot.Value) ?? slot.Value : slot.Value;
+                        key.Append(captured.Type.Value).Append('T').Append(captured.DenotedType?.Value ?? -1).Append(';');
+                    }
+                key.Append(')');
             }
-            key.Append(';');
         }
-        if (provenance.Supported) provenance.AppendAliases(key);
-        return provenance.Supported && provenance.HasCompleteDetachedCells;
     }
 
     private sealed record TemplateInputUsage(
@@ -82,6 +116,7 @@ internal sealed partial class SemanticAnalyzer
         if (templateUsages.TryGetValue(template, out var cached)) return cached;
         HashSet<HirLocationId> wholeReads = [];
         Dictionary<HirLocationId, HashSet<string>> fieldReads = [];
+        Dictionary<HirLocationId, (HirLocationId Root, string? Path)> locals = [];
         if (!stack.Add(template)) return new(wholeReads, fieldReads);
 
         foreach (var witness in program.TypeWitnesses.Values)
@@ -97,7 +132,6 @@ internal sealed partial class SemanticAnalyzer
 
         void AddFieldRead(HirLocationId loc, string field)
         {
-            if (wholeReads.Contains(loc)) return;
             if (!fieldReads.TryGetValue(loc, out var set)) fieldReads[loc] = set = new(StringComparer.Ordinal);
             set.Add(field);
         }
@@ -105,22 +139,40 @@ internal sealed partial class SemanticAnalyzer
         void Visit(HirNodeId id)
         {
             var node = program.Node(id);
-            if (node.Kind == HirKind.MemberRead && node.Text is { } fieldName)
+            if (node.Kind == HirKind.Declare)
             {
-                var children = program.Children(id);
-                if (children.Length > 0)
-                {
-                    var receiver = program.Node(children[0]);
-                    if (receiver.Kind is HirKind.ReadLocation or HirKind.ReadStorage)
-                    {
-                        AddFieldRead(program.Original(new(receiver.Data)), fieldName);
-                        for (int i = 1; i < children.Length; i++) Visit(children[i]);
-                        return;
-                    }
-                }
+                var target = program.Original(new(node.Data));
+                var initializer = program.Children(id)[0];
+                if (!program.WrittenLocations.Contains(target) && InputPath(initializer) is { } initializerPath)
+                    locals[target] = initializerPath;
+            }
+            if (node.Kind == HirKind.MemberRead && InputPath(id) is { Path: { } path } access)
+            {
+                AddFieldRead(access.Root, path);
+                return;
             }
             if (node.Kind is HirKind.ReadLocation or HirKind.ReadStorage)
                 wholeReads.Add(program.Original(new(node.Data)));
+            if (node.Kind == HirKind.Call)
+            {
+                var inputs = program.Children(id);
+                var target = program.Node(inputs[0]);
+                HirTemplateId? known = target.Kind == HirKind.TemplateClosure
+                    ? hir.TemplateClosures[target.Data].Template
+                    : target.Kind is HirKind.ReadLocation or HirKind.ReadStorage
+                        && program.FunctionLocations.TryGetValue(program.Original(new(target.Data)), out var routine)
+                        ? routine : null;
+                if (known is { } callee && !stack.Contains(callee))
+                {
+                    var uses = Usage(callee, stack);
+                    var parameters = hir.Templates[callee.Value].Parameters;
+                    for (int i = 0; i < Math.Min(parameters.Length, inputs.Length - 1); i++)
+                        if (InputPath(inputs[i + 1]) is { } actual
+                            && uses.FieldReads.TryGetValue(program.Original(parameters[i]), out var fields))
+                            foreach (string field in fields)
+                                AddFieldRead(actual.Root, Extend(actual.Path, field));
+                }
+            }
             if (node.Kind == HirKind.TemplateClosure)
             {
                 var closure = hir.TemplateClosures[node.Data];
@@ -137,140 +189,38 @@ internal sealed partial class SemanticAnalyzer
                     var inner = program.Original(cap.Target);
                     if (innerUsage.WholeReads.Contains(inner))
                         wholeReads.Add(outer);
-                    else if (innerUsage.FieldReads.TryGetValue(inner, out var innerFields))
-                        foreach (var f in innerFields) AddFieldRead(outer, f);
+                    if (innerUsage.FieldReads.TryGetValue(inner, out var innerFields))
+                        foreach (var f in innerFields)
+                            if (locals.TryGetValue(outer, out var binding))
+                                AddFieldRead(binding.Root, Extend(binding.Path, f));
+                            else
+                                AddFieldRead(outer, f);
                 }
             }
             if (node.Kind == HirKind.Match)
                 foreach (var arm in hir.Matches[node.Data].Arms) Visit(arm.Value);
             foreach (var child in program.Children(id)) Visit(child);
         }
+
+        (HirLocationId Root, string? Path)? InputPath(HirNodeId id)
+        {
+            var node = program.Node(id);
+            if (node.Kind is HirKind.ReadLocation or HirKind.ReadStorage)
+            {
+                var root = program.Original(new(node.Data));
+                return locals.GetValueOrDefault(root, (root, null));
+            }
+            return node.Kind == HirKind.MemberRead && InputPath(program.Children(id)[0]) is { } parent
+                ? (parent.Root, Extend(parent.Path, node.Text!)) : null;
+        }
+
+        static string Extend(string? path, string field) => path is null ? field : path + '\0' + field;
     }
 
     private static bool IsScalarSchema(SemanticValue value) => value.Scope is null
         && value.Element is null && value.Callables.IsDefaultOrEmpty && value.IndexedRegion is null
         && value.DeferredEffects.IsDefaultOrEmpty && value.IndexedAliases.IsDefaultOrEmpty
         && value.FutureCallableDomain is null;
-
-    private string ValueKey(SemanticValue value)
-    {
-        StringBuilder key = new();
-        KeyProvenance provenance = new();
-        AppendValueKey(key, value, null, new(ReferenceEqualityComparer.Instance), provenance);
-        provenance.AppendAliases(key);
-        return key.ToString();
-    }
-
-    private void AppendValueKey(StringBuilder key, SemanticValue value, SemanticContext? context,
-        HashSet<SemanticValue>? active, KeyProvenance provenance, HashSet<string>? usedScopeFields = null)
-    {
-        if (!provenance.Supported) return;
-        SemanticIndexed? indexed = value.IndexedRegion is { } resource ? context?.Indexed.GetValueOrDefault(resource) : null;
-        if (provenance.ReadOnlyInput && ((value.IndexedRegion is not null && indexed is null)
-            || !value.IndexedAliases.IsDefaultOrEmpty || !value.DeferredEffects.IsDefaultOrEmpty
-            || !value.OpenSessionCalls.IsDefaultOrEmpty))
-        {
-            provenance.Supported = false;
-            return;
-        }
-        key.Append(PlanType(value).Value).Append(value.EagerRange ? '!' : '.').Append('S').Append(value.StorageConstraint?.Value ?? -1);
-        if (value.DenotedType is { } denoted) key.Append('T').Append(denoted.Value);
-        if (active?.Add(value) == false)
-        {
-            key.Append('^');
-            return;
-        }
-        if (!value.Callables.IsDefaultOrEmpty)
-        {
-            if (provenance.ReadOnlyInput && value.Callables.Length > 1) provenance.MaySkipCells = true;
-            AppendCallableKey(key, Choices(value), context, active, provenance);
-        }
-        if (!provenance.Supported) return;
-        if (value.FutureCallableDomain is { } future && !RedundantFutureDomain(value, future))
-        {
-            key.Append("U(");
-            AppendCallableKey(key, future.Choices, context, active, provenance);
-            if (!provenance.Supported) return;
-            key.Append("|C(");
-            if (!future.Current.IsDefaultOrEmpty) AppendCallableKey(key, future.Current, context, active, provenance);
-            key.Append("))");
-        }
-        if (!provenance.Supported) return;
-        if (value.Scope is { } scope)
-            AppendScopeKey(key, context?.Objects.GetValueOrDefault(scope.Region, scope) ?? scope, context, active, provenance, usedScopeFields);
-        if (!provenance.Supported) return;
-        if (value.Element is { } element) { key.Append('['); AppendValueKey(key, element with { StorageConstraint = null }, context, active, provenance); key.Append(']'); }
-        if (value.IndexedRegion is { } region && indexed is not null)
-        {
-            key.Append('I').Append(provenance.Region(region)).Append(':').Append(indexed.FixedCarrier?.Value ?? -1);
-            if (!indexed.CarrierConstraints.IsDefaultOrEmpty)
-                foreach (var constraint in indexed.CarrierConstraints) key.Append('C').Append(constraint.Value);
-            if (provenance.DefineIndexed(region)) AppendValueKey(key, indexed.Element, context, active, provenance);
-            else key.Append('^');
-        }
-        if (!value.IndexedAliases.IsDefaultOrEmpty)
-            foreach (int alias in value.IndexedAliases)
-            {
-                key.Append('J').Append(provenance.Region(alias));
-                if (context?.Indexed.TryGetValue(alias, out var storage) == true)
-                {
-                    key.Append('C').Append(storage.FixedCarrier?.Value ?? -1);
-                    if (!storage.CarrierConstraints.IsDefaultOrEmpty)
-                        foreach (var constraint in storage.CarrierConstraints) key.Append('C').Append(constraint.Value);
-                    if (provenance.DefineIndexed(alias)) AppendValueKey(key, storage.Element, context, active, provenance);
-                    else key.Append('^');
-                }
-            }
-        if (!value.DeferredEffects.IsDefaultOrEmpty)
-            foreach (var write in value.DeferredEffects)
-            {
-                key.Append('W').Append((int)write.Kind).Append(write.Field);
-                key.Append(write.Kind == SemanticWriteKind.Location
-                    ? provenance.Location(write.Location) : provenance.Region(write.Region));
-                AppendValueKey(key, write.After, context, active, provenance);
-            }
-        active?.Remove(value);
-    }
-
-    private void AppendCallableKey(StringBuilder key, IEnumerable<SemanticCallable> choices,
-        SemanticContext? context, HashSet<SemanticValue>? active, KeyProvenance provenance)
-    {
-        foreach (var callable in choices)
-        {
-            key.Append('F').Append(callable.NativeName ?? callable.Template?.Value.ToString()).Append('(');
-            if (!callable.Captures.IsDefault)
-                for (int index = 0; index < callable.Captures.Length; index++)
-                {
-                    var capture = callable.Captures[index];
-                    SemanticValue? live = context?.Values.GetValueOrDefault(capture.Source);
-                    if (provenance.ReadOnlyInput && (capture.Mode != HirCaptureMode.Location
-                        || (live is null && !provenance.RecordUnbound(capture.Source, capture.Value))))
-                    {
-                        provenance.Supported = false;
-                        return;
-                    }
-                    key.Append('C').Append(provenance.Location(capture.Source));
-                    HashSet<string>? usedFields = null;
-                    if (callable.Template is { } template)
-                    {
-                        if (!ReadsCapture(template, index, out usedFields))
-                        {
-                            provenance.Skip(live ?? capture.Value);
-                            key.Append(':').Append(capture.Value.Type.Value);
-                            continue;
-                        }
-                    }
-                    if (live is not null || provenance.ReadOnlyInput)
-                    {
-                        if (provenance.DefineLocation(capture.Source)) AppendValueKey(key, live ?? capture.Value, context, active, provenance, usedFields);
-                        else key.Append('^');
-                    }
-                    else AppendValueKey(key, capture.Value, context, active, provenance, usedFields);
-                    if (!provenance.Supported) return;
-                }
-            key.Append(')');
-        }
-    }
 
     private static bool RedundantFutureDomain(SemanticValue value, SemanticCallableDomain future)
     {
@@ -295,199 +245,4 @@ internal sealed partial class SemanticAnalyzer
         }
     }
 
-    private void AppendScopeKey(StringBuilder key, SemanticScope scope, SemanticContext? context,
-        HashSet<SemanticValue>? active, KeyProvenance provenance, HashSet<string>? usedFields = null)
-    {
-        if (provenance.ReadOnlyInput && (scope.Region < 0 || !scope.Aliases.IsDefaultOrEmpty))
-        {
-            provenance.Supported = false;
-            return;
-        }
-        key.Append('{').Append(scope.Region >= 0 ? 'S' : 'V')
-            .Append(scope.Region >= 0 ? provenance.Region(scope.Region) : provenance.Structural(scope));
-        var plan = provenance.BeginScope(scope, usedFields);
-        if (!plan.ShouldEmit)
-        {
-            key.Append("^}");
-            return;
-        }
-        if (plan.IsFirst && !scope.Aliases.IsDefaultOrEmpty)
-            provenance.Alias(scope, 'A', scope.Aliases);
-        if (plan.IsFirst && context?.AliasViews.TryGetValue(scope.Region, out var views) == true)
-            provenance.Alias(scope, 'V', views);
-        foreach (var field in scope.Fields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
-        {
-            if (!plan.Include(field.Key))
-            {
-                if (plan.Skipped(field.Key)) provenance.Skip(field.Value);
-                continue;
-            }
-            key.Append(field.Key).Append(':');
-            bool hasLocation = scope.Locations.TryGetValue(field.Key, out var location);
-            var member = hasLocation
-                ? context?.Values.GetValueOrDefault(location, field.Value) ?? field.Value : field.Value;
-            if (provenance.ReadOnlyInput && Runtime(member) == TypeRef.Null)
-            {
-                HirTypeId? carrier = hasLocation && context is not null ? StorageType(location, context) : member.StorageConstraint;
-                if (carrier is { } storage && hir.Types[storage.Value].TypeParameter < 0)
-                    member = member with { Type = storage };
-            }
-            AppendValueKey(key, member, context, active, provenance);
-            if (!provenance.Supported) return;
-            if (context?.MemberContracts.TryGetValue((scope.Region, field.Key), out var contracts) == true)
-                foreach (var contract in contracts)
-                {
-                    key.Append('K').Append(contract.Concept).Append(':').Append(contract.Requirement.Type.Value)
-                        .Append(':').Append(contract.Requirement.Signature);
-                    foreach (var associated in contract.Associated.OrderBy(pair => pair.Key.Value))
-                        key.Append('A').Append(associated.Key.Value).Append(':').Append(associated.Value.Value);
-                }
-        }
-        key.Append('}');
-    }
-
-    // Canonical alias partitions contain no allocation identities: two unrelated
-    // calls with the same alias topology share code. Aliased and disjoint inputs
-    // cannot share flow proofs after writes to nullable fields or captured cells.
-    private sealed class KeyProvenance(bool readOnlyInput = false)
-    {
-        public readonly record struct ScopeEmitPlan(bool ShouldEmit, bool IsFirst, HashSet<string>? Filter, HashSet<string>? AlreadyEmitted)
-        {
-            public bool Include(string field) => (Filter is null || Filter.Contains(field)) && AlreadyEmitted?.Contains(field) != true;
-            public bool Skipped(string field) => Filter is not null && !Filter.Contains(field) && AlreadyEmitted?.Contains(field) != true;
-        }
-
-        public bool ReadOnlyInput { get; } = readOnlyInput;
-        public bool Supported { get; set; } = true;
-        public bool MaySkipCells { get; set; }
-        public bool HasCompleteDetachedCells => !MaySkipCells || unbound is null;
-        private Dictionary<HirLocationId, SemanticValue>? unbound;
-        private Dictionary<int, int>? regions;
-        private Dictionary<HirLocationId, int>? locations;
-        private Dictionary<int, HashSet<string>?>? definedScopeFields;
-        private HashSet<int>? definedIndexed;
-        private HashSet<HirLocationId>? definedLocations;
-        private Dictionary<SemanticScope, int>? structural;
-        private Dictionary<SemanticScope, HashSet<string>?>? definedStructuralFields;
-
-        // Distinct callable alternatives and write-only captures can omit
-        // nested occurrences which still contribute to formal cell fallback.
-        public void Skip(SemanticValue value)
-        {
-            if (ReadOnlyInput && !IsScalarSchema(value)) MaySkipCells = true;
-        }
-
-        public bool RecordUnbound(HirLocationId location, SemanticValue value)
-        {
-            unbound ??= [];
-            if (unbound.TryAdd(location, value)) return true;
-            var previous = unbound[location];
-            // A formal cell can be visited through several detached closures.
-            // Its fallback is independent of traversal order only if they agree.
-            return ReferenceEquals(previous, value) || (previous.Type == value.Type
-                && previous.DenotedType == value.DenotedType && previous.EagerRange == value.EagerRange
-                && IsScalarSchema(previous) && IsScalarSchema(value)
-                && previous.OpenSessionCalls.IsDefaultOrEmpty && value.OpenSessionCalls.IsDefaultOrEmpty);
-        }
-        private List<(string Source, char Kind, IEnumerable<int> Targets)>? aliases;
-
-        public void Alias(SemanticScope source, char kind, IEnumerable<int> targets)
-        {
-            string anchor = source.Region >= 0 ? $"S{Region(source.Region)}" : $"V{Structural(source)}";
-            (aliases ??= []).Add((anchor, kind, targets.Distinct()));
-        }
-
-        public void AppendAliases(StringBuilder key)
-        {
-            if (aliases is null) return;
-            var rows = aliases.Select(group => (group.Source, group.Kind,
-                Targets: group.Targets.Where(target => regions?.ContainsKey(target) == true)
-                    .Select(target => regions![target]).ToHashSet())).ToArray();
-            var external = aliases.SelectMany(group => group.Targets.Select(target =>
-                (group.Source, group.Kind, Target: target)))
-                .Where(edge => edge.Target >= 0 && regions?.ContainsKey(edge.Target) != true)
-                .GroupBy(edge => edge.Target)
-                .Select(group => group.Select(edge => (edge.Source, edge.Kind)).Distinct()
-                    .OrderBy(edge => edge.Source, StringComparer.Ordinal).ThenBy(edge => edge.Kind).ToArray())
-                .Where(incidence => incidence.Select(edge => edge.Source).Distinct().Skip(1).Any()
-                    && !AlreadyLinked(incidence, rows))
-                .Select(incidence => string.Join(';', incidence.Select(edge => edge.Source + edge.Kind)))
-                .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
-            if (rows.All(row => row.Targets.Count == 0) && external.Length == 0) return;
-            key.Append("|aliases[");
-            foreach (var row in rows.OrderBy(row => row.Source, StringComparer.Ordinal).ThenBy(row => row.Kind))
-            {
-                if (row.Targets.Count == 0) continue;
-                key.Append(row.Source).Append(row.Kind).Append('(');
-                foreach (int target in row.Targets.Order()) key.Append(target).Append(',');
-                key.Append(");");
-            }
-            foreach (string incidence in external) key.Append('E').Append(incidence.Length).Append(':').Append(incidence);
-            key.Append(']');
-        }
-
-        private static bool AlreadyLinked((string Source, char Kind)[] incidence,
-            (string Source, char Kind, HashSet<int> Targets)[] rows)
-        {
-            foreach (var from in incidence)
-            {
-                if (from.Source[0] != 'S') return false;
-                var row = rows.First(item => item.Source == from.Source && item.Kind == from.Kind);
-                foreach (var to in incidence)
-                {
-                    if (from.Source == to.Source) continue;
-                    if (from.Kind != to.Kind || to.Source[0] != 'S'
-                        || !row.Targets.Contains(int.Parse(to.Source.AsSpan(1), System.Globalization.CultureInfo.InvariantCulture)))
-                        return false;
-                }
-            }
-            return true;
-        }
-
-        public ScopeEmitPlan BeginScope(SemanticScope scope, HashSet<string>? usedFields) =>
-            scope.Region >= 0
-                ? PlanFields(definedScopeFields ??= [], scope.Region, usedFields)
-                : PlanFields(definedStructuralFields ??= new(ReferenceEqualityComparer.Instance), scope, usedFields);
-
-        private static ScopeEmitPlan PlanFields<TKey>(Dictionary<TKey, HashSet<string>?> table, TKey id,
-            HashSet<string>? usedFields) where TKey : notnull
-        {
-            if (!table.TryGetValue(id, out var existing))
-            {
-                table[id] = usedFields is null ? null : new HashSet<string>(usedFields, StringComparer.Ordinal);
-                return new(true, true, usedFields, null);
-            }
-            if (existing is null) return default;
-            if (usedFields is null)
-            {
-                table[id] = null;
-                return new(true, false, null, existing);
-            }
-            if (usedFields.IsSubsetOf(existing)) return default;
-            var snapshot = new HashSet<string>(existing, StringComparer.Ordinal);
-            existing.UnionWith(usedFields);
-            return new(true, false, usedFields, snapshot);
-        }
-        public bool DefineIndexed(int region) => (definedIndexed ??= []).Add(region);
-        public bool DefineLocation(HirLocationId location) => (definedLocations ??= []).Add(location);
-        public int Structural(SemanticScope scope)
-        {
-            structural ??= new(ReferenceEqualityComparer.Instance);
-            if (!structural.TryGetValue(scope, out var ordinal)) structural[scope] = ordinal = structural.Count;
-            return ordinal;
-        }
-        public int Region(int region)
-        {
-            if (region < 0) return -1;
-            regions ??= [];
-            if (!regions.TryGetValue(region, out var ordinal)) regions[region] = ordinal = regions.Count;
-            return ordinal;
-        }
-        public int Location(HirLocationId location)
-        {
-            locations ??= [];
-            if (!locations.TryGetValue(location, out var ordinal)) locations[location] = ordinal = locations.Count;
-            return ordinal;
-        }
-    }
 }

@@ -149,6 +149,7 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
         value = value with { StorageConstraint = type,
             CheckedType = program.Declaration(source).Annotation is not null && hir.Types[type.Value].Shape >= 0
                 ? type : value.CheckedType };
+        value = StoreLayoutChoice(children[0], value, node.Source, context);
         SealStorage(location, type, context);
         context.Values[location] = value;
         UpdateStorageValue(location, value, context);

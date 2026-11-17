@@ -6,27 +6,10 @@ namespace Msync.Compiler.Semantics;
 
 internal sealed partial class SemanticAnalyzer
 {
-    private sealed record SemanticInputSchema(SemanticValue[] Arguments, SemanticValue[] Captures, SemanticContext Context);
-
-    private SemanticInputSchema CodeSchema(IReadOnlyList<SemanticValue> arguments,
-        IReadOnlyList<SemanticValue> captures, SemanticContext caller)
-    {
-        SemanticContext context = new(new(-1)) { ReplacedProgramCells = caller.ReplacedProgramCells };
-        foreach (var pair in caller.Definitions) context.Definitions.Add(pair.Key, pair.Value);
-        FormalInput input = new(this, caller, context, keyOnly: true);
-        SemanticValue[] parameters = new SemanticValue[arguments.Count];
-        SemanticValue[] environment = new SemanticValue[captures.Count];
-        for (int index = 0; index < captures.Count; index++) environment[index] = input.Abstract(captures[index]);
-        for (int index = 0; index < arguments.Count; index++) parameters[index] = input.Abstract(arguments[index]);
-        input.Complete();
-        return new(parameters, environment, context);
-    }
-
-    private sealed class FormalInput(SemanticAnalyzer owner, SemanticContext caller, SemanticContext formal,
-        bool keyOnly = false)
+    internal sealed class FormalInput(SemanticAnalyzer owner, SemanticContext caller, SemanticContext formal)
     {
         private readonly Dictionary<int, int> regions = [];
-        private readonly List<int> admittedRegions = [];
+        private readonly Dictionary<int, (SemanticScope Scope, SemanticInputRole Role)> sources = [];
         private readonly Dictionary<int, int> indexedRegions = [];
         private readonly Dictionary<SemanticValue, SemanticValue> active = new(ReferenceEqualityComparer.Instance);
         private readonly Dictionary<(SemanticValue Value, SemanticInputRole Role), SemanticValue> completed = new(ReferenceRoleComparer<SemanticValue>.Instance);
@@ -35,15 +18,24 @@ internal sealed partial class SemanticAnalyzer
         private readonly Dictionary<SemanticInputRole, int> scopeRoles = [];
         private readonly Dictionary<SemanticInputRole, int> resourceRoles = [];
         private readonly SemanticInputRoles roles = new();
-        private readonly Dictionary<int, HashSet<int>> scopeSources = [];
         private int nextRoot;
         public Dictionary<HirLocationId, HirLocationId> Locations { get; } = [];
+        public Dictionary<int, SemanticOrigin> ScopePaths { get; } = [];
+        public List<(SemanticOrigin Path, SemanticValue Value)> NestedInputs { get; } = [];
+        public int FieldLoads { get; private set; }
+        public bool OwnsScope(int region) => sources.ContainsKey(region);
 
-        public SemanticValue Abstract(SemanticValue value) => Abstract(value, roles.Root(nextRoot++));
+        public SemanticValue Abstract(SemanticValue value)
+        {
+            var role = roles.Root(nextRoot++);
+            return owner.Trace?.Detail is { } trace
+                ? trace.Measure("compiler.semantic.formal_input", (Input: this, value, role),
+                    static state => state.Input.Abstract(state.value, state.role))
+                : Abstract(value, role);
+        }
 
         private SemanticValue Abstract(SemanticValue value, SemanticInputRole role)
         {
-            if (keyOnly && IsKeyLeaf(value)) return value;
             if (active.TryGetValue(value, out var known)) return known;
             if (completed.TryGetValue((value, role), out known)) return known;
             // Runtime constants are not specialization facts. In particular a first
@@ -54,6 +46,8 @@ internal sealed partial class SemanticAnalyzer
                 Node = HirNodeId.None,
                 Location = null,
                 Literal = value.DenotedType is null ? null : value.Literal,
+                BranchValue = null,
+                TypeRead = null,
                 Callables = [],
                 Scope = null,
                 Element = null,
@@ -68,54 +62,24 @@ internal sealed partial class SemanticAnalyzer
             if (value.Scope is { } scope)
             {
                 scope = caller.Objects.GetValueOrDefault(scope.Region, scope);
-                if (scope.Region >= 0 && regions.TryGetValue(scope.Region, out var existing)
-                    && formal.Objects.TryGetValue(existing, out var admitted))
-                    result = result with { Scope = admitted };
-                else
+                int region = scopeRoles.TryGetValue(role, out var prototype) ? prototype : ++owner.nextRegion;
+                scopeRoles[role] = region;
+                if (scope.Region >= 0) regions.TryAdd(scope.Region, region);
+                if (!sources.ContainsKey(region))
                 {
-                    bool summary = scope.Region < 0;
-                    int region = scope.Region >= 0 && regions.TryGetValue(scope.Region, out var family) ? family
-                        : summary && scopeRoles.TryGetValue(role, out var prototype) ? prototype : ++owner.nextRegion;
-                    if (summary) scopeRoles[role] = region;
-                    if (scope.Region >= 0 && !regions.ContainsKey(scope.Region)) AddRegion(scope.Region, region);
-                    var sources = scope.Aliases.IsDefaultOrEmpty ? (scope.Region >= 0 ? ImmutableHashSet.Create(scope.Region) : [])
-                        : scope.Aliases.ToImmutableHashSet();
-                    RegisterScopeSources(region, sources);
+                    sources.Add(region, (scope, role));
                     var symbolic = scope with
                     {
                         Region = region,
                         Fields = ImmutableDictionary<string, SemanticValue>.Empty,
                         Locations = ImmutableDictionary<string, HirLocationId>.Empty,
                         Aliases = [],
-                        Dynamic = scope.Dynamic || summary
+                        Dynamic = scope.Dynamic || scope.Region < 0
                     };
                     formal.Objects[region] = symbolic;
-                    result = result with { Scope = symbolic };
-                    active[value] = result;
-                    var fields = ImmutableDictionary.CreateBuilder<string, SemanticValue>(StringComparer.Ordinal);
-                    foreach (var (name, original) in scope.Fields)
-                    {
-                        bool located = scope.Locations.TryGetValue(name, out var location);
-                        var field = located ? caller.Values.GetValueOrDefault(location, original) : original;
-                        HirTypeId? carrier = located ? owner.StorageType(location, caller) : field.StorageConstraint;
-                        if (carrier is { } storage && owner.hir.Types[storage.Value].TypeParameter < 0)
-                        {
-                            TypeRef stored = owner.hir.Types[storage.Value].RuntimeType;
-                            if (owner.Runtime(field) == TypeRef.Null
-                                || (stored.Kind & (TypeKind.Scope | TypeKind.Range | TypeKind.Function | TypeKind.Type)) == 0)
-                                field = field with { Type = storage };
-                        }
-                        fields.Add(name, Abstract(field, roles.Field(role, name)));
-                    }
-                    symbolic = symbolic with { Fields = fields.ToImmutable() };
-                    formal.Objects[region] = symbolic;
-                    foreach (var field in scope.Fields.Keys)
-                        foreach (int source in sources)
-                            if (caller.MemberContracts.TryGetValue((source, field), out var contracts))
-                                formal.MemberContracts[(region, field)] = formal.MemberContracts.GetValueOrDefault((region, field), [])
-                                    .AddRange(contracts).Distinct().ToImmutableArray();
-                    result = result with { Scope = symbolic };
                 }
+                result = result with { Scope = formal.Objects[region] };
+                active[value] = result;
             }
             if (value.Element is { } element) result = result with
             { Element = Abstract(element with { StorageConstraint = null }, roles.Element(role)) };
@@ -166,16 +130,52 @@ internal sealed partial class SemanticAnalyzer
             return result;
         }
 
-        private static bool IsKeyLeaf(SemanticValue value)
+        public bool TryField(SemanticScope scope, string name, SemanticContext context, out SemanticValue value)
         {
-            if (value.Scope is not null || value.Element is not null || value.IndexedRegion is not null
-                || !value.IndexedAliases.IsDefaultOrEmpty || !value.DeferredEffects.IsDefaultOrEmpty
-                || value.FutureCallableDomain is not null || !value.OpenSessionCalls.IsDefaultOrEmpty) return false;
-            foreach (var callable in value.Callables.IsDefault ? [] : value.Callables)
-                if (!callable.Captures.IsDefaultOrEmpty) return false;
-            // Key writing observes types and callable identities, never runtime
-            // annotations. Executable-body abstraction still strips those facts.
-            return true;
+            if (!sources.TryGetValue(scope.Region, out var input))
+            {
+                value = null!;
+                return false;
+            }
+            var loaded = owner.Trace?.Detail is { } trace
+                ? trace.Measure("compiler.semantic.formal_field", (Input: this, input, scope, name, context),
+                    static state => state.Input.LoadField(state.input.Scope, state.input.Role,
+                        state.scope, state.name, state.context))
+                : LoadField(input.Scope, input.Role, scope, name, context);
+            value = loaded!;
+            return loaded is not null;
+        }
+
+        private SemanticValue? LoadField(SemanticScope source, SemanticInputRole role, SemanticScope scope,
+            string name, SemanticContext context)
+        {
+            if (!owner.TryScopeField(source, name, caller, out var field)) return null;
+            FieldLoads++;
+            HirTypeId? carrier = source.Locations.TryGetValue(name, out var location)
+                ? owner.StorageType(location, caller) : field.StorageConstraint;
+            if (carrier is { } storage && owner.hir.Types[storage.Value].TypeParameter < 0)
+            {
+                TypeRef stored = owner.hir.Types[storage.Value].RuntimeType;
+                if (owner.Runtime(field) == TypeRef.Null
+                    || (stored.Kind & (TypeKind.Scope | TypeKind.Range | TypeKind.Function | TypeKind.Type)) == 0)
+                    field = field with { Type = storage };
+            }
+            var value = Abstract(field, roles.Field(role, name));
+            if (ScopePaths.TryGetValue(scope.Region, out var origin))
+                value = AttachOrigin(value, new SemanticOrigin(origin.Root, [.. origin.Fields.AsSpan(), name]), []);
+            scope = context.Objects.GetValueOrDefault(scope.Region, scope);
+            context.Objects[scope.Region] = scope with { Fields = scope.Fields.SetItem(name, value) };
+            AdmitMemberContract(scope.Region, name, context);
+            return value;
+        }
+
+        public void AdmitMemberContract(int region, string name, SemanticContext context)
+        {
+            if (!sources.TryGetValue(region, out var input)) return;
+            foreach (int source in ScopeAliases(input.Scope))
+                if (caller.MemberContracts.TryGetValue((source, name), out var contracts))
+                    context.MemberContracts[(region, name)] = context.MemberContracts.GetValueOrDefault((region, name), [])
+                        .AddRange(contracts).Distinct().ToImmutableArray();
         }
 
         private ImmutableArray<SemanticCallable> AbstractCallables(ImmutableArray<SemanticCallable> values, SemanticInputRole role)
@@ -213,7 +213,7 @@ internal sealed partial class SemanticAnalyzer
                     ? caller.Values.GetValueOrDefault(capture.Source, capture.Value) : capture.Value,
                     capture.Mode == HirCaptureMode.Location ? roles.Capture(source) : roles.ValueCapture(role, source));
                 formal.Values[source] = captured;
-                if (!keyOnly) formal.Storage[source] = owner.StorageType(capture.Source, caller);
+                formal.Storage[source] = owner.StorageType(capture.Source, caller);
                 captures.Add(capture with { Source = source, Value = captured });
             }
             var result = callable with { Captures = captures.MoveToImmutable() };
@@ -263,17 +263,23 @@ internal sealed partial class SemanticAnalyzer
         {
             if (caller.Objects.TryGetValue(source, out var scope))
                 return Abstract(new(owner.hir.Type(new HirType(TypeRef.Scope, Shape: scope.Layout)), HirNodeId.None, Scope: scope)).Scope!.Region;
-            if (!regions.TryGetValue(source, out var region)) AddRegion(source, region = ++owner.nextRegion);
+            if (!regions.TryGetValue(source, out var region)) regions.Add(source, region = ++owner.nextRegion);
             return region;
         }
 
         public SemanticValue AttachOrigin(SemanticValue value, HirLocationId root) =>
-            AttachOrigin(value, new(root), []);
+            owner.Trace?.Detail is { } trace
+                ? trace.Measure("compiler.semantic.formal_origins", (Input: this, value, root),
+                    static state => state.Input.AttachOrigin(state.value, new(state.root), []))
+                : AttachOrigin(value, new(root), []);
 
         private SemanticValue AttachOrigin(SemanticValue value, SemanticOrigin origin, HashSet<int> active)
         {
             var result = value with { Origin = origin };
+            if (!origin.Fields.IsDefaultOrEmpty && HasNestedBindings(value))
+                NestedInputs.Add((origin, result));
             if (value.Scope is not { } scope || !active.Add(scope.Region)) return result;
+            ScopePaths.TryAdd(scope.Region, origin);
             scope = formal.Objects.GetValueOrDefault(scope.Region, scope);
             scope = scope with
             {
@@ -289,53 +295,17 @@ internal sealed partial class SemanticAnalyzer
             return result with { Scope = scope };
         }
 
-        private void RegisterScopeSources(int region, IEnumerable<int> sources)
-        {
-            foreach (int source in sources)
-            {
-                if (!scopeSources.TryGetValue(source, out var views)) scopeSources[source] = views = [];
-                foreach (int view in views)
-                {
-                    if (view == region) continue;
-                    formal.AliasViews[region] = formal.AliasViews.GetValueOrDefault(region, ImmutableHashSet<int>.Empty).Add(view);
-                    formal.AliasViews[view] = formal.AliasViews.GetValueOrDefault(view, ImmutableHashSet<int>.Empty).Add(region);
-                }
-                views.Add(region);
-            }
-        }
-
-        private int AliasRegion(int source)
-        {
-            if (source < 0) return -1;
-            if (regions.TryGetValue(source, out int target)) return target;
-            // An external alias endpoint names a place family, not another
-            // demanded value graph. Reads import facts through Abstract.
-            AddRegion(source, target = ++owner.nextRegion);
-            return target;
-        }
-
-        private void AddRegion(int source, int target)
-        {
-            regions.Add(source, target);
-            admittedRegions.Add(source);
-        }
+        private static bool HasNestedBindings(SemanticValue value) =>
+            value.IndexedRegion is not null || !value.IndexedAliases.IsDefaultOrEmpty
+            || value.Element is not null || !value.DeferredEffects.IsDefaultOrEmpty
+            || value.FutureCallableDomain is not null
+            || !value.Callables.IsDefaultOrEmpty && value.Callables.Any(callable => !callable.Captures.IsDefaultOrEmpty);
 
         public void Complete()
         {
             foreach (var pair in Locations.ToArray())
                 if (!formal.Values.ContainsKey(pair.Value) && caller.Values.TryGetValue(pair.Key, out var value))
                     formal.Values[pair.Value] = Abstract(value, roles.Capture(pair.Value));
-            for (int index = 0; index < admittedRegions.Count; index++)
-            {
-                int source = admittedRegions[index];
-                if (!caller.AliasViews.TryGetValue(source, out var views)) continue;
-                int target = regions[source];
-                foreach (int alias in views)
-                {
-                    int mapped = AliasRegion(alias);
-                    formal.AliasViews[target] = formal.AliasViews.GetValueOrDefault(target, ImmutableHashSet<int>.Empty).Add(mapped);
-                }
-            }
         }
 
         private HirLocationId FormalLocation(HirLocationId source)
@@ -354,9 +324,6 @@ internal sealed partial class SemanticAnalyzer
                 });
             }
             Locations[source] = target;
-            // Key encoding uses the normalized location identity and current
-            // value, not the facts needed to analyze a body in that location.
-            if (keyOnly) return target;
             if (caller.CallableContracts.TryGetValue(source, out var contracts)) formal.CallableContracts[target] = contracts;
             if (caller.Definitions.TryGetValue(source, out var definition)) formal.Definitions[target] = definition;
             else if (owner.CanonicalDefinition(source) is { } canonical) formal.Definitions[target] = canonical;
