@@ -107,12 +107,16 @@ public static partial class LlvmInstCombine
             {
                 if (phi.GetIncomingValue(i) is not LlvmGetElementPtrInstruction gep || !gep.HasOneUser ||
                     gep.SourceElementType != first.SourceElementType || gep.OperandCount != first.OperandCount) return null;
+                if (gep.GetTargetStorageType() != first.GetTargetStorageType())
+                { Count("phi.gep_retained_distinct_storage"); return null; }
                 Count("phi.gep.incoming_visited");
                 flags &= gep.NoWrapFlags;
                 if (allAllocas && (gep.PointerOperand is not LlvmAllocaInstruction || !gep.Indices.All(index => index is LlvmConstantInt))) allAllocas = false;
                 for (int op = 0; op < first.OperandCount; ++op)
                 {
                     if (first.GetOperand(op) == gep.GetOperand(op)) continue;
+                    if (op != 0 && gep.GetTargetStorageType() is not null)
+                    { Count("phi.gep_retained_typed_index"); return null; }
                     if (first.GetOperand(op) is LlvmConstant || gep.GetOperand(op) is LlvmConstant ||
                         first.GetOperand(op)!.Type != gep.GetOperand(op)!.Type || neededPhi) return null;
                     operands[op] = null; neededPhi = true;
@@ -121,6 +125,7 @@ public static partial class LlvmInstCombine
             if (allAllocas) { Count("phi.gep.alloca_addresses"); return null; }
             for (int op = 0; op < operands.Length; ++op) operands[op] ??= PhiOperand(phi, op, first);
             var result = new LlvmGetElementPtrInstruction(first.SourceElementType, operands[0]!, operands.Skip(1).Select(value => value!).ToArray(), flags);
+            result.TargetStorageType = first.GetTargetStorageType();
             PHIArgMergedDebugLoc(result, phi); Count("phi.gep_merged"); return result;
         }
         private bool IsSafeAndProfitableToSinkLoad(LlvmLoadInstruction load)
@@ -153,6 +158,8 @@ public static partial class LlvmInstCombine
                 if (phi.GetIncomingValue(i) is not LlvmLoadInstruction item || !item.HasOneUser || !item.IsSimple ||
                     ((LlvmPointerType)item.PointerOperand.Type).AddressSpace != addressSpace || !LlvmLocal.CanReplaceOperandWithVariable(item, 0) ||
                     item.Parent != phi.GetIncomingBlock(i) || !IsSafeAndProfitableToSinkLoad(item)) return null;
+                if (first.PointerOperand != item.PointerOperand && (SplitStoragePointerLoad(first) || SplitStoragePointerLoad(item)))
+                { Count("phi.load_retained_split_storage"); return null; }
                 Count("phi.load.incoming_visited");
                 if (item.Alignment.Value < alignment.Value) alignment = item.Alignment;
             }
@@ -170,6 +177,14 @@ public static partial class LlvmInstCombine
             if (common is null) InsertNewInstBefore(pointerPhi, phi); else pointerPhi.DropAllReferences();
             PHIArgMergedDebugLoc(result, phi); Count("phi.load_merged"); return result;
         }
+
+        // LLVM aggregate expansion loads function components as physical pointers.
+        // The target recovers each component from its containing logical field;
+        // an address phi would first require a standalone pointer to that component.
+        private static bool SplitStoragePointerLoad(LlvmLoadInstruction load) =>
+            load.LogicalType < 0 && load.Type.IsPointerTy() &&
+            (load.GetOperandUse(0).TargetStorageType is not null ||
+                load.PointerOperand is LlvmGetElementPtrInstruction gep && gep.GetTargetStorageType() is not null);
         private LlvmInstruction? FoldPHIArgOpIntoPHI(LlvmPhiInstruction phi)
         {
             if (phi.Parent!.GetTerminator().IsEHPad) return null;

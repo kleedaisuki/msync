@@ -117,9 +117,11 @@ public static partial class LlvmEarlyCse
             if (instruction is LlvmGetElementPtrInstruction gep)
             {
                 var offset = LlvmAPInt.GetZero(Layout.GetIndexTypeSizeInBits(gep.Type));
+                var storage = gep.GetTargetStorageType();
                 var key = new GepValue(gep, LlvmValueTracking.AccumulateConstantOffset(gep, Layout, ref offset, Metrics)
-                    ? offset.TrySExtValue() : null);
+                    ? offset.TrySExtValue() : null, storage, storage is null ? -1 : gep.LogicalType);
                 Count("gep.lookup");
+                if (storage is not null) Count("gep.typed_storage_lookup");
                 if (geps.Lookup(key) is { } available)
                 {
                     CombineFlags(gep, available); gep.ReplaceAllUsesWith(available);

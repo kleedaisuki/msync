@@ -8,6 +8,8 @@ public static partial class LlvmNativeLowerer
 {
     private sealed partial class Body
     {
+        private int literalAddressSelects, literalSelectedLoads;
+
         private void Alloca(LlvmAllocaInstruction allocation)
         {
             if (allocation.ArraySize is not LlvmConstantInt { IsOne: true })
@@ -40,6 +42,16 @@ public static partial class LlvmNativeLowerer
         {
             if (StaticLoad(load)) return;
             if (FunctionComponentLoad(load)) return;
+            if (load.PointerOperand is LlvmSelectInstruction select &&
+                TryLiteralAddressSelect(select, out var literal))
+            {
+                int result = load.LogicalType >= 0 ? load.LogicalType : literal.Type;
+                if (load.LogicalType < 0) SetSelectedValueType(load, result);
+                Add(new(NativeOp.Select, Slot(load), OperandSlot(select, 0),
+                    ConstantSlotValue(literal.True, result), ConstantSlotValue(literal.False, result), Source: load.Source));
+                trace?.Metric("addresses.literal_loads_selected", ++literalSelectedLoads);
+                return;
+            }
             if (RelocatedConstantLoad(load, out var constant))
             {
                 Add(new(NativeOp.Constant, Slot(load), owner.Constant(constant), Source: load.Source));
@@ -51,6 +63,32 @@ public static partial class LlvmNativeLowerer
                 throw Unsupported(load, $"load {load.Type} in '{function.Name}' from {load.PointerOperand.Name} ({load.PointerOperand.GetType().Name}): " +
                     $"storage #{storageType} {owner.Types[storageType]}, result #{resultType} {owner.Types[resultType]}");
             Add(new(NativeOp.Load, Slot(load), MemoryAddressSlot(load, 0, storageType), Type: storageType, Source: load.Source));
+        }
+
+        private readonly record struct LiteralAddressSelect(NativeConstant True, NativeConstant False, int Type);
+
+        // SimplifyCFG can sink an entire literal load through a branch. Literal
+        // globals encode source values, not addressable Native storage.
+        private bool TryLiteralAddressSelect(LlvmSelectInstruction select, out LiteralAddressSelect literal)
+        {
+            literal = default;
+            if (select.TrueValue is not LlvmGlobalVariable { IsConstant: true, LogicalType: >= 0 } whenTrue ||
+                select.FalseValue is not LlvmGlobalVariable { IsConstant: true, LogicalType: >= 0 } whenFalse ||
+                !ReferenceEquals(whenTrue.ValueType, whenFalse.ValueType) ||
+                !owner.Input.Constants.TryGetValue(whenTrue, out var trueValue) ||
+                !owner.Input.Constants.TryGetValue(whenFalse, out var falseValue)) return false;
+            int type = owner.Types[whenTrue.LogicalType].Pointee;
+            int other = owner.Types[whenFalse.LogicalType].Pointee;
+            if (type < 0 || other < 0 || !NativeTypeRelations.SameStorageRepresentation(owner.Types, type, other)) return false;
+            foreach (var use in select.Uses)
+            {
+                if (use.User is not LlvmLoadInstruction { IsSimple: true } load ||
+                    !ReferenceEquals(load.PointerOperand, select) || !ReferenceEquals(load.Type, whenTrue.ValueType) ||
+                    load.LogicalType >= 0 && !NativeTypeRelations.SameStorageRepresentation(owner.Types, type, load.LogicalType))
+                    return false;
+            }
+            literal = new(trueValue, falseValue, type);
+            return true;
         }
         private void FileIn(LlvmFileInInst input)
         {

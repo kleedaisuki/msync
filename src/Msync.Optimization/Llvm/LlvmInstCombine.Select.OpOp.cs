@@ -81,6 +81,12 @@ public static partial class LlvmInstCombine
                 whenTrue is not (LlvmBinaryOperator or LlvmGetElementPtrInstruction) || !whenTrue.HasOneUse || !whenFalse.HasOneUse) return null;
             LlvmValue? matched = GetCommonOp(whenTrue is LlvmBinaryOperator binary && binary.IsCommutative);
             if (matched is null) return null;
+            if (whenTrue is LlvmGetElementPtrInstruction firstGep && whenFalse is LlvmGetElementPtrInstruction secondGep)
+            {
+                var firstStorage = firstGep.GetTargetStorageType();
+                if (firstStorage != secondGep.GetTargetStorageType() || commonIsZero && firstStorage is not null)
+                { Count("select.gep_retained_typed_storage"); return null; }
+            }
             if (whenTrue is LlvmBinaryOperator div && div.Opcode is LlvmOpcode.UDiv or LlvmOpcode.SDiv or LlvmOpcode.URem or LlvmOpcode.SRem &&
                 !LlvmValueTracking.IsGuaranteedNotToBePoison(condition))
                 if (div.Opcode is LlvmOpcode.SDiv or LlvmOpcode.SRem || commonIsZero) condition = Builder.CreateFreeze(condition);
@@ -93,7 +99,8 @@ public static partial class LlvmInstCombine
                 return result;
             }
             LlvmGetElementPtrInstruction trueGep = (LlvmGetElementPtrInstruction)whenTrue, falseGep = (LlvmGetElementPtrInstruction)whenFalse;
-            return new LlvmGetElementPtrInstruction(trueGep.SourceElementType, left, [right], trueGep.NoWrapFlags & falseGep.NoWrapFlags);
+            return new LlvmGetElementPtrInstruction(trueGep.SourceElementType, left, [right], trueGep.NoWrapFlags & falseGep.NoWrapFlags)
+            { TargetStorageType = trueGep.GetTargetStorageType() };
         }
         private static bool SelectMatchFNeg(LlvmValue value, out LlvmValue operand)
         {

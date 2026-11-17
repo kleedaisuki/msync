@@ -38,6 +38,9 @@ public static partial class LlvmLocal
     private static bool CanReplaceGepIndex(LlvmGetElementPtrInstruction instruction, int operandIndex)
     {
         if (operandIndex == 0) return true;
+        // A target storage view maps a constant LLVM offset to a typed field,
+        // not to a byte offset in the target's split payload/root layout.
+        if (instruction.GetTargetStorageType() is not null) return false;
         var type = instruction.SourceElementType;
         for (int index = 1; index < operandIndex; ++index)
         {

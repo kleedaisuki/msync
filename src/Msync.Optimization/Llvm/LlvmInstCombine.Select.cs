@@ -59,6 +59,8 @@ public static partial class LlvmInstCombine
             LlvmInstruction? SelectGepWithBase(LlvmGetElementPtrInstruction gep, LlvmValue basis, bool swap)
             {
                 if (gep.OperandCount != 2 || !ReferenceEquals(gep.PointerOperand, basis) || !gep.HasOneUse) return null;
+                if (gep.GetTargetStorageType() is not null)
+                { Count("select.gep_retained_typed_storage"); return null; }
                 LlvmValue newTrue = gep.GetOperand(1)!, newFalse = LlvmConstant.GetNullValue(gep.GetOperand(1)!.Type);
                 if (swap) (newTrue, newFalse) = (newFalse, newTrue);
                 LlvmValue index = Builder.CreateSelect(condition, newTrue, newFalse, select.Name + ".idx");

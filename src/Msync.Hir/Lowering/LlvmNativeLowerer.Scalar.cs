@@ -54,6 +54,11 @@ public static partial class LlvmNativeLowerer
         {
             if (TryAggregateSelect(select)) return;
             if (!select.Condition.Type.IsIntegerTy(1)) throw Unsupported(select, "non-scalar select condition");
+            if (TryLiteralAddressSelect(select, out _))
+            {
+                trace?.Metric("addresses.literal_selects_elided", ++literalAddressSelects);
+                return;
+            }
             int type = SelectedValueType(select);
             Add(new(NativeOp.Select, Slot(select), OperandSlot(select, 0),
                 OperandSlot(select, 1, type), OperandSlot(select, 2, type), Source: select.Source));

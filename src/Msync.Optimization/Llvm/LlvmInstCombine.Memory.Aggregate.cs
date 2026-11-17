@@ -62,6 +62,8 @@ public static partial class LlvmInstCombine
             LlvmValue result = LlvmPoisonValue.Get(type);
             if (type is LlvmStructType structure)
             {
+                if (structure.Name == "msync.function")
+                { Count("instcombine.memory.unpack.load.retained_callable"); return null; }
                 int count = structure.Elements.Count;
                 if (count == 1)
                     return ReplaceInstUsesWith(load, Builder.CreateInsertValue(result,
@@ -118,6 +120,8 @@ public static partial class LlvmInstCombine
             LlvmType type = value.Type;
             if (type is LlvmStructType structure)
             {
+                if (structure.Name == "msync.function")
+                { Count("instcombine.memory.unpack.store.retained_callable"); return false; }
                 int count = structure.Elements.Count;
                 if (count == 1)
                 { CombineStoreToNewValue(store, Builder.CreateExtractValue(value, 0)); return true; }

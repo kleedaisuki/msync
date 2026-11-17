@@ -108,17 +108,20 @@ public static partial class LlvmEarlyCse
         }
     }
 
-    private readonly record struct GepValue(LlvmGetElementPtrInstruction Instruction, long? ConstantOffset);
+    private readonly record struct GepValue(LlvmGetElementPtrInstruction Instruction, long? ConstantOffset,
+        LlvmStructType? TargetStorage, int LogicalType);
     private sealed class GepComparer : IEqualityComparer<GepValue>
     {
         public int GetHashCode(GepValue key)
         {
             HashCode hash = new(); hash.Add(key.Instruction.Opcode); hash.Add(key.Instruction.PointerOperand);
+            hash.Add(key.TargetStorage); hash.Add(key.LogicalType);
             if (key.ConstantOffset.HasValue) hash.Add(key.ConstantOffset.Value);
             else foreach (var operand in key.Instruction.Operands.Skip(1)) hash.Add(operand);
             return hash.ToHashCode();
         }
         public bool Equals(GepValue a, GepValue b) => a.Instruction.PointerOperand == b.Instruction.PointerOperand &&
+            a.TargetStorage == b.TargetStorage && a.LogicalType == b.LogicalType &&
             (a.ConstantOffset.HasValue && b.ConstantOffset.HasValue ? a.ConstantOffset.Value == b.ConstantOffset.Value :
                 a.Instruction.IsIdenticalToWhenDefined(b.Instruction));
     }

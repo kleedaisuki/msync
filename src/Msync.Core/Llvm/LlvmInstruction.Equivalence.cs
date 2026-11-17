@@ -38,13 +38,25 @@ public abstract partial class LlvmInstruction
             LlvmInsertValueInstruction left => left.Indices.SequenceEqual(((LlvmInsertValueInstruction)other).Indices),
             LlvmExtractValueInstruction left => left.Indices.SequenceEqual(((LlvmExtractValueInstruction)other).Indices),
             LlvmShuffleVectorInstruction left => left.ShuffleMask.SequenceEqual(((LlvmShuffleVectorInstruction)other).ShuffleMask),
-            LlvmGetElementPtrInstruction left => ReferenceEquals(left.SourceElementType, ((LlvmGetElementPtrInstruction)other).SourceElementType),
-            // These three instructions are project extensions; compare their semantic attributes.
-            LlvmHeapAllocInst left => ignoreAlignment || left.Alignment == ((LlvmHeapAllocInst)other).Alignment,
+            LlvmGetElementPtrInstruction left => SameGepState(left, (LlvmGetElementPtrInstruction)other),
+            LlvmHeapAllocInst left => SameHeapAllocation(left, (LlvmHeapAllocInst)other, ignoreAlignment),
             LlvmFileInInst left => left.Format == ((LlvmFileInInst)other).Format,
             LlvmFileOutInst left => left.Mode == ((LlvmFileOutInst)other).Mode,
             _ => true
         };
+    }
+
+    // The byte count does not describe the native reference and initialization lanes.
+    private static bool SameHeapAllocation(LlvmHeapAllocInst left, LlvmHeapAllocInst right, bool ignoreAlignment) =>
+        left.LogicalLayout == right.LogicalLayout && left.LogicalType == right.LogicalType
+        && left.LogicalAllocationSite == right.LogicalAllocationSite
+        && (ignoreAlignment || left.Alignment == right.Alignment);
+
+    private static bool SameGepState(LlvmGetElementPtrInstruction left, LlvmGetElementPtrInstruction right)
+    {
+        if (left.SourceElementType != right.SourceElementType) return false;
+        var storage = left.GetTargetStorageType();
+        return storage == right.GetTargetStorageType() && (storage is null || left.LogicalType == right.LogicalType);
     }
 
     private static bool SameLoadState(LlvmLoadInstruction left, LlvmLoadInstruction right, bool ignoreAlignment) =>

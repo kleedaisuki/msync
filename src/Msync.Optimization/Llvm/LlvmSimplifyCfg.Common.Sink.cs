@@ -133,7 +133,8 @@ public static partial class LlvmSimplifyCfg
                     if (value is LlvmConstant &&
                         ((first.Opcode is LlvmOpcode.UDiv or LlvmOpcode.SDiv or LlvmOpcode.URem or LlvmOpcode.SRem) && operand == 1 ||
                          first is LlvmCallBase intrinsic && intrinsic.CalledFunction?.IntrinsicDescriptor is not null)) return false;
-                    if (instructions.Any(instruction => !LlvmLocal.CanReplaceOperandWithVariable(instruction, operand))) return false;
+                    if (instructions.Any(instruction => !LlvmLocal.CanReplaceOperandWithVariable(instruction, operand)))
+                        return first is LlvmGetElementPtrInstruction ? Reject("gep-index") : false;
                     var values = new List<LlvmValue>(instructions.Count);
                     foreach (var instruction in instructions) values.Add(instruction.GetOperand(operand)!);
                     phiOperands[first.GetOperandUse(operand)] = values;

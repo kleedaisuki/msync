@@ -118,6 +118,10 @@ public static partial class LlvmHirLowerer
             var signature = LlvmFunctionType.Get(result, arguments.Select(argument => argument.Type).ToArray());
             var target = owner.module.GetFunction(System.Text.Encoding.UTF8.GetBytes(name)) ??
                 LlvmFunction.Create(signature, LlvmLinkage.ExternalLinkage, name, owner.module);
+            // Iterator handles lower to immediate, activation-local cursor IDs.
+            // Merging these calls can replace a specific cursor with a pointer phi.
+            target.NoMerge = true;
+            owner.trace?.Detail?.Metric("iterators.fixed_site_calls", 1);
             owner.iteratorCalls[target] = operation;
             return Add(new LlvmCallInstruction(signature, target, arguments));
         }
