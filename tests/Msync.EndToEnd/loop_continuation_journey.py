@@ -78,9 +78,12 @@ MID_LOOP_FAILURE: str = (
 for row in rows {
     let text = $std::io::read_text(row::path);
     let number = text as Number;
-    let destination = $std::string::concat("./done-", row::index as String) as Path;
-    (number as String) -> destination;
-    acquire;
+    # Demand the conversion in control flow, outside the Bool-returning transfer.
+    if number >= 0 {
+        let destination = $std::string::concat("./done-", row::index as String) as Path;
+        (number as String) -> destination;
+        acquire;
+    };
 };
 "unreachable" -> ./after.txt;
 """

@@ -44,9 +44,9 @@ public static partial class NativeArtifact
                 throw new MsyncException("Not an msync native IR artifact");
             ushort version = reader.ReadUInt16();
             if (version != FormatVersion)
-                throw new MsyncException($"Unsupported native IR format {version}; expected {FormatVersion}. Recompile the source with msync 0.9.0");
+                throw new MsyncException($"Unsupported native IR format {version}; expected {FormatVersion}. Recompile the source with this msync version.");
             int encoding = reader.ReadInt32();
-            if (encoding != CompactMarker) throw new MsyncException("Unsupported native IR encoding; recompile the source with msync 0.9.0");
+            if (encoding != CompactMarker) throw new MsyncException("Unsupported native IR encoding; recompile the source with this msync version.");
             NativeProgram program = ReadCompact(reader, trace);
             trace?.Metric("artifact.bytes", input.Position - start);
             return program;

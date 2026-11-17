@@ -189,12 +189,12 @@ def artifact_versions(binary: Path, parent: Path) -> int:
         "current format compile",
     )
     image: bytes = artifact.read_bytes()
-    assert image[:8] == b"MSYNCBC\0" and int.from_bytes(image[8:10], "little") == 5
+    assert image[:8] == b"MSYNCIR\0" and int.from_bytes(image[8:10], "little") == 2
     source.unlink()
     accept(
         invoke(binary, directory, "run-ir", str(artifact)), "source-free current format"
     )
-    for version in (1, 2, 3, 4):
+    for version in (1, 3):
         obsolete: Path = directory / f"obsolete-{version}.mso"
         obsolete.write_bytes(image[:8] + version.to_bytes(2, "little") + image[10:])
         result: subprocess.CompletedProcess[str] = invoke(
@@ -204,7 +204,11 @@ def artifact_versions(binary: Path, parent: Path) -> int:
         assert f"format {version}" in result.stderr and "Recompile" in result.stderr, (
             result.stderr
         )
-    return 5
+    retired: Path = directory / "retired-stack.mso"
+    retired.write_bytes(b"MSYNCBC\0" + (5).to_bytes(2, "little") + image[10:])
+    result = invoke(binary, directory, "run-ir", str(retired))
+    assert result.returncode != 0 and result.stderr.strip(), result
+    return 4
 
 
 def main() -> None:
