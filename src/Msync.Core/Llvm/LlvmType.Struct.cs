@@ -19,6 +19,8 @@ public sealed class LlvmStructType : LlvmType
     public bool IsOpaque => (flags & HasBody) == 0;
     public bool IsPacked => (flags & Packed) != 0;
     public bool IsLiteral => (flags & Literal) != 0;
+    // The fields describe the IR ABI, not separately addressable target storage.
+    public bool HasNativeRecordStorage { get; private init; }
     public bool HasName => name.Length != 0;
     public string Name { get { Debug.Assert(!IsLiteral, "Literal structs never have names"); return name; } }
     public LlvmType GetElementType(int index) => containedTypes[index];
@@ -42,6 +44,13 @@ public sealed class LlvmStructType : LlvmType
     {
         var type = Create(context, name);
         type.SetBody(elements, packed);
+        return type;
+    }
+    public static LlvmStructType CreateNativeRecord(LlvmContext context, IReadOnlyList<LlvmType> elements, string name)
+    {
+        var type = new LlvmStructType(context) { HasNativeRecordStorage = true };
+        type.SetName(name);
+        type.SetBody(elements);
         return type;
     }
     public static LlvmStructType? GetTypeByName(LlvmContext context, string name) => context.GetNamedStruct(name);

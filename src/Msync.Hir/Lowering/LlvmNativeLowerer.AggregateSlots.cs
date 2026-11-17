@@ -18,8 +18,8 @@ public static partial class LlvmNativeLowerer
         private int constantValueSlotHits;
 
         private static bool IsFunctionAggregate(LlvmType type) => type is LlvmStructType { HasName: true } structure && structure.Name == "msync.function";
-        private static bool IsLeafAggregate(LlvmType type) => type is LlvmStructType { IsOpaque: false, Elements.Count: > 0 } structure
-            && (!structure.HasName || structure.Name != "msync.path" && !structure.Name.StartsWith("msync.union.", StringComparison.Ordinal));
+        private static bool IsLeafAggregate(LlvmType type) => type is LlvmStructType
+            { IsOpaque: false, HasNativeRecordStorage: false, Elements.Count: > 0 };
 
         private AggregateShape AggregateShapeFor(LlvmType type)
         {

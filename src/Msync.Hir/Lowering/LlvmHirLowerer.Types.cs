@@ -61,7 +61,7 @@ public static partial class LlvmHirLowerer
                 : (kinds & ~(TypeKind.Null | TypeKind.Bool | TypeKind.Number)) != 0 ? 1U : 0U;
             LlvmType raw = rawBits == 0 ? LlvmArrayType.Get(LlvmIntegerType.Get(context, 8), 0)
                 : LlvmIntegerType.Get(context, (uint)rawBits);
-            return LlvmStructType.Create(context,
+            return LlvmStructType.CreateNativeRecord(context,
                 [LlvmIntegerType.Get(context, 8), raw, LlvmArrayType.Get(DataPointer, roots)], name);
         }
     }

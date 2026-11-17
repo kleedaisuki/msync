@@ -26,6 +26,8 @@ public static partial class LlvmInstCombine
                 if (aggregate.Type is LlvmStructType { } structure && structure.IsScalableTy()) return null;
                 if (load.IsSimple && load.HasOneUse)
                 {
+                    if (load.Type.ContainsNativeRecordStorage())
+                    { Count("aggregate.extract.load-retained-native-record"); return null; }
                     List<LlvmValue> indices = [LlvmConstantInt.Get(LlvmType.GetInt32Ty(extract.Context), 0)];
                     foreach (uint index in extract.Indices) indices.Add(LlvmConstantInt.Get(LlvmType.GetInt32Ty(extract.Context), index));
                     Builder.SetInsertPoint(load);

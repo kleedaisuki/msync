@@ -88,6 +88,14 @@ primitive mappings can omit annotations. No arbitrary integer or opaque-pointer
 carrier is guessed. No name-based builtin or stdlib recognition is introduced
 at the target stage.
 
+`Path` and finite value unions have an explicit Native record storage marker
+on their LLVM struct type. Their fields describe the IR ABI, not separately
+addressable Native cells. SROA and InstCombine retain whole-record memory
+accesses; whole-value promotion and ordinary aggregate decomposition still
+apply. In a file traversal, the iterator writes one typed `Path` cell and
+the transfer consumes the whole load, including after loop rotation. This
+also keeps the result's logical type attached through target emission.
+
 The adapter emits a nonnull NativeBackendCode directly, using existing Standard
 handlers, one record per target instruction. It does not call
 NativeBackendCompiler, NativeStoragePlanning or NativeOptimizer. Optional raw,

@@ -50,14 +50,15 @@ internal static class ManagedLayoutProperties
             "Range constructor results remain ordinary managed builtin references.");
         var paths = LlvmHirLowerer.Lower(Compiler.Analyze("let value = ./source; [value]", "managed-path.msync"));
         var pathType = LlvmStructType.GetTypeByName(paths.Module.Context, "msync.path")!;
-        Require(pathType.Elements.Skip(2).All(type => type is LlvmPointerType { AddressSpace: 1 }),
-            "Path root fields carry the same explicit managed-reference representation.");
+        Require(pathType.HasNativeRecordStorage && pathType.Elements.Skip(2).All(type => type is LlvmPointerType { AddressSpace: 1 }),
+            "Path roots are managed references in a single Native storage record.");
         var union = LlvmHirLowerer.Lower(Compiler.Analyze(
             "fn choose(flag: Bool) { if flag { scope { value: 1 } } else { \"text\" } }; choose(true)", "managed-union.msync"));
         var unions = union.Module.Functions.SelectMany(function => function.FunctionType.Parameters.Append(function.ReturnType))
             .OfType<LlvmStructType>().Where(type => type.HasName && type.Name.StartsWith("msync.union.", StringComparison.Ordinal)).ToArray();
-        Require(unions.Length > 0 && unions.All(type => type.Elements[2] is LlvmArrayType { ElementType: LlvmPointerType { AddressSpace: 1 } }),
-            "Union root arrays hold actual managed AS1 references.");
+        Require(unions.Length > 0 && unions.All(type => type.HasNativeRecordStorage
+            && type.Elements[2] is LlvmArrayType { ElementType: LlvmPointerType { AddressSpace: 1 } }),
+            "Union records hold actual managed AS1 references.");
         StorageViews(false);
         StorageViews(true);
         return checks;

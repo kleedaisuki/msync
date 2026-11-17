@@ -30,6 +30,13 @@ public abstract partial class LlvmType
     public bool IsFunctionTy() => Id == LlvmTypeId.FunctionTyID;
     public bool IsStructTy() => Id == LlvmTypeId.StructTyID;
     public bool IsArrayTy() => Id == LlvmTypeId.ArrayTyID;
+    public bool ContainsNativeRecordStorage() => this switch
+    {
+        LlvmStructType structure => structure.HasNativeRecordStorage
+            || structure.Elements.Any(static type => type.ContainsNativeRecordStorage()),
+        LlvmArrayType array => array.ElementType.ContainsNativeRecordStorage(),
+        _ => false
+    };
     public bool IsVectorTy() => this is LlvmVectorType;
     public bool IsTargetExtTy() => Id == LlvmTypeId.TargetExtTyID;
     public bool IsIEEELikeFPTy() => Id is LlvmTypeId.HalfTyID or LlvmTypeId.BFloatTyID or

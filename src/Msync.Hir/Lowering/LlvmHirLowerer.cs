@@ -130,7 +130,7 @@ public static partial class LlvmHirLowerer
             LlvmStructType.Create(context, [CodePointer, DataPointer, DataPointer], "msync.function");
 
         private LlvmStructType PathType() => LlvmStructType.GetTypeByName(context, "msync.path") ??
-            LlvmStructType.Create(context, [LlvmIntegerType.Get(context, 8), LlvmIntegerType.Get(context, 8),
+            LlvmStructType.CreateNativeRecord(context, [LlvmIntegerType.Get(context, 8), LlvmIntegerType.Get(context, 8),
                 DataPointer, DataPointer, DataPointer, DataPointer, DataPointer], "msync.path");
 
         internal LlvmStructType Layout(int index)

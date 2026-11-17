@@ -59,6 +59,8 @@ public static partial class LlvmInstCombine
         {
             if (!load.IsSimple) return null;
             LlvmType type = load.Type;
+            if (type.ContainsNativeRecordStorage())
+            { Count("instcombine.memory.unpack.load.retained_native_record"); return null; }
             LlvmValue result = LlvmPoisonValue.Get(type);
             if (type is LlvmStructType structure)
             {
@@ -118,6 +120,8 @@ public static partial class LlvmInstCombine
             if (!store.IsSimple) return false;
             LlvmValue value = store.ValueOperand;
             LlvmType type = value.Type;
+            if (type.ContainsNativeRecordStorage())
+            { Count("instcombine.memory.unpack.store.retained_native_record"); return false; }
             if (type is LlvmStructType structure)
             {
                 if (structure.Name == "msync.function")

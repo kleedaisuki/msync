@@ -64,6 +64,8 @@ public static partial class LlvmSroa
         {
             Debug.Assert(load.PointerOperand == currentUse.Value);
             if (!load.IsSimple || load.Type.IsSingleValueType()) return false;
+            if (load.Type.ContainsNativeRecordStorage())
+            { Count("aggregate.loads.retained_native_record"); return false; }
             List<LlvmCallInstruction> fakeUses = [];
             foreach (LlvmUser user in load.Users)
                 if (user is LlvmCallInstruction { CalledFunction.IntrinsicDescriptor.Kind: var kind } call &&
@@ -92,6 +94,8 @@ public static partial class LlvmSroa
             if (!store.IsSimple || store.PointerOperand != currentUse.Value) return false;
             LlvmValue aggregate = store.ValueOperand;
             if (aggregate.Type.IsSingleValueType()) return false;
+            if (aggregate.Type.ContainsNativeRecordStorage())
+            { Count("aggregate.stores.retained_native_record"); return false; }
             builder.SetInsertPoint(store);
             SplitAggregate(aggregate.Type, ref aggregate, store.PointerOperand, aggregate.Type, store.Alignment,
                 aggregate.Name + ".fca", store: true);

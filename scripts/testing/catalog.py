@@ -66,6 +66,11 @@ def catalog() -> dict[str, Task]:
             receipt="{work}/fixture/result.json",
         ),
         python(
+            "native-preparation",
+            "tests/NativePreparation/test_journey.py",
+            "--binary", "{binary}",
+        ),
+        python(
             "bound-fusion",
             "tests/NativePreparation/test_fusion_journey.py",
             "--binary", "{binary}", "--output", "{work}/journey.json",
