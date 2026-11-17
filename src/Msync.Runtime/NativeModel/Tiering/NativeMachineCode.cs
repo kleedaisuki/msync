@@ -51,13 +51,22 @@ internal static partial class NativeMachineCode
         private readonly Dictionary<(int Pc, bool Demand), int> guardStubs = [];
         private readonly int[] labels = Enumerable.Repeat(-1, function.Instructions.Length + 1).ToArray();
         private readonly IReadOnlyDictionary<int, NativeRegisterRegion> regions = layout.RegionsByPc;
+        private int ShadowBytes => windows ? 32 : 0;
+        private int StackBytes => ShadowBytes + layout.StackBytes;
         private int tableReference, dispatch, exit, guard;
         internal byte[] Emit()
         {
             Bytes(0x41, 0x54); // r12 owns the opaque context across managed bridges.
-            if (windows) { Bytes(0x48, 0x83, 0xec, 0x20, 0x49, 0x89, 0xcc, 0x89, 0xd0); }
+            if (windows) Bytes(0x49, 0x89, 0xcc, 0x89, 0xd0);
             else Bytes(0x49, 0x89, 0xfc, 0x89, 0xf0);
-            if (layout.StackBytes != 0) { Bytes(0x48, 0x81, 0xec); Int(layout.StackBytes); }
+            int stackBytes = StackBytes;
+            if (windows && stackBytes >= 4096)
+            {
+                // Touch intervening guard pages before moving RSP across them.
+                for (int offset = 4096; offset < stackBytes; offset += 4096) ProbeStack(offset);
+                ProbeStack(stackBytes);
+            }
+            if (stackBytes != 0) { Bytes(0x48, 0x81, 0xec); Int(stackBytes); }
             dispatch = code.Count;
             Bytes(0x41, 0x89, 0x44, 0x24, 0x10);
             Bytes(0x3d); Int(function.Instructions.Length); Jump(0x0f, 0x83, -2);
@@ -111,8 +120,7 @@ internal static partial class NativeMachineCode
             }
             guard = code.Count; Bytes(0xb8); Int(-3);
             exit = code.Count;
-            if (layout.StackBytes != 0) { Bytes(0x48, 0x81, 0xc4); Int(layout.StackBytes); }
-            if (windows) Bytes(0x48, 0x83, 0xc4, 0x20);
+            if (stackBytes != 0) { Bytes(0x48, 0x81, 0xc4); Int(stackBytes); }
             Bytes(0x41, 0x5c, 0xc3);
             int table = code.Count;
             for (int pc = 0; pc < labels.Length - 1; pc++)
@@ -235,6 +243,11 @@ internal static partial class NativeMachineCode
             Bytes(0x4d, 0x8b, 0x54, 0x24, 0x08);
             Bytes(0x4d, 0x8b, 0x9a); Int(scalarOffset + 8);
             Bytes(0x41, 0xc6, 0x03, 0x00);
+        }
+
+        private void ProbeStack(int offset)
+        {
+            Bytes(0xf6, 0x84, 0x24); Int(-offset); Bytes(0); // test byte ptr [rsp - offset], 0
         }
 
         private void Arguments(int pc)

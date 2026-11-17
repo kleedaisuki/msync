@@ -40,7 +40,7 @@ internal static partial class NativeMachineCode
             else
             {
                 Bytes(0xf2, 0x0f, 0x10, (byte)(0x84 | target << 3), 0x24);
-                Int((windows ? 32 : 0) + value.Spill * 8);
+                Int(ShadowBytes + value.Spill * 8);
             }
             if (value.Unsigned && kind == NativeKind.Number)
             {
@@ -57,7 +57,7 @@ internal static partial class NativeMachineCode
             else
             {
                 Bytes(0xf2, 0x0f, 0x11, 0x84, 0x24);
-                Int((windows ? 32 : 0) + value.Spill * 8);
+                Int(ShadowBytes + value.Spill * 8);
             }
         }
 

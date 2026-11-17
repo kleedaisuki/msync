@@ -48,7 +48,7 @@ internal static partial class NativeMachineCode
                 bits = source.Unsigned;
                 int target = second ? 1 : 0;
                 if (source.Register >= 0) Bytes(0x66, 0x0f, 0x28, (byte)(0xc0 | target << 3 | source.Register));
-                else { Bytes(0xf2, 0x0f, 0x10, (byte)(0x84 | target << 3), 0x24); Int((windows ? 32 : 0) + source.Spill * 8); }
+                else { Bytes(0xf2, 0x0f, 0x10, (byte)(0x84 | target << 3), 0x24); Int(ShadowBytes + source.Spill * 8); }
             }
             Bytes(bits ? (byte)0x66 : (byte)0xf2, 0x48, 0x0f, bits ? (byte)0x7e : (byte)0x2c, second ? (byte)0xc9 : (byte)0xc0);
         }
