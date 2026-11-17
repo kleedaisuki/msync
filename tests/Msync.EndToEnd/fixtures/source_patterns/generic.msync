@@ -1,0 +1,26 @@
+fn tail<T>(xs: Range<T>) -> Range<T> { $std::ranges::drop(xs, 1) };
+fn empty<T>() -> Range<T> { [] };
+let paths: Range<Path> = empty();
+$std::io::println($std::ranges::size(paths) as String);
+$std::io::println($std::ranges::first(tail(["lost", "kept"])));
+concept Indexed {
+    key: typename Key,
+    value: typename Value,
+    get: fn(key: Key) -> decltype(value),
+    copy: fn(key: Key) -> decltype(get(key)),
+};
+fn lookup<M: Indexed>(table: M, key: M::Key) -> M::Value { table::get(key) };
+let number = { key: 0, value: "value", get: fn(k: Number) => "number", copy: fn(k: Number) => "copy" };
+let string = { key: "", value: 0, get: fn(k: String) => 37, copy: fn(k: String) => 0 };
+$std::io::println(lookup(number, 2));
+$std::io::println(lookup(string, "key") as String);
+let numbers = { Key: Number, Value: String, key: 1, value: "mixed-number", get: fn(k: Number) => "mixed-number", copy: fn(k: Number) => "copy" };
+let strings = { Key: String, Value: Number, key: "key", value: 41, get: fn(k: String) => 41, copy: fn(k: String) => 0 };
+fn selected(numeric: Bool) -> String {
+    let table = if numeric { numbers } else { strings };
+    lookup(table, table::key) as String
+};
+$std::io::println(selected(true));
+$std::io::println(selected(false));
+let inferred: Range<_> = ["hint"];
+$std::io::println($std::ranges::first(inferred));

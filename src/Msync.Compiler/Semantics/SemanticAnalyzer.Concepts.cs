@@ -21,10 +21,10 @@ internal sealed partial class SemanticAnalyzer
         }
     }
 
-    private void RequireConcept(SemanticValue value, int conceptId, HirSourceRange source,
+    private ImmutableDictionary<HirTypeId, HirTypeId> RequireConcept(SemanticValue value, int conceptId, HirSourceRange source,
         SemanticContext context, bool nullable = false)
     {
-        if (nullable && Runtime(value) == TypeRef.Null) return;
+        if (nullable && Runtime(value) == TypeRef.Null) return ImmutableDictionary<HirTypeId, HirTypeId>.Empty;
         if (Runtime(value).Nullable && !nullable)
             throw ConceptError(conceptId, source, "a non-null Scope", Runtime(value).ToString());
         if (value.Scope is not { } shape)
@@ -68,6 +68,7 @@ internal sealed partial class SemanticAnalyzer
                 if (!contracts.Contains(contract)) context.MemberContracts[key] = contracts.Add(contract);
             }
         }
+        return substitutions;
     }
 
     private void CheckConceptBounds(int concept, ImmutableDictionary<HirTypeId, HirTypeId> associated,

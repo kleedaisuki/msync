@@ -18,7 +18,7 @@ For the existing BTree example, a promising finite interface is the `_Chain`
 root's storage/logical contract:
 
 ```text
-first, last : Scope | Null
+first, last : Scope or Null
 count       : Number
 seed        : Range<Item>       // includes the actual associated Item obligation
 ```

@@ -357,7 +357,7 @@ internal static class Program
             ("branch-results", "fn choose(flag: Bool, value: Number) { if flag { return value + 1; }; value + 2 }; choose(true, 3) + choose(false, 5)", 11),
             ("captured-parameter-lifetime", "fn make(start: Number) { fn() { start = start + 1; start } }; let a = make(3); let b = make(10); a() + b() + a()", 20),
             ("rebound-scope-capture", "let current = scope { n: 1 }; fn replace() { current = scope { n: 2 }; null }; replace(); current::n", 2),
-            ("nullable-scope-frame", "fn next(value?: Number | Null) { if value is null { 0 } else { value + 1 } }; let initial?: Number = null; let node = scope { key?: initial }; fn from_node(node) { let key? = node::key; if key is null { 0 } else { key + 1 } }; let empty = from_node(node); node::key = 7; next(null) + next(3) + empty + from_node(node)", 12),
+            ("nullable-scope-frame", "fn next(value?: Number or Null) { if value is null { 0 } else { value + 1 } }; let initial?: Number = null; let node = scope { key?: initial }; fn from_node(node) { let key? = node::key; if key is null { 0 } else { key + 1 } }; let empty = from_node(node); node::key = 7; next(null) + next(3) + empty + from_node(node)", 12),
             ("scope-capture", "let shared = scope { n: 1 }; fn change() { shared::n = shared::n + 2; shared::n }; change() + change()", 8),
             ("loop-call", "fn increment(value: Number) { value + 1 }; let sum = 0; for value in $std::ranges::iota(0, 20) { sum = sum + increment(value); }; sum", 210),
             ("changed-function", "let pick = fn(value: Number) { value + 1 }; let before = pick(2); pick = fn(value: Number) { value + 10 }; before + pick(2)", 15),

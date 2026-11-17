@@ -39,7 +39,7 @@ let resolved = meta::try_invoke_result(generic, Number);
 let nothing = meta::try_invoke_result(unit);
 let combined = meta::common_type_of(Number, Path, Null);
 ((meta::is_same(resolved, Number) and meta::is_same(nothing, Null)
-    and meta::is_same(combined, Number | Path | Null)
+    and meta::is_same(combined, Number or Path or Null)
     and (meta::try_invoke_result(checked, String) is null)
     and meta::is_same(meta::try_invoke_result(checked, Number), String))
     as String) -> ./invocation.txt;

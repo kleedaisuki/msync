@@ -6,7 +6,7 @@ namespace Msync.Core;
 
 public static partial class NumberSyntax
 {
-    [GeneratedRegex(@"\G(?:0[xX][0-9a-fA-F](?:_?[0-9a-fA-F])*|0[bB][01](?:_?[01])*|0[oO][0-7](?:_?[0-7])*|(?:[0-9](?:_?[0-9])*(?:\.(?:[0-9](?:_?[0-9])*)?)?|\.[0-9](?:_?[0-9])*)(?:[eE][+-]?[0-9](?:_?[0-9])*)?)", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"\G(?:0[xX][0-9a-fA-F](?:_?[0-9a-fA-F])*|0[bB][01](?:_?[01])*|0[oO][0-7](?:_?[0-7])*|(?:[0-9](?:_?[0-9])*(?:\.(?!\.)(?:[0-9](?:_?[0-9])*)?)?|\.[0-9](?:_?[0-9])*)(?:[eE][+-]?[0-9](?:_?[0-9])*)?)", RegexOptions.CultureInvariant)]
     private static partial Regex LiteralPattern();
 
     public static int LengthAt(string source, int start)
@@ -14,7 +14,8 @@ public static partial class NumberSyntax
         Match match = LiteralPattern().Match(source, start);
         if (!match.Success) return 0;
         int end = start + match.Length;
-        if (end < source.Length && (char.IsLetterOrDigit(source[end]) || source[end] is '_' or '.' or '\\')) return 0;
+        if (end < source.Length && (char.IsLetterOrDigit(source[end]) || source[end] is '_' or '\\'
+            || source[end] == '.' && !source.AsSpan(end).StartsWith("..", StringComparison.Ordinal))) return 0;
         if (end + 1 < source.Length && source[end] == '-' && (char.IsLetter(source[end + 1]) || source[end + 1] == '_')) return 0;
         return match.Length;
     }

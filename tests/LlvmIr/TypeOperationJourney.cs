@@ -30,15 +30,15 @@ internal static class TypeOperationJourney
             if left is not null { if right is null { left + 1 } else { 0 } } else { 0 }
             """, 8),
         new("union-conversions", """
-            fn choose(flag: Bool) -> Number | String { if flag { 7 } else { "8" } };
-            let value: Number | String = choose(true);
+            fn choose(flag: Bool) -> Number or String { if flag { 7 } else { "8" } };
+            let value: Number or String = choose(true);
             let first = value as Number;
             value = choose(false);
             first + (value as Number)
             """, 15, true),
         new("union-range-snapshot", """
-            let original: Range<Number> | String = [2, 3];
-            fn identity(value: Range<Number> | String) { value };
+            let original: Range<Number> or String = [2, 3];
+            fn identity(value: Range<Number> or String) { value };
             let saved = identity(original);
             original = "later";
             $std::ranges::size(saved)
@@ -67,7 +67,7 @@ internal static class TypeOperationJourney
             } else { 0 }
             """, 1),
         new("heterogeneous-regex-match", """
-            fn score(value: Number | String | Null) {
+            fn score(value: Number or String or Null) {
                 match value { <a+> => { 4 }, Number => { value + 1 }, _ => { 0 } }
             };
             score("aaa") + score(2) + score(null)

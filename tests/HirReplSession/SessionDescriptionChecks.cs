@@ -16,7 +16,7 @@ internal static class SessionDescriptionChecks
             scope Named {
                 path: ./named,
                 make: fn { scope { field?: null } },
-                get: fn(item: Path | String) -> Path { item as Path },
+                get: fn(item: Path or String) -> Path { item as Path },
             };
             let object = scope { text: "before", path: ./before, remote: ssh://forge };
             let optional?: String = "before";

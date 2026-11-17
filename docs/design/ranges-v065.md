@@ -72,7 +72,7 @@ and stage types rather than trusting annotations.
 
 There is no `Any` fallback or runtime parsing. A callback receives the inferred
 scalar/union slot type. An operation must be valid for every possible member;
-for example a Bool condition over `Bool | String` is a static error. A callback
+for example a Bool condition over `Bool or String` is a static error. A callback
 that ignores its input can transform a mixed list into String or Bool, and an
 identity callback can retain the permitted union. Compiler-owned operator
 capabilities live in [the common type contract](type-system-v065.md).

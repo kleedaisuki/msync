@@ -39,7 +39,7 @@ function hasScope(line, word, expected) {
 }
 
 test('named, anonymous and native functions retain callable and parameter roles', () => {
-    for (const line of ['fn copy(file: Path | String, des) {', 'item: fn copy(file: Path | String, des) {', 'native fn copy(file: Path | String, des) -> Bool;']) {
+    for (const line of ['fn copy(file: Path or String, des) {', 'item: fn copy(file: Path or String, des) {', 'native fn copy(file: Path or String, des) -> Bool;']) {
         hasScope(line, 'fn', 'keyword.declaration.function.msync');
         hasScope(line, 'copy', 'entity.name.function.msync');
         hasScope(line, 'file', 'variable.parameter.msync');

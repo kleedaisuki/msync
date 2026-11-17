@@ -196,6 +196,14 @@ public static class HirValidation
             case HirKind.Loop: if (node.Data < 0) Fail("loop identity is negative"); Arity(count, 1, 1); break;
             case HirKind.Break: if (node.Data < 0) Fail("break loop identity is negative"); Arity(count, 0, 1); break;
             case HirKind.Continue: if (node.Data < 0) Fail("continue loop identity is negative"); Arity(count, 0, 0); break;
+            case HirKind.PatternRegion:
+                PatternIndex(node, 1);
+                Arity(count, 2, 3);
+                if (count == 3 && module.Node(module.Children(node)[2]).Kind != HirKind.TypeValue)
+                    Fail("pattern cursor requires a static element type");
+                break;
+            case HirKind.PatternDemand: PatternIndex(node, 1); Arity(count, 0, 0); break;
+            case HirKind.PatternRead: PatternIndex(node, 0); Arity(count, 0, 0); break;
             case HirKind.Return: Arity(count, 0, 1); break;
             case HirKind.Unary: if (!Enum.IsDefined((HirUnaryOperator)node.Data)) Fail("unknown unary operator"); Arity(count, 1, 1); break;
             case HirKind.Binary: if (!Enum.IsDefined((HirBinaryOperator)node.Data)) Fail("unknown binary operator"); Arity(count, 2, 2); break;
@@ -227,6 +235,13 @@ public static class HirValidation
             case HirKind.Qualify or HirKind.QualifyOn or HirKind.PathJoin or HirKind.Transfer: Arity(count, 2, 2); break;
             case HirKind.Barrier: Id(node.Data, module.Barriers.Length, "barrier node"); Arity(count, 0, 1); break;
         }
+    }
+
+    private static void PatternIndex(HirNode node, int minimum)
+    {
+        if (node.Data < 0 || !int.TryParse(node.Text, System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out int index) || index < minimum)
+            Fail("invalid pattern cursor identity or index");
     }
 
     private static void Captures(HirModule module, System.Collections.Immutable.ImmutableArray<HirCapture> captures)

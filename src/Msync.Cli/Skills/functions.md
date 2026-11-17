@@ -9,7 +9,7 @@ on a parameter.
 
 ```msync
 fn identity(value) { value };
-fn copy(source: Path | String, destination: Path) -> Bool {
+fn copy(source: Path or String, destination: Path) -> Bool {
     source -> destination
 };
 let replace = fn(file: Path, destination: Path) -> Bool {

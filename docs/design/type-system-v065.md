@@ -10,8 +10,8 @@ wire name for the semantic `Scope` type; this is not a second source type.
 
 | Operator/capability | Accepted operands | Result |
 | --- | --- | --- |
-| `/` | `(String | Path) × (String | Path)` | `Path` |
-| `::` | `Scope × (Path | String)` | `Path` |
+| `/` | `(String or Path) × (String or Path)` | `Path` |
+| `::` | `Scope × (Path or String)` | `Path` |
 | `::` | `Scope × Scope` | `Scope` |
 | program member selection | `Process × member name` | typed port |
 | `and`, `or`, `not` | `Bool` operands | `Bool` |
@@ -53,7 +53,7 @@ A heterogeneous permitted range has an inferred scalar union item type; it is no
 silently rejected merely for mixing permitted members. Operations on an item
 must be supported for every possible member type. A callback that ignores its
 argument can therefore transform a mixed range to one scalar type, while a bool
-condition on an unresolved `String | Bool` item is a static error. Nested ranges,
+condition on an unresolved `String or Bool` item is a static error. Nested ranges,
 scopes and ports are not scalar range elements. Empty ranges remain representable
 without filesystem enumeration.
 

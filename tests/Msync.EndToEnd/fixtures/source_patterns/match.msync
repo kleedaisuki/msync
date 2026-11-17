@@ -1,0 +1,48 @@
+fn describe(x: Number or String or Null) -> String {
+    match x {
+        Number as n if n > 5 => n as String,
+        Number or String => "other",
+        null => "empty",
+    }
+};
+fn binding(x: Range<Number>) -> Number {
+    let [Number as first, Number as second, ..] = x else { return -1; };
+    first + second
+};
+fn response(r) {
+    if r is { status: 200 or 206, body: String as text } { text } else { "missing" }
+};
+$std::io::println(describe(6));
+$std::io::println(describe(2));
+$std::io::println(describe(null));
+$std::io::println(binding(1..5) as String);
+$std::io::println(binding([1]) as String);
+$std::io::println(response({ status: 206, body: "content" }));
+$std::io::println(response({ status: 206, name: "no body" }));
+fn numeric_guard(x: Number or String) {
+    if x is Number as n and n > 10 { n } else { 0 }
+};
+$std::io::println(numeric_guard(12) as String);
+$std::io::println(numeric_guard("none") as String);
+fn or_binding(x: Number or String) -> String {
+    let (Number as v or String as v) = x else { return "unknown"; };
+    v as String
+};
+$std::io::println(or_binding(3));
+$std::io::println(or_binding("bound"));
+
+let demand = { observed: 0 };
+let items = [for n in 1..5 => { demand::observed = demand::observed + 1; n }];
+let observed = match items {
+    [Number as first, ..] if first > 5 => first,
+    [Number as first, ..] => first,
+    _ => 0,
+};
+$std::io::println(observed as String);
+$std::io::println(demand::observed as String);
+fn dynamic_scope(flag: Bool) {
+    let item = if flag { number: 1 } else { text: "present" };
+    if item is { text: String as value } { value } else { "missing" }
+};
+$std::io::println(dynamic_scope(true));
+$std::io::println(dynamic_scope(false));

@@ -49,7 +49,7 @@ JOURNEYS: tuple[Journey, ...] = (
         concept Cell<T> { value: T, };
         concept Entry<T: Named> : Cell<T> { source: Path, };
         concept Wrapped<T> { cell: Cell<T>, };
-        concept Input<T: Path | String> { value: T, };
+        concept Input<T: Path or String> { value: T, };
         scope Addition {
             identity: 0,
             combine: fn(left: Number, right: Number) -> Number { left + right },
@@ -79,7 +79,7 @@ JOURNEYS: tuple[Journey, ...] = (
     Journey(
         "generic_concept_invalid_explicit_bound",
         """
-        concept Input<T: Path | String> { value: T, };
+        concept Input<T: Path or String> { value: T, };
         fn unused(input: Input<Number>) { input };
         """,
         {},
@@ -102,7 +102,7 @@ JOURNEYS: tuple[Journey, ...] = (
         "generic_concept_writable_carrier_does_not_widen",
         """
         concept Cell<T> { value: T, };
-        fn overwrite(cell: Cell<Number | String>) { cell::value = "different"; };
+        fn overwrite(cell: Cell<Number or String>) { cell::value = "different"; };
         overwrite(scope { value: 1 });
         """,
         {},

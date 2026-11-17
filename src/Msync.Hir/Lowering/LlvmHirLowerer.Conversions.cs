@@ -71,6 +71,8 @@ public static partial class LlvmHirLowerer
         {
             var value = Child(node, 0);
             if (block.HasTerminator) return value;
+            if (node.Kind == HirKind.IsType && node.Text == "pattern.layout")
+                return HasLayout(value, owner.metadata.Layout(Hir.Types[node.Data].Shape));
             var arguments = new List<LlvmValue> { value };
             if (node.Kind == HirKind.IsType)
                 arguments.Add(node.Children.Count == 2 ? Child(node, 1) : TypeValue(new(node.Data)));

@@ -13,7 +13,7 @@ internal static partial class NativeMachineCode
             Bytes(0x41, 0x8b, 0x82); Int(state);
             Bytes(0xa8, NativeSequenceCursor.Open, 0x0f, 0x84);
             int opaque = code.Count; Int(0);
-            Bytes(0xa8, NativeSequenceCursor.Stalled, 0x0f, 0x85);
+            Bytes(0xa8, NativeSequenceCursor.Stalled | NativeSequenceCursor.Finished, 0x0f, 0x85);
             int stalled = code.Count; Int(0);
             Bytes(0x41, 0xf6, 0x44, 0x24, 0x24, 1, 0x0f, 0x85);
             int pending = code.Count; Int(0);
@@ -37,12 +37,19 @@ internal static partial class NativeMachineCode
             Bytes(0x41, 0x83, 0x8a); Int(state); Bytes(NativeSequenceCursor.Stalled);
             PatchLocal(advanced);
             Bytes(0xf2, 0x41, 0x0f, 0x11, 0x8a); Int(cursor);
+            int yield = code.Count;
             layout.TryFixed(instruction.Result, out FixedTierSlot result);
             Bytes(0xf2, 0x41, 0x0f, 0x11, 0x82); Int(result.DataOffset);
             StoreInitialized(instruction.Result, result);
             Advance(pc, pc + instruction.Span, instruction.Span, layout.TrueHits[pc]);
 
             PatchLocal(upperLimit);
+            Bytes(0x0f, 0x85); int above = code.Count; Int(0);
+            Bytes(0xa8, NativeSequenceCursor.Inclusive, 0x0f, 0x84); int exclusive = code.Count; Int(0);
+            Bytes(0x41, 0x83, 0x8a); Int(state); Bytes(NativeSequenceCursor.Finished);
+            Bytes(0xe9); Int(yield - code.Count - 4);
+            PatchLocal(above);
+            PatchLocal(exclusive);
             PatchLocal(lowerLimit);
             Advance(pc, instruction.B, instruction.Span, layout.Hits[pc]);
             PatchLocal(opaque);

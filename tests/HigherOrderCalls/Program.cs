@@ -91,7 +91,7 @@ var cases = new (string Name, string Source, Value Expected)[]
         }), "|")
         """, new StringValue("2|3")),
     ("private-union-parameter-result", """
-        fn lines(input: Path | String | Range<String>) {
+        fn lines(input: Path or String or Range<String>) {
             match input {
                 Path => { $std::io::read_lines(input) },
                 String => { $std::string::lines(input) },
@@ -146,13 +146,13 @@ var cases = new (string Name, string Source, Value Expected)[]
         first::value
         """, new NumberValue(3)),
     ("deferred-live-union-dispatch", """
-        fn lines(input: String | Range<String>) {
+        fn lines(input: String or Range<String>) {
             match input {
                 String => { $std::string::lines(input) },
                 Range<String> => { input },
             }
         };
-        let current: String | Range<String> = ["before"];
+        let current: String or Range<String> = ["before"];
         let pending = lines(current);
         current = "after
         mutation";
@@ -160,7 +160,7 @@ var cases = new (string Name, string Source, Value Expected)[]
         """, new StringValue("after|mutation")),
     ("unwritten-parameter-shadowing", """
         fn reverse(values: Range<String>) { $std::ranges::reverse(values) };
-        fn lines(input: String | Range<String>) {
+        fn lines(input: String or Range<String>) {
             let writer = fn(input: Number) { input = input + 1; input };
             writer(0);
             { let input = 0; input = 1; };
@@ -190,15 +190,15 @@ var cases = new (string Name, string Source, Value Expected)[]
 var rejected = new (string Name, string Source)[]
 {
     ("deferred-union-identity", """
-        fn identity(value: String | Range<String>) { value };
-        let current: String | Range<String> = ["before"];
+        fn identity(value: String or Range<String>) { value };
+        let current: String or Range<String> = ["before"];
         let pending = identity(current);
         current = "after";
         $std::string::join(pending, "|")
         """),
     ("deferred-written-parameter", """
         fn reverse(value: Range<String>) { $std::ranges::reverse(value) };
-        fn lines(input: String | Range<String>) {
+        fn lines(input: String or Range<String>) {
             let pending = reverse(input);
             input = "after";
             pending
@@ -207,7 +207,7 @@ var rejected = new (string Name, string Source)[]
         """),
     ("deferred-global-writer", """
         fn reverse(value: Range<String>) { $std::ranges::reverse(value) };
-        fn lines(input: String | Range<String>) {
+        fn lines(input: String or Range<String>) {
             let write = fn(index: Number) { global input; input = "after"; };
             let pending = reverse(input);
             write(0);

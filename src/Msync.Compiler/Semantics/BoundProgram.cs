@@ -53,7 +53,13 @@ internal sealed record BoundNativeSignature(string Name, HirSourceRange Source,
 
 internal sealed record BoundTemplate(HirTemplateId Id, string Name,
     ImmutableArray<HirLocationId> Parameters, ImmutableArray<HirLocationId> Captures,
-    HirTypeId? ResultAnnotation, HirNodeId Body, HirSourceRange Source);
+    HirTypeId? ResultAnnotation, HirNodeId Body, HirSourceRange Source)
+{
+    public ImmutableArray<BoundGenericParameter> Generics { get; init; } = [];
+}
+internal sealed record BoundGenericParameter(HirTypeId Type, HirTypeId? Bound, string Name);
+internal sealed record BoundAssociatedProjection(HirTypeId Parameter, int Concept, HirTypeId Associated);
+internal sealed record BoundTypeQuery(HirNodeId Operand, ImmutableArray<(HirLocationId Location, HirTypeId Type)> Inputs, HirSourceRange Source);
 internal sealed record BoundModule(string Name, HirSourceId Source, HirNodeId Body,
     ImmutableDictionary<string, HirLocationId> Exports, ImmutableDictionary<string, int> Concepts,
     bool Projected = false);
@@ -86,6 +92,22 @@ internal sealed class BoundProgram(HirBuilder hir)
     public Dictionary<HirLocationId, string> NativeLocations { get; } = [];
     public Dictionary<string, BoundNativeSignature> NativeSignatures { get; } = new(StringComparer.Ordinal);
     public Dictionary<HirNodeId, HirTypeId> TypeAnnotations { get; } = [];
+    public Dictionary<int, IReadOnlyDictionary<int, string>> NamedCalls { get; } = [];
+    public Dictionary<int, HirTypeId> CallResultHints { get; } = [];
+    public Dictionary<int, BoundAssociatedProjection> AssociatedProjections { get; } = [];
+    public Dictionary<int, BoundTypeQuery> TypeQueries { get; } = [];
+    public HashSet<int> LocalTypeHoles { get; } = [];
+    public Dictionary<int, HirTypeId> TypeQueryMembers { get; } = [];
+    public HashSet<HirLocationId> TypeQueryInputs { get; } = [];
+    public Dictionary<HirNodeId, HirTypeId> ConformanceChecks { get; } = [];
+    public Dictionary<HirNodeId, PatternCoverageSite> PatternCoverage { get; } = [];
+    public Dictionary<int, ImmutableArray<PatternCoverageTerm>> AtomicPatternCoverage { get; } = [];
+    public HashSet<HirNodeId> PatternExits { get; } = [];
+    public HashSet<HirNodeId> PatternUnreachable { get; } = [];
+    public HashSet<HirNodeId> PatternFieldTests { get; } = [];
+    public HashSet<HirNodeId> PatternBranches { get; } = [];
+    public Dictionary<HirNodeId, (HirNodeId Test, HirNodeId Guard)> PatternGuardConditions { get; } = [];
+    public Dictionary<HirLocationId, HirNodeId> PatternOrigins { get; } = [];
     public Dictionary<HirNodeId, int> ConceptUses { get; } = [];
     public Dictionary<(int Definition, string Arguments), int> ConceptApplications { get; } = [];
     public Dictionary<int, string> TypeParameterNames { get; } = [];
@@ -96,6 +118,7 @@ internal sealed class BoundProgram(HirBuilder hir)
     public Dictionary<string, HirLocationId> StandardLocations { get; } = new(StringComparer.Ordinal);
     public ImmutableDictionary<string, HirLocationId> Exports { get; set; }
         = ImmutableDictionary<string, HirLocationId>.Empty;
+    public List<HirExport> SessionShadows { get; } = [];
     public ImmutableDictionary<string, int> RootConcepts { get; set; }
         = ImmutableDictionary<string, int>.Empty;
 
@@ -108,6 +131,22 @@ internal sealed class BoundProgram(HirBuilder hir)
         foreach (var pair in previous.NativeLocations) NativeLocations.Add(pair.Key, pair.Value);
         foreach (var pair in previous.NativeSignatures) NativeSignatures.Add(pair.Key, pair.Value);
         foreach (var pair in previous.TypeAnnotations) TypeAnnotations.Add(pair.Key, pair.Value);
+        foreach (var pair in previous.NamedCalls) NamedCalls.Add(pair.Key, pair.Value);
+        foreach (var pair in previous.CallResultHints) CallResultHints.Add(pair.Key, pair.Value);
+        foreach (var pair in previous.AssociatedProjections) AssociatedProjections.Add(pair.Key, pair.Value);
+        foreach (var pair in previous.TypeQueries) TypeQueries.Add(pair.Key, pair.Value);
+        LocalTypeHoles.UnionWith(previous.LocalTypeHoles);
+        foreach (var pair in previous.TypeQueryMembers) TypeQueryMembers.Add(pair.Key, pair.Value);
+        TypeQueryInputs.UnionWith(previous.TypeQueryInputs);
+        foreach (var pair in previous.ConformanceChecks) ConformanceChecks.Add(pair.Key, pair.Value);
+        foreach (var pair in previous.PatternCoverage) PatternCoverage.Add(pair.Key, pair.Value);
+        foreach (var pair in previous.AtomicPatternCoverage) AtomicPatternCoverage.Add(pair.Key, pair.Value);
+        PatternExits.UnionWith(previous.PatternExits);
+        PatternUnreachable.UnionWith(previous.PatternUnreachable);
+        PatternFieldTests.UnionWith(previous.PatternFieldTests);
+        PatternBranches.UnionWith(previous.PatternBranches);
+        foreach (var pair in previous.PatternGuardConditions) PatternGuardConditions.Add(pair.Key, pair.Value);
+        foreach (var pair in previous.PatternOrigins) PatternOrigins.Add(pair.Key, pair.Value);
         foreach (var pair in previous.ConceptUses) ConceptUses.Add(pair.Key, pair.Value);
         foreach (var pair in previous.ConceptApplications) ConceptApplications.Add(pair.Key, pair.Value);
         foreach (var pair in previous.TypeParameterNames) TypeParameterNames.Add(pair.Key, pair.Value);
@@ -145,7 +184,8 @@ internal sealed class BoundProgram(HirBuilder hir)
         if (declaration.Template is not null) return true;
         foreach (BoundModule module in StandardModules.Values)
             if (module.Source == declaration.Source.Source && module.Exports.Values.Contains(location)) return false;
-        return !IsSession || !Exports.Values.Contains(location);
+        return !IsSession || !Exports.Values.Contains(location)
+            && !SessionShadows.Any(shadow => shadow.Location == location);
     }
     public void Declare(BoundDeclaration declaration)
     {

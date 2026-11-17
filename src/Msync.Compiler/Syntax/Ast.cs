@@ -12,7 +12,10 @@ public sealed record Document(IReadOnlyList<Statement> Statements, SourceSpan Sp
 }
 public abstract record Node(SourceSpan Span);
 public abstract record Statement(SourceSpan Span) : Node(Span);
-public sealed record LetStatement(Pattern Pattern, bool Nullable, TypeSyntax? Type, Expr Value, SourceSpan Span) : Statement(Span);
+public sealed record LetStatement(Pattern Pattern, bool Nullable, TypeSyntax? Type, Expr Value, SourceSpan Span) : Statement(Span)
+{
+    public BlockExpr? Failure { get; init; }
+}
 public sealed record GlobalStatement(IReadOnlyList<NameExpr> Names, SourceSpan Span) : Statement(Span);
 public sealed record FunctionDeclaration(string Name, FunctionExpr Function, SourceSpan Span) : Statement(Span);
 public sealed record NativeDeclaration(string Name, IReadOnlyList<Parameter> Parameters, TypeSyntax ReturnType, SourceSpan Span) : Statement(Span)
@@ -51,6 +54,7 @@ public sealed record NumberExpr(double Value, SourceSpan Span) : Expr(Span);
 public sealed record CastExpr(Expr Value, TypeSyntax Type, SourceSpan Span) : Expr(Span)
 {
     public SourceSpan? OperatorSpan { get; init; }
+    public bool CheckOnly { get; init; }
 }
 public sealed record UnaryExpr(string Operator, Expr Operand, SourceSpan Span) : Expr(Span);
 public sealed record BinaryExpr(string Operator, Expr Left, Expr Right, SourceSpan Span) : Expr(Span)
@@ -62,13 +66,17 @@ public sealed record AssignmentExpr(Expr Target, Expr Value, SourceSpan Span) : 
     public SourceSpan? OperatorSpan { get; init; }
 }
 public sealed record BarrierExpr(bool Release, bool Acquire, Expr? Value, SourceSpan Span) : Expr(Span);
-public sealed record CallExpr(Expr Callee, IReadOnlyList<Expr> Arguments, SourceSpan Span) : Expr(Span);
+public sealed record CallExpr(Expr Callee, IReadOnlyList<Expr> Arguments, SourceSpan Span) : Expr(Span)
+{
+    public IReadOnlyDictionary<int, string>? Labels { get; init; }
+}
 public sealed record BlockExpr(IReadOnlyList<Statement> Statements, SourceSpan Span) : Expr(Span)
 {
     public bool EditorIncomplete { get; init; }
 }
 public sealed record IfExpr(Expr Condition, BlockExpr Then, Expr? Else, SourceSpan Span) : Expr(Span);
 public sealed record MatchExpr(Expr Value, IReadOnlyList<MatchArm> Arms, SourceSpan Span) : Expr(Span);
+public sealed record PatternTestExpr(Expr Value, Pattern Pattern, SourceSpan Span) : Expr(Span);
 public sealed record ForExpr(Pattern Pattern, Expr Source, BlockExpr Body, SourceSpan Span) : Expr(Span)
 {
     public bool Nullable { get; init; }
@@ -76,6 +84,9 @@ public sealed record ForExpr(Pattern Pattern, Expr Source, BlockExpr Body, Sourc
 public sealed record FunctionExpr(string? Name, IReadOnlyList<Parameter> Parameters, TypeSyntax? ReturnType, BlockExpr Body, SourceSpan Span) : Expr(Span)
 {
     public SourceSpan? NameSpan { get; init; }
+    public bool ExpressionBodied { get; init; }
+    public IReadOnlyList<ConceptAssociatedType> TypeParameters { get; init; } = [];
+    public SourceSpan? TypeParameterList { get; init; }
 }
 public sealed record ScopeExpr(IReadOnlyList<ScopeMember> Members, Expr? Value, SourceSpan Span) : Expr(Span)
 {
@@ -84,6 +95,8 @@ public sealed record ScopeExpr(IReadOnlyList<ScopeMember> Members, Expr? Value, 
     public bool EditorIncomplete { get; init; }
 }
 public sealed record RangeExpr(IReadOnlyList<Expr> Items, SourceSpan Span) : Expr(Span);
+public sealed record RangeComprehensionExpr(NamePattern Binding, bool Nullable, Expr Source, Expr? Filter, Expr Projection,
+    SourceSpan Span) : Expr(Span);
 public sealed record TypeExpr(TypeSyntax Type, SourceSpan Span) : Expr(Span);
 public sealed record LoopExpr(BlockExpr Body, SourceSpan Span) : Expr(Span);
 public sealed record ReturnExpr(Expr? Value, SourceSpan Span) : Expr(Span);
@@ -94,8 +107,12 @@ public sealed record ScopeMember(string Name, Expr Value, SourceSpan Span) : Nod
 {
     public bool Nullable { get; init; }
     public SourceSpan? NameSpan { get; init; }
+    public bool Shorthand { get; init; }
 }
-public sealed record MatchArm(Pattern Pattern, Expr Value, SourceSpan Span) : Node(Span);
+public sealed record MatchArm(Pattern Pattern, Expr Value, SourceSpan Span) : Node(Span)
+{
+    public Expr? Guard { get; init; }
+}
 public abstract record Pattern(SourceSpan Span) : Node(Span);
 public sealed record NamePattern(string Name, SourceSpan Span) : Pattern(Span);
 public sealed record WildcardPattern(SourceSpan Span) : Pattern(Span);
@@ -103,10 +120,24 @@ public sealed record NullPattern(SourceSpan Span) : Pattern(Span);
 public sealed record LiteralPattern(Expr Value, SourceSpan Span) : Pattern(Span);
 public sealed record TypePattern(TypeSyntax Type, SourceSpan Span) : Pattern(Span);
 public sealed record RegexPattern(string Pattern, SourceSpan Span) : Pattern(Span);
-public sealed record TuplePattern(IReadOnlyList<Pattern> Items, SourceSpan Span) : Pattern(Span);
+public sealed record TuplePattern(IReadOnlyList<Pattern> Items, SourceSpan Span) : Pattern(Span)
+{
+    public bool Prefix { get; init; }
+}
+public sealed record PatternField(string Name, Pattern Pattern, SourceSpan Span) : Node(Span);
+public sealed record ScopePattern(IReadOnlyList<PatternField> Fields, SourceSpan Span) : Pattern(Span);
+public sealed record CapturePattern(Pattern Inner, NamePattern Binding, SourceSpan Span) : Pattern(Span);
+public sealed record BinaryPattern(bool Conjunction, Pattern Left, Pattern Right, SourceSpan Span) : Pattern(Span);
+public sealed record NotPattern(Pattern Inner, SourceSpan Span) : Pattern(Span);
+public sealed record RelationPattern(string Operation, Expr Limit, SourceSpan Span) : Pattern(Span);
+public sealed record DenotationPattern(Expr TypeValue, SourceSpan Span) : Pattern(Span);
 public sealed record TypeSyntax(string Name, IReadOnlyList<TypeSyntax> Arguments, IReadOnlyList<TypeSyntax> Alternatives, bool Nullable, SourceSpan Span) : Node(Span)
 {
     public bool DeclaresAssociatedType { get; init; }
+    public TypeSyntax? Group { get; init; }
+    public TypeSyntax? Complement { get; init; }
+    public IReadOnlyList<TypeSyntax> Intersections { get; init; } = [];
+    public Expr? Query { get; init; }
 }
 
 public sealed class SyntaxException : Exception

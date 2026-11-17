@@ -165,7 +165,7 @@ CLI integration run, not by a substitute synthetic instruction-count assertion.
 
 A Function environment PHI can merge an initial null with an allocated Scope
 address. The incoming address register is monomorphic; the PHI register uses
-`Null | Scope`, whose physical representation includes a union tag. These two
+`Null or Scope`, whose physical representation includes a union tag. These two
 registers do not admit the same raw byte copy, despite both carrying LLVM `ptr`.
 The edge copy must use Native's existing carrier-moving Copy when the physical
 types differ, and may specify a raw typed Copy only for equal physical types.
@@ -392,7 +392,7 @@ loss, separate from the repaired tier dispatch. `LlvmHirLowerer.SourceCall`
 already assigns the concrete environment storage's `LogicalType` to the
 Function environment `extractvalue`. Source operand ABI annotations also survive
 on `LlvmUse` across replacement. The target instead projected every whole
-Function environment into the canonical `Scope | Null` leaf at the whole
+Function environment into the canonical `Scope or Null` leaf at the whole
 Function definition, then aliased the extract to that nullable slot. This erased
 the existing exact-address representation even at a known source-call boundary.
 

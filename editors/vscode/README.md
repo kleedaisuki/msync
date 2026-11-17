@@ -10,11 +10,11 @@ by the extension.
 ## Install and develop
 
 Requires VS Code 1.91 or newer and the matching msync executable on PATH.
-Install `msync-language-0.9.0.vsix` with **Extensions: Install
+Install `msync-language-0.9.1.vsix` with **Extensions: Install
 from VSIX**, or:
 
 ```sh
-code --install-extension msync-language-0.9.0.vsix
+code --install-extension msync-language-0.9.1.vsix
 ```
 
 The VSIX does not bundle the executable. Set `msync.serverPath` to its absolute
@@ -51,7 +51,7 @@ tree is not needed in the installed VSIX.
 ## Language editing
 
 ```text
-fn copy(file: Path | String, destination) {
+fn copy(file: Path or String, destination) {
     file -> destination
 };
 let file? = if exists ~/.codex { ~/.codex } else { null };

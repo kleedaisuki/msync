@@ -1,0 +1,26 @@
+let work = { reads: 0 };
+let input = [for i in 1..4 => { work::reads = work::reads + 1; i }];
+let answer = match input {
+    [Number as first, ..] if first > 7 => first,
+    [Number as first, Number as second, ..] => first + second,
+    _ => 0,
+};
+$std::io::println(answer as String);
+$std::io::println(work::reads as String);
+
+let next = { reads: 0 };
+let repeatable = [for i in 1..4 => { next::reads = next::reads + 1; i }];
+for iteration in 1..3 {
+    match repeatable {
+        [Number, ..] if { continue; } => 99,
+        [Number, Number, ..] => 98,
+        _ => 97,
+    };
+};
+$std::io::println(next::reads as String);
+
+let conditional = { reads: 0 };
+let sequence = [for i in 1..4 => { conditional::reads = conditional::reads + 1; i }];
+$std::io::println((sequence is [8, ..] or [Number, Number, ..]) as String);
+$std::io::println(conditional::reads as String);
+$std::io::println(([1] is [8, ..] or [Number, Number, ..]) as String);

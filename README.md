@@ -77,7 +77,7 @@ statement and discards its value. The final unterminated expression is the block
 result. An empty block or a terminated final statement returns `null`.
 
 ```rust
-fn copy_one(source: Path | String, destination) {
+fn copy_one(source: Path or String, destination) {
     source -> destination
 };
 let codex = ~/.codex;
@@ -113,7 +113,7 @@ The constraint checks reachable block tails and explicit `return` expressions;
 Path/String conversion changes the runtime result as well as its inferred type.
 
 ```rust
-let replace = fn(file: Path | String, destination) -> Bool {
+let replace = fn(file: Path or String, destination) -> Bool {
     file -> destination
 };
 let selected = [input.txt, settings.toml];
@@ -334,7 +334,7 @@ for file in $std::ranges::filter(input/<.+>, keep_text) {
 };
 ```
 
-`native fn exists(path: Path | String) -> Bool;` binds a declaration to the
+`native fn exists(path: Path or String) -> Bool;` binds a declaration to the
 registered host capability in its module context. The declaration is not a
 shell command or an unrestricted dynamic library loader. The registry owns
 arity, types, dependent range results, and effect classification. Checking and

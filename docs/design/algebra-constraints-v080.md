@@ -114,7 +114,7 @@ The current implementation already has most of the operational substrate:
   alternatives, Type-value denotations and storage identities, in
   `src/Msync.Compiler/Compilation/State/Info.cs`.
 * Generic calls specialize using actual argument/callable/Scope information;
-  `Path | String` annotations restrict kinds without creating an open typeclass
+  `Path or String` annotations restrict kinds without creating an open typeclass
   mechanism. See `Functions.Specialize` and `Typing.ResolveType`.
 * Scope/Function values and captured locations are mutable with fixed storage
   constraints. Existing callable and dependent-cast contracts show how a

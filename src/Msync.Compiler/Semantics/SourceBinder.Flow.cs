@@ -11,6 +11,13 @@ internal sealed partial class SourceBinder
 {
     private HirNodeId Conditional(IfExpr conditional)
     {
+        if (conditional.Condition is PatternTestExpr test && NeedsPatternDecision(test.Pattern))
+            return ConditionalPattern(conditional, test);
+        if (conditional.Condition is BinaryExpr { Operator: "and" } conjunction && HasPatternBinding(conjunction))
+        {
+            var failure = conditional.Else is { } otherwise ? Expression(otherwise) : Null(conditional.Span);
+            return BindConditionalGuard(conjunction, () => Block(conditional.Then), failure);
+        }
         var condition = Expression(conditional.Condition);
         var yes = Block(conditional.Then);
         var no = conditional.Else is null ? Null(conditional.Span) : Expression(conditional.Else);
@@ -78,6 +85,7 @@ internal sealed partial class SourceBinder
 
     private HirNodeId Match(MatchExpr match)
     {
+        if (match.Arms.Any(arm => arm.Guard is not null || !IsMatchLeaf(arm.Pattern))) return CompoundMatch(match);
         var value = Expression(match.Value);
         List<HirMatchArm> arms = [];
         foreach (var arm in match.Arms)
@@ -93,8 +101,14 @@ internal sealed partial class SourceBinder
         }
         int descriptor = hir.Matches.Count;
         hir.Matches.Add(new(arms.ToImmutableArray()));
+        if (!match.Arms.Any(arm => arm.Pattern is NamePattern or WildcardPattern))
+            program.AtomicPatternCoverage.Add(descriptor, match.Arms.Select(arm => Coverage(arm.Pattern)).ToImmutableArray());
         return Node(HirKind.Match, OpenType("match"), match.Span, [value], descriptor);
     }
+
+    private static bool IsMatchLeaf(Pattern pattern) =>
+        pattern is NamePattern or WildcardPattern or NullPattern or TypePattern
+            or Syntax.RegexPattern or Syntax.LiteralPattern;
 
     private HirPattern Pattern(Pattern pattern, HirTypeId input) => pattern switch
     {

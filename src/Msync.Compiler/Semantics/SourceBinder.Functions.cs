@@ -32,8 +32,39 @@ internal sealed partial class SourceBinder
         annotationScope = outer;
         List<HirLocationId> parameters = [];
         List<HirTypeId> typeParameters = [];
+        var generics = ImmutableArray.CreateBuilder<BoundGenericParameter>(function.TypeParameters.Count);
         try
         {
+            if (function.TypeParameters.Count != 0)
+            {
+                annotationScope = new(outer, definition, id);
+                foreach (var variable in function.TypeParameters)
+                {
+                    if (annotationScope.Associated.ContainsKey(variable.Name) || LanguageTypes.Contains(variable.Name))
+                        throw Error($"Duplicate or reserved type parameter '{variable.Name}'.", variable.Span, "E0202");
+                    var parameter = OpenType(variable.Name);
+                    annotationScope.Associated = annotationScope.Associated.Add(variable.Name, parameter);
+                    typeParameters.Add(parameter);
+                }
+                scope.Associated = annotationScope.Associated;
+                foreach (var variable in function.TypeParameters)
+                {
+                    var parameter = annotationScope.Associated[variable.Name];
+                    HirTypeId? limit = variable.Bound is { } constraint ? Type(constraint) : null;
+                    generics.Add(new(parameter, limit, variable.Name));
+                    if (limit is { } type && hir.Types[type.Value].Concept is >= 0 and var concept)
+                    {
+                        foreach (var (associated, target) in program.Concepts[concept].AssociatedTypes)
+                        {
+                            string namePath = variable.Name + "::" + associated;
+                            var projected = OpenType(namePath);
+                            annotationScope.Associated = annotationScope.Associated.Add(namePath, projected);
+                            program.AssociatedProjections.Add(hir.Types[projected.Value].TypeParameter, new(parameter, concept, target));
+                        }
+                    }
+                }
+                scope.Associated = annotationScope.Associated;
+            }
             foreach (var parameter in function.Parameters)
             {
                 HirTypeId? annotation = parameter.Type is null ? null : Type(parameter.Type);
@@ -53,7 +84,8 @@ internal sealed partial class SourceBinder
                 typeParameters.Select(type => program.TypeParameterNames[hir.Types[type.Value].TypeParameter]).ToImmutableArray(),
                 parameters.ToImmutableArray(), body, definition, captures, result, typeParameters.ToImmutableArray());
             program.Templates[id.Value] = new(id, name, parameters.ToImmutableArray(),
-                captures.Select(capture => capture.Target).ToImmutableArray(), result, body, definition);
+                captures.Select(capture => capture.Target).ToImmutableArray(), result, body, definition)
+                { Generics = generics.MoveToImmutable() };
             int closure = hir.TemplateClosures.Count;
             hir.TemplateClosures.Add(new(id, captures));
             return Node(HirKind.TemplateClosure, hir.Type(TypeRef.Function), function.Span, data: closure);
@@ -107,7 +139,7 @@ internal sealed partial class SourceBinder
         var location = Declare(declaration.Name, declaration.NameSpan ?? declaration.Span,
             DeclarationKind.Native, type);
         program.NativeLocations.Add(location, identity);
-        if (observations) program.NativeSignatures.TryAdd(identity, new(identity, Range(declaration.Span),
+        program.NativeSignatures.TryAdd(identity, new(identity, Range(declaration.Span),
             declaration.Parameters.Select(parameter => parameter.Name).ToImmutableArray(), parameterTypes, result,
             declaration.Parameters.Select(parameter => parameter.Nullable).ToImmutableArray()));
         var value = Node(HirKind.NativeFunction, type, declaration.Span, text: identity);
@@ -164,6 +196,8 @@ internal sealed partial class SourceBinder
             {
                 if (!names.Add(member.Name)) throw Error($"Scope field '{member.Name}' is declared more than once.",
                     member.NameSpan ?? member.Span, "E0212");
+                if (member.Shorthand && !scope.Values.ContainsKey(member.Name))
+                    throw Error($"No binding '{member.Name}' to use for this Scope field.", member.NameSpan ?? member.Span, "E0202");
                 var value = Expression(member.Value);
                 var type = program.Node(value).Type;
                 if (member.Nullable && hir.Types[type.Value].RuntimeType.WithoutNull.Kind == TypeKind.Never)

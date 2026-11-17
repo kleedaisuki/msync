@@ -22,9 +22,9 @@ string[] examples = [
 "scope ScopeName { item: ~/.codex, ready: true, op: fn SomeOperation { true }, nested: scope { file: ~/.codex, }, }; let ScopeName2 = scope { item: true, };",
 "let file = match exists ~/.codex { true => { ~/.codex/config.toml }, _ => { ~ }, };",
 "let file = match SomeSymbol { <.+> => {}, _ => {}, };",
-"native fn exists(path: Path | String) -> Bool; let file? = if exists ~/.codex { ~/.codex } else { null }; if file is null {} else { file -> $wsl @ file }; if file? {} else { file -> $wsl @ file };",
+"native fn exists(path: Path or String) -> Bool; let file? = if exists ~/.codex { ~/.codex } else { null }; if file is null {} else { file -> $wsl @ file }; if file? {} else { file -> $wsl @ file };",
 "let result = if decltype(~/.codex) is Path { true } else { false }; let remote = ssh://forge; for file in ~/.codex/<.+> { file -> remote @ file };",
-"fn SomeOperation(file: Path | String, des) { file -> des }; let values: Range<Path> = [~/a, ~/b];",
+"fn SomeOperation(file: Path or String, des) { file -> des }; let values: Range<Path> = [~/a, ~/b];",
 "let source = C:\\Users\\Klee\\Documents; source -> /tmp/copied/; let f = fn (x: String?) -> Bool { x is null };",
 "let _ = match file { null => { true }, Path => { false }, _ => { true } };"
 ];

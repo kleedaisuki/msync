@@ -12,7 +12,7 @@ string[] sources =
 [
     "concept Product { first?: typename First, second?: typename Second, copy: fn(value: First) -> First, };",
     "scope Tools { copy: fn(source: Path, destination: Path) -> Bool { source -> destination }, }; let plain = scope { item: true };",
-    "let named = scope Named { item: ~/.codex }; native fn copy(source: Path | String, destination: Path) -> Bool;",
+    "let named = scope Named { item: ~/.codex }; native fn copy(source: Path or String, destination: Path) -> Bool;",
     "fn preserve(value?: $std::concepts::Option) -> $std::concepts::Option? { value };",
     "fn unfinished(argument) { let local = scope { item: 7 }; local::"
 ];

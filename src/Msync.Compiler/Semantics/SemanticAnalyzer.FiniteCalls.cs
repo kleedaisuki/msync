@@ -86,7 +86,7 @@ internal sealed partial class SemanticAnalyzer
             || callee.Callables[0].Template is not { } template) return false;
         if (!dependentTypeCalls.TryGetValue(template, out bool dependent))
         {
-            dependent = program.TypeWitnesses.Values.Any(witness =>
+            dependent = !program.Templates[template.Value].Generics.IsEmpty || program.TypeWitnesses.Values.Any(witness =>
                 hir.Locations[witness.Location.Value].TemplateOwner == template);
             dependentTypeCalls[template] = dependent;
         }
@@ -107,7 +107,8 @@ internal sealed partial class SemanticAnalyzer
         if (stored >= 0 && !inputs.Where((_, i) => i != stored).Any(HasCases))
         {
             var choiceValue = inputs[stored].BranchValue!;
-            result = EmitFiniteCall(callee, inputs, stored, choiceValue, false, source, context);
+            var projections = CorrelatedCallProjections(sourceInputs, stored);
+            result = EmitFiniteCall(callee, inputs, stored, choiceValue, false, source, context, projections);
             return true;
         }
 
@@ -130,6 +131,23 @@ internal sealed partial class SemanticAnalyzer
         static bool HasCases(SemanticValue value) => HasUnresolvedType(value) || value.BranchValue is not null;
         static bool HasUnresolvedType(SemanticValue value) =>
             value.DenotedType is null && value.TypeCandidates is { Types.Length: > 1 };
+    }
+
+    private Dictionary<int, string>? CorrelatedCallProjections(ReadOnlySpan<HirNodeId> inputs, int receiver)
+    {
+        var owner = program.Node(inputs[receiver]);
+        if (owner.Kind is not (HirKind.ReadLocation or HirKind.ReadStorage)) return null;
+        if (!Stable(new(owner.Data))) return null;
+        Dictionary<int, string>? fields = null;
+        for (int index = 0; index < inputs.Length; index++)
+        {
+            var read = program.Node(inputs[index]);
+            if (read.Kind != HirKind.MemberRead) continue;
+            var selected = program.Node(program.Children(inputs[index])[0]);
+            if ((selected.Kind is HirKind.ReadLocation or HirKind.ReadStorage) && selected.Data == owner.Data)
+                (fields ??= []).Add(index, read.Text!);
+        }
+        return fields;
     }
 
     private bool OriginalChoice(SemanticValue value, SemanticBranchValue choice, SemanticContext context)
@@ -160,7 +178,8 @@ internal sealed partial class SemanticAnalyzer
     }
 
     private SemanticValue EmitFiniteCall(SemanticValue callee, SemanticValue[] inputs, int index,
-        SemanticBranchValue choice, bool reuse, HirSourceRange source, SemanticContext context)
+        SemanticBranchValue choice, bool reuse, HirSourceRange source, SemanticContext context,
+        Dictionary<int, string>? projections = null)
     {
         var choices = choice.Arms;
         var selector = choice.Selector;
@@ -177,6 +196,7 @@ internal sealed partial class SemanticAnalyzer
         }
 
         var subject = inputs[index];
+        var ordinary = projections is null ? null : inputs.ToArray();
         List<SemanticContext> branches = [];
         var results = new SemanticValue[choices.Length];
         SemanticValue? result = null;
@@ -191,6 +211,20 @@ internal sealed partial class SemanticAnalyzer
                         data: hir.Nodes[subject.Node.Value].Data, effects: HirEffects.ReadLocation)
                     : subject.Node
             };
+            if (projections is not null && choices[i].Scope is { } scope)
+                foreach (var (argument, field) in projections)
+                {
+                    var original = ordinary![argument];
+                    inputs[argument] = original;
+                    if (!TryScopeField(branch.Objects.GetValueOrDefault(scope.Region, scope), field, branch, out var selected))
+                        continue;
+                    var selectedType = selected.Type;
+                    var narrowed = output is not null && selectedType != original.Type
+                        ? output.Add(HirKind.Coerce, selectedType, source, [original.Node], data: selectedType.Value)
+                        : original.Node;
+                    inputs[argument] = selected with { Node = narrowed, Location = null };
+                    Trace?.Metric("finite_call.correlated_field", 1);
+                }
             results[i] = Invoke(callee, inputs, source, branch);
             result = result is null ? results[i] : Join(result, results[i]);
         }

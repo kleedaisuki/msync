@@ -30,7 +30,7 @@ scope Completed {
     },
     write_to: fn(
         self: $std::concepts::CompletedProcess,
-        destination: Path | String
+        destination: Path or String
     ) {
         $std::io::write_text(destination, self::output)
     },
@@ -38,11 +38,11 @@ scope Completed {
 
 # Construction snapshots argument data without starting or observing a process.
 scope Command {
-    new: fn(executable: Path | String, arguments: Range) {
+    new: fn(executable: Path or String, arguments: Range) {
         Command::with_runner(executable, arguments, NativeProcess)
     },
     with_runner: fn(
-        executable: Path | String,
+        executable: Path or String,
         arguments: Range,
         runner: $std::concepts::ProcessRunner
     ) -> $std::concepts::CommandSpec {

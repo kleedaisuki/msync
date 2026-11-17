@@ -102,7 +102,7 @@ internal static class Program
                 first::n + second::n
                 """, 8),
             ("capture-adaptation", """
-                fn outer(n: Number | String) { fn() { if n is Number { n + 1 } else { 0 } } };
+                fn outer(n: Number or String) { fn() { if n is Number { n + 1 } else { 0 } } };
                 let first = outer(6); let second = outer("text");
                 first() + second()
                 """, 7),
@@ -509,7 +509,7 @@ internal static class Program
         foreach ((string argument, NativeValue expected) in new[]
             { ("41", NativeValue.FromNumber(42)), ("\"hello\"", NativeValue.FromString("hello!")) })
         {
-            string source = "fn choose(value: Number | String) { if value is Number { value + 1 } "
+            string source = "fn choose(value: Number or String) { if value is Number { value + 1 } "
                 + "else { $std::string::concat(value, \"!\") } }; choose(" + argument + ")";
             NativeProgram program = NativePreparation.Prepare(Compiler.Compile(source, "refinement.msync", 0));
             Check(program.Functions.Any(function => function.Instructions.Any(code => code.Op == NativeOp.Narrow)),

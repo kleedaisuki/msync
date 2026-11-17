@@ -206,7 +206,7 @@ resulting typed values select the operator's behavior:
 | Path item | Relative path item | Append the right path, retaining compatible endpoint identity |
 | Path item | String literal | Interpret the string as a path fragment **inside this operator**, then apply the same append rules |
 | String literal | Path item or string literal | Interpret the left string as a path base and apply the same rules |
-| Space, program, or program port | Any | Type error; select a path item before applying `/` |
+| Space, program, or program port | Any or Type error; select a path item before applying `/` |
 
 The string overloads do not make a bare quoted transfer source a file. For
 example, `"input.txt" -> output` copies literal bytes, while

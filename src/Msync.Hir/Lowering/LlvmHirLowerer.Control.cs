@@ -3,7 +3,7 @@ using Msync.Core.Llvm;
 
 namespace Msync.Hir;
 
-public enum LlvmIteratorOperation : byte { Open, Next, Close }
+public enum LlvmIteratorOperation : byte { Open, Next, Close, Create, OpenAt }
 
 public static partial class LlvmHirLowerer
 {
@@ -23,6 +23,7 @@ public static partial class LlvmHirLowerer
             internal HirLoopId Id { get; } = id;
             internal HirTypeId ResultType { get; init; }
             internal int IteratorDepth { get; } = iteratorDepth;
+            internal int ContinueDepth { get; init; } = iteratorDepth;
             internal int AcquireDepth { get; } = acquireDepth;
             internal bool ProducesValue { get; } = producesValue;
             internal LlvmBasicBlock Header { get; } = header;
@@ -66,6 +67,7 @@ public static partial class LlvmHirLowerer
         private LlvmValue Continue(HirNode node)
         {
             var state = loops.Last(item => item.Id.Value == node.Data);
+            CloseIterators(state.ContinueDepth);
             CloseAcquire(state.AcquireDepth);
             continueCount++;
             Add(new LlvmUncondBrInstruction(state.Header));
@@ -87,7 +89,8 @@ public static partial class LlvmHirLowerer
             var body = new LlvmBasicBlock(owner.context, "for.body", function);
             var exhausted = new LlvmBasicBlock(owner.context, "for.exhausted", function);
             var exit = new LlvmBasicBlock(owner.context, "for.exit", function);
-            var state = new LoopState(iteration.Loop, header, exit, iterators.Count, acquireRegions.Count, false);
+            var state = new LoopState(iteration.Loop, header, exit, iterators.Count, acquireRegions.Count, false)
+            { ContinueDepth = iterators.Count + 1 };
             loops.Add(state);
             iterators.Add(capability);
             forCount++;
@@ -123,6 +126,8 @@ public static partial class LlvmHirLowerer
             string name = operation switch
             {
                 LlvmIteratorOperation.Open => "msync.iterator.open",
+                LlvmIteratorOperation.Create => "msync.iterator.create",
+                LlvmIteratorOperation.OpenAt => "msync.iterator.open_at",
                 LlvmIteratorOperation.Next => "msync.iterator.next",
                 _ => "msync.iterator.close"
             };

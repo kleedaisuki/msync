@@ -16,6 +16,13 @@ public static partial class LlvmNativeLowerer
                     iterators.Add(call, iterator);
                     Add(new(NativeOp.OpenIterator, A: ArgumentSlot(call, 0), B: iterator, Source: call.Source));
                     break;
+                case LlvmIteratorOperation.Create:
+                    iterators.Add(call, iterators.Count);
+                    break;
+                case LlvmIteratorOperation.OpenAt:
+                    Add(new(NativeOp.OpenIterator, A: ArgumentSlot(call, 1), B: iterators[call.GetArgument(0)], Source: call.Source));
+                    values.Add(call, Null());
+                    break;
                 case LlvmIteratorOperation.Next: IteratorNext(call); break;
                 case LlvmIteratorOperation.Close:
                     Add(new(NativeOp.CloseIterator, A: iterators[call.GetArgument(0)], Source: call.Source));

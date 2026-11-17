@@ -23,7 +23,7 @@ internal sealed partial class SemanticAnalyzer
     private SemanticValue Control(HirNodeId id, HirNode node, ReadOnlySpan<HirNodeId> children,
         SemanticContext context) => node.Kind switch
         {
-            HirKind.If => Conditional(node, children, context),
+            HirKind.If => Conditional(id, node, children, context),
             HirKind.Match => Match(node, children, context),
             HirKind.For => For(id, node, children, context),
             HirKind.Loop => Loop(id, node, children, context),
@@ -34,7 +34,7 @@ internal sealed partial class SemanticAnalyzer
             _ => throw new InvalidOperationException($"Not a control expression: {node.Kind}")
         };
 
-    private SemanticValue Conditional(HirNode node, ReadOnlySpan<HirNodeId> children,
+    private SemanticValue Conditional(HirNodeId id, HirNode node, ReadOnlySpan<HirNodeId> children,
         SemanticContext context)
     {
         SemanticValue condition = Analyze(children[0], context);
@@ -46,6 +46,9 @@ internal sealed partial class SemanticAnalyzer
             SemanticValue value = Analyze(children[known ? 1 : 2], selected);
             MergeContexts(context, selected);
             AppendExits(context, selected);
+            if (program.PatternFieldTests.Contains(children[0])) return value;
+            if (program.PatternBranches.Contains(id))
+                return value with { Node = Add(node with { Kind = HirKind.Block }, value.Type, [condition.Node, value.Node], context) };
             HirNodeId ignored = Null(node.Source, context).Node;
             return value with
             {
@@ -76,6 +79,8 @@ internal sealed partial class SemanticAnalyzer
     {
         if (yes.DenotedType is { } first && no.DenotedType is { } second) return first != second;
         if (yes.Scope is not { } left || no.Scope is not { } right) return false;
+        if (program.AssociatedProjections.Count != 0 && left.Layout >= 0 && right.Layout >= 0
+            && left.Layout != right.Layout) return true;
         foreach (var field in left.Fields)
             if (field.Value.DenotedType is { } known && right.Fields.TryGetValue(field.Key, out var other)
                 && other.DenotedType is { } different && known != different) return true;
@@ -87,7 +92,8 @@ internal sealed partial class SemanticAnalyzer
     {
         SemanticValue subject = Analyze(children[0], context);
         HirMatch match = hir.Matches[node.Data];
-        CheckExhaustive(subject, match, node.Source, context);
+        if (program.AtomicPatternCoverage.TryGetValue(node.Data, out var patterns))
+            CheckPatternCoverage(subject, patterns, false, node.Source, context);
         List<HirMatchArm> arms = [];
         List<SemanticValue> armValues = [];
         List<SemanticContext> branches = [];
@@ -332,6 +338,12 @@ internal sealed partial class SemanticAnalyzer
 
     private void RefineCondition(HirNodeId expression, bool positive, SemanticContext context)
     {
+        if (positive && program.PatternGuardConditions.TryGetValue(expression, out var guarded))
+        {
+            RefineCondition(guarded.Test, true, context);
+            RefineCondition(guarded.Guard, true, context);
+            return;
+        }
         HirNode node = program.Node(expression);
         var children = program.Children(expression);
         if (node.Kind == HirKind.Unary && (HirUnaryOperator)node.Data == HirUnaryOperator.Not)
@@ -350,6 +362,11 @@ internal sealed partial class SemanticAnalyzer
             RefineSubject(children[0], Intersect(ReadType(children[0], context), TypeRef.Null, positive), context);
         else if (node.Kind == HirKind.IsType)
         {
+            if (program.PatternFieldTests.Contains(expression))
+            {
+                RefinePatternField(children[0], node.Text!, positive, context);
+                return;
+            }
             HirTypeId? target = children.Length == 2
                 ? program.Node(children[1]).Kind == HirKind.TypeValue
                     ? ResolveHirType(new(program.Node(children[1]).Data), context) : Subject(children[1], context)?.DenotedType
@@ -431,6 +448,10 @@ internal sealed partial class SemanticAnalyzer
         if (node.Kind is HirKind.ReadLocation or HirKind.ReadStorage)
         {
             context.Values[context.Location(new(node.Data))] = value;
+            if (program.PatternOrigins.TryGetValue(new(node.Data), out var original)
+                && Stable(new(program.Node(original).Data)) && Subject(original, context) is { } previous)
+                SetSubject(original, previous with { Type = value.Type, TypeCandidates = value.TypeCandidates,
+                    DenotedType = value.DenotedType, Literal = value.Literal }, context);
             return;
         }
         if (node.Kind != HirKind.MemberRead) return;
@@ -486,44 +507,6 @@ internal sealed partial class SemanticAnalyzer
     {
         TypeRef result = Intersect(original, tested, true);
         return (original.Kind & TypeKind.Type) != 0 ? result with { Kind = result.Kind | TypeKind.Type } : result;
-    }
-
-    private void CheckExhaustive(SemanticValue value, HirMatch match, HirSourceRange source,
-        SemanticContext context)
-    {
-        if (Runtime(value) == TypeRef.Type && value.TypeCandidates is { } domain)
-        {
-            var coveredTypes = match.Arms.SelectMany(arm => MatchingDenotations(domain, arm.Pattern, context)).ToHashSet();
-            var missingTypes = domain.Types.Where(type => !coveredTypes.Contains(type)).ToArray();
-            if (missingTypes.Length == 0) return;
-            var missingNames = string.Join(", ", missingTypes.Select(type => hir.Types[type.Value].RuntimeType));
-            throw Error(source, $"Non-exhaustive match for Type; missing {missingNames} or a final '_'.", "E0209");
-        }
-        TypeKind covered = TypeKind.Never;
-        bool hasTrue = false, hasFalse = false;
-        foreach (HirMatchArm arm in match.Arms)
-        {
-            HirPattern pattern = arm.Pattern;
-            if (pattern.Kind == HirPatternKind.Any) return;
-            if (pattern.Kind == HirPatternKind.Null) covered |= TypeKind.Null;
-            if (pattern.Kind == HirPatternKind.Type)
-            {
-                HirTypeId type = Resolve(new(pattern.Data), context);
-                if (TypePatternMatch(value, type) == true) return;
-                TypeRef runtime = hir.Types[type.Value].RuntimeType;
-                covered |= runtime.Kind & ~TypeKind.Type;
-                if (runtime == TypeRef.Any) covered |= TypeKind.Type;
-            }
-            if (pattern.Kind == HirPatternKind.Literal && hir.Literals[pattern.Data].Kind == HirLiteralKind.Bool)
-            {
-                hasTrue |= hir.Literals[pattern.Data].Boolean;
-                hasFalse |= !hir.Literals[pattern.Data].Boolean;
-            }
-        }
-        if (hasTrue && hasFalse) covered |= TypeKind.Bool;
-        TypeKind missing = Runtime(value).Kind & ~covered;
-        if (missing != TypeKind.Never)
-            throw Error(source, $"Non-exhaustive match for {Runtime(value)}; missing {new TypeRef(missing)} or a final '_'.", "E0209");
     }
 
     private void MergeContexts(SemanticContext destination, params SemanticContext[] branches)

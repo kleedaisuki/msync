@@ -10,7 +10,7 @@ from pathlib import Path
 from btree_bplus_journey import ROOT, execute
 
 SOURCE: str = """let Tree = $std::containers::BPlusTree;
-fn optional(flag: Bool) -> Number | Null { if flag { null } else { 0 } };
+fn optional(flag: Bool) -> Number or Null { if flag { null } else { 0 } };
 let carrier = decltype(optional(true));
 let tree = Tree::of_types(carrier, carrier);
 Tree::insert(tree, null, null);

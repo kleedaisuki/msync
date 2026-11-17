@@ -191,6 +191,8 @@ internal sealed partial class SemanticAnalyzer
         if (nullable) type = Nullable(type);
         var description = hir.Types[type.Value];
         if (description.TypeParameter < 0) return type;
+        if (program.TypeQueries.ContainsKey(description.TypeParameter) || program.TypeQueryMembers.ContainsKey(description.TypeParameter))
+            return ResolveTypeQuery(description.TypeParameter, nullable, context);
         if (program.TypeWitnesses.TryGetValue(description.TypeParameter, out var witness))
         {
             HirLocationId location = context.Location(witness.Location);

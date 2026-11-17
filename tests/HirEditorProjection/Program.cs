@@ -74,7 +74,7 @@ values.Add(new(scope, Members: [new("self", cycleA), new("leaf", num)]));
 SemanticValueId cycleB = new(values.Count);
 values.Add(new(scope, Members: [new("self", cycleB), new("leaf", str)]));
 SemanticValueId alias = Add(new(function, NativeName: "fs.exists",
-    Signature: "native fn exists(path: Path | String) -> Bool", Documentation: "Tests whether a path exists."));
+    Signature: "native fn exists(path: Path or String) -> Bool", Documentation: "Tests whether a path exists."));
 SemanticValueId native = Add(new(function, NativeName: "meta.is_invocable"));
 SemanticValueId path = Add(new(builder.Type(TypeRef.Path), Path: new("./file", "/origin", new(ConnectionKind.Ssh, "forge"))));
 
@@ -110,16 +110,16 @@ SemanticMember merged = presenter.Describe("value", [first, second]);
 Require(merged.Members is { Count: 1 }, "Only common outer fields are offered");
 SemanticMember nested = merged.Members!.Single();
 Require(nested.Name == "nested" && nested.Members is { Count: 1 }, "Common nested capabilities survive merging");
-Require(nested.Members!.Single().Name == "shared" && nested.Members!.Single().Type == "String | Number", "Nested union is typed and excludes branch-specific fields");
+Require(nested.Members!.Single().Name == "shared" && nested.Members!.Single().Type == "String or Number", "Nested union is typed and excludes branch-specific fields");
 Require(presenter.Describe("recursive", [shape]).Members!.Single().Members is null, "Recursive type shape terminates by identity");
 Require(presenter.Describe("cycle", [cycleA]).Members!.First().Members is null, "Recursive value shape terminates by identity");
 SemanticMember cycles = presenter.Describe("cycles", [cycleA, cycleB]);
 Require(cycles.Members!.Single(item => item.Name == "self").Members is null, "Recursive variant intersection terminates by identity pair");
-Require(cycles.Members!.Single(item => item.Name == "leaf").Type == "String | Number", "Recursive intersection retains ordinary fields");
+Require(cycles.Members!.Single(item => item.Name == "leaf").Type == "String or Number", "Recursive intersection retains ordinary fields");
 Require(presenter.Describe("record", [optional]).Members!.Single().Type == "Number?", "Shape-only nullable field admission");
 Require(presenter.Describe("contract", [optionalContract]).Members!.Single().Type == "Number?", "Constraint-only nullable field admission");
 Require(presenter.Describe("union", [unionScope]).Members!.Single().Members!.Single() is
-    { Name: "shared", Type: "String | Number" }, "True HIR type unions preserve nested common fields");
+    { Name: "shared", Type: "String or Number" }, "True HIR type unions preserve nested common fields");
 Require(presenter.Describe("optional_union", [optionalUnion]).Members!.Single().Members!.Single().Name == "shared",
     "Null alternatives do not erase valid Scope capabilities");
 Require(presenter.Describe("callable_or_scope", [functionOrScope]).Members is null,

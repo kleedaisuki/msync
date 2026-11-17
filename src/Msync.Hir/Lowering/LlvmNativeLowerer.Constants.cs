@@ -62,6 +62,9 @@ public static partial class LlvmNativeLowerer
                 return SessionCellSlot(lexical, cell);
             if (value is LlvmGlobalVariable global && owner.StaticObjects.TryGetValue(global, out int declaration))
                 return StaticObjectSlot(global, declaration);
+            if (value is LlvmGlobalVariable { IsConstant: true, LogicalType: >= 0 } literal
+                && owner.Input.Constants.TryGetValue(literal, out var contents))
+                return LiteralAddress(literal, contents);
             if (value is LlvmFunction target)
             {
                 if (values.TryGetValue(target, out int codeSlot)) return codeSlot;
@@ -82,6 +85,21 @@ public static partial class LlvmNativeLowerer
             slot = Register(SelectedValueType(value));
             values.Add(value, slot);
             return slot;
+        }
+
+        private int LiteralAddress(LlvmGlobalVariable global, NativeConstant literal)
+        {
+            if (values.TryGetValue(global, out int existing)) return existing;
+            int pointer = global.LogicalType;
+            int pointee = owner.Types[pointer].Pointee;
+            int contents = ConstantSlotValue(literal, pointee);
+            int local = Register(pointee, IsSessionEntry ? NativeSlotRole.Temporary : NativeSlotRole.Local);
+            int address = Register(pointer);
+            values.Add(global, address);
+            prelude.Add(new(NativeOp.FrameAddress, address, local, Source: instructionSource));
+            prelude.Add(new(NativeOp.Store, A: address, B: contents, C: 0, Type: pointee, Source: instructionSource));
+            trace?.Metric("addresses.literal_cells_materialized", 1);
+            return address;
         }
 
         private int ConstantSlot(LlvmConstant value, int type)

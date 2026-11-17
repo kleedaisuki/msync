@@ -23,6 +23,11 @@ public static partial class NativeBuiltins
             if (step == 0) throw new MsyncException("ranges.sequence requires a nonzero step");
             return NativeValue.FromRange(NativeRange.Sequence(new(first, last, step, token)));
         }
+        if (operation == "closed")
+        {
+            double first = ClosedEndpoint(args[0]), last = ClosedEndpoint(args[1]);
+            return NativeValue.FromRange(NativeRange.Sequence(new(first, last, 1, token, Inclusive: true)));
+        }
         NativeRange source = Range(args[0], operation);
         if (operation is "identity" or "all") return args[0];
         if (operation is "filter" or "transform" or "take_while" or "drop_while")
@@ -43,6 +48,15 @@ public static partial class NativeBuiltins
         return await ConsumeRangeAsync(source, operation, args, invoke, token);
     }
 
+    private static double ClosedEndpoint(NativeValue endpoint)
+    {
+        double value = endpoint.AsNumber();
+        const double max = 9007199254740992d;
+        if (!(value >= -max && value <= max) || value != Math.Truncate(value))
+            throw new MsyncException("A closed range endpoint must be an integer between -2^53 and 2^53.");
+        return value;
+    }
+
     private static TypeRef ElementType(IEnumerable<NativeValue> values) => values.Aggregate(
         new TypeRef(TypeKind.Never), static (type, value) => TypeRef.Union(type, value.Type));
 
@@ -51,16 +65,21 @@ public static partial class NativeBuiltins
         CancellationToken token, IReadOnlyList<NativeValue>? captures = null, NativeType? physicalItemType = null)
     {
         physicalItemType ??= source.PhysicalItemType;
-        NativePathSelection? selection = source.Selection;
-        NativePathSelection? adapted = selection is null ? null : selection with
+        NativeValue[] roots = [NativeValue.FromRange(source), .. captures ?? []];
+        return new(operation(source, token), itemType, roots, AdaptSelection(source, operation),
+            source.Resolve is null ? null : async cancellation => Adapt(await source.Resolve(cancellation), itemType, operation, cancellation, captures, physicalItemType),
+            physicalItemType: physicalItemType);
+    }
+
+    internal static NativePathSelection? AdaptSelection(NativeRange source,
+        Func<NativeRange, CancellationToken, IAsyncEnumerable<NativeValue>> operation)
+    {
+        if (source.Selection is not { } selection) return null;
+        return selection with
         {
             Apply = (items, cancellation) => operation(new NativeRange(
                 selection.Apply is null ? items : selection.Apply(items, cancellation), source.ItemType, physicalItemType: source.PhysicalItemType), cancellation)
         };
-        NativeValue[] roots = [NativeValue.FromRange(source), .. captures ?? []];
-        return new(operation(source, token), itemType, roots, adapted,
-            source.Resolve is null ? null : async cancellation => Adapt(await source.Resolve(cancellation), itemType, operation, cancellation, captures, physicalItemType),
-            physicalItemType: physicalItemType);
     }
 
     private static async IAsyncEnumerable<NativeValue> Repeated(NativeValue value, long count,

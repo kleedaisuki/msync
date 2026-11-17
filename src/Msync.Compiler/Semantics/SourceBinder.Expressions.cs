@@ -23,6 +23,7 @@ internal sealed partial class SourceBinder
         FunctionExpr function => Function(function),
         ScopeExpr shape => Scope(shape),
         RangeExpr range => RangeValue(range),
+        RangeComprehensionExpr range => RangeComprehension(range),
         BlockExpr block => Block(block),
         UnaryExpr unary => Unary(unary),
         BinaryExpr binary => Binary(binary),
@@ -34,6 +35,7 @@ internal sealed partial class SourceBinder
         ForExpr loop => For(loop),
         LoopExpr loop => Loop(loop),
         MatchExpr match => Match(match),
+        PatternTestExpr test => PatternTest(test),
         ReturnExpr returned => Node(HirKind.Return, hir.Type(new TypeRef(TypeKind.Never)), returned.Span,
             [returned.Value is null ? Null(returned.Span) : Expression(returned.Value)]),
         BreakExpr broken => Break(broken),
@@ -88,6 +90,7 @@ internal sealed partial class SourceBinder
 
     private HirNodeId Binary(BinaryExpr binary)
     {
+        if (binary.Operator is "??" or "??=" or "?::" or "..") return SourceSugar(binary);
         if (binary.Operator == "::")
         {
             if (binary.Left is UnaryExpr { Operator: "$", Operand: NameExpr { Name: "std" } root }
@@ -222,6 +225,12 @@ internal sealed partial class SourceBinder
     {
         var value = Expression(cast.Value);
         var type = Type(cast.Type);
+        if (cast.CheckOnly)
+        {
+            var check = Node(HirKind.Block, program.Node(value).Type, cast.Span, [value]);
+            program.ConformanceChecks.Add(check, type);
+            return check;
+        }
         program.TypeAnnotations[value] = type;
         return Node(HirKind.Convert, type, cast.Span, [value], type.Value, effects: HirEffects.MayFail);
     }
@@ -230,7 +239,8 @@ internal sealed partial class SourceBinder
     {
         if (call.Callee is NameExpr { Name: "decltype" })
         {
-            if (call.Arguments.Count != 1) throw Error("decltype expects one unevaluated expression.", call.Span);
+            if (call.Arguments.Count != 1 || call.Labels is not null)
+                throw Error("decltype expects one positional unevaluated expression.", call.Span);
             return Node(HirKind.TypeOf, hir.Type(TypeRef.Type), call.Span, [Expression(call.Arguments[0])]);
         }
         var callee = Expression(call.Callee);
@@ -238,6 +248,7 @@ internal sealed partial class SourceBinder
         children.AddRange(call.Arguments.Select(Expression));
         int descriptor = hir.Calls.Count;
         hir.Calls.Add(new(HirCallKind.Dynamic, new(-1)));
+        if (call.Labels is { } labels) program.NamedCalls.Add(descriptor, labels);
         return Node(HirKind.Call, OpenType("call"), call.Span,
             System.Runtime.InteropServices.CollectionsMarshal.AsSpan(children), descriptor, effects: HirEffects.Invoke);
     }
@@ -265,6 +276,8 @@ internal sealed partial class SourceBinder
         if (pipe.Right is CallExpr call) children.AddRange(call.Arguments.Select(Expression));
         int descriptor = hir.Calls.Count;
         hir.Calls.Add(new(HirCallKind.Dynamic, new(-1)));
+        if (pipe.Right is CallExpr { Labels: { } labels })
+            program.NamedCalls.Add(descriptor, labels.ToDictionary(label => label.Key + 1, label => label.Value));
         var called = Node(HirKind.Call, OpenType("pipe"), pipe.Span,
             System.Runtime.InteropServices.CollectionsMarshal.AsSpan(children), descriptor, effects: HirEffects.Invoke);
         scope.Values = outer;

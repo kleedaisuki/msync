@@ -8,15 +8,19 @@ public sealed class LlvmHirLoweringSession
 {
     private Generation? acceptedCode;
 
-    public LlvmHirLoweringResult Lower(HirModule module, CompilationTrace? trace = null)
+    public LlvmHirLoweringResult Lower(HirModule module, CompilationTrace? trace = null) =>
+        Lower(module, [], trace);
+
+    public LlvmHirLoweringResult Lower(HirModule module, IReadOnlyList<HirExport> shadows, CompilationTrace? trace)
     {
-        var generation = trace?.Detail is not { } detail ? new Generation(module, acceptedCode)
-            : detail.MeasureDetailed("compiler.llvm.session.registry", (module, previous: acceptedCode),
-                static state => new Generation(state.module, state.previous),
+        var generation = trace?.Detail is not { } detail ? new Generation(module, shadows, acceptedCode)
+            : detail.MeasureDetailed("compiler.llvm.session.registry", (module, shadows, previous: acceptedCode),
+                static state => new Generation(state.module, state.shadows, state.previous),
                 metrics: static state => new Dictionary<string, ulong>
                 {
                     ["generation"] = (ulong)state.Number,
                     ["roots"] = (ulong)state.Roots.Count,
+                    ["shadow.paths"] = (ulong)(state.ShadowPaths?.Count ?? 0),
                     ["import.roots"] = (ulong)state.ImportSlots.Count,
                     ["types"] = (ulong)state.Metadata.Types.Count,
                     ["layouts"] = (ulong)state.Metadata.Layouts.Count,
@@ -64,14 +68,15 @@ public sealed class LlvmHirLoweringSession
         internal readonly HirFunctionId Entry;
         internal readonly int Number;
         internal readonly HirLocationId[] Exports;
+        internal readonly IReadOnlyList<int[]>? ShadowPaths;
         internal readonly List<NativeStatic> Statics;
         internal readonly List<int> ImportSlots = [];
 
-        internal Generation(HirModule module, Generation? previous)
+        internal Generation(HirModule module, IReadOnlyList<HirExport> shadows, Generation? previous)
         {
             Entry = module.Entry;
             Number = (previous?.Number ?? 0) + 1;
-            Exports = module.Exports.Select(export => export.Location).Distinct().ToArray();
+            Exports = module.Exports.Concat(shadows).Select(export => export.Location).Distinct().ToArray();
             Metadata = previous is null ? new(module) : previous.Metadata.Fork(module);
             Program = previous?.Program;
             Statics = Program?.Statics.ToList() ?? [];
@@ -95,6 +100,10 @@ public sealed class LlvmHirLoweringSession
                 Map.Locations[new(module.Entry, location)] = root.Slot;
                 Map.Locations[new(module.Locations[location.Value].Owner, location)] = root.Slot;
             }
+            if (shadows.Count == 0) return;
+            var visible = module.Exports.ToDictionary(export => export.Name, export => Roots[export.Location].Slot);
+            ShadowPaths = [.. shadows.GroupBy(shadow => shadow.Name).Select(group =>
+                new[] { visible[group.Key] }.Concat(group.Reverse().Select(shadow => Roots[shadow.Location].Slot)).ToArray())];
         }
         private void Copy(Generation previous)
         {

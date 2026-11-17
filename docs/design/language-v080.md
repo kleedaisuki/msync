@@ -119,11 +119,11 @@ failures still produce an actual conversion diagnostic during execution.
 
 | Target | Admitted source representations beyond compatible identity |
 | --- | --- |
-| String | Path (native text), Bool, Number, Connection, Type |
-| Path | String, projected in the current context |
-| Number | Bool (`false`/`true` to 0/1), String/Path containing invariant numeric text |
-| Bool | Number (zero/NaN false, otherwise true), String/Path containing `true`/`false` |
-| Connection | String naming a builtin endpoint or an explicit `ssh://`/`wsl://` endpoint |
+| String or Path (native text), Bool, Number, Connection, Type |
+| Path or String, projected in the current context |
+| Number or Bool (`false`/`true` to 0/1), String/Path containing invariant numeric text |
+| Bool or Number (zero/NaN false, otherwise true), String/Path containing `true`/`false` |
+| Connection or String naming a builtin endpoint or an explicit `ssh://`/`wsl://` endpoint |
 | Range with an item constraint | Range whose elements admit the requested conversion, applied lazily |
 | Scope, Function, Process, Type | Compatible identity only; concept constraints are checked structurally |
 
@@ -152,7 +152,7 @@ identities are not retained in the current format-4 reader/runtime. An ordinary
 user declaration with the same spelling remains a lexical value, not a builtin.
 
 Named/anonymous `fn` is the one callable source construct. Parameters may state
-capability constraints such as `Path | String`; omitted types specialize from
+capability constraints such as `Path or String`; omitted types specialize from
 arguments. A template captures only referenced outer lexical locations, by
 identity, at its definition. Capture ownership is retained as slots, not names: local shadowing
 must not change what a recursive call sees. Specialized recursive calls reuse a
@@ -208,7 +208,7 @@ fn use_identity(algebra: Monoid<Number>) -> Monoid<Number> {
 
 concept Named { name: String, };
 concept Entry<T: Named> { item: T, };
-concept Input<T: Path | String> { value: T, };
+concept Input<T: Path or String> { value: T, };
 ```
 
 Concept type parameters can be bounded by a type or a structural concept.

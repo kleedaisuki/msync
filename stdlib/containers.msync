@@ -6,7 +6,7 @@ scope SnapshotStorage {
     },
 };
 
-fn construction_range(initial: Range | Type) {
+fn construction_range(initial: Range or Type) {
     if decltype(initial) is Type {
         $std::ranges::empty_of(initial)
     } else {
@@ -21,10 +21,10 @@ fn entry_seed(keys: Range, values: Range) {
 };
 
 scope List {
-    new: fn(initial: Range | Type) {
+    new: fn(initial: Range or Type) {
         List::with_storage(construction_range(initial), SnapshotStorage)
     },
-    with_storage: fn(initial: Range | Type, storage: $std::concepts::RangeStorage) {
+    with_storage: fn(initial: Range or Type, storage: $std::concepts::RangeStorage) {
         scope {
             items: $std::ranges::materialize(storage::snapshot(construction_range(initial))),
             storage: storage,
@@ -171,7 +171,7 @@ scope Equivalence {
 };
 
 scope EqualitySet {
-    new: fn(initial: Range | Type) {
+    new: fn(initial: Range or Type) {
         let source = construction_range(initial);
         EqualitySet::with_policy(
             source,
@@ -182,11 +182,11 @@ scope EqualitySet {
             SnapshotStorage
         )
     },
-    with_equality: fn(initial: Range | Type, equality: $std::concepts::Equality) {
+    with_equality: fn(initial: Range or Type, equality: $std::concepts::Equality) {
         EqualitySet::with_policy(initial, equality, SnapshotStorage)
     },
     with_policy: fn(
-        initial: Range | Type,
+        initial: Range or Type,
         equality: $std::concepts::Equality,
         storage: $std::concepts::RangeStorage
     ) {
@@ -516,7 +516,7 @@ scope Map {
 };
 
 scope Stack {
-    new: fn(initial: Range | Type) {
+    new: fn(initial: Range or Type) {
         List::new(initial)
     },
     with_storage: fn(initial: Range, storage: $std::concepts::RangeStorage) {
@@ -560,7 +560,7 @@ scope Stack {
 };
 
 scope Queue {
-    new: fn(initial: Range | Type) {
+    new: fn(initial: Range or Type) {
         List::new(initial)
     },
     with_storage: fn(initial: Range, storage: $std::concepts::RangeStorage) {
@@ -2215,7 +2215,7 @@ fn _set_bound(self, key?) {
 # Ordered Set with logarithmic point operations and an explicit comparison policy.
 # Comparator-equivalent keys are unique; snapshots retain membership, not deep copies.
 scope Set {
-    new: fn(initial: Range | Type) {
+    new: fn(initial: Range or Type) {
         Set::with_policy(
             initial,
             scope {
@@ -2230,7 +2230,7 @@ scope Set {
     empty: fn(prototype?) {
         Set::new($std::ranges::take([prototype], 0))
     },
-    with_policy: fn(initial: Range | Type, order: $std::concepts::StrictOrder) {
+    with_policy: fn(initial: Range or Type, order: $std::concepts::StrictOrder) {
         let source = construction_range(initial);
         let Item = decltype($std::ranges::front(source));
         let nil_key?: Item = null;
@@ -2559,7 +2559,7 @@ fn _heap_sift_down(self, start) {
 };
 
 scope Heap {
-    new: fn(initial: Range | Type) {
+    new: fn(initial: Range or Type) {
         Heap::with_policy(
             initial,
             scope {
@@ -2574,7 +2574,7 @@ scope Heap {
     empty: fn(prototype?) {
         Heap::new($std::ranges::take([prototype], 0))
     },
-    with_policy: fn(initial: Range | Type, order: $std::concepts::StrictOrder) {
+    with_policy: fn(initial: Range or Type, order: $std::concepts::StrictOrder) {
         let source = construction_range(initial);
         let Item = decltype($std::ranges::front(source));
         let nil_value?: Item = null;

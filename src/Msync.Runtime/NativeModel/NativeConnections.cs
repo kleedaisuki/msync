@@ -14,7 +14,7 @@ internal sealed class NativeConnections(RuntimeTimeline? timeline = null)
     private int owners;
     private string? sockets;
 
-    internal void Acquire() { lock (gate) owners++; }
+    internal void AcquireMultiplexing() { lock (gate) owners++; }
     internal NativeEndpoint Get(NativeConnection connection)
     {
         connection = connection with { Address = connection.Address ?? "" };
@@ -52,7 +52,7 @@ internal sealed class NativeConnections(RuntimeTimeline? timeline = null)
         }
     }
 
-    internal async ValueTask ReleaseAsync(NativeRuntimeContext context)
+    internal async ValueTask ReleaseMultiplexingAsync(NativeRuntimeContext context)
     {
         NativeEndpoint[] closed;
         string? directory;
@@ -141,14 +141,23 @@ internal sealed class NativeConnections(RuntimeTimeline? timeline = null)
             using RuntimeTimelineScope? observation = table.timeline?.Begin("connection.command.prepare");
             observation?.SetAttribute("connection.endpoint", Connection.ToString());
             ProcessStartInfo info = Client(input);
-            socket ??= table.Socket(identity);
-            observation?.SetAttribute("ssh.session.strategy", socket is null ? "native_config" : "owned_mux");
-            if (socket is not null)
+            if (OperatingSystem.IsWindows())
+            {
+                // Win32 OpenSSH cannot carry redirected streams over the Unix mux.
+                // Override ControlPath from ssh_config as well as our own defaults.
+                info.ArgumentList.Add("-oControlMaster=no");
+                info.ArgumentList.Add("-oControlPersist=no");
+                info.ArgumentList.Add("-oControlPath=none");
+                observation?.SetAttribute("ssh.session.strategy", "windows_direct");
+            }
+            else if ((socket ??= table.Socket(identity)) is { } controlPath)
             {
                 info.ArgumentList.Add("-oControlMaster=auto");
                 info.ArgumentList.Add("-oControlPersist=60");
-                info.ArgumentList.Add("-S"); info.ArgumentList.Add(socket);
+                info.ArgumentList.Add("-S"); info.ArgumentList.Add(controlPath);
+                observation?.SetAttribute("ssh.session.strategy", "owned_mux");
             }
+            else observation?.SetAttribute("ssh.session.strategy", "native_config");
             info.ArgumentList.Add("--"); info.ArgumentList.Add(address);
             info.ArgumentList.Add("sh -c " + NativeTransferProtocol.Quote(script) + " sh"
                 + string.Concat(arguments.Select(value => " " + NativeTransferProtocol.Quote(value))));

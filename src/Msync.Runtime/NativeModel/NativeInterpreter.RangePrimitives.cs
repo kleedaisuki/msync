@@ -7,11 +7,12 @@ namespace Msync.Runtime.Native;
 public sealed partial class NativeInterpreter
 {
     private async ValueTask<NativeDatum?> TryRangeDatumAsync(Msync.Core.NativeSignature signature,
-        IReadOnlyList<NativeDatum> args, CancellationToken token, NativeType? resultPhysical = null)
+        IReadOnlyList<NativeDatum> args, CancellationToken token, NativeType? resultPhysical = null, SourceSpan? origin = null)
     {
         if (!signature.Name.StartsWith("ranges.", StringComparison.Ordinal)) return null;
         string operation = signature.Name[7..];
-        if (operation is "empty_of" or "sequence" or "less") return null;
+        if (operation is "empty_of" or "sequence" or "closed" or "less") return null;
+        if (operation == "pattern_prefix") return await PatternPrefixAsync(args, origin, token);
         bool callback = operation is "transform" or "filter" or "take_while" or "drop_while" or "scan"
             or "find_if" or "any" or "any_of" or "all_of" or "none" or "none_of" or "sort_with"
             or "merge_with" or "set_union_with" or "set_intersection_with" or "set_difference_with" or "set_symmetric_difference_with";
@@ -41,21 +42,27 @@ public sealed partial class NativeInterpreter
             long count = RangeOrdinal(await args[1].ResolveAsync(token), operation, operation is "stride" or "step");
             if (operation == "take" && count == 0)
                 return new NativeDatum(NativeValue.FromRange(DatumSnapshot([], source.ItemType, source.PhysicalItemType)));
-            return new NativeDatum(NativeValue.FromRange(DatumRangeValue(CountedDatums(source, operation, count, token), source.ItemType, args, source.PhysicalItemType)));
+            var selected = AdaptDatumSelection(source, operation, count,
+                static (owner, input, op, limit, cancellation) => owner.CountedDatums(input, op, limit, cancellation));
+            return new NativeDatum(NativeValue.FromRange(DatumRangeValue(CountedDatums(source, operation, count, token),
+                source.ItemType, args, source.PhysicalItemType, selected)));
         }
         IAsyncEnumerable<NativeDatum> items;
         TypeRef itemType = source.ItemType;
         NativeType physicalType = source.PhysicalItemType;
+        NativePathSelection? selection = null;
         switch (operation)
         {
             case "transform":
             case "filter":
             case "take_while":
             case "drop_while":
-                items = CallbackDatums(source, operation, await args[1].ResolveAsync(token), token);
+                NativeValue callbackValue = await args[1].ResolveAsync(token);
+                items = CallbackDatums(source, operation, callbackValue, token);
+                selection = AdaptDatumSelection(source, operation, callbackValue,
+                    static (owner, input, op, callable, cancellation) => owner.CallbackDatums(input, op, callable, cancellation));
                 if (operation == "transform")
                 {
-                    NativeValue callbackValue = await args[1].ResolveAsync(token);
                     itemType = DescribeFunction(callbackValue.AsFunction())?.Result ?? TypeRef.Any;
                     physicalType = resultPhysical ?? CallbackPhysical(callbackValue);
                 }
@@ -110,7 +117,7 @@ public sealed partial class NativeInterpreter
                 break;
             default: return new(await InvokeNativeAsync(signature.Name, await ResolveArguments(args, token), context, token));
         }
-        return new NativeDatum(NativeValue.FromRange(DatumRangeValue(items, itemType, args, physicalType)));
+        return new NativeDatum(NativeValue.FromRange(DatumRangeValue(items, itemType, args, physicalType, selection)));
     }
 
     private static bool HasLogicalMetadata(TypeRef type) => (type.Kind & ~TypeKind.Any) != 0
@@ -170,11 +177,24 @@ public sealed partial class NativeInterpreter
         await Task.CompletedTask;
     }
 
-    private NativeRange DatumRangeValue(IAsyncEnumerable<NativeDatum> items, TypeRef itemType, IReadOnlyList<NativeDatum> roots, NativeType physicalItemType)
+    private NativePathSelection? AdaptDatumSelection<T>(NativeRange source, string operation, T operand,
+        Func<NativeInterpreter, NativeRange, string, T, CancellationToken, IAsyncEnumerable<NativeDatum>> adapt)
+    {
+        if (source.Selection is not { } selection) return null;
+        using var observation = context.Timeline?.Begin("range.selection.adapt");
+        observation?.SetAttribute("range.operation", operation);
+        observation?.SetAttribute("range.endpoint", selection.Directory.Connection?.ToString() ?? "local");
+        NativeRuntimeContext origin = context.CaptureDirectory();
+        return NativeBuiltins.AdaptSelection(source, (input, token) =>
+            ResolveDatumItems(new ContextDatums(this, adapt(this, input, operation, operand, token), origin), token));
+    }
+
+    private NativeRange DatumRangeValue(IAsyncEnumerable<NativeDatum> items, TypeRef itemType, IReadOnlyList<NativeDatum> roots,
+        NativeType physicalItemType, NativePathSelection? selection = null)
     {
         items = CaptureDatums(items);
         NativeRange range = new(ResolveDatumItems(items, CancellationToken.None), itemType,
-            roots.Where(static value => value.IsReady).Select(static value => value.Value).ToArray(), physicalItemType: physicalItemType);
+            roots.Where(static value => value.IsReady).Select(static value => value.Value).ToArray(), selection, physicalItemType: physicalItemType);
         rangeRoots.Add(range, new(roots.ToArray()));
         datumRanges.Add(range, new(items, roots.Any(DatumExecutionMayDefer)));
         return range;
@@ -197,6 +217,49 @@ public sealed partial class NativeInterpreter
         List<NativeDatum> result = [];
         await foreach (NativeDatum value in DatumItems(range, token)) result.Add(value);
         return result;
+    }
+
+    private async ValueTask<NativeDatum> PatternPrefixAsync(IReadOnlyList<NativeDatum> args, SourceSpan? origin, CancellationToken token)
+    {
+        using var trace = context.Timeline?.Begin("range.pattern_prefix");
+        trace?.SetSource(origin);
+        try
+        {
+            var source = (await args[0].ResolveAsync(token)).AsRange();
+            int count = checked((int)RangeOrdinal(await args[1].ResolveAsync(token), "pattern_prefix", false));
+            trace?.SetMetric("elements.requested", count);
+            if (source.SnapshotValues is { } snapshot && snapshot.Count <= count)
+            {
+                trace?.SetAttribute("storage", "reuse-snapshot");
+                trace?.SetMetric("elements.observed", snapshot.Count);
+                return new(NativeValue.FromRange(source));
+            }
+            List<NativeDatum> elements = [];
+            if (source.SnapshotValues is { } stored)
+            {
+                trace?.SetAttribute("storage", "indexed-snapshot");
+                for (int i = 0; i < count; i++) elements.Add(new(stored[i]));
+            }
+            else if (source.NumberSequence is { } sequence && sequence.UsesToken(token))
+            {
+                trace?.SetAttribute("storage", "numeric-cursor");
+                var cursor = new NativeSequenceCursor(sequence);
+                while (elements.Count < count && cursor.Next(out double value))
+                {
+                    token.ThrowIfCancellationRequested();
+                    elements.Add(new(NativeValue.FromNumber(value)));
+                }
+            }
+            else if (count != 0)
+            {
+                trace?.SetAttribute("storage", "datum-cursor");
+                await using var cursor = GetDatumIterator(source, token);
+                while (elements.Count < count && await cursor.MoveNextAsync()) elements.Add(cursor.Current);
+            }
+            trace?.SetMetric("elements.observed", elements.Count);
+            return new(NativeValue.FromRange(DatumSnapshot(elements, source.ItemType, source.PhysicalItemType)));
+        }
+        catch (Exception error) { trace?.Fail(error); throw; }
     }
 
     private static double RangeFinite(NativeValue value, string operation)

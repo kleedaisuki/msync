@@ -23,12 +23,12 @@ native fn any_of(values: Range, predicate: Function) -> Bool;
 native fn all_of(values: Range, predicate: Function) -> Bool;
 native fn none(values: Range, predicate: Function) -> Bool;
 native fn none_of(values: Range, predicate: Function) -> Bool;
-native fn front(values: Range) -> Bool | String | Path | Range | Function | Scope | Process | Connection | Type | Number | Null;
-native fn back(values: Range) -> Bool | String | Path | Range | Function | Scope | Process | Connection | Type | Number | Null;
-native fn first(values: Range) -> Bool | String | Path | Range | Function | Scope | Process | Connection | Type | Number | Null;
-native fn last(values: Range) -> Bool | String | Path | Range | Function | Scope | Process | Connection | Type | Number | Null;
-native fn find(values: Range, value?) -> Bool | String | Path | Range | Function | Scope | Process | Connection | Type | Number | Null;
-native fn find_if(values: Range, predicate: Function) -> Bool | String | Path | Range | Function | Scope | Process | Connection | Type | Number | Null;
+native fn front(values: Range) -> Bool or String or Path or Range or Function or Scope or Process or Connection or Type or Number or Null;
+native fn back(values: Range) -> Bool or String or Path or Range or Function or Scope or Process or Connection or Type or Number or Null;
+native fn first(values: Range) -> Bool or String or Path or Range or Function or Scope or Process or Connection or Type or Number or Null;
+native fn last(values: Range) -> Bool or String or Path or Range or Function or Scope or Process or Connection or Type or Number or Null;
+native fn find(values: Range, value?) -> Bool or String or Path or Range or Function or Scope or Process or Connection or Type or Number or Null;
+native fn find_if(values: Range, predicate: Function) -> Bool or String or Path or Range or Function or Scope or Process or Connection or Type or Number or Null;
 
 # Iterator capabilities; adapters defer source and callback work until consumption.
 native fn concat(left: Range, right: Range) -> Range;
@@ -43,7 +43,7 @@ native fn sort_with(values: Range, less: Function) -> Range;
 native fn scan(values: Range, initial?, operation: Function) -> Range;
 native fn sequence(start: Number, stop: Number, step: Number) -> Range<Number>;
 native fn repeat(value?, count: Number) -> Range;
-native fn at(values: Range, index: Number) -> Bool | String | Path | Range | Function | Scope | Process | Connection | Type | Number | Null;
+native fn at(values: Range, index: Number) -> Bool or String or Path or Range or Function or Scope or Process or Connection or Type or Number or Null;
 native fn merge(left: Range, right: Range) -> Range;
 native fn merge_with(left: Range, right: Range, compare: Function) -> Range;
 native fn set_union(left: Range, right: Range) -> Range;

@@ -43,7 +43,7 @@ EXAMPLES: tuple[Example, ...] = (
     ),
     Example(
         "union-type-change",
-        'let value: Bool | String = true; value = "changed type"; value -> ./result;',
+        'let value: Bool or String = true; value = "changed type"; value -> ./result;',
         b"changed type",
     ),
     Example(
@@ -134,7 +134,7 @@ EXAMPLES: tuple[Example, ...] = (
     ),
     Example(
         "capture-type-change",
-        'let value: Bool | String = true; let read = fn { if value is String { value } else { "wrong" } }; value = "after"; read() -> ./result;',
+        'let value: Bool or String = true; let read = fn { if value is String { value } else { "wrong" } }; value = "after"; read() -> ./result;',
         b"after",
     ),
     Example(
@@ -422,7 +422,7 @@ INVALID: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ),
     (
         "return-after-store",
-        'fn bad() -> Bool { let value: Bool | String = true; value = "text"; value }; bad();',
+        'fn bad() -> Bool { let value: Bool or String = true; value = "text"; value }; bad();',
         ("Bool", "String", "return"),
     ),
     (

@@ -171,7 +171,8 @@ public sealed partial class NativeInterpreter
             : new("local", ResourcePath.Resolve(path.LocalPath(origin.WorkingDirectory, origin.HomeDirectory)));
 
     private async ValueTask<NativeValue> InvokeNativeAsync(string name, IReadOnlyList<NativeValue> arguments,
-        NativeRuntimeContext origin, CancellationToken token, Task? predecessor = null, bool admitted = false)
+        NativeRuntimeContext origin, CancellationToken token, Task? predecessor = null, bool admitted = false,
+        SourceSpan? source = null)
     {
         if (profile is not null) (currentWork.Value ?? executionWork).Counters.Native(name);
         NativeBuiltinOperation operation = NativeBuiltins.Resolve(name);
@@ -180,12 +181,31 @@ public sealed partial class NativeInterpreter
             return await InvokeNativeWriteAsync(operation, arguments, origin, predecessor ?? ordering, token);
         bool deferredRead = DefersPathRead(signature);
         if (!deferredRead && !admitted) await AwaitNativeDependenciesAsync(signature, arguments, origin, token, predecessor);
-        NativeValue result = await NativeBuiltins.InvokeAsync(operation, arguments, origin, InvokeAsync, token);
+        NativeValue result = origin.Timeline is { } timeline && name == "ranges.closed"
+            ? await TraceClosedRange(operation, arguments, origin, source, timeline, token)
+            : await NativeBuiltins.InvokeAsync(operation, arguments, origin, InvokeAsync, token);
         if (!deferredRead || result.Kind != NativeKind.Range) return result;
         NativeRange range = result.AsRange();
         NativeRange wrapped = new(OrderedNativeItems(signature, arguments, origin, range), range.ItemType,
             [result, .. arguments], range.Selection, range.Resolve, physicalItemType: range.PhysicalItemType);
         return NativeValue.FromRange(wrapped);
+    }
+
+    private async ValueTask<NativeValue> TraceClosedRange(NativeBuiltinOperation operation,
+        IReadOnlyList<NativeValue> endpoints, NativeRuntimeContext origin, SourceSpan? source,
+        RuntimeTimeline timeline, CancellationToken token)
+    {
+        using var trace = timeline.Begin("range.closed.construct");
+        trace?.SetSource(source);
+        trace?.SetMetric("endpoint.count", endpoints.Count);
+        try
+        {
+            var result = await NativeBuiltins.InvokeAsync(operation, endpoints, origin, InvokeAsync, token);
+            trace?.SetAttribute("range.direction", endpoints[0].AsNumber() <= endpoints[1].AsNumber()
+                ? "ascending" : "empty");
+            return result;
+        }
+        catch (Exception error) { trace?.Fail(error); throw; }
     }
 
     private static bool DefersPathRead(Msync.Core.NativeSignature signature)

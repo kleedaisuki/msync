@@ -22,13 +22,13 @@ let categories = [
     meta::is_function(Function), meta::is_scope(Scope),
     meta::is_process(Process), meta::is_connection(Connection),
     meta::is_type(Type), meta::is_never(meta::remove_null(Null)),
-    meta::is_union(Number | Null), meta::is_scalar(String | Path),
-    meta::is_nullable(Number | Null),
+    meta::is_union(Number or Null), meta::is_scalar(String or Path),
+    meta::is_nullable(Number or Null),
 ];
 ($std::ranges::all_of(categories, fn(value: Bool) { value }) as String)
     -> ./categories.txt;
 let relations = [
-    meta::is_same(Number, Number), meta::accepts(Path | String, Path),
+    meta::is_same(Number, Number), meta::accepts(Path or String, Path),
     meta::is_assignable(String, Path), meta::is_convertible(Path, String),
     not meta::is_convertible(Number, String), meta::is_castable(String, Number),
     not meta::is_castable(String, Process),
@@ -37,7 +37,7 @@ let relations = [
 ($std::ranges::all_of(relations, fn(value: Bool) { value }) as String)
     -> ./relations.txt;
 meta::type_name(meta::add_null(Number)) -> ./nullable.txt;
-meta::type_name(meta::remove_null(Number | Null)) -> ./nonnull.txt;
+meta::type_name(meta::remove_null(Number or Null)) -> ./nonnull.txt;
 meta::type_name(meta::common_type(Path, String)) -> ./common.txt;
 meta::type_name(meta::range_of(Number)) -> ./range.txt;
 let element? = meta::element_type(Range<String>);
@@ -117,7 +117,7 @@ OUTPUTS: dict[str, bytes] = {
     "relations.txt": b"true",
     "nullable.txt": b"Number?",
     "nonnull.txt": b"Number",
-    "common.txt": b"String | Path",
+    "common.txt": b"String or Path",
     "range.txt": b"Range<Number>",
     "element.txt": b"String",
     "nonrange.txt": b"true",

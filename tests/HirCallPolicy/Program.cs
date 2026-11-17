@@ -38,7 +38,7 @@ await Source("native fn first(values: Range) -> String; let flag = true; let del
 await Source("native fn first(values: Range) -> String; let state = scope { flag: true }; let delayed = [if state::flag { \"yes\" } else { \"no\" }]; state::flag = false; first(delayed)", "no");
 await Source("native fn first(values: Range) -> String; let state = scope { flag: true }; fn build() { if state::flag { [\"yes\"] } else { [\"no\"] } }; let delayed = build(); state::flag = false; first(delayed)", "no");
 await Source("native fn first(values: Range) -> String; let value?: String = \"before\"; let delayed = [if value is not null { value } else { \"fallback\" }]; value = null; first(delayed)", "fallback");
-Reject("native fn first(values: Range) -> String; let input: Range | String = [\"before\"]; fn identity(value) { value }; let delayed = identity(input); input = \"after\"; first(delayed)");
+Reject("native fn first(values: Range) -> String; let input: Range or String = [\"before\"]; fn identity(value) { value }; let delayed = identity(input); input = \"after\"; first(delayed)");
 HirModule callbacks = Compiler.Analyze("fn use(operations) { operations::get() }; let first = scope { get: fn { 1 } }; let second = scope { get: fn { 2 } }; use(first) * 10 + use(second)", "callable-shape.msync");
 Check(await Interpreter.ExecuteAsync(HirLowerer.Lower(callbacks, new(0)).Module) is NumberValue { Data: 12 },
     "A pure unknown scheme cannot erase a specialized callable's result type.");
@@ -52,7 +52,7 @@ try
     string prefix = $"let file = {StringLiteral(before)};";
     string suffix = $"file = {StringLiteral(after)}; $std::ranges::first(saved)";
     await Source(prefix + "let saved = $std::io::lines(file);" + suffix, "after");
-    await Source($"let file: Path | String | Range = {StringLiteral(before)};" + "fn lines(value: Path | String | Range) { if value is Range { value } else { $std::io::read_lines(value) } }; let saved = lines(file);" + suffix, "after");
+    await Source($"let file: Path or String or Range = {StringLiteral(before)};" + "fn lines(value: Path or String or Range) { if value is Range { value } else { $std::io::read_lines(value) } }; let saved = lines(file);" + suffix, "after");
     await Source(prefix + "let saved = $std::ranges::cache($std::io::lines(file));" + suffix, "before");
 }
 finally { Directory.Delete(root, recursive: true); }
@@ -103,5 +103,5 @@ void Reject(string source)
         checks++;
         return;
     }
-    throw new InvalidOperationException("A writable Range | String argument cannot promise a future Range.");
+    throw new InvalidOperationException("A writable Range or String argument cannot promise a future Range.");
 }

@@ -301,7 +301,8 @@ public sealed class NativeRange
     }
 }
 
-internal readonly record struct NativeNumberSequence(double First, double Limit, double Step, CancellationToken Token)
+internal readonly record struct NativeNumberSequence(double First, double Limit, double Step, CancellationToken Token,
+    bool Inclusive = false)
 {
     internal bool UsesToken(CancellationToken token) => !Token.CanBeCanceled || Token == token;
 

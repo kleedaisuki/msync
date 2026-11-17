@@ -3,7 +3,7 @@
 Types are inferred once for each storage location, not changed by assignment.
 Optional annotations express requirements: Bool, String,
 Path, Function, Scope, Connection, Process, Null, Number, Type and Range<T>.
-Use `Path | String` for a union and `?` to admit Null explicitly.
+Use `Path or String` for a union and `?` to admit Null explicitly.
 `Any` admits any supported value type, including Null; use a narrower
 constraint when an operation needs specific capabilities.
 

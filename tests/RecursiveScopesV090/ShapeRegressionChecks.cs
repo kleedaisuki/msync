@@ -70,7 +70,7 @@ internal static class ShapeRegressionChecks
                 if first is null { if second is null { 0 } else { second + 5 } } else { 0 }
                 """, 7),
             ("nullable-storage-flow", """
-                fn next(value?: Number | Null) { if value is null { 0 } else { value + 1 } };
+                fn next(value?: Number or Null) { if value is null { 0 } else { value + 1 } };
                 let initial?: Number = null;
                 let node = scope { key?: initial };
                 fn from_node(node) {

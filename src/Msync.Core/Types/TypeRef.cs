@@ -69,7 +69,7 @@ public sealed record TypeRef(TypeKind Kind, TypeRef? Element = null)
         for (TypeKind bit = TypeKind.Bool; bit <= TypeKind.Storage; bit = (TypeKind)((ushort)bit << 1))
         {
             if ((Kind & bit) == 0) continue;
-            if (text.Length != 0) text.Append(" | ");
+            if (text.Length != 0) text.Append(" or ");
             if (bit == TypeKind.Range && Element is not null) text.Append("Range<").Append(Element).Append('>');
             else text.Append(bit switch
             {
@@ -86,7 +86,11 @@ public sealed record TypeRef(TypeKind Kind, TypeRef? Element = null)
                 _ => "Number"
             });
         }
-        if (Nullable) text.Append('?');
+        if (Nullable)
+        {
+            if (System.Numerics.BitOperations.PopCount((uint)(Kind & ~TypeKind.Null)) > 1) text.Insert(0, '(').Append(')');
+            text.Append('?');
+        }
         return text.ToString();
     }
 }

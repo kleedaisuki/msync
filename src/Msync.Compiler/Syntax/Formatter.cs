@@ -106,10 +106,12 @@ public static class Formatter
                     if (nesting.TryPeek(out var kind) && (kind.Kind == TokenKind.LeftBrace || kind.Expanded)) Newline(); else Space();
                     break;
                 case TokenKind.Colon:
+                    if (hints.ScopeShorthands.Contains(token.Span.Start)) { Text(":"); break; }
                     if (previous is { } prior && hints.ConceptHeaders.Contains(prior.Span.End)) Space();
                     else Trim();
                     Text(":"); Space(); break;
                 case TokenKind.Select:
+                case TokenKind.OptionalSelect:
                 case TokenKind.Slash:
                 case TokenKind.Question:
                     Trim(); Text(token.Text); break;
@@ -118,6 +120,8 @@ public static class Formatter
                 case TokenKind.Arrow:
                 case TokenKind.FatArrow:
                 case TokenKind.Equal:
+                case TokenKind.Coalesce:
+                case TokenKind.CoalesceAssign:
                 case TokenKind.EqualEqual:
                 case TokenKind.NotEqual:
                 case TokenKind.Pipe:
@@ -219,8 +223,9 @@ public static class Formatter
         {
             if (output.Length == 0 || output[^1] == '\n') return;
             if (previous is not { } prior) return;
+            if (hints.ScopeShorthands.Contains(prior.Span.Start)) return;
             if (token.Kind == TokenKind.String && prior.Kind == TokenKind.Atom && Parser.WindowsPathPrefix(prior.Text)) return;
-            if (prior.Kind is TokenKind.LeftParen or TokenKind.LeftBracket or TokenKind.Select or TokenKind.Slash or TokenKind.Dollar) return;
+            if (prior.Kind is TokenKind.LeftParen or TokenKind.LeftBracket or TokenKind.Select or TokenKind.OptionalSelect or TokenKind.Slash or TokenKind.Dollar) return;
             if (prior.Kind == TokenKind.Less && InType(prior)) return;
             if (hints.UnaryOperators.Contains(prior.Span.Start)) return;
             if (prior.Kind == TokenKind.Atom && token.Kind == TokenKind.Atom)
@@ -296,6 +301,7 @@ public static class Formatter
         public List<SourceSpan> Paths { get; } = [];
         public List<SourceSpan> Types { get; } = [];
         public HashSet<int> DeclarationEnds { get; } = [];
+        public HashSet<int> ScopeShorthands { get; } = [];
         public HashSet<int> ConceptHeaders { get; } = [];
         public static LayoutHints Collect(Document document)
         {
@@ -313,15 +319,17 @@ public static class Formatter
                 Types.AddRange(concept.Bases.Select(type => type.Span));
             }
             else Types.AddRange(TypeSyntaxFacts.Annotations(node).Select(type => type.Span));
+            if (node is FunctionExpr { TypeParameterList: { } variables }) Types.Add(variables);
             if (node is ConceptDeclaration { NameSpan: { } name } declaration)
                 ConceptHeaders.Add(declaration.ParameterList?.End ?? name.End);
             if (node is FunctionDeclaration or ScopeDeclaration) DeclarationEnds.Add(node.Span.End);
             if (node is PathExpr path) Paths.Add(path.Span);
+            if (node is ScopeMember { Shorthand: true }) ScopeShorthands.Add(node.Span.Start);
             if (node is UnaryExpr { Operator: "+" or "-" } unary) UnaryOperators.Add(unary.Span.Start);
             if (node is CastExpr { OperatorSpan: { } cast }) Operators.Add(cast.Start);
             if (node is BinaryExpr binary && binary.OperatorSpan is { } operation)
             {
-                if (binary.Operator != "::" && (binary.Operator != "/" || binary.Left is NumberExpr || binary.Right is NumberExpr)) Operators.Add(operation.Start);
+                if (binary.Operator is not ("::" or "?::") && (binary.Operator != "/" || binary.Left is NumberExpr || binary.Right is NumberExpr)) Operators.Add(operation.Start);
                 chain = binary.Operator is "and" or "or" ? chain ?? binary.Span : null;
                 if (chain is { } group) Chains[operation.Start] = group;
             }
@@ -330,7 +338,7 @@ public static class Formatter
         }
         private static IEnumerable<Node> Children(Node node) => node switch
         {
-            LetStatement let => [let.Value],
+            LetStatement let => SyntaxTraversal.Children(let),
             ExpressionStatement expression => [expression.Expression],
             FunctionDeclaration declaration => [declaration.Function],
             ScopeDeclaration declaration => [declaration.Scope],
@@ -347,10 +355,11 @@ public static class Formatter
             CallExpr call => new Node[] { call.Callee }.Concat(call.Arguments),
             IfExpr conditional => new Node[] { conditional.Condition, conditional.Then }.Concat(conditional.Else is null ? [] : [conditional.Else]),
             MatchExpr match => new Node[] { match.Value }.Concat(match.Arms),
-            MatchArm arm => [arm.Pattern, arm.Value],
+            MatchArm or PatternTestExpr or Pattern or PatternField => SyntaxTraversal.Children(node),
             ForExpr loop => [loop.Source, loop.Body],
             LoopExpr loop => [loop.Body],
             RangeExpr range => range.Items,
+            RangeComprehensionExpr range => new Node[] { range.Source, range.Projection }.Concat(range.Filter is null ? [] : [range.Filter]),
             ReturnExpr { Value: not null } returned => [returned.Value],
             BreakExpr { Value: not null } broken => [broken.Value],
             _ => []

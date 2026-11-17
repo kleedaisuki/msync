@@ -144,6 +144,8 @@ public sealed record NativeProgram(IReadOnlyList<NativeConstant> Constants,
     public NativeBackendCode? Backend { get; init; }
     public BindingContext? Context { get; init; }
     public IReadOnlyList<int>? SessionRoots { get; init; }
+    // Live session metadata only. Each path orders lexical slots newest first.
+    public IReadOnlyList<int[]>? SessionShadowPaths { get; init; }
     public IReadOnlyList<SessionDispatchTable>? SessionDispatches { get; init; }
     public IReadOnlyList<NativeExecutionPlan>? ExecutionPlans { get; init; }
     public ArtifactStage Stage { get; init; } = ArtifactStage.Relocatable;

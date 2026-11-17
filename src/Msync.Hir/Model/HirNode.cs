@@ -15,7 +15,8 @@ public enum HirKind : byte
     Unary, Binary, Coerce, Convert, IsNull, IsType, RegexMatch, Call, Closure, TemplateClosure, AdaptFunction,
     Scope, MemberRead, MemberAssign, Range,
     Qualify = 35, PathJoin, SelectPath, Transfer, Barrier,
-    QualifyOn, AllocateScope, Continue
+    QualifyOn, AllocateScope, Continue,
+    PatternRegion, PatternDemand, PatternRead
 }
 
 public enum HirUnaryOperator : byte { Not, Negate }

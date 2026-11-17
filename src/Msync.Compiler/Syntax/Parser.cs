@@ -187,13 +187,15 @@ public sealed class Parser
         if (TakeWord("global")) return Global(start);
         if (TakeWord("let"))
         {
-            var pattern = ParsePattern(false);
+            var pattern = ParsePattern(true, binding: true);
             bool nullable = Take(TokenKind.Question);
             TypeSyntax? type = Take(TokenKind.Colon) ? ParseType() : null;
             Require(TokenKind.Equal, "Expected '=' after the binding pattern.");
             var value = Expression();
+            var failure = TakeWord("else") ? Block() : null;
             Require(TokenKind.Semicolon, "Expected ';' after the let declaration.");
-            return new LetStatement(pattern, nullable, type, value, SourceSpan.Cover(start, Previous.Span));
+            return new LetStatement(pattern, nullable, type, value, SourceSpan.Cover(start, Previous.Span))
+                { Failure = failure };
         }
         if (Word("native")) return Native();
         if (Word("fn") && Peek().Kind == TokenKind.Atom)
@@ -327,22 +329,30 @@ public sealed class Parser
             int precedence = op == "/" && ExplicitPath(left) ? 16 : Precedence(op);
             if (op is null || precedence < minimum) break;
             Token operation = Next();
-            if (op == "as")
+            if (op == ".." && left is BinaryExpr { Operator: ".." } && tokens[position - 2].Kind != TokenKind.RightParen)
+                Fail("A closed range has two endpoints; parenthesize nested expressions.");
+            if (op is "as" or "satisfies")
             {
-                TypeSyntax type = ParseType();
-                left = new CastExpr(left, type, SourceSpan.Cover(left.Span, type.Span)) { OperatorSpan = operation.Span };
+                TypeSyntax type = ParseType(wordUnion: false);
+                left = new CastExpr(left, type, SourceSpan.Cover(left.Span, type.Span))
+                    { OperatorSpan = operation.Span, CheckOnly = op == "satisfies" };
                 continue;
             }
-            if (op == "is" && TakeWord("not")) op = "is not";
+            if (op == "is")
+            {
+                Pattern pattern = ParsePattern(true, test: true);
+                left = new PatternTestExpr(left, pattern, SourceSpan.Cover(left.Span, pattern.Span));
+                continue;
+            }
             Expr right;
             if (op == "/" && IsPathEnd(header)) right = new PathExpr("", Previous.Span);
-            else if (op == "::" && At(TokenKind.Atom))
+            else if (op is "::" or "?::" && At(TokenKind.Atom))
             {
                 var member = Next();
                 right = new NameExpr(member.Text, member.Span);
                 if (WindowsPathBeforeString(member)) right = WindowsPathWithString(member);
             }
-            else right = Expression(precedence + (op is "=" or "**" ? 0 : 1), header, stopSelection: op == "@");
+            else right = Expression(precedence + (op is "=" or "??=" or "??" or "**" ? 0 : 1), header, stopSelection: op == "@");
             left = op == "="
                 ? new AssignmentExpr(left, right, SourceSpan.Cover(left.Span, right.Span)) { OperatorSpan = operation.Span }
                 : new BinaryExpr(op, left, right, SourceSpan.Cover(left.Span, right.Span)) { OperatorSpan = operation.Span };
@@ -352,6 +362,9 @@ public sealed class Parser
     private string? Operator() => Current.Kind switch
     {
         TokenKind.Equal => "=",
+        TokenKind.CoalesceAssign => "??=",
+        TokenKind.Coalesce => "??",
+        TokenKind.DotDot => "..",
         TokenKind.Arrow => "->",
         TokenKind.Pipe => "|",
         TokenKind.EqualEqual => "==",
@@ -361,9 +374,10 @@ public sealed class Parser
         TokenKind.Greater => ">",
         TokenKind.GreaterEqual => ">=",
         TokenKind.Select => "::",
+        TokenKind.OptionalSelect => "?::",
         TokenKind.Slash => "/",
         TokenKind.At => "@",
-        TokenKind.Atom when Current.Text is "and" or "or" or "is" or "+" or "-" or "*" or "**" or "%" or "as" => Current.Text,
+        TokenKind.Atom when Current.Text is "and" or "or" or "is" or "+" or "-" or "*" or "**" or "%" or "as" or "satisfies" => Current.Text,
         _ => null
     };
     private static bool ExplicitPath(Expr value) => value switch
@@ -376,19 +390,21 @@ public sealed class Parser
     };
     private static int Precedence(string? op) => op switch
     {
-        "=" => 0,
+        "=" or "??=" => 0,
         "->" => 1,
-        "or" => 2,
-        "and" => 3,
-        "|" => 4,
-        "is" or "is not" or "==" or "!=" => 5,
-        "<" or "<=" or ">" or ">=" => 6,
-        "+" or "-" => 7,
-        "*" or "/" or "%" => 8,
-        "@" => 9,
-        "as" => 10,
+        "??" => 2,
+        "or" => 3,
+        "and" => 4,
+        "|" => 5,
+        "is" or "is not" or "==" or "!=" => 6,
+        "<" or "<=" or ">" or ">=" => 7,
+        ".." => 8,
+        "+" or "-" => 9,
+        "*" or "/" or "%" => 10,
+        "@" => 11,
+        "as" or "satisfies" => 12,
         "**" => 13,
-        "::" => 17,
+        "::" or "?::" => 17,
         _ => -1
     };
     private bool IsExpressionEnd(bool header = false) => Current.Kind is TokenKind.End or TokenKind.RightBrace or TokenKind.RightParen or TokenKind.RightBracket or TokenKind.Comma or TokenKind.Semicolon or TokenKind.Arrow or TokenKind.At || Word("in") || header && At(TokenKind.LeftBrace);
@@ -396,7 +412,7 @@ public sealed class Parser
     {
         // Adjacency keeps ./and a filename; a separated operator resumes expression parsing.
         return IsExpressionEnd(header) || Current.Span.Start > Previous.Span.End && Operator() is
-            "and" or "or" or "is" or "as" or "==" or "!=" or "<" or "<=" or ">" or ">=" or "|" or "=";
+            "and" or "or" or "is" or "as" or "==" or "!=" or "<" or "<=" or ">" or ">=" or "|" or "=" or "??" or "??=" or "..";
     }
     private Expr Prefix(bool header, bool stopSelection = false)
     {
@@ -421,7 +437,7 @@ public sealed class Parser
         }
         if (TakeWord("exists") || TakeWord("not"))
         {
-            var operand = Expression(token.Text == "not" ? 5 : 8, header);
+            var operand = Expression(token.Text == "not" ? 6 : 10, header);
             return new UnaryExpr(token.Text, operand, SourceSpan.Cover(token.Span, operand.Span));
         }
         if (TakeWord("-") || TakeWord("+"))
@@ -434,7 +450,7 @@ public sealed class Parser
             var operand = Expression(18, header);
             return new UnaryExpr("$", operand, SourceSpan.Cover(token.Span, operand.Span));
         }
-        if (At(TokenKind.LeftBrace)) return Block();
+        if (At(TokenKind.LeftBrace)) return IsScopeBody() ? Scope(token.Span) : Block();
         if (Take(TokenKind.LeftParen))
         {
             var inner = Expression(); Require(TokenKind.RightParen, "Expected ')'."); return inner;
@@ -442,6 +458,19 @@ public sealed class Parser
         if (Take(TokenKind.LeftBracket))
         {
             List<Expr> items = [];
+            if (TakeWord("for"))
+            {
+                var start = Previous.Span;
+                var (pattern, nullable, values) = ForHeader();
+                if (Word("if") || At(TokenKind.FatArrow))
+                    return Comprehension(token.Span, pattern, nullable, values);
+                items.Add(FinishFor(start, pattern, nullable, values));
+                if (!Take(TokenKind.Comma))
+                {
+                    Require(TokenKind.RightBracket, "Expected ']'.");
+                    return new RangeExpr(items, SourceSpan.Cover(token.Span, Previous.Span));
+                }
+            }
             while (!At(TokenKind.RightBracket) && !At(TokenKind.End))
             {
                 items.Add(Expression());
@@ -461,12 +490,13 @@ public sealed class Parser
         if (Take(TokenKind.String)) return new StringExpr(token.Text, token.Span);
         if (Take(TokenKind.Number)) return new NumberExpr(NumberSyntax.TryParse(token.Text, out double number) ? number : 0, token.Span);
         if (Take(TokenKind.Regex)) return new PathExpr("<" + token.Text + ">", token.Span);
+        if (Take(TokenKind.DotDot)) return new NameExpr(token.Text, token.Span);
         if (!At(TokenKind.Atom))
         {
             Fail("Expected an expression.");
             return new MissingExpr(new(Current.Span.Start, 0));
         }
-        if (LanguageTypes.Contains(token.Text)) { var type = ParseType(); return new TypeExpr(type, type.Span); }
+        if (LanguageTypes.Contains(token.Text)) { var type = ParseType(expression: true); return new TypeExpr(type, type.Span); }
         Next();
         if (WindowsPathBeforeString(token)) return WindowsPathWithString(token);
         if (CanContinuePath(token.Text) && At(TokenKind.Atom) && CanContinuePath(Current.Text) && ContinuesBarePath())
@@ -517,16 +547,25 @@ public sealed class Parser
     private CallExpr Call(Expr callee)
     {
         Next(); List<Expr> args = [];
+        Dictionary<int, string>? labels = null;
         while (!At(TokenKind.RightParen) && !At(TokenKind.End))
         {
+            if (At(TokenKind.Atom) && Peek().Kind == TokenKind.Colon)
+            {
+                var label = Next();
+                Next();
+                (labels ??= []).Add(args.Count, label.Text);
+            }
+            else if (labels is not null) Fail("Write positional arguments before named arguments.");
             args.Add(Expression());
             if (!Take(TokenKind.Comma)) break;
         }
         Require(TokenKind.RightParen, "Expected ')' after function arguments.");
-        return new(callee, args, SourceSpan.Cover(callee.Span, Previous.Span));
+        return new(callee, args, SourceSpan.Cover(callee.Span, Previous.Span)) { Labels = labels };
     }
     private BlockExpr Block()
     {
+        if (At(TokenKind.LeftBrace) && IsScopeBody()) return ExpressionBody(Scope(Current.Span));
         var start = Require(TokenKind.LeftBrace, "Expected '{'.").Span;
         var statements = Statements(TokenKind.RightBrace);
         Token close = Require(TokenKind.RightBrace, "Expected '}'.");
@@ -536,11 +575,30 @@ public sealed class Parser
     {
         var start = Next().Span;
         Token? name = At(TokenKind.Atom) ? Next() : null;
+        List<ConceptAssociatedType> variables = [];
+        SourceSpan? variableList = null;
+        if (Take(TokenKind.Less))
+        {
+            var open = Previous.Span;
+            do
+            {
+                var variable = Require(TokenKind.Atom, "Expected a function type parameter.");
+                var bound = Take(TokenKind.Colon) ? ParseType() : null;
+                variables.Add(new(variable.Text, variable.Span) { Bound = bound, NameSpan = variable.Span });
+            } while (Take(TokenKind.Comma));
+            Require(TokenKind.Greater, "Expected '>' after function type parameters.");
+            variableList = SourceSpan.Cover(open, Previous.Span);
+        }
         var parameters = At(TokenKind.LeftParen) ? Parameters() : [];
         TypeSyntax? result = Take(TokenKind.Arrow) ? ParseType() : null;
-        var body = Block();
-        return new(name?.Text, parameters, result, body, SourceSpan.Cover(start, body.Span)) { NameSpan = name?.Span };
+        bool expressionBodied = Take(TokenKind.FatArrow);
+        var body = expressionBodied ? ExpressionBody(Expression()) : Block();
+        return new(name?.Text, parameters, result, body, SourceSpan.Cover(start, body.Span))
+            { NameSpan = name?.Span, ExpressionBodied = expressionBodied,
+                TypeParameters = variables, TypeParameterList = variableList };
     }
+    private static BlockExpr ExpressionBody(Expr expression) =>
+        new([new ExpressionStatement(expression, false, expression.Span)], expression.Span);
     private IReadOnlyList<Parameter> Parameters()
     {
         Require(TokenKind.LeftParen, "Expected '('."); List<Parameter> result = [];
@@ -555,6 +613,12 @@ public sealed class Parser
         Require(TokenKind.RightParen, "Expected ')' after parameters.");
         return result;
     }
+    private bool IsScopeBody() => Peek().Kind == TokenKind.Colon || IsScopeMember(1);
+    private bool IsScopeMember(int offset) =>
+        (offset == 0 ? Current.Kind : Peek(offset).Kind) is TokenKind.Atom or TokenKind.String
+        && (Peek(offset + 1).Kind == TokenKind.Colon ||
+            Peek(offset + 1).Kind == TokenKind.Question && Peek(offset + 2).Kind == TokenKind.Colon);
+
     private ScopeExpr Scope(SourceSpan start)
     {
         Require(TokenKind.LeftBrace, "Expected '{' after scope.");
@@ -562,8 +626,17 @@ public sealed class Parser
         Expr? value = null;
         while (!At(TokenKind.RightBrace) && !At(TokenKind.End))
         {
-            if ((At(TokenKind.Atom) || At(TokenKind.String)) &&
-                (Peek().Kind == TokenKind.Colon || Peek().Kind == TokenKind.Question && Peek(2).Kind == TokenKind.Colon))
+            if (Take(TokenKind.Colon))
+            {
+                var colon = Previous;
+                var name = Require(TokenKind.Atom, "Expected a binding name after ':'.");
+                var member = new NameExpr(name.Text, name.Span);
+                members.Add(new(name.Text, member, SourceSpan.Cover(colon.Span, name.Span))
+                    { NameSpan = name.Span, Shorthand = true });
+                if (!Take(TokenKind.Comma) && !At(TokenKind.RightBrace)) Fail("Expected ',' after a scope member.");
+                continue;
+            }
+            if (IsScopeMember(0))
             {
                 var name = Next();
                 bool nullable = Take(TokenKind.Question);
@@ -597,9 +670,10 @@ public sealed class Parser
         while (!At(TokenKind.RightBrace) && !At(TokenKind.End))
         {
             var pattern = ParsePattern(true);
+            Expr? guard = TakeWord("if") ? Expression() : null;
             Require(TokenKind.FatArrow, "Expected '=>' after match pattern.");
             var armValue = Expression();
-            arms.Add(new(pattern, armValue, SourceSpan.Cover(pattern.Span, armValue.Span)));
+            arms.Add(new(pattern, armValue, SourceSpan.Cover(pattern.Span, armValue.Span)) { Guard = guard });
             if (!Take(TokenKind.Comma) && !At(TokenKind.RightBrace)) Fail("Expected ',' between match arms.");
         }
         Require(TokenKind.RightBrace, "Expected '}' after match arms.");
@@ -607,35 +681,194 @@ public sealed class Parser
     }
     private ForExpr For(SourceSpan start)
     {
+        var (pattern, nullable, values) = ForHeader();
+        return FinishFor(start, pattern, nullable, values);
+    }
+    private (Pattern, bool, Expr) ForHeader()
+    {
         var pattern = ParsePattern(false);
         bool nullable = Take(TokenKind.Question);
         if (!TakeWord("in")) Fail("Expected 'in' after the loop binding.");
-        var values = Expression(header: true); var body = Block();
+        return (pattern, nullable, Expression(header: true));
+    }
+    private ForExpr FinishFor(SourceSpan start, Pattern pattern, bool nullable, Expr values)
+    {
+        var body = Block();
         return new(pattern, values, body, SourceSpan.Cover(start, body.Span)) { Nullable = nullable };
     }
-    private Pattern ParsePattern(bool matching)
+    private RangeComprehensionExpr Comprehension(SourceSpan start, Pattern pattern, bool nullable, Expr values)
+    {
+        var binding = pattern as NamePattern;
+        if (binding is null && pattern is WildcardPattern) binding = new("_", pattern.Span);
+        if (binding is null) Fail("Expected one element binding in the Range comprehension.");
+        Expr? filter = TakeWord("if") ? Expression() : null;
+        Require(TokenKind.FatArrow, "Expected '=>' before the Range projection.");
+        Expr result = Expression();
+        Require(TokenKind.RightBracket, "Expected ']' after the Range projection.");
+        return new(binding ?? new("_", pattern.Span), nullable, values, filter, result, SourceSpan.Cover(start, Previous.Span));
+    }
+    private Pattern ParsePattern(bool matching, bool test = false, bool binding = false, int minimum = 0)
+    {
+        Pattern pattern;
+        if (matching && TakeWord("not"))
+        {
+            var start = Previous.Span;
+            var inner = ParsePattern(true, test, minimum: 4);
+            pattern = new NotPattern(inner, SourceSpan.Cover(start, inner.Span));
+        }
+        else pattern = PatternAtom(matching, test, binding);
+        if (!matching) return pattern;
+        while (true)
+        {
+            if (minimum <= 3 && Word("as") && AtPatternName(1))
+            {
+                Next();
+                var name = Next();
+                pattern = new CapturePattern(pattern, new(name.Text, name.Span), SourceSpan.Cover(pattern.Span, name.Span));
+                continue;
+            }
+            bool and = Word("and");
+            int precedence = and ? 2 : Word("or") ? 1 : 0;
+            if (precedence == 0 || precedence < minimum || test && !BeginsTestPattern(1)) break;
+            Next();
+            Pattern right = ParsePattern(true, test, minimum: precedence + 1);
+            pattern = new BinaryPattern(and, pattern, right, SourceSpan.Cover(pattern.Span, right.Span));
+        }
+        return pattern;
+    }
+
+    private bool AtPatternName(int offset) => Peek(offset).Kind == TokenKind.Atom
+        && !LanguageTypes.Contains(Peek(offset).Text);
+
+    private bool BeginsTestPattern(int offset)
+    {
+        var next = Peek(offset);
+        return next.Kind is TokenKind.Number or TokenKind.String or TokenKind.Regex or TokenKind.LeftBracket
+            or TokenKind.LeftBrace or TokenKind.Less or TokenKind.Greater or TokenKind.LessEqual or TokenKind.GreaterEqual
+            || next.Kind == TokenKind.Atom && (next.Text is "null" or "true" or "false" or "_"
+                || next.Text == "not" && BeginsTestPattern(offset + 1) || LanguageTypes.Contains(next.Text))
+            || next.Kind == TokenKind.LeftParen && BeginsTestPattern(offset + 1);
+    }
+
+    private Pattern PatternAtom(bool matching, bool test, bool binding)
     {
         var token = Current;
         if (Take(TokenKind.LeftParen) || Take(TokenKind.LeftBracket))
         {
             var close = token.Kind == TokenKind.LeftParen ? TokenKind.RightParen : TokenKind.RightBracket;
             List<Pattern> items = [];
-            while (!At(close) && !At(TokenKind.End)) { items.Add(ParsePattern(matching)); if (!Take(TokenKind.Comma)) break; }
+            bool prefix = false, comma = false;
+            while (!At(close) && !At(TokenKind.End))
+            {
+                if (matching && Take(TokenKind.DotDot)) { prefix = true; break; }
+                items.Add(ParsePattern(matching));
+                if (!Take(TokenKind.Comma)) break;
+                comma = true;
+            }
             Require(close, "Expected the pattern's closing delimiter.");
-            return new TuplePattern(items, SourceSpan.Cover(token.Span, Previous.Span));
+            if (matching && token.Kind == TokenKind.LeftParen && !prefix && !comma && items.Count == 1
+                && (!binding || items[0] is not (NamePattern or WildcardPattern or TuplePattern)))
+                return items[0];
+            return new TuplePattern(items, SourceSpan.Cover(token.Span, Previous.Span)) { Prefix = prefix };
+        }
+        if (matching && Take(TokenKind.LeftBrace))
+        {
+            List<PatternField> fields = [];
+            while (!At(TokenKind.RightBrace) && !At(TokenKind.End))
+            {
+                var name = At(TokenKind.String) ? Next() : Require(TokenKind.Atom, "Expected a Scope field.");
+                Require(TokenKind.Colon, "Expected ':' in the Scope pattern.");
+                var field = ParsePattern(true);
+                fields.Add(new(name.Text, field, SourceSpan.Cover(name.Span, field.Span)));
+                if (!Take(TokenKind.Comma)) break;
+            }
+            Require(TokenKind.RightBrace, "Expected '}' after the Scope pattern.");
+            return new ScopePattern(fields, SourceSpan.Cover(token.Span, Previous.Span));
         }
         if (TakeWord("_")) return new WildcardPattern(token.Span);
         if (matching && TakeWord("null")) return new NullPattern(token.Span);
         if (matching && Take(TokenKind.Regex)) return new RegexPattern(token.Text, token.Span);
-        if (matching && LanguageTypes.Contains(token.Text)) { var type = ParseType(); return new TypePattern(type, type.Span); }
+        if (matching && (LanguageTypes.Contains(token.Text) || At(TokenKind.Dollar)))
+        { var type = TypeAtom(); return new TypePattern(type, type.Span); }
+        if (matching && token.Kind is TokenKind.Less or TokenKind.LessEqual or TokenKind.Greater or TokenKind.GreaterEqual)
+        {
+            Next();
+            var sign = Current;
+            bool signed = TakeWord("-") || TakeWord("+");
+            var number = Require(TokenKind.Number, "Expected a Number literal after a relational pattern operator.");
+            NumberSyntax.TryParse(number.Text, out double limit);
+            var end = signed ? SourceSpan.Cover(sign.Span, number.Span) : number.Span;
+            return new RelationPattern(token.Text, new NumberExpr(signed && sign.Text == "-" ? -limit : limit, end),
+                SourceSpan.Cover(token.Span, end));
+        }
         if (matching && (At(TokenKind.String) || At(TokenKind.Number) || Word("true") || Word("false") ||
             (Word("+") || Word("-")) && Peek().Kind == TokenKind.Number))
         { var literal = Prefix(false); return new LiteralPattern(literal, literal.Span); }
+        if (test)
+        {
+            var value = Expression(minimum: 7, header: true);
+            return new DenotationPattern(value, value.Span);
+        }
         return new NamePattern(Require(TokenKind.Atom, "Expected a binding or match pattern.").Text, token.Span);
     }
-    private TypeSyntax ParseType(bool union = true)
+    private TypeSyntax ParseType(bool wordUnion = true, bool expression = false)
+    {
+        TypeSyntax first = TypeIntersection(wordUnion, expression);
+        List<TypeSyntax>? alternatives = null;
+        while (TakeTypeWord("or", wordUnion, expression))
+            (alternatives ??= []).Add(TypeIntersection(wordUnion, expression));
+        if (wordUnion && !expression && At(TokenKind.Pipe))
+            Fail("Use 'or', not '|', to join types.");
+        return alternatives is null ? first : first with
+        {
+            Alternatives = alternatives,
+            Span = SourceSpan.Cover(first.Span, Previous.Span)
+        };
+    }
+
+    private bool TakeTypeWord(string word, bool compound, bool expression) => compound && Word(word)
+        && (!expression || Peek().Kind == TokenKind.Atom && LanguageTypes.Contains(Peek().Text))
+        && TakeWord(word);
+
+    private TypeSyntax TypeIntersection(bool compound, bool expression)
+    {
+        TypeSyntax first = TypeUnary();
+        List<TypeSyntax>? rest = null;
+        while (TakeTypeWord("and", compound, expression)) (rest ??= []).Add(TypeUnary());
+        return rest is null ? first : first with
+        {
+            Intersections = rest,
+            Span = SourceSpan.Cover(first.Span, Previous.Span)
+        };
+    }
+
+    private TypeSyntax TypeUnary()
+    {
+        if (!TakeWord("not")) return TypeAtom();
+        SourceSpan start = Previous.Span;
+        TypeSyntax operand = TypeUnary();
+        return new(operand.Name, [], [], false, SourceSpan.Cover(start, operand.Span)) { Complement = operand };
+    }
+
+    private TypeSyntax TypeAtom()
     {
         var start = Current.Span;
+        if (Word("decltype") && Peek().Kind == TokenKind.LeftParen)
+        {
+            Next();
+            Next();
+            var operand = Expression();
+            Require(TokenKind.RightParen, "Expected ')' after decltype operand.");
+            bool optional = Take(TokenKind.Question);
+            return new("decltype", [], [], optional, SourceSpan.Cover(start, Previous.Span)) { Query = operand };
+        }
+        if (Take(TokenKind.LeftParen))
+        {
+            var group = ParseType();
+            Require(TokenKind.RightParen, "Expected ')' after the grouped type.");
+            bool optional = Take(TokenKind.Question);
+            return new(group.Name, [], [], optional, SourceSpan.Cover(start, Previous.Span)) { Group = group };
+        }
         bool declares = TakeWord("typename");
         if (declares && conceptTypes is null)
             Fail("An inline 'typename' declaration belongs in a concept requirement.");
@@ -650,17 +883,16 @@ public sealed class Parser
         string qualified = (reference ? "$" : "") + name.Text;
         while (Take(TokenKind.Select))
             qualified += "::" + Require(TokenKind.Atom, "Expected a type or concept name after '::'.").Text;
-        List<TypeSyntax> arguments = [], alternatives = [];
+        List<TypeSyntax> arguments = [];
         if (Take(TokenKind.Less))
         {
             do { arguments.Add(ParseType()); } while (Take(TokenKind.Comma));
             Require(TokenKind.Greater, "Expected '>' after generic type arguments.");
         }
         bool nullable = Take(TokenKind.Question);
-        if (union) while (Take(TokenKind.Pipe)) alternatives.Add(ParseType(false));
-        return new(qualified, arguments, alternatives, nullable,
+        return new(qualified, arguments, [], nullable,
             new(start.Start, Math.Max(name.Span.End, Previous.Span.End) - start.Start)) { DeclaresAssociatedType = declares };
     }
     private bool ContinuesBarePath() => source[Previous.Span.End..Current.Span.Start].All(c => c is ' ' or '\t');
-    private static bool CanContinuePath(string text) => text is not ("+" or "-" or "*" or "**" or "%" or "as" or "concept" or "true" or "false" or "null" or "and" or "or" or "is" or "not" or "in" or "else" or "if" or "fn" or "scope" or "let" or "match" or "for" or "exists" or "return" or "break" or "continue" or "loop" or "native" or "release" or "acquire" or "acqrel") && !LanguageTypes.Contains(text);
+    private static bool CanContinuePath(string text) => text is not ("+" or "-" or "*" or "**" or "%" or "as" or "satisfies" or "concept" or "true" or "false" or "null" or "and" or "or" or "is" or "not" or "in" or "else" or "if" or "fn" or "scope" or "let" or "match" or "for" or "exists" or "return" or "break" or "continue" or "loop" or "native" or "release" or "acquire" or "acqrel") && !LanguageTypes.Contains(text);
 }

@@ -168,7 +168,7 @@ not introduce a runtime record class or strengthen the sample cell's storage ABI
 
 A refined read updates both its HIR runtime-kind mask and its Nullable marker.
 Keeping the declaration's old Nullable marker on a non-null Number read makes
-native lowering reconstruct `Null | Number`, even though semantic arithmetic was
+native lowering reconstruct `Null or Number`, even though semantic arithmetic was
 checked as Number. The location's independent Null admission remains unchanged;
 the reader still requires an explicit checked narrowing from nullable storage.
 
@@ -778,7 +778,7 @@ measurements use `tests/Performance/repl_tail.py` rather than compile-only count
 The public `InvokeAsync` host boundary checks pointer arguments against the
 formal invariant physical ABI and the owning layout, without reading payloads.
 Thus an uninitialized output location is valid, but a Number location cannot be
-passed as writable `Number | Null`. Indirect pointers may change after entry;
+passed as writable `Number or Null`. Indirect pointers may change after entry;
 each dereference checks physical read compatibility, and Store admits ready kinds
 or pending producer masks to the actual selected location after normal Path/String
 coercion. A narrower physical location must not silently receive a wider value.

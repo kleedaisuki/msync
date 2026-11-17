@@ -23,7 +23,7 @@ public sealed partial class NativeInterpreter
             if (arguments.Any(DatumExecutionMayDefer))
                 return SubmitStreamReduction(signature, arguments, origin, source, predecessor, token, rangePhysicalType);
         }
-        if (signature is not null && await TryRangeDatumAsync(signature, arguments, token, rangePhysicalType) is { } rangeResult) return rangeResult;
+        if (signature is not null && await TryRangeDatumAsync(signature, arguments, token, rangePhysicalType, source) is { } rangeResult) return rangeResult;
         bool scalarView = signature is not null && (signature.Behavior.GetValueOrDefault() & NativeBehavior.DeferredScalar) != 0;
         if ((dependencies is not null || scalarView) && DefersScalarNative(signature, arguments))
         {
@@ -31,10 +31,10 @@ public sealed partial class NativeInterpreter
             foreach (NativeDatum argument in arguments)
                 if (argument.IsReady && argument.Value.Kind == NativeKind.Process)
                     (processes ??= []).Add(argument.Value.AsProcess());
-            return Track(new(new NativeFuture(InvokeDeferredNativeAsync(name, arguments, origin, predecessor, token), dependencies,
+            return Track(new(new NativeFuture(InvokeDeferredNativeAsync(name, arguments, origin, predecessor, source, token), dependencies,
                 source: source, processes: processes, logicalType: signature!.Result)));
         }
-        return new(await InvokeNativeAsync(name, await ResolveArguments(arguments, token), origin, token, predecessor));
+        return new(await InvokeNativeAsync(name, await ResolveArguments(arguments, token), origin, token, predecessor, source: source));
     }
 
     private NativeDatum SubmitInput(string name, IReadOnlyList<NativeDatum> arguments, NativeRuntimeContext origin,
@@ -79,8 +79,8 @@ public sealed partial class NativeInterpreter
     }
 
     private async Task<NativeValue> InvokeDeferredNativeAsync(string name, IReadOnlyList<NativeDatum> arguments,
-        NativeRuntimeContext origin, Task predecessor, CancellationToken token) =>
-        await InvokeNativeAsync(name, await ResolveArguments(arguments, token), origin, token, predecessor);
+        NativeRuntimeContext origin, Task predecessor, SourceSpan? source, CancellationToken token) =>
+        await InvokeNativeAsync(name, await ResolveArguments(arguments, token), origin, token, predecessor, source: source);
 
     internal bool TryFastUnaryMath(NativeWorkScope work, NativeFrame frame, in NativeInstruction instruction)
     {

@@ -1,11 +1,11 @@
 # Variables belong to the current process; directory values use this execution's
 # captured context rather than changing the process-wide working directory.
-native fn get(name: String) -> String | Null;
+native fn get(name: String) -> String or Null;
 native fn set(name: String, value: String) -> Null;
 native fn unset(name: String) -> Null;
 native fn variables() -> Range<Scope>;
 native fn working_directory() -> Path;
-native fn set_working_directory(path: Path | String) -> Path;
+native fn set_working_directory(path: Path or String) -> Path;
 native fn home_directory() -> Path;
 native fn operating_system() -> String;
 native fn newline() -> String;

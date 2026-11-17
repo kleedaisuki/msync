@@ -114,7 +114,7 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
         binary, ["skill", "library", "containers", "Set"], directory, environment
     )
     assert (
-        family.returncode == 0 and "new: fn(initial: Range | Type)" in family.stdout
+        family.returncode == 0 and "new: fn(initial: Range or Type)" in family.stdout
     ), family
     constructor = invoke(
         binary, ["skill", "library", "containers", "Set", "new"], directory, environment
@@ -151,7 +151,7 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
     assert "connection @ path" in syntax.stdout and "Connection::" not in syntax.stdout
 
     fs = pages[("library", "fs")]
-    assert "native fn exists(path: Path | String) -> Bool;" in fs
+    assert "native fn exists(path: Path or String) -> Bool;" in fs
     assert "native fn directory_iterator" in fs
     for topic in ((), ("language", "functions")):
         colored = invoke(

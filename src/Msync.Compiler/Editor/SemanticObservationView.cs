@@ -107,8 +107,8 @@ internal static class SemanticTypeNames
             var present = type.Alternatives.Where(part => types[part.Value].RuntimeType != TypeRef.Null).ToArray();
             bool admitsNull = !omitNull && (nullable || present.Length != type.Alternatives.Length || type.Nullable);
             if (present.Length == 1) return Format(present[0], types, concepts, associated, admitsNull, omitNull);
-            string union = string.Join(" | ", present.Select(part => Format(part, types, concepts, associated)));
-            return admitsNull ? union + " | Null" : union;
+            string union = string.Join(" or ", present.Select(part => Format(part, types, concepts, associated)));
+            return admitsNull ? $"({union})?" : union;
         }
         if (type.TypeParameter >= 0)
             return (associated?.GetValueOrDefault(type.TypeParameter) ?? "inferred at call")

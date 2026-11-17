@@ -114,7 +114,7 @@ behavioral failure remains in this target's accepted windows.
 | Bool lists, nested boolean callbacks, runtime values and order | First window |
 | String and scoped/default Path list insertion order | First window |
 | Mixed permitted scalar lists and total callbacks, without opening an unused path | First window |
-| `Path | String` callback `/`, both iterations and actual final file bytes, source/object/IR | Second window |
+| `Path or String` callback `/`, both iterations and actual final file bytes, source/object/IR | Second window |
 | Invalid operator/list/union/transfer domains reject before an earlier sentinel effect | Second window |
 | Whole-If flags and compiled explicit directional-fence reference | Second window |
 | All three conditional modifiers, both selected branches, complete while an unrelated TCP source remains held | First window |

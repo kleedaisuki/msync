@@ -86,15 +86,23 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
             HirKind.Declare => Declare(node, children, context),
             HirKind.Assign => Assign(node, children, context),
             HirKind.Discard => Discard(node, children, context),
+            HirKind.Block when program.ConformanceChecks.TryGetValue(id, out var contract) =>
+                Conformance(contract, node, children[0], context),
+            HirKind.Block when program.PatternCoverage.TryGetValue(id, out var coverage) =>
+                AnalyzeCoveredMatch(coverage, node, children, context),
+            HirKind.Block when program.PatternUnreachable.Contains(id) => UnreachableMatch(node, context),
             HirKind.Block => Block(node, children, context),
             HirKind.TemplateClosure => TemplateClosure(node, context),
             HirKind.Scope or HirKind.AllocateScope => Scope(node, children, context),
+            HirKind.PatternRegion or HirKind.PatternDemand or HirKind.PatternRead => PatternCursor(node, children, context),
             HirKind.Range => Range(node, children, context),
             HirKind.Call => Call(node, children, context),
             HirKind.If or HirKind.Match or HirKind.For or HirKind.Loop
                 or HirKind.Break or HirKind.Continue or HirKind.Return or HirKind.Barrier => Control(id, node, children, context),
             _ => Operation(id, node, children, context)
         };
+        if (program.PatternExits.Contains(id) && Runtime(value).Kind != TypeKind.Never)
+            throw Error(node.Source, "The 'else' block of a pattern declaration must exit on every path.", "E0209");
         observations?.RecordNode(id, value, context);
         return value;
     }
@@ -140,6 +148,8 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
         HirLocationId source = new(node.Data);
         HirLocationId location = context.Location(source);
         var definition = hir.Locations[source.Value];
+        if (program.LocalTypeHoles.Count != 0 && program.Declaration(source).Annotation is { } annotation)
+            FillTypeHoles(annotation, value, node.Source, context);
         HirTypeId type = StorageTypeFor(location, value, context);
         if (!AdmitsNull(source, type) && Runtime(value).Nullable)
             throw SemanticDiagnosticFactory.NullAdmission(hir.Sources[node.Source.Source.Value],

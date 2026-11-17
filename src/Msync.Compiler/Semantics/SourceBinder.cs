@@ -243,6 +243,8 @@ internal sealed partial class SourceBinder
             locationKind, AdmitsNull: nullable, TemplateOwner: scope.Template));
         program.Declare(new(id, name, kind, Range(span), annotation, Template: scope.Template));
         if (nativeModule is not null && scope.Template is null) program.WrittenLocations.Add(id);
+        if (program.IsSession && scope.Parent is null && scope.IncludesEnd && scope.Values.TryGetValue(name, out var shadow))
+            program.SessionShadows.Add(new(name, shadow));
         scope.Values = scope.Values.SetItem(name, id);
         Observe(span, id, declaration: true, parameter: kind == DeclarationKind.Parameter);
         return id;
@@ -326,13 +328,21 @@ internal sealed partial class SourceBinder
 
     private HirNodeId Let(LetStatement let)
     {
+        if (let.Failure is not null) return LetElse(let);
+        if (!IsBindingPattern(let.Pattern))
+            throw Error("A refutable declaration needs an 'else' block that exits.", let.Pattern.Span, "E0209");
         var initializer = Expression(let.Value);
         HirTypeId? annotation = let.Type is null ? null : Type(let.Type);
+        if (annotation is { } required && program.Node(initializer).Kind == HirKind.Call)
+            program.CallResultHints[program.Node(initializer).Data] = required;
         var targetType = annotation ?? program.Node(initializer).Type;
         if (annotation is null && let.Nullable && hir.Types[targetType.Value].RuntimeType.WithoutNull.Kind == TypeKind.Never)
             targetType = OpenType("nullable storage");
         return BindPattern(let.Pattern, initializer, let.Nullable, targetType, annotation, DeclarationKind.Local);
     }
+
+    private static bool IsBindingPattern(Pattern pattern) => pattern is NamePattern or WildcardPattern
+        || pattern is TuplePattern { Prefix: false } tuple && tuple.Items.All(IsBindingPattern);
 
     private HirNodeId BindPattern(Pattern pattern, HirNodeId value, bool nullable,
         HirTypeId type, HirTypeId? annotation, DeclarationKind kind)

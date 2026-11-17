@@ -73,19 +73,21 @@ internal sealed partial class SemanticAnalyzer
         program.TryDeclaration(location, out _) ? program.Original(location) : null;
 
     private FunctionInvocation Instantiate(HirTemplateId id, ImmutableArray<SemanticCapture> captured,
-        IReadOnlyList<SemanticValue> arguments, HirSourceRange source, SemanticContext caller, bool applyEffects = true)
+        IReadOnlyList<SemanticValue> arguments, HirSourceRange source, SemanticContext caller, bool applyEffects = true,
+        HirTypeId? expectedResult = null)
     {
-        return Trace is null ? InstantiateCore(id, captured, arguments, source, caller, applyEffects)
-            : Trace.MeasureDetailed("compiler.semantic.instantiate", (self: this, id, captured, arguments, source, caller, applyEffects),
+        return Trace is null ? InstantiateCore(id, captured, arguments, source, caller, applyEffects, expectedResult)
+            : Trace.MeasureDetailed("compiler.semantic.instantiate", (self: this, id, captured, arguments, source, caller, applyEffects, expectedResult),
                 static state => state.self.InstantiateCore(state.id, state.captured, state.arguments,
-                    state.source, state.caller, state.applyEffects),
+                    state.source, state.caller, state.applyEffects, state.expectedResult),
                 attributes: new Dictionary<string, string>(HirTelemetry.Source(hir.Sources, source))
                 { ["template.name"] = hir.Templates[id.Value].Name, ["template.id"] = id.Value.ToString(System.Globalization.CultureInfo.InvariantCulture),
                   ["semantic.mode"] = caller.Publish ? "publish" : "query" });
     }
 
     private FunctionInvocation InstantiateCore(HirTemplateId id, ImmutableArray<SemanticCapture> captured,
-        IReadOnlyList<SemanticValue> arguments, HirSourceRange source, SemanticContext caller, bool applyEffects)
+        IReadOnlyList<SemanticValue> arguments, HirSourceRange source, SemanticContext caller, bool applyEffects,
+        HirTypeId? expectedResult)
     {
         var template = hir.Templates[id.Value];
         Trace?.Metric("arguments", arguments.Count);
@@ -109,6 +111,8 @@ internal sealed partial class SemanticAnalyzer
             preparedArguments[index] = enriched;
         }
         if (preparedArguments is not null) arguments = preparedArguments;
+        var substitutions = program.Templates[id.Value].Generics.IsEmpty ? null
+            : InferGenerics(id, template, arguments, source, caller, expectedResult);
         var actualCaptures = captured.IsDefault ? ImmutableArray<SemanticCapture>.Empty : captured;
         SemanticValue[] captureValues = new SemanticValue[actualCaptures.Length];
         for (int index = 0; index < actualCaptures.Length; index++)
@@ -128,6 +132,8 @@ internal sealed partial class SemanticAnalyzer
             captureValues[index] = value;
         }
         string key = InstanceKey(id, arguments, captureValues, caller);
+        if (substitutions is not null)
+            key += "#" + string.Join(",", substitutions.OrderBy(pair => pair.Key.Value).Select(pair => pair.Value.Value));
         Trace?.Metric("key.characters", key.Length);
         var cache = caller.Publish ? instances : (caller.Queries ??= queries).Instances;
         if (!cache.TryGetValue(key, out var instance))
@@ -136,7 +142,7 @@ internal sealed partial class SemanticAnalyzer
             // A new specialization could add concrete facts to an earlier
             // function body. That edit must replace the whole projection.
             if (id.Value < reusedEditorTemplates) throw new EditorPrefixChanged();
-            instance = BuildInstance(id, template, arguments, captureValues, actualCaptures, source, caller, cache, key);
+            instance = BuildInstance(id, template, arguments, captureValues, actualCaptures, source, caller, cache, key, substitutions);
         }
         else Trace?.Metric(instance.Complete ? "cache.hit" : "cache.recursive", 1);
         return ProjectInvocation(instance, arguments, captureValues, actualCaptures, caller, applyEffects, source);
@@ -145,7 +151,7 @@ internal sealed partial class SemanticAnalyzer
     private FunctionInstance BuildInstance(HirTemplateId id, HirTemplate template,
         IReadOnlyList<SemanticValue> arguments, IReadOnlyList<SemanticValue> captureValues,
         ImmutableArray<SemanticCapture> captured, HirSourceRange source, SemanticContext caller,
-        SemanticInstanceCache cache, string key)
+        SemanticInstanceCache cache, string key, Dictionary<HirTypeId, HirTypeId>? substitutions)
     {
         SemanticValue? recursiveSignature = null;
         if (caller.Publish && template.ResultAnnotation is null
@@ -171,6 +177,8 @@ internal sealed partial class SemanticAnalyzer
             hir.Type(new TypeRef(TypeKind.Never)), HirNodeId.None, id, IsOpen: true));
         SemanticContext context = new(function, caller.Output)
         { Queries = caller.Queries, DeferredReads = caller.DeferredReads, WriteEvents = [] };
+        if (substitutions is not null)
+            foreach (var (parameter, concrete) in substitutions) context.Substitutions[parameter] = concrete;
         foreach (var declaration in program.DeclarationsOf(id))
         {
             var location = hir.Locations[declaration.Location.Value];

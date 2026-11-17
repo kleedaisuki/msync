@@ -36,9 +36,9 @@ internal sealed class SemanticSession(string sourceName, int optimization)
         SemanticSessionDispatch nextDispatches = dispatches.Fork();
         SemanticAnalyzer analyzer = new(bound, codeCache: instances, sessionDispatch: nextDispatches);
         HirModule module = Compiler.Analyze(analyzer, facts, trace);
-        LlvmHirLoweringResult graph = trace is null ? lowering.Lower(module)
-            : trace.MeasureDetailed("compiler.lower", (lowering, module, trace),
-                static state => state.lowering.Lower(state.module, state.trace),
+        LlvmHirLoweringResult graph = trace is null ? lowering.Lower(module, bound.SessionShadows, null)
+            : trace.MeasureDetailed("compiler.lower", (lowering, module, shadows: bound.SessionShadows, trace),
+                static state => state.lowering.Lower(state.module, state.shadows, state.trace),
                 metrics: static lowered => new Dictionary<string, ulong>
                 {
                     ["functions"] = (ulong)lowered.SourceFunctions.Count,
@@ -117,12 +117,10 @@ internal sealed class SemanticSession(string sourceName, int optimization)
     {
         if (pending is not { } submission) return;
         var exports = accepted?.Exports ?? ImmutableDictionary<string, HirLocationId>.Empty;
+        foreach (var shadow in submission.Program.SessionShadows)
+            Admit(shadow.Name, shadow.Location);
         foreach (var (name, location) in submission.Program.Exports)
-        {
-            if (exports.TryGetValue(name, out var prior) && prior == location) continue;
-            if (submission.Layout.Locations.TryGetValue(new(submission.Program.Entry, location), out int slot)
-                && initialized(slot)) exports = exports.SetItem(name, location);
-        }
+            Admit(name, location);
         accepted = submission.Program;
         dispatches = submission.Dispatches;
         accepted.Exports = exports;
@@ -134,6 +132,13 @@ internal sealed class SemanticSession(string sourceName, int optimization)
         facts.DetachFacts();
         pending = null;
         descriptions = null;
+
+        void Admit(string name, HirLocationId location)
+        {
+            if (exports.TryGetValue(name, out var prior) && prior == location) return;
+            if (submission.Layout.Locations.TryGetValue(new(submission.Program.Entry, location), out int slot)
+                && initialized(slot)) exports = exports.SetItem(name, location);
+        }
     }
 
     private void Refresh(HirLoweringLayout layout, Func<int, NativeValue?> resolve) =>

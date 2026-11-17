@@ -3,7 +3,7 @@ using Msync.Core;
 
 namespace Msync.Compiler.Syntax;
 
-internal enum TokenKind { End, Atom, Number, String, Regex, LeftBrace, RightBrace, LeftParen, RightParen, LeftBracket, RightBracket, Comma, Semicolon, Colon, Select, Equal, Arrow, FatArrow, Question, Dollar, Slash, Pipe, At, EqualEqual, NotEqual, Less, LessEqual, Greater, GreaterEqual }
+internal enum TokenKind { End, Atom, Number, String, Regex, LeftBrace, RightBrace, LeftParen, RightParen, LeftBracket, RightBracket, Comma, Semicolon, Colon, Select, OptionalSelect, Equal, Arrow, FatArrow, Question, Coalesce, CoalesceAssign, DotDot, Dollar, Slash, Pipe, At, EqualEqual, NotEqual, Less, LessEqual, Greater, GreaterEqual }
 internal readonly record struct Token(TokenKind Kind, string Text, SourceSpan Span);
 internal sealed class Lexer(string source, string sourceName, CancellationToken cancellationToken = default,
     Action<EditorLexeme>? observe = null)
@@ -60,7 +60,11 @@ internal sealed class Lexer(string source, string sourceName, CancellationToken 
                 ']' => TokenKind.RightBracket,
                 ',' => TokenKind.Comma,
                 ';' => TokenKind.Semicolon,
+                '?' when Take('?') => Take('=') ? TokenKind.CoalesceAssign : TokenKind.Coalesce,
+                '?' when source.AsSpan(position).StartsWith("::", StringComparison.Ordinal) => OptionalSelect(),
                 '?' => TokenKind.Question,
+                '.' when !PathSegment(start) && position < source.Length && source[position] == '.'
+                    && (position + 1 == source.Length || source[position + 1] != '/') && Take('.') => TokenKind.DotDot,
                 '$' => TokenKind.Dollar,
                 '/' => TokenKind.Slash,
                 '|' => TokenKind.Pipe,
@@ -83,6 +87,11 @@ internal sealed class Lexer(string source, string sourceName, CancellationToken 
     {
         if (position == source.Length || source[position] != c) return false;
         position++; return true;
+    }
+    private TokenKind OptionalSelect()
+    {
+        position += 2;
+        return TokenKind.OptionalSelect;
     }
     private void Add(TokenKind kind, string text, int start)
     {
@@ -118,7 +127,19 @@ internal sealed class Lexer(string source, string sourceName, CancellationToken 
         throw Unterminated("Unterminated string.", start,
             "Close the String with '\"'. Inside a String, write a literal quote as two consecutive quotes (\"\").");
     }
-    private bool IsRegexStart() => tokens.Count == 0 || tokens[^1].Kind is TokenKind.Slash or TokenKind.LeftBrace or TokenKind.Comma or TokenKind.LeftBracket or TokenKind.FatArrow;
+    private bool IsRegexStart() => position < source.Length && !char.IsWhiteSpace(source[position]) && source[position] != '='
+        && !NumericRelation()
+        && (tokens.Count == 0 || tokens[^1].Kind is TokenKind.Slash or TokenKind.LeftBrace or TokenKind.Comma
+            or TokenKind.LeftBracket or TokenKind.FatArrow or TokenKind.Colon
+            || tokens[^1] is { Kind: TokenKind.Atom, Text: "is" or "not" or "and" or "or" });
+
+    private bool NumericRelation()
+    {
+        int start = position + (source[position] is '+' or '-' ? 1 : 0);
+        if (start >= source.Length || !char.IsAsciiDigit(source[start]) && source[start] != '.') return false;
+        int length = NumberSyntax.LengthAt(source, start);
+        return length != 0 && (start + length == source.Length || source[start + length] != '>');
+    }
     private void ReadRegex(int start)
     {
         int end = position;
@@ -179,6 +200,8 @@ internal sealed class Lexer(string source, string sourceName, CancellationToken 
             string delimiters = uri ? "{}(),;?\"$|<>!" : "{}()[],;?\"$|<>!@";
             if (char.IsWhiteSpace(c) || delimiters.Contains(c, StringComparison.Ordinal)) break;
             if (!uri && !windows && !PathSegment(start) && c is '+' or '*' or '%') break;
+            if (!uri && !windows && !PathSegment(start) && c == '.'
+                && position + 1 < source.Length && source[position + 1] == '.') break;
             if (uri && brackets == 0 && c == ':' && position + 1 < source.Length && source[position + 1] == ':') break;
             if (!uri && !windows && (c == '/' || c == ':')) break;
             if (c == '=' && !uri) break;

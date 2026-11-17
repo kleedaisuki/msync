@@ -278,7 +278,7 @@ continues to specialize into the established typed IR; this is not a second
 runtime type system. Native argument admission shares the registered capability
 with object validation and reports the offending argument's inferred type.
 
-The central interoperability contract is `(String | Path) / (String | Path) ->
+The central interoperability contract is `(String or Path) / (String or Path) ->
 Path`, not Windows-path recognition. Quoted strings remain data unless consumed
 by a path operator. Independent real-process acceptance uses all four operand
 pairings, lexical String and Path aliases on either side, native observations,

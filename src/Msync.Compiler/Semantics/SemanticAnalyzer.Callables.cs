@@ -18,22 +18,105 @@ internal sealed partial class SemanticAnalyzer
     private SemanticValue CallCore(HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext context)
     {
         Trace?.Metric("arguments", children.Length - 1);
-        if (TryMetaCall(node, children, context, out SemanticValue metadata)) return metadata;
+        program.NamedCalls.TryGetValue(node.Data, out var labels);
+        if (labels is null && TryMetaCall(node, children, context, out SemanticValue metadata)) return metadata;
         SemanticValue callee = Analyze(children[0], context);
-        if (TryMetaCall(callee, node, children, context, out SemanticValue computedMetadata)) return computedMetadata;
+        if (labels is null && TryMetaCall(callee, node, children, context, out SemanticValue computedMetadata)) return computedMetadata;
         SemanticValue[] inputs = new SemanticValue[children.Length - 1];
         for (int index = 0; index < inputs.Length; index++) inputs[index] = Analyze(children[index + 1], context);
+        if (context.Output is null && program.Node(children[0]) is { Kind: HirKind.ReadLocation, Data: var input }
+            && program.TypeQueryInputs.Contains(new(input)))
+            return QueryTypeCall(callee, inputs, node.Source, context);
         if (hir.Calls[node.Data] is { Kind: HirCallKind.Native } native)
             return InvokeNative(native.NativeName!, inputs, node.Source, context, callee);
+        if (labels is not null) return InvokeNamed(callee, inputs, children[1..], labels, node.Source, context);
         if (TryFiniteCall(callee, inputs, children[1..], node.Source, context, out var finite)) return finite;
-        return Invoke(callee, inputs, node.Source, context);
+        return Invoke(callee, inputs, node.Source, context,
+            program.CallResultHints.TryGetValue(node.Data, out var hint) ? hint : null);
+    }
+
+    private SemanticValue InvokeNamed(SemanticValue callee, SemanticValue[] inputs, ReadOnlySpan<HirNodeId> syntax,
+        IReadOnlyDictionary<int, string> labels, HirSourceRange source, SemanticContext context)
+    {
+        var choices = Choices(callee).ToArray();
+        Trace?.Metric("named_arguments.labels", labels.Count);
+        Trace?.Metric("named_arguments.callable_alternatives", choices.Length);
+        if (choices.Length == 0) throw Error(source, "Named arguments require a known function signature.", "E0204");
+        var order = Enumerable.Range(0, inputs.Length).ToArray();
+        HashSet<int> occupied = [];
+        foreach (var (index, label) in labels)
+        {
+            int? target = null;
+            foreach (var choice in choices)
+            {
+                int slot = NamedSlot(choice, label);
+                if (slot < 0 || slot >= inputs.Length)
+                    throw Error(source, $"No parameter named '{label}' on the selected signature.", "E0204");
+                if (target is { } prior && slot != prior)
+                    throw Error(source, $"Callable alternatives disagree about parameter '{label}'.", "E0204");
+                target = slot;
+            }
+            order[index] = target!.Value;
+        }
+        bool reorder = false;
+        for (int index = 0; index < order.Length; index++)
+        {
+            if (!occupied.Add(order[index]))
+                throw Error(source, "The same parameter receives more than one argument.", "E0204");
+            reorder |= order[index] != index;
+        }
+        Trace?.Metric("named_arguments.reordered", reorder ? 1 : 0);
+        if (!reorder)
+            return TryFiniteCall(callee, inputs, syntax, source, context, out var finite)
+                ? finite : Invoke(callee, inputs, source, context);
+
+        var output = context.Output;
+        List<HirNodeId> evaluations = [];
+        if (output is not null)
+        {
+            callee = SaveCallee(callee, source, context, out var initializer);
+            evaluations.Add(initializer);
+        }
+        SemanticValue[] ordered = new SemanticValue[inputs.Length];
+        for (int index = 0; index < inputs.Length; index++)
+        {
+            SemanticValue value = inputs[index];
+            if (output is not null)
+            {
+                var location = output.ReserveLocation(new("<argument>", value.Type, source, context.Function,
+                    HirLocationKind.Temporary, Mutable: false, AdmitsNull: Runtime(value).Nullable));
+                evaluations.Add(output.Add(HirKind.Declare, hir.Type(TypeRef.Null), source, [value.Node],
+                    location.Value, effects: HirEffects.WriteLocation));
+                value = value with { Node = output.Add(HirKind.ReadLocation, value.Type, source,
+                    data: location.Value, effects: HirEffects.ReadLocation) };
+            }
+            ordered[order[index]] = value;
+        }
+        var result = Invoke(callee, ordered, source, context);
+        if (output is null) return result;
+        evaluations.Add(result.Node);
+        return result with { Node = output.Add(HirKind.Block, result.Type, source,
+            System.Runtime.InteropServices.CollectionsMarshal.AsSpan(evaluations)) };
+    }
+
+    private int NamedSlot(SemanticCallable choice, string label)
+    {
+        if (choice.Template is { } template)
+        {
+            var parameters = program.Templates[template.Value].Parameters;
+            for (int index = 0; index < parameters.Length; index++)
+                if (hir.Locations[parameters[index].Value].Name == label) return index;
+        }
+        if (choice.NativeName is { } native && program.NativeSignatures.TryGetValue(native, out var signature))
+            return signature.ParameterNames.IndexOf(label);
+        return -1;
     }
 
     private SemanticValue InvokeType(SemanticValue callee, IReadOnlyList<SemanticValue> arguments,
         HirSourceRange source, SemanticContext context) => Invoke(callee, arguments, source, QueryContext(context));
 
     private SemanticValue Invoke(SemanticValue callee, IReadOnlyList<SemanticValue> arguments,
-        HirSourceRange source, SemanticContext context)
+        HirSourceRange source, SemanticContext context, HirTypeId? expectedResult = null)
     {
         if (Runtime(callee).WithoutNull == TypeRef.Path)
         {
@@ -64,7 +147,7 @@ internal sealed partial class SemanticAnalyzer
             SemanticValue output;
             if (choice.Template is { } template)
             {
-                var instance = Instantiate(template, choice.Captures, arguments, source, selected);
+                var instance = Instantiate(template, choice.Captures, arguments, source, selected, expectedResult: expectedResult);
                 output = instance.Result;
                 if (context.DeferredReads && alternatives is null) deferredEffects.AddRange(instance.Effects);
                 dispatch.Add(new(choice.RuntimeIdentity ?? HirCallableId.From(template), instance.Id));

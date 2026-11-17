@@ -22,6 +22,9 @@ public static partial class NativeSignatures
         Add("materialize", NativeResultRule.FirstArgument, range);
         result["ranges.materialize"] = result["ranges.materialize"] with
         { Behavior = NativeBehavior.Enumerates | NativeBehavior.MayFail | NativeBehavior.EagerRange };
+        result.Add("ranges.pattern_prefix", new("ranges.pattern_prefix", [range, TypeRef.Number], range,
+            ResultRule: NativeResultRule.FirstArgument,
+            Behavior: NativeBehavior.Enumerates | NativeBehavior.MayFail | NativeBehavior.EagerRange));
         Add("sort", NativeResultRule.FirstArgument, range);
         Add("sort_with", NativeResultRule.FirstArgument, range, TypeRef.Function);
         Add("scan", NativeResultRule.RangeScan, range, TypeRef.Any, TypeRef.Function);
@@ -41,6 +44,8 @@ public static partial class NativeSignatures
         result.Add("ranges.at", new("ranges.at", [range, TypeRef.Number], TypeRef.Any,
             ResultRule: NativeResultRule.RangeItem, Behavior: NativeBehavior.Enumerates | NativeBehavior.MayFail));
         result.Add("ranges.sequence", new("ranges.sequence", [TypeRef.Number, TypeRef.Number, TypeRef.Number], new(TypeKind.Range, TypeRef.Number),
+            Behavior: NativeBehavior.Deferred | NativeBehavior.MayFail));
+        result.Add("ranges.closed", new("ranges.closed", [TypeRef.Number, TypeRef.Number], new(TypeKind.Range, TypeRef.Number),
             Behavior: NativeBehavior.Deferred | NativeBehavior.MayFail));
     }
 }

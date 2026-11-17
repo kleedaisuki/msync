@@ -54,8 +54,16 @@ internal sealed record EditorSyntaxIndex(
 
         static IEnumerable<TypeSyntax> TypeTree(TypeSyntax type)
         {
-            yield return type;
-            foreach (TypeSyntax child in type.Arguments.Concat(type.Alternatives))
+            if (type.Group is { } group)
+            {
+                foreach (TypeSyntax nested in TypeTree(group)) yield return nested;
+            }
+            else if (type.Complement is { } complement)
+            {
+                foreach (TypeSyntax nested in TypeTree(complement)) yield return nested;
+            }
+            else yield return type;
+            foreach (TypeSyntax child in type.Arguments.Concat(type.Intersections).Concat(type.Alternatives))
                 foreach (TypeSyntax nested in TypeTree(child)) yield return nested;
         }
     }
@@ -160,6 +168,8 @@ internal sealed record EditorSyntaxIndex(
             int start = type.Span.Start;
             while (start > 0 && char.IsWhiteSpace(source[start - 1])) start--;
             typeSpans.Add(new(start, type.Span.End - start));
+            if (type.Group is { } group) AddType(group);
+            if (type.Complement is { } complement) AddType(complement);
             string prefix = "";
             foreach (var (part, name) in EditorTypeNames.Parts(source, type))
             {
@@ -170,6 +180,7 @@ internal sealed record EditorSyntaxIndex(
                         : "A compile-time standard-library namespace. Select a concept with `::`.", SemanticRole: "type");
             }
             foreach (TypeSyntax argument in type.Arguments) AddType(argument);
+            foreach (TypeSyntax intersection in type.Intersections) AddType(intersection);
             foreach (TypeSyntax alternative in type.Alternatives) AddType(alternative);
         }
         void Add(SourceSpan? span, string type, string signature, string? role = null)

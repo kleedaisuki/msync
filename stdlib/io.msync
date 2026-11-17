@@ -1,12 +1,12 @@
 # Text is UTF-8. Range readers open on demand and close when enumeration ends.
-native fn read_text(path: Path | String) -> String;
-native fn read_lines(path: Path | String) -> Range<String>;
-native fn read_bytes(path: Path | String) -> Range<Number>;
-native fn write_text(path: Path | String, text: String) -> Null;
-native fn append_text(path: Path | String, text: String) -> Null;
-native fn write_bytes(path: Path | String, bytes: Range<Number>) -> Null;
-native fn append_bytes(path: Path | String, bytes: Range<Number>) -> Null;
-native fn file_size(path: Path | String) -> Number;
+native fn read_text(path: Path or String) -> String;
+native fn read_lines(path: Path or String) -> Range<String>;
+native fn read_bytes(path: Path or String) -> Range<Number>;
+native fn write_text(path: Path or String, text: String) -> Null;
+native fn append_text(path: Path or String, text: String) -> Null;
+native fn write_bytes(path: Path or String, bytes: Range<Number>) -> Null;
+native fn append_bytes(path: Path or String, bytes: Range<Number>) -> Null;
+native fn file_size(path: Path or String) -> Number;
 
 # Borrow the execution's text streams. Empty lines are Strings; only EOF is Null.
 native fn read_line() -> String?;
@@ -36,30 +36,30 @@ fn append(path, text: String) { append_text(path, text) };
 fn copy(source, destination) { source -> destination };
 
 # Metadata and link operations share the filesystem primitives and endpoint rules.
-fn exists(path: Path | String) { $std::fs::exists(path) };
-fn status(path: Path | String) { $std::fs::status(path) };
-fn symlink_status(path: Path | String) { $std::fs::symlink_status(path) };
-fn is_regular_file(path: Path | String) { $std::fs::is_regular_file(path) };
-fn is_directory(path: Path | String) { $std::fs::is_directory(path) };
-fn is_symlink(path: Path | String) { $std::fs::is_symlink(path) };
-fn is_empty(path: Path | String) { $std::fs::is_empty(path) };
-fn create_directory(path: Path | String) { $std::fs::create_directory(path) };
-fn create_directories(path: Path | String) { $std::fs::create_directories(path) };
-fn remove(path: Path | String) { $std::fs::remove(path) };
-fn remove_all(path: Path | String) { $std::fs::remove_all(path) };
-fn rename(source: Path | String, destination: Path | String) {
+fn exists(path: Path or String) { $std::fs::exists(path) };
+fn status(path: Path or String) { $std::fs::status(path) };
+fn symlink_status(path: Path or String) { $std::fs::symlink_status(path) };
+fn is_regular_file(path: Path or String) { $std::fs::is_regular_file(path) };
+fn is_directory(path: Path or String) { $std::fs::is_directory(path) };
+fn is_symlink(path: Path or String) { $std::fs::is_symlink(path) };
+fn is_empty(path: Path or String) { $std::fs::is_empty(path) };
+fn create_directory(path: Path or String) { $std::fs::create_directory(path) };
+fn create_directories(path: Path or String) { $std::fs::create_directories(path) };
+fn remove(path: Path or String) { $std::fs::remove(path) };
+fn remove_all(path: Path or String) { $std::fs::remove_all(path) };
+fn rename(source: Path or String, destination: Path or String) {
     $std::fs::rename(source, destination)
 };
-fn create_hard_link(target: Path | String, link: Path | String) {
+fn create_hard_link(target: Path or String, link: Path or String) {
     $std::fs::create_hard_link(target, link)
 };
-fn create_symlink(target: Path | String, link: Path | String) {
+fn create_symlink(target: Path or String, link: Path or String) {
     $std::fs::create_symlink(target, link)
 };
-fn create_directory_symlink(target: Path | String, link: Path | String) {
+fn create_directory_symlink(target: Path or String, link: Path or String) {
     $std::fs::create_directory_symlink(target, link)
 };
-fn read_symlink(path: Path | String) { $std::fs::read_symlink(path) };
-fn copy_symlink(source: Path | String, destination: Path | String) {
+fn read_symlink(path: Path or String) { $std::fs::read_symlink(path) };
+fn copy_symlink(source: Path or String, destination: Path or String) {
     $std::fs::copy_symlink(source, destination)
 };

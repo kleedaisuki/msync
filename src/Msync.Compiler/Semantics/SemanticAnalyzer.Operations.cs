@@ -42,6 +42,7 @@ internal sealed partial class SemanticAnalyzer
             case HirKind.IsType:
                 {
                     var value = Analyze(children[0], context);
+                    if (program.PatternFieldTests.Contains(id)) return AnalyzePatternField(node, value, context);
                     var type = Analyze(children[1], context);
                     Require(type, hir.Type(TypeRef.Type), program.Node(children[1]).Source, context: context);
                     bool? known = null;
@@ -97,6 +98,14 @@ internal sealed partial class SemanticAnalyzer
             return PairOperation(node, operand!, other, context, program.Node(children[0]).Source, program.Node(children[1]).Source);
         }
         throw Error(node.Source, $"Unknown semantic operation '{node.Kind}'.");
+    }
+
+    private SemanticValue Conformance(HirTypeId target, HirNode node, HirNodeId operand, SemanticContext context)
+    {
+        var value = Analyze(operand, context);
+        Require(value, target, node.Source, context: context);
+        Trace?.Metric("conformance_checks", 1);
+        return value;
     }
 
     private SemanticValue Builtin(HirNode node, SemanticContext context)

@@ -249,9 +249,11 @@ public static partial class LlvmHirLowerer
         }
 
         private LlvmAllocaInstruction StackCell(HirTypeId type, bool admitsNull = false)
+            => StackCell(owner.Type(type, admitsNull), owner.metadata.Type(type, admitsNull));
+
+        private LlvmAllocaInstruction StackCell(LlvmType type, int logicalType)
         {
-            int logicalType = owner.metadata.Type(type, admitsNull);
-            var address = new LlvmAllocaInstruction(owner.Type(type, admitsNull), owner.Int(1),
+            var address = new LlvmAllocaInstruction(type, owner.Int(1),
                 owner.module.DataLayout.GetAllocaAddressSpace())
                 { LogicalType = owner.metadata.Pointer(logicalType), AllocatedLogicalType = logicalType };
             entry.InsertBefore(address, entry.GetTerminatorOrNull());
@@ -271,6 +273,9 @@ public static partial class LlvmHirLowerer
             var value = node.Kind switch
             {
                 HirKind.Literal => Literal(node),
+                HirKind.PatternRegion => PatternRegion(node),
+                HirKind.PatternDemand => PatternDemand(node),
+                HirKind.PatternRead => ReadPatternItem(node),
                 HirKind.ReadLocation or HirKind.ReadStorage => ReadLocation(node),
                 HirKind.Declare or HirKind.Assign => Store(node),
                 HirKind.Discard => Discard(node),

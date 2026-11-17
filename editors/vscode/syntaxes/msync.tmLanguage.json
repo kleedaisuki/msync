@@ -425,7 +425,7 @@
           "name": "keyword.operator.logical.msync"
         },
         {
-          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:native|let|global|drop|include|execute|decltype|is)(?![\\p{L}\\p{N}_./\\\\-])",
+          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:native|let|global|drop|include|execute|decltype|is|satisfies)(?![\\p{L}\\p{N}_./\\\\-])",
           "name": "keyword.other.msync"
         },
         {
@@ -451,11 +451,15 @@
       "name": "entity.name.function.msync"
     },
     "numbers": {
-      "match": "(?<![\\p{L}\\p{N}_./\\\\:])(?:0[xX][0-9a-fA-F](?:_?[0-9a-fA-F])*|0[bB][01](?:_?[01])*|0[oO][0-7](?:_?[0-7])*|(?:[0-9](?:_?[0-9])*(?:\\.(?:[0-9](?:_?[0-9])*)?)?|\\.[0-9](?:_?[0-9])*)(?:[eE][+-]?[0-9](?:_?[0-9])*)?)(?![\\p{L}\\p{N}_.\\\\:])(?!-[\\p{L}_])",
+      "match": "(?:(?<![\\p{L}\\p{N}_./\\\\:])|(?<=\\.\\.))(?:0[xX][0-9a-fA-F](?:_?[0-9a-fA-F])*|0[bB][01](?:_?[01])*|0[oO][0-7](?:_?[0-7])*|(?:[0-9](?:_?[0-9])*(?:\\.(?!\\.)(?:[0-9](?:_?[0-9])*)?)?|\\.[0-9](?:_?[0-9])*)(?:[eE][+-]?[0-9](?:_?[0-9])*)?)(?:(?=\\.\\.)|(?![\\p{L}\\p{N}_.\\\\:]))(?!-[\\p{L}_])",
       "name": "constant.numeric.msync"
     },
     "operators": {
       "patterns": [
+        {
+          "match": "\\?::|\\?\\?=?|\\.\\.(?![/\\\\])",
+          "name": "keyword.operator.msync"
+        },
         {
           "match": "\\?",
           "name": "keyword.control.msync"

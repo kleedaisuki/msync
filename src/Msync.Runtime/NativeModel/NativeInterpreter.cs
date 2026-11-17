@@ -15,6 +15,7 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
     private NativeEnvironmentLayout?[] explicitEnvironments => (programUpdated ? activeGeneration.Value ?? generation : generation).ExplicitEnvironments;
     private readonly RuntimeProfile? profile;
     private readonly NativeRuntimeContext sessionContext;
+    private readonly bool ownsSshMultiplexing;
     private readonly Action<NativeProcess>? processCreatedObserver;
     private readonly AsyncLocal<NativeRuntimeContext?> deferredContext = new();
     private NativeRuntimeContext context => deferredContext.Value ?? sessionContext;
@@ -54,7 +55,8 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
         this.context.DescribeFunction = DescribeFunction;
         if (program.Stage == ArtifactStage.Relocatable) program = NativeBackendCompiler.Compile(program, this.context);
         generation = new(new(program, this.context, retainedLiterals));
-        sessionContext.Connections.Acquire();
+        ownsSshMultiplexing = program.PreserveLocals && !OperatingSystem.IsWindows();
+        if (ownsSshMultiplexing) sessionContext.Connections.AcquireMultiplexing();
         statics = Enumerable.Range(0, program.Statics.Count).Select(_ => new StaticState()).ToArray();
         int concurrency = Math.Max(1, Math.Min(this.context.Jobs,
             (int)Math.Min(int.MaxValue, this.context.MemoryLimit / Math.Max(1, this.context.BufferSize))));
@@ -249,7 +251,7 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
     }
 
     private async ValueTask FinishOwnedWorkAsync(Activation activation, NativeEnvironment? environment,
-        NativeArguments arguments, NativeDatum result, CancellationToken token)
+        NativeArguments arguments, NativeDatum result, CancellationToken token, bool recovering)
     {
         Exception? iteratorFailure = null;
         try { await activation.CloseIteratorsAsync(); }
@@ -269,7 +271,7 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
                     else reachable.AddLocation(environment.CaptureAddress(capture));
                 }
             if (activation.FunctionIndex == image.Program.EntryPoint && image.Program.SessionRoots is { } roots)
-                foreach (int root in roots) reachable.AddLocation(activation.Frame.Location(root));
+                AddSessionRoots(activation.Frame, roots, reachable, recovering);
             try { await activation.Work.FinishAsync(reachable, () => Interlocked.Increment(ref failedTransfers), token); }
             catch (Exception error) when (iteratorFailure is not null)
             { throw new AggregateException("Native iterator and work cleanup failed.", iteratorFailure, error); }
@@ -277,6 +279,31 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
         if (iteratorFailure is not null) ExceptionDispatchInfo.Capture(iteratorFailure).Throw();
     }
 
+    private void AddSessionRoots(NativeFrame frame, IReadOnlyList<int> roots, NativeReachable reachable, bool recovering)
+    {
+        HashSet<int>? hidden = null;
+        if (image.Program.SessionShadowPaths is { } shadows)
+        {
+            using var span = context.Timeline?.Begin("work.session_shadow_roots");
+            span?.SetMetric("recovering", recovering ? 1 : 0);
+            span?.SetMetric("paths", shadows.Count);
+            int restored = 0;
+            hidden = [];
+            foreach (int[] path in shadows)
+            {
+                int visible = path[0];
+                if (recovering)
+                    foreach (int slot in path)
+                        if (memory.TryRead(frame.Location(slot), out _)) { visible = slot; break; }
+                if (visible != path[0]) ++restored;
+                foreach (int slot in path)
+                    if (slot != visible) hidden.Add(slot);
+            }
+            span?.SetMetric("restored", restored);
+        }
+        foreach (int root in roots)
+            if (hidden?.Contains(root) != true) reachable.AddLocation(frame.Location(root));
+    }
 
 
     private NativeAddress EnvironmentAddress(NativeFunction function, NativeInstruction instruction)
@@ -422,7 +449,8 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
             DisposeTierPool();
             transferSlots.Dispose();
             guestHeap.Retire(Volatile.Read(ref guestReferencesExported));
-            await sessionContext.Connections.ReleaseAsync(sessionContext);
+            if (ownsSshMultiplexing)
+                await sessionContext.Connections.ReleaseMultiplexingAsync(sessionContext);
         }
     }
 }

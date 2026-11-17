@@ -1,0 +1,18 @@
+fn test(record) {
+    match record {
+        { envelope: { ok: true } } => "ok",
+        { envelope: { ok: false } } => "failed",
+    }
+};
+fn seq(xs: Range<Bool>) {
+    match xs {
+        [] => "empty",
+        [true, ..] => "yes",
+        [false, ..] => "no",
+    }
+};
+$std::io::println(test({ envelope: { ok: true } }));
+$std::io::println(test({ envelope: { ok: false } }));
+$std::io::println(seq([true, false]));
+$std::io::println(seq([false, true]));
+$std::io::println(seq([]));

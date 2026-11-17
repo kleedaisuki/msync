@@ -96,8 +96,8 @@ foreach (int level in new[] { 0, 2, 3 })
         }
     }
     const string unsafeUnion = """
-        let current: Range | String = [1];
-        fn identity(value: Range | String) { value };
+        let current: Range or String = [1];
+        fn identity(value: Range or String) { value };
         let values = identity(current);
         current = "changed";
         $std::ranges::size(values)
