@@ -132,6 +132,22 @@ reader (including a child inheriting the OS handle) cannot see bytes already
 buffered by the first. Use a separate source file and explicit child input when
 ownership must be transferred.
 
+For redirected CLI input, line reads start the asynchronous stream reader
+directly under the same reader turn. An already-buffered line completes
+inline; when the buffer needs more bytes, the stream read supplies the pending
+operation. No per-line thread-pool submission is required. The reader owns its
+turn until the actual read finishes, even if a caller stops awaiting it.
+An arbitrary injected reader (or the terminal reader) still starts on the
+pool because its async method may block before returning.
+`input.read_line` diagnostics record dispatch, turn contention and whether
+the direct reader returned pending.
+
+On the standard Set deduplication fixture (seed 17, same bound artifact),
+seven alternating telemetry-off Native AOT pairs on CPUs 12–15 moved process
+medians from 4.204 s to 3.094 s (paired median -26.0%, seven faster pairs).
+A separate diagnostic run recorded 12,288 direct reads, 53 pending reader
+results, and no waits for the reader turn.
+
 TTY reads borrow the terminal only after the editor returns the submitted
 statement. They reuse the existing cancellable foreground key input and the
 plain-line editing shared with authentication prompts. Ctrl-C releases the

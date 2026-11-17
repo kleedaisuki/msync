@@ -3,5 +3,6 @@
   <ItemGroup>
     <ProjectReference Include="../Msync.Core/Msync.Core.csproj" />
     <InternalsVisibleTo Include="Msync.NativeTiering.Tests" />
+    <InternalsVisibleTo Include="msync" />
   </ItemGroup>
 </Project>

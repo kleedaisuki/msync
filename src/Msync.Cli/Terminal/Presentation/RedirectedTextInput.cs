@@ -1,9 +1,10 @@
 using System.Text;
+using Msync.Runtime.Native;
 
 namespace Msync.Cli;
 
 // One lazy buffer owns command and program reads from the redirected stdin stream.
-internal sealed class RedirectedTextInput : TextReader
+internal sealed class RedirectedTextInput : TextReader, IAsyncLineInput
 {
     private StreamReader? reader;
     private StreamReader Reader => reader ??= new(Console.OpenStandardInput(),
