@@ -39,14 +39,18 @@ public static partial class LlvmHirLowerer
             return result;
         }
 
-        internal PhysicalMember SourceMember(int shape, string name, int ordinalHint)
+        internal bool TrySourceMember(int shape, string name, int ordinal, out PhysicalMember member)
         {
             var fields = hir.ScopeLayouts[shape].Fields;
-            int ordinal = (uint)ordinalHint < (uint)fields.Length && fields[ordinalHint].Name == name
-                ? ordinalHint
-                : fields.Select((field, index) => (field, index)).First(item => item.field.Name == name).index;
+            if ((uint)ordinal >= (uint)fields.Length || fields[ordinal].Name != name)
+            {
+                ordinal = 0;
+                while (ordinal < fields.Length && fields[ordinal].Name != name) ordinal++;
+                if (ordinal == fields.Length) { member = default; return false; }
+            }
             int layout = metadata.Layout(shape);
-            return new(Layout(shape), layout, ordinal, metadata.Layouts[layout].Fields[ordinal].Type);
+            member = new(Layout(shape), layout, ordinal, metadata.Layouts[layout].Fields[ordinal].Type);
+            return true;
         }
 
         internal readonly Dictionary<int, LlvmStructType> scopeLayoutsByPhysicalId = [];
@@ -202,12 +206,15 @@ public static partial class LlvmHirLowerer
                 return NativeBuiltin(node, "process." + node.Text, [receiver]);
             }
             var domain = type.ScopeDomain;
+            bool checkedView = (node.Effects & HirEffects.MayFail) != 0;
             owner.trace?.Detail?.Metric("physical.layouts", domain.Count);
             if (domain.Count == 1)
             {
+                if (!owner.TrySourceMember(domain[0], node.Text!, node.Data, out var member))
+                    return MissingMember(node, checkedView);
                 directMemberCount++;
                 owner.trace?.Detail?.Metric("layout.fixed_offset", 1);
-                return MemberAt(node, receiver, assigned, owner.SourceMember(domain[0], node.Text!, node.Data));
+                return MemberAt(node, receiver, assigned, member);
             }
             if (receiver is LlvmHeapAllocInst allocation
                 && owner.TryAllocatedMember(allocation.LogicalLayout, node.Text!, node.Data, out var allocated))
@@ -217,10 +224,31 @@ public static partial class LlvmHirLowerer
                 owner.trace?.Detail?.Metric("layout.fixed_offset", 1);
                 return MemberAt(node, receiver, assigned, allocated);
             }
-            var cases = domain.Count == 0
-                ? owner.MemberLayouts(node.Text!, Hir.Types[(assigned is null ? node.Type : Hir.Node(Hir.Children(node)[1]).Type).Value].RuntimeType.Kind)
-                : Enumerable.Range(0, domain.Count).Select(index => owner.SourceMember(domain[index], node.Text!, node.Data)).ToArray();
-            if (cases.Length == 0) throw new LlvmHirLoweringException(node.Source, "member without a declared physical object layout");
+            Lowering.PhysicalMember[] cases;
+            bool exhaustive = true;
+            if (domain.Count == 0)
+            {
+                cases = owner.MemberLayouts(node.Text!, Hir.Types[(assigned is null ? node.Type : Hir.Node(Hir.Children(node)[1]).Type).Value].RuntimeType.Kind);
+                exhaustive = !checkedView;
+            }
+            else
+            {
+                List<Lowering.PhysicalMember> known = new(domain.Count);
+                for (int index = 0; index < domain.Count; index++)
+                {
+                    if (owner.TrySourceMember(domain[index], node.Text!, node.Data, out var member)) known.Add(member);
+                    else if (!checkedView) return MissingMember(node, false);
+                }
+                cases = known.ToArray();
+                exhaustive = cases.Length == domain.Count;
+            }
+            if (cases.Length == 0) return MissingMember(node, checkedView);
+            if (!exhaustive)
+            {
+                dispatchedMemberCount++;
+                owner.trace?.Detail?.Metric("layout.checked_view_tests", cases.Length);
+                return DispatchMember(node, receiver, assigned, cases, exhaustive: false);
+            }
             if (cases.Length == 1)
             {
                 directMemberCount++;
@@ -260,25 +288,56 @@ public static partial class LlvmHirLowerer
 
         private LlvmValue MemberAccess(HirNode node, LlvmValue address, LlvmValue? assigned, int fieldType)
         {
-            var type = owner.RepresentationType(owner.metadata.Types[fieldType].Kind);
+            var actual = owner.metadata.Types[fieldType].Kind;
+            var type = owner.RepresentationType(actual);
             if (assigned is not null)
             {
+                var supplied = Hir.Types[Hir.Node(Hir.Children(node)[1]).Type.Value].RuntimeType.Kind;
+                if ((supplied & actual) == TypeKind.Never) return MissingCheckedMember(node);
+                if ((supplied & ~actual) != TypeKind.Never)
+                    assigned = CheckedMemberValue(assigned, type, fieldType);
                 var value = ReferenceEquals(assigned.Type, type) ? assigned :
                     ConversionCall(LlvmRuntimeConversionOperation.Represent, type, fieldType, [assigned]);
                 Add(new LlvmStoreInstruction(value, address));
                 return owner.Null;
             }
+            var expected = Hir.Types[node.Type.Value].RuntimeType.Kind;
+            bool checkedView = (node.Effects & HirEffects.MayFail) != 0;
+            if (checkedView && (actual & expected) == TypeKind.Never) return MissingCheckedMember(node);
             var loaded = Add(new LlvmLoadInstruction(type, address) { LogicalType = fieldType });
+            if (checkedView && (actual & ~expected) != TypeKind.Never)
+                return CheckedMemberValue(loaded, owner.Type(node.Type), owner.metadata.Type(node.Type));
             return Represent(loaded, node.Type);
         }
 
-        private LlvmValue DispatchMember(HirNode node, LlvmValue receiver, LlvmValue? assigned, IReadOnlyList<Lowering.PhysicalMember> cases)
+        private LlvmValue CheckedMemberValue(LlvmValue value, LlvmType type, int target)
+        {
+            owner.trace?.Detail?.Metric("member.checked_view_narrows", 1);
+            return ConversionCall(LlvmRuntimeConversionOperation.Narrow, type, target, [value], target);
+        }
+
+        private LlvmValue MissingCheckedMember(HirNode node)
+        {
+            owner.trace?.Detail?.Metric("member.checked_view_rejects", 1);
+            // Bare LLVM unreachable lets the optimizer discard the incoming edge.
+            OperationCall(new(LlvmRuntimeValueOperation.FailMember, Symbol: $"Scope member '{node.Text}' is outside its structural view."),
+                LlvmType.GetVoidTy(owner.context), -1, []);
+            Add(new LlvmUnreachableInstruction(owner.context));
+            return owner.Null;
+        }
+
+        private LlvmValue MissingMember(HirNode node, bool checkedView) => checkedView
+            ? MissingCheckedMember(node)
+            : throw new LlvmHirLoweringException(node.Source, "member without a declared physical object layout");
+
+        private LlvmValue DispatchMember(HirNode node, LlvmValue receiver, LlvmValue? assigned,
+            IReadOnlyList<Lowering.PhysicalMember> cases, bool exhaustive = true)
         {
             var done = new LlvmBasicBlock(owner.context, "member.end", function);
             var incoming = new List<(LlvmValue Value, LlvmBasicBlock Block)>();
             for (int index = 0; index < cases.Count; index++)
             {
-                if (index + 1 < cases.Count)
+                if (!exhaustive || index + 1 < cases.Count)
                 {
                     var selected = new LlvmBasicBlock(owner.context, "member.layout", function);
                     var next = new LlvmBasicBlock(owner.context, "member.next", function);
@@ -289,7 +348,9 @@ public static partial class LlvmHirLowerer
                 }
                 else EmitCase(cases[index]);
             }
+            if (!exhaustive) MissingCheckedMember(node);
             block = done;
+            if (incoming.Count == 0) return MissingCheckedMember(node);
             if (assigned is not null) return owner.Null;
             var result = Add(new LlvmPhiInstruction(owner.Type(node.Type), incoming.Count) { LogicalType = owner.metadata.Type(node.Type) });
             foreach (var item in incoming) result.AddIncoming(item.Value, item.Block);
@@ -298,6 +359,7 @@ public static partial class LlvmHirLowerer
             void EmitCase(Lowering.PhysicalMember member)
             {
                 var value = MemberAt(node, receiver, assigned, member);
+                if (block.HasTerminator) return;
                 incoming.Add((value, block));
                 Add(new LlvmUncondBrInstruction(done));
             }

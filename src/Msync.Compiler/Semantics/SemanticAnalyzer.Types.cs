@@ -100,6 +100,16 @@ internal sealed partial class SemanticAnalyzer
         return type == value.Type && ReferenceEquals(element, value.Element) ? value : value with { Type = type, Element = element };
     }
 
+    // A structural view constrains member types, not the allocation's field offsets.
+    private HirTypeId ViewOf(HirTypeId contract, HirTypeId value)
+    {
+        var view = hir.Types[contract.Value];
+        var layouts = hir.Types[value.Value].ScopeDomain;
+        if ((view.RuntimeType.Kind & TypeKind.Scope) == 0 || view.ScopeDomain.Equals(layouts)) return contract;
+        Trace?.Metric("scope.views.physical_domain_transfers", 1);
+        return hir.Type(view with { ScopeDomain = layouts });
+    }
+
     private static ImmutableDictionary<string, ImmutableArray<HirSourceRange>>? JoinFieldDefinitions(
         SemanticScope first, SemanticScope second, IEnumerable<string> members)
     {

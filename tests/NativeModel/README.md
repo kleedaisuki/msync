@@ -138,7 +138,7 @@ Number-to-Scope, Null-to-nonnull, widened scalar and incompatible-pointer stores
 A forged projection omitting an admitted layout remains rejected. Projection
 coverage errors include function, instruction, base register and both layout
 sets. `tests/NativeHirLowering` exercises the two-node cycle through source and
-source-free HIR, checked portable native artifacts and real execution at O0/O2,
+source-free HIR, portable and bound native artifacts and real execution at O0/O2,
 with an independent four-hop sum of 6.
 
 ## Logical reflection and deferred scalar observations

@@ -47,6 +47,9 @@ public static partial class LlvmNativeLowerer
         {
             switch (binding.Operation)
             {
+                case LlvmRuntimeValueOperation.FailMember:
+                    Add(new(NativeOp.Unreachable, Symbol: binding.Symbol, Source: call.Source));
+                    break;
                 case LlvmRuntimeValueOperation.SelectPath:
                     Add(new(NativeOp.SelectPath, Slot(call), ArgumentSlot(call, 0), Symbol: binding.Symbol, Source: call.Source));
                     break;

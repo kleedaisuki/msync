@@ -198,12 +198,14 @@ internal sealed partial class SemanticAnalyzer
         if (expected.Accepts(Runtime(value)) && !structural) return value;
         if (structural)
         {
-            SemanticValue narrowed = RetypeFlowValue(value, target, context, []);
+            HirTypeId view = StructuralStorageType(target);
+            HirTypeId result = ViewOf(view, value.Type);
+            SemanticValue narrowed = RetypeFlowValue(value, result, context, []);
             return narrowed with
             {
-                Type = target,
-                CheckedType = target,
-                Node = Add(node with { Data = target.Value }, target, [value.Node], context)
+                Type = result,
+                CheckedType = view,
+                Node = Add(node with { Data = view.Value }, result, [value.Node], context)
             };
         }
         return new(target, Add(node with { Data = target.Value }, target, [value.Node], context),
@@ -237,8 +239,9 @@ internal sealed partial class SemanticAnalyzer
         if (receiver.CheckedType is { } checkedReceiver)
         {
             HirFlowTypeAlgebra algebra = new(hir);
-            receiverType = hir.Types[checkedReceiver.Value].RuntimeType.Accepts(Runtime(receiver))
+            HirTypeId view = hir.Types[checkedReceiver.Value].RuntimeType.Accepts(Runtime(receiver))
                 ? algebra.Narrow(checkedReceiver, Runtime(receiver), true) : checkedReceiver;
+            receiverType = ViewOf(view, receiver.Type);
         }
         receiver = receiver with { Type = receiverType };
         var scope = receiver.Scope ?? ValueForType(receiver.Type).Scope;
@@ -270,10 +273,11 @@ internal sealed partial class SemanticAnalyzer
         if (receiver.CheckedType is { } checkedType)
         {
             HirFlowTypeAlgebra algebra = new(hir);
-            HirTypeId memberType = algebra.Member(checkedType, node.Text!);
+            HirTypeId memberType = StructuralStorageType(algebra.Member(checkedType, node.Text!));
             if (hir.Types[memberType.Value].RuntimeType.Accepts(Runtime(value)))
                 memberType = algebra.Narrow(memberType, Runtime(value), true);
-            value = RetypeFlowValue(value, memberType, context, []) with { Type = memberType, CheckedType = memberType };
+            HirTypeId result = ViewOf(memberType, value.Type);
+            value = RetypeFlowValue(value, result, context, []) with { Type = result, CheckedType = memberType };
         }
         if (hir.Types[receiver.Type.Value].ScopeDomain.Count == 0)
             value = WithoutLayoutFacts(value);
@@ -294,7 +298,9 @@ internal sealed partial class SemanticAnalyzer
         }
         return value with
         {
-            Node = Add(node with { Data = offset }, value.Type, [receiver.Node], context),
+            Node = Add(node with { Data = offset,
+                Effects = receiver.CheckedType is null ? node.Effects : node.Effects | HirEffects.MayFail },
+                value.Type, [receiver.Node], context),
             Location = location,
             StorageConstraint = constraint,
             TypeRead = typeRead
@@ -318,7 +324,7 @@ internal sealed partial class SemanticAnalyzer
         if (Runtime(receiver).Nullable || Runtime(receiver) != TypeRef.Scope)
             throw Error(node.Source, "Member assignment requires a non-null Scope.", "E0206");
         if (receiver.CheckedType is { } checkedType)
-            receiver = receiver with { Type = new HirFlowTypeAlgebra(hir).Narrow(checkedType, Runtime(receiver), true) };
+            receiver = receiver with { Type = ViewOf(new HirFlowTypeAlgebra(hir).Narrow(checkedType, Runtime(receiver), true), receiver.Type) };
         if (receiver.Scope is null) receiver = receiver with { Scope = ValueForType(receiver.Type).Scope };
         if (receiver.Scope is not { } scope)
             throw Error(node.Source, "Member assignment requires a non-null Scope.", "E0206");
@@ -381,7 +387,9 @@ internal sealed partial class SemanticAnalyzer
                 MarkProgramCell(canonical, context);
             }
         }
-        return new(hir.Type(TypeRef.Null), Add(node with { Data = offset }, hir.Type(TypeRef.Null), [receiver.Node, value.Node], context));
+        return new(hir.Type(TypeRef.Null), Add(node with { Data = offset,
+            Effects = receiver.CheckedType is null ? node.Effects : node.Effects | HirEffects.MayFail },
+            hir.Type(TypeRef.Null), [receiver.Node, value.Node], context));
     }
 
     private HirTypeId RangeType(HirTypeId element)

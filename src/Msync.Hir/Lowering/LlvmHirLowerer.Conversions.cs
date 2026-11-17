@@ -4,7 +4,7 @@ using Msync.Core.Native;
 
 namespace Msync.Hir;
 
-public enum LlvmRuntimeConversionOperation : byte { Represent, Coerce, Convert, IsNull, IsType, TypeOf }
+public enum LlvmRuntimeConversionOperation : byte { Represent, Coerce, Convert, IsNull, IsType, TypeOf, Narrow }
 public sealed record LlvmRuntimeConversionBinding(LlvmRuntimeConversionOperation Operation, int TargetType = -1);
 
 public static partial class LlvmHirLowerer

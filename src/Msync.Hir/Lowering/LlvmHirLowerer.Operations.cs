@@ -4,7 +4,7 @@ using Msync.Core.Native;
 
 namespace Msync.Hir;
 
-public enum LlvmRuntimeValueOperation : byte { SelectPath, Barrier, Acquire, ProcessCall, HasLayout, DemandBool, ProjectAddress, BindSessionCell }
+public enum LlvmRuntimeValueOperation : byte { SelectPath, Barrier, Acquire, ProcessCall, HasLayout, DemandBool, ProjectAddress, BindSessionCell, FailMember }
 public sealed record LlvmRuntimeValueBinding(LlvmRuntimeValueOperation Operation, int Mode = 0, string? Symbol = null)
 {
     public NativeProjection? Projection { get; init; }
@@ -29,6 +29,8 @@ public static partial class LlvmHirLowerer
             else if (binding.Operation is LlvmRuntimeValueOperation.HasLayout or LlvmRuntimeValueOperation.ProjectAddress)
                 // The object shape and storage location do not change on field writes.
                 target.MemoryEffectsAttribute = new(0);
+            else if (binding.Operation == LlvmRuntimeValueOperation.FailMember)
+                target.NoMerge = true;
             operationBindings.Add((binding, signature), target);
             valueOperations.Add(target, binding);
             trace?.Detail?.Metric("operations.binding.created", 1);

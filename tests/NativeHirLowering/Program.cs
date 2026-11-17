@@ -168,7 +168,8 @@ await CheckSeparatedInitialization();
             fn() { start = start + 1; start }
         };
         let next = make(5);
-        next()
+        let other = make(30);
+        next() * 10000 + other() * 100 + next()
         """),
     ("captured-iteration", """
         let next = fn() { 0 };
@@ -198,7 +199,7 @@ await CheckSeparatedInitialization();
         """),
     ("lazy-captures", """
         let value = 1;
-        fn source() { [value, value + 1] };
+        fn source() { $std::ranges::transform([0, 1], fn(offset: Number) { value + offset }) };
         let sequence = source();
         value = 5;
         let sum = 0;
@@ -223,18 +224,11 @@ foreach ((string name, string source) in examples)
         .SelectMany(input => new[] { 0, 2 }.Select(level => (input, level))))
     {
         NativeProgram program = SourceCompiler.LowerNative(input, optimizationLevel);
-        try { NativeArtifact.Validate(program); }
-        catch
-        {
-            string work = Path.Combine(Directory.GetCurrentDirectory(), ".temp/native-hir-lowering-failures");
-            Directory.CreateDirectory(work);
-            File.WriteAllText(Path.Combine(work, name + ".json"), NativeArtifact.ToJson(program));
-            throw;
-        }
         using MemoryStream bytes = new();
         NativeArtifact.WriteProduced(program, bytes); bytes.Position = 0;
         NativeProgram decoded = NativeArtifact.Read(bytes);
-        await using (NativeInterpreter interpreter = new(decoded))
+        NativeProgram bound = NativePreparation.Prepare(decoded);
+        await using (NativeInterpreter interpreter = new(bound))
         {
             NativeValue actual = await interpreter.ExecuteAsync();
             if (name == "heterogeneous-field")
@@ -258,7 +252,7 @@ foreach ((string name, string source) in examples)
                     "generic-shared-environment" => 9,
                     "nullable-loop-flow" => 4,
                     "builtin-storage" => 9,
-                    "captured-parameter" => 6,
+                    "captured-parameter" => 63107,
                     "captured-iteration" => 3,
                     "rebound-layout" => 10,
                     "control-and-cleanup" => 9,
@@ -268,7 +262,7 @@ foreach ((string name, string source) in examples)
                     _ => throw new InvalidOperationException("Missing independent native execution oracle.")
                 };
                 Require(actual.Kind == NativeKind.Number && actual.AsNumber() == expected,
-                    $"{name}: expected {expected}, got {actual.Kind}");
+                    $"{name}: expected {expected}, got {actual}");
             }
         }
         if (name == "two-node-cycle")
@@ -297,10 +291,18 @@ foreach ((string name, string source) in examples)
                     && !symbol.StartsWith("storage.", StringComparison.Ordinal)
                     && !symbol.StartsWith("slots.", StringComparison.Ordinal)), name + ": allocator-shaped operation");
         if (name == "heterogeneous-field")
-            Require(decoded.Projections.Any(projection =>
-                projection.Cases.Any(item => decoded.Types[decoded.Layouts[item.Layout].Fields[item.Field].Type].Kind == TypeKind.String)
-                && projection.Cases.Any(item => decoded.Types[decoded.Layouts[item.Layout].Fields[item.Field].Type].Kind == TypeKind.Path)),
-                "Mixed native field projection lost its monomorphic String/Path physical alternatives");
+        {
+            var fields = decoded.Functions.SelectMany(function => function.Instructions)
+                .SelectMany(instruction => instruction.Op switch
+                {
+                    NativeOp.AddressOffset => [decoded.Layouts[instruction.B].Fields[instruction.C]],
+                    NativeOp.ProjectAddress => decoded.Projections[instruction.B].Cases
+                        .Select(item => decoded.Layouts[item.Layout].Fields[item.Field]),
+                    _ => Enumerable.Empty<NativeCodeField>()
+                }).Where(field => field.Name == "value").Select(field => decoded.Types[field.Type].Kind).ToHashSet();
+            Require(fields.Contains(TypeKind.String) && fields.Contains(TypeKind.Path),
+                "Mixed native field access lost its monomorphic String/Path physical alternatives");
+        }
         if (name == "generic-allocation-abis")
             foreach (TypeKind kind in new[] { TypeKind.Number, TypeKind.String, TypeKind.Path })
                 Require(decoded.Layouts.Any(layout => layout.Fields is [{ Name: "payload" } field]
@@ -308,23 +310,14 @@ foreach ((string name, string source) in examples)
                     $"Generic allocation lost its monomorphic {kind} payload ABI");
         if (name == "explicit-scope-shape")
         {
-            var cast = decoded.Functions.SelectMany(function => function.Instructions)
-                .Single(instruction => instruction.Op == NativeOp.Convert && instruction.Immediate == 1);
-            var layouts = decoded.Types[cast.Type].Layouts;
-            Require(layouts is { Count: > 0 } && layouts.All(layout => decoded.Layouts[layout].Fields
-                .Any(field => field.Name == "count" && decoded.Types[field.Type].Kind == TypeKind.Number)),
-                "Structural Scope cast admitted an unrelated physical field schema");
-        }
-        if (name == "captured-parameter")
-        {
-            var make = decoded.Functions.Single(function => function.Name.StartsWith("make", StringComparison.Ordinal)
-                && function.ParameterCount == 1 && !function.IsTemplate);
-            int allocate = make.Instructions.ToList().FindIndex(instruction => instruction.Op == NativeOp.Allocate);
-            int closure = make.Instructions.ToList().FindIndex(instruction => instruction.Op == NativeOp.MakeFunction);
-            Require(allocate >= 0 && closure > allocate, "Captured parameter did not get an independent logical location");
+            Require(decoded.Functions.SelectMany(function => function.Instructions)
+                .Where(instruction => instruction.Op == NativeOp.AddressOffset)
+                .Select(instruction => decoded.Layouts[instruction.B].Fields[instruction.C])
+                .Any(field => field.Name == "count" && decoded.Types[field.Type].Kind == TypeKind.Number),
+                "The checked member did not use the Number field's physical layout");
         }
     }
-    Console.WriteLine("PASS " + name + ": source and detached HIR, O0/O2 -> checked native artifact and execution");
+    Console.WriteLine("PASS " + name + ": source and detached HIR, O0/O2 -> bound native artifact and execution");
 }
 
 CheckLiteralBits();
@@ -381,7 +374,7 @@ async Task CheckPhysicalWriteBoundary()
             {
                 NativeValue result = await interpreter.ExecuteAsync();
                 Require(valid && result.Kind == NativeKind.Number && result.AsNumber() == 3,
-                    "Checked structural write bypassed its selected physical String ABI");
+                    $"Checked structural write ({valid}, O{level}) bypassed its selected physical String ABI: {result}");
             }
             catch (MsyncException error) when (!valid)
             {

@@ -34,6 +34,8 @@ public static partial class LlvmNativeLowerer
                 LlvmRuntimeConversionOperation.Coerce or LlvmRuntimeConversionOperation.Convert =>
                     new(NativeOp.Convert, result, input, Type: binding.TargetType,
                         Immediate: binding.Operation == LlvmRuntimeConversionOperation.Convert ? 1 : 0, Source: call.Source),
+                LlvmRuntimeConversionOperation.Narrow =>
+                    new(NativeOp.Narrow, result, input, Type: binding.TargetType, Source: call.Source),
                 _ => new(NativeOp.Unary, result, input,
                     B: binding.Operation == LlvmRuntimeConversionOperation.IsType ? ArgumentSlot(call, 1) : -1,
                     Immediate: (int)(binding.Operation switch

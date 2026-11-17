@@ -96,6 +96,13 @@ apply. In a file traversal, the iterator writes one typed `Path` cell and
 the transfer consumes the whole load, including after loop rotation. This
 also keeps the result's logical type attached through target emission.
 
+A checked structural scope view supplies the member contract, while the
+reaching value supplies the physical layout domain. Taking a view or reading
+a member through one must not copy layout IDs from the view's type witness:
+replacing a nested scope through an alias can leave the view valid and change
+the field's offset in the replacement. A known singleton still lowers to a
+constant offset; a finite domain uses the existing layout selection.
+
 The adapter emits a nonnull NativeBackendCode directly, using existing Standard
 handlers, one record per target instruction. It does not call
 NativeBackendCompiler, NativeStoragePlanning or NativeOptimizer. Optional raw,

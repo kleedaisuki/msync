@@ -2,7 +2,7 @@
 
 `dotnet run --project tests/NativeHirLowering -c Release` analyzes real source,
 exports HIR without source text, lowers both forms through the production LLVM pipeline, and
-passes each result through the actual artifact validator/codec and native VM,
+passes each result through the production artifact codec, binding and native VM,
 checking independent numerical/path results at O0 and O2. Generic closures are
 instantiated with unrelated builtin and namespace capture ABIs, and shared
 mutable captures verify that adaptation preserves the original locations. It additionally
