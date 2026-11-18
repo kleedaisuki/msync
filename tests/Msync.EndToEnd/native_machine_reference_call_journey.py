@@ -6,6 +6,7 @@ import os
 import platform
 import sqlite3
 import subprocess
+from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -26,7 +27,7 @@ $std::io::println(node::value as String);
 
 
 def metrics(path: Path) -> dict[str, int]:
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         assert connection.execute("SELECT status,exporter_error FROM sessions").fetchall() == [("complete", None)]
         return dict(connection.execute("""
             SELECT m.key,sum(m.value_int) FROM records r JOIN metrics m ON r.id=m.record_id

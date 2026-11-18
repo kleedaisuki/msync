@@ -6,6 +6,7 @@ import os
 import platform
 import sqlite3
 import subprocess
+from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -174,7 +175,7 @@ def exercise(binary: Path, work: Path, *, handoff: bool = False, boolean: bool =
         database: Path = work / f"{name}-{tier}.sqlite"
         run_gated(cli, work, program, ["--telemetry-db", str(database), "--telemetry-level", "diagnostics"],
                   tier, warm, expected, reply)
-        with sqlite3.connect(database) as connection:
+        with closing(sqlite3.connect(database)) as connection:
             assert connection.execute("SELECT status,exporter_error FROM sessions").fetchall() == [("complete", None)]
             counts: dict[str, int] = dict(connection.execute("""
                 SELECT key,sum(value_int) FROM metrics
@@ -298,7 +299,7 @@ def exercise_segments(binary: Path, work: Path) -> None:
             cwd=work, env={**os.environ, "MSYNC_JIT": tier}, capture_output=True, check=True, timeout=25,
         )
         assert result.stdout == expected and not result.stderr, result
-        with sqlite3.connect(database) as connection:
+        with closing(sqlite3.connect(database)) as connection:
             assert connection.execute("SELECT status,exporter_error FROM sessions").fetchall() == [("complete", None)]
             counts: dict[str, int] = dict(connection.execute("""
                 SELECT key,sum(value_int) FROM metrics
@@ -329,7 +330,7 @@ def exercise_repeated_cold(binary: Path, work: Path) -> None:
                 capture_output=True, check=True, timeout=30,
             )
             assert result.stdout.replace(b"\r\n", b"\n") == b"cold\n" + expected and not result.stderr, result
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection:
         assert connection.execute("SELECT status,exporter_error FROM sessions").fetchall() == [("complete", None)]
         counts: dict[str, int] = dict(connection.execute("""
             SELECT key,sum(value_int) FROM metrics
