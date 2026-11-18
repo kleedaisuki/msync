@@ -13,15 +13,15 @@ public static partial class NativeBuiltins
     private static NativeValue ShellOperation(string operation, IReadOnlyList<NativeValue> args,
         NativeRuntimeContext context, CancellationToken token) => operation switch
         {
-            "tail_lines" => NativeValue.FromRange(TailRange(Range(args[0], operation), Ordinal(args[1], operation, false, "shell"), token)),
+            "tail_lines" => NativeValue.FromRange(TailRange(Range(args[0], operation), Ordinal(args[1], operation, false, "shell"), context, token)),
             "unique_lines" => NativeValue.FromRange(Adapt(Range(args[0], operation), TypeRef.String, UniqueLines, token)),
             "which" => Which(Text(args[0]), context),
-            "process_table" => NativeValue.FromRange(ProcessTable(token)),
+            "process_table" => NativeValue.FromRange(ProcessTable(context, token)),
             _ => throw new MsyncException($"Unknown shell native '{operation}'")
         };
 
-    private static NativeRange TailRange(NativeRange source, long count, CancellationToken token) => count == 0
-        ? NativeRange.Snapshot([], TypeRef.String)
+    private static NativeRange TailRange(NativeRange source, long count, NativeRuntimeContext context, CancellationToken token) => count == 0
+        ? context.Snapshot([], TypeRef.String)
         : Adapt(source, TypeRef.String, (range, cancellation) => TailLines(range, count, cancellation), token);
 
     private static async IAsyncEnumerable<NativeValue> TailLines(NativeRange source, long count,
@@ -68,19 +68,19 @@ public static partial class NativeBuiltins
 
     private static bool Executable(string path) => File.Exists(path) && (OperatingSystem.IsWindows() || NativeAccess.Executable(path));
 
-    private static NativeRange ProcessTable(CancellationToken token)
+    private static NativeRange ProcessTable(NativeRuntimeContext context, CancellationToken token)
     {
         List<NativeValue> rows = [];
         foreach (Process process in Process.GetProcesses())
         {
             using Process owned = process;
             token.ThrowIfCancellationRequested();
-            try { rows.Add(Record(ProcessRowLayout, NativeValue.FromNumber(owned.Id), NativeValue.FromString(owned.ProcessName))); }
+            try { rows.Add(Record(context, ProcessRowLayout, NativeValue.FromNumber(owned.Id), NativeValue.FromString(owned.ProcessName))); }
             catch (InvalidOperationException) { }
             catch (Win32Exception error)
-            { rows.Add(Record(ProcessRowLayout, NativeValue.FromNumber(owned.Id), NativeValue.FromString($"<unavailable: {error.Message}>"))); }
+            { rows.Add(Record(context, ProcessRowLayout, NativeValue.FromNumber(owned.Id), NativeValue.FromString($"<unavailable: {error.Message}>"))); }
         }
         rows.Sort(static (left, right) => left.AsAddress().Field(0).Load().AsNumber().CompareTo(right.AsAddress().Field(0).Load().AsNumber()));
-        return NativeRange.Snapshot(rows, TypeRef.Scope);
+        return context.Snapshot(rows, TypeRef.Scope);
     }
 }

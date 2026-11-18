@@ -41,7 +41,9 @@ public sealed partial class NativeInterpreter
         byte* vector = (byte*)block.Address;
         *(int*)vector = captures.Length;
         captures.CopyTo(new Span<NativeCaptureVector>(vector + 8, captures.Length));
-        Interlocked.CompareExchange(ref owner.MachineCaptures, (nint)vector, 0);
+        if (Interlocked.CompareExchange(ref owner.MachineCaptures, (nint)vector, 0) == 0
+            && owner.GuestReferences is not null)
+            NativeGuestObjectTable.MarkCaptureVector(owner.Storage.RawAddress);
         if (profile is not null)
             (currentWork.Value ?? executionWork).Counters.NativeCaptureVector(bytes, locations, values, block.Reserved);
     }

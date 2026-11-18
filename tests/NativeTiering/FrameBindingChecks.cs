@@ -18,24 +18,10 @@ internal static class FrameBindingChecks
         if (!image.Frame(0).BindingSlots.SequenceEqual([0]))
             throw new Exception("Immutable frame locations acquired mutable binding state.");
         NativeMemory memory = new();
-        NativeFrame frame = new(image, 0, null, [], memory);
-        frame.Set(0, NativeValue.FromNumber(7));
-        frame.Set(1, NativeValue.FromNumber(13));
-        NativeAddress old = frame.Location(0);
-        NativeAddress target = frame.Location(1);
-        frame.Bind(0, target);
-        if (frame.Location(0) != target || old == target || old.Load().AsNumber() != 7)
-            throw new Exception("Binding redirected a previously obtained frame address.");
-        frame.Set(0, NativeValue.FromNumber(21));
-        if (frame.GetDatum(1).Value.AsNumber() != 21 || old.Load().AsNumber() != 7)
-            throw new Exception("A compact frame binding lost its canonical alias.");
-        frame.SetPointer(2, old);
-        if (frame.Pointer(2) != old)
-            throw new Exception("A static pointer cell lost an old pre-bind address.");
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
-        if (frame.Pointer(2).Load().AsNumber() != 7)
-            throw new Exception("A compact binding failed to keep an escaping frame owner alive.");
+        CheckRebinding(new(image, 0, null, [], memory));
+        using NativeGuestHeap native = new(rawEdges: IntPtr.Size == sizeof(ulong));
+        CheckRebinding(new(image, 0, null, default(NativeArguments), memory, heap: native));
+        if (IntPtr.Size == sizeof(ulong)) CheckStackAddresses(image, memory, native);
 
         NativeProgram persistent = program with { PreserveLocals = true, SessionRoots = [1] };
         NativeImage sessionImage = new(persistent, new());
@@ -59,6 +45,46 @@ internal static class FrameBindingChecks
         ephemeral.Bind(0, heap);
         if (ephemeral.Location(0) != heap)
             throw new Exception("An ephemeral session-capable frame cannot rebind without a persistence owner.");
-        return 9;
+        return 13;
+    }
+
+    private static void CheckStackAddresses(NativeImage image, NativeMemory memory, NativeGuestHeap heap)
+    {
+        using NativeFrameStack? stack = NativeFrameStack.Open();
+        NativeFrame source = new(image, 0, null, default(NativeArguments), memory, heap: heap, stack: true);
+        NativeFrame target = new(image, 0, null, default(NativeArguments), memory, heap: heap, stack: true);
+        source.Set(1, NativeValue.FromNumber(7));
+        target.SetPointer(2, source.Location(1));
+        if (!target.TryNativePointer(2, out var pointer, out nint carrier, out bool pending)
+            || pending || !pointer.IsInitialized || carrier != NativeStorageTypeWord.Encode(NativeType.Of(NativeKind.Number)))
+            throw new InvalidOperationException("A caller-owned address did not stay in native stack memory.");
+        if (!target.TryNativeLocation(0, out var output, out NativeType type)
+            || !pointer.TryCopy(type, output, type) || target.GetDatum(0).Value.AsNumber() != 7)
+            throw new InvalidOperationException("The native stack address lost its physical carrier.");
+        memory.ResetFrame(target.Allocation);
+        target.LeaveStack();
+        memory.ResetFrame(source.Allocation);
+        source.LeaveStack();
+    }
+
+    private static void CheckRebinding(NativeFrame frame)
+    {
+        frame.Set(0, NativeValue.FromNumber(7));
+        frame.Set(1, NativeValue.FromNumber(13));
+        NativeAddress old = frame.Location(0);
+        NativeAddress target = frame.Location(1);
+        frame.Bind(0, target);
+        if (frame.Location(0) != target || old == target || old.Load().AsNumber() != 7)
+            throw new Exception("Binding redirected a previously obtained frame address.");
+        frame.Set(0, NativeValue.FromNumber(21));
+        if (frame.GetDatum(1).Value.AsNumber() != 21 || old.Load().AsNumber() != 7)
+            throw new Exception("A compact frame binding lost its canonical alias.");
+        frame.SetPointer(2, old);
+        if (frame.Pointer(2) != old)
+            throw new Exception("A static pointer cell lost an old pre-bind address.");
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        if (frame.Pointer(2).Load().AsNumber() != 7)
+            throw new Exception("A compact binding failed to keep an escaping frame owner alive.");
     }
 }

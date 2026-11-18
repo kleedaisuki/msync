@@ -49,7 +49,7 @@ internal static class GuestHeapChecks
         NativeAllocation owner = heap.NewObject(layout, 1, 1, 0, default);
         NativeAllocation target = heap.NewObject(layout, 1, 1, 0, default);
         owner.Field(1).Store(NativeValue.FromAddress(target.Address));
-        if (owner.HeapRoots[0].Value is not null || owner.HeapEdges[0] != target.Storage.RawAddress
+        if (!owner.HeapRoots.IsEmpty || owner.HeapEdges[0] != target.Storage.RawAddress
             || owner.Field(1).Load().AsAddress() != target.Address)
             throw new InvalidOperationException("A guest-to-guest edge was mirrored to a CLR reference.");
         NativeAllocation host = new(layout);
@@ -58,6 +58,16 @@ internal static class GuestHeapChecks
         if (owner.HeapEdges[0] != 0 || host.Field(1).Load().AsAddress() != target.Address)
             throw new InvalidOperationException("Copying from the native bank changed guest identity.");
         NativeStorage.Copy(host.Field(1), owner.Field(1));
+        NativeAddress interior = target.Field(0);
+        host.Field(1).Store(NativeValue.FromAddress(interior));
+        NativeStorage.Copy(host.Field(1), owner.Field(1));
+        if (!NativeStorageTypeWord.IsType(owner.HeapEdges[1]))
+            throw new InvalidOperationException("A source-typed address must encode its contract in the native lane.");
+        host.Field(1).Clear();
+        NativeStorage.Copy(owner.Field(1), host.Field(1));
+        NativeAddress restored = host.Field(1).Load().AsAddress();
+        if (restored != interior || restored.StorageType != interior.StorageType)
+            throw new InvalidOperationException("Moving an interior address between banks lost its storage type.");
         NativeLayout emptyLayout = new(Array.Empty<NativeField>());
         NativeAllocation empty = heap.NewObject(emptyLayout, 2, 1, 0, default);
         NativeAllocation otherEmpty = heap.NewObject(emptyLayout, 2, 1, 0, default);
@@ -70,10 +80,10 @@ internal static class GuestHeapChecks
             arena.TraceObject(owner.Storage.RawAddress);
             while (arena.TakeObject(out nint current))
                 foreach (nint edge in arena.References!.Resolve(current).HeapEdges)
-                    if (edge != 0) arena.TraceObject(edge);
+                    if (NativeGuestObjectTable.IsObjectEdge(edge)) arena.TraceObject(edge);
         };
         heap.Collect(trace);
-        if (owner.Field(1).Load().AsAddress() != target.Address || NativeStorage.LoadAddressDirect(target.Field(1)) != empty.Address)
+        if (owner.Field(1).Load().AsAddress() != interior || NativeStorage.LoadAddressDirect(target.Field(1)) != empty.Address)
             throw new InvalidOperationException("Sweeping changed the identity of a retained edge.");
 
         NativeLayout callables = new(NativeType.Of(NativeKind.Function));
@@ -82,11 +92,11 @@ internal static class GuestHeapChecks
         NativeEnvironment original = NativeEnvironment.View(schema, target.Address);
         NativeEnvironment another = NativeEnvironment.View(schema, target.Address);
         holder.Field(0).Store(NativeValue.FromFunction(new(1, original)));
-        if (holder.HeapRoots[0].Value is not null || holder.HeapEdges[0] == 0
+        if (!holder.HeapRoots.IsEmpty || holder.HeapEdges[0] == 0
             || !ReferenceEquals(holder.Field(0).Load().AsFunction().Environment, original))
             throw new InvalidOperationException("The closure was not stored as a raw edge.");
         holder.Field(0).Store(NativeValue.FromFunction(new(1, another)));
-        if (holder.HeapEdges[0] != 0 || !ReferenceEquals(holder.Field(0).Load().AsFunction().Environment, another))
+        if (!NativeHostReference.IsHost(holder.HeapEdges[0]) || !ReferenceEquals(holder.Field(0).Load().AsFunction().Environment, another))
             throw new InvalidOperationException("Two independent environment views lost their identity.");
         heap.Collect(trace);
 
@@ -129,6 +139,36 @@ internal static class GuestHeapChecks
         }
         if (GC.GetAllocatedBytesForCurrentThread() != beforeClosures)
             throw new InvalidOperationException("Reusing a guest closure allocated CLR objects.");
+
+        NativeLayout texts = new(NativeType.Of(NativeKind.String), NativeType.Of(NativeKind.String), NativeType.Of(NativeKind.String));
+        NativeAllocation messages = heap.NewObject(texts, 4, 1, 0, default);
+        NativeRootBank bank = messages.Storage.roots;
+        messages.Field(0).Store(NativeValue.FromString("first"));
+        messages.Field(1).Store(NativeValue.FromString("second"));
+        bank.CopyTo(0, bank, 1, 2);
+        if (!messages.HeapRoots.IsEmpty || bank.ReadHost(1).Text != "first" || bank.ReadHost(2).Text != "second")
+            throw new InvalidOperationException("The native lane lost an overlapping host-slot copy.");
+        nint boundaryKey = bank.GuestAddress + 2 * IntPtr.Size;
+        heap.Collect(trace);
+        if (heap.References!.HostReferences.Read(boundaryKey).Value is not null)
+            throw new InvalidOperationException("Sweeping a native block retained a host boundary entry.");
+
+        heap.References.AllocateText = text => heap.NewText(text, default);
+        NativeAllocation nativeText = heap.NewObject(texts, 4, 1, 0, default);
+        nativeText.Field(0).Store(NativeValue.FromString("β🙂"));
+        NativeValue span = nativeText.Field(0).Load();
+        nativeText.Field(1).Store(span);
+        nint textEdge = nativeText.HeapEdges[0];
+        if (!NativeGuestObjectTable.IsTextEdge(textEdge) || nativeText.HeapEdges[1] != textEdge
+            || !span.AsStringSpan().SequenceEqual("β🙂"))
+            throw new InvalidOperationException("Guest text transfer did not share one native UTF-16 block.");
+        heap.Collect(arena =>
+        {
+            arena.Mark(nativeText.Storage.RawAddress);
+            arena.Mark(textEdge & ~7);
+        });
+        if (!nativeText.Field(1).Load().AsStringSpan().SequenceEqual("β🙂"))
+            throw new InvalidOperationException("A live native text edge was lost on sweep.");
     }
 
     internal static async Task HostLifetimeAsync()

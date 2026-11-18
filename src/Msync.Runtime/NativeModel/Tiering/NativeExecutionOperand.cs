@@ -48,6 +48,17 @@ internal readonly record struct NativeExecutionOperand(NativeType? Type, NativeL
 
     internal NativeAddress AddressField(NativeAddress address) => address.OffsetBy(Field.Offset, Field.Type);
 
+    internal bool TryProjectNative(int layout, out NativeFieldLayout field)
+    {
+        NativeProjectionField[] cases = Projection!;
+        if (cases.Length == 1) { field = cases[0].Field; return true; }
+        if (layout != NativeGuestObjectTable.UnknownLayout)
+            foreach (ref readonly NativeProjectionField candidate in cases.AsSpan())
+                if (candidate.Layout == layout) { field = candidate.Field; return true; }
+        field = default;
+        return false;
+    }
+
     internal NativeAddress Project(NativeImage image, NativeAddress address)
     {
         NativeProjectionField[] cases = Projection!;

@@ -12,6 +12,8 @@ public sealed partial class NativeStorage
         internal NativeRootBank roots;
         internal NativeRawSlice<bool> initialized;
         internal readonly nint CallableCells;
+        internal nint PendingCell;
+        internal bool StackAddressable;
         internal readonly byte[] RawBytes => bytes.Buffer;
         internal readonly bool[] InitializedFlags => initialized.Buffer;
         internal readonly int RawOffset => bytes.Offset;
@@ -36,15 +38,15 @@ public sealed partial class NativeStorage
         }
 
         internal unsafe Data(NativeLayout layout, nint address, nint callableCells,
-            NativeGuestObjectTable? objects = null, nint edges = 0, NativeRoot[]? reused = null)
+            NativeGuestObjectTable? objects = null, nint edges = 0, nint pendingCell = 0)
         {
             this.layout = layout;
             bytes = new((byte*)address, layout.RawSize);
             initialized = new((bool*)((byte*)address + layout.RawSize), layout.RawSize);
             int count = layout.ReferenceCount;
-            NativeRoot[] host = reused is not null && reused.Length >= count ? reused : count == 0 ? [] : new NativeRoot[count];
-            roots = new(host, 0, count, objects, edges);
+            roots = objects is not null ? new((nint*)edges, count, objects) : new(count == 0 ? [] : new NativeRoot[count]);
             CallableCells = callableCells;
+            PendingCell = pendingCell;
         }
 
         internal void BindStack(byte[] bytes, NativeRoot[] roots, bool[] initialized, NativeOffset offset)
@@ -54,20 +56,27 @@ public sealed partial class NativeStorage
             this.initialized = new(initialized, offset.Bytes, layout.RawSize);
         }
 
-        internal unsafe void BindStack(byte* bytes, NativeRoot[] roots, bool* initialized, NativeOffset offset,
-            NativeGuestObjectTable? objects = null, nint* edges = null)
+        internal unsafe void BindStack(byte* bytes, NativeRoot[]? roots, bool* initialized, NativeOffset offset,
+            NativeGuestObjectTable? objects = null, nint* edges = null, nint pendingCell = 0)
         {
             this.bytes = new(bytes + offset.Bytes, layout.RawSize);
-            this.roots = new(roots, offset.References, layout.ReferenceCount, objects,
-                edges is null ? 0 : (nint)(edges + offset.References));
+            this.roots = objects is not null
+                ? new(edges is null ? null : edges + offset.References, layout.ReferenceCount, objects)
+                : new(roots!, offset.References, layout.ReferenceCount);
             this.initialized = new(initialized + offset.Bytes, layout.RawSize);
+            PendingCell = pendingCell;
+            StackAddressable = pendingCell != 0;
         }
+
+        internal readonly nint StackEdge() => PendingCell | NativeGuestObjectTable.StackTag;
 
         internal void DetachStack()
         {
+            StackAddressable = false;
             bytes = new([]);
             roots = new([]);
             initialized = new([]);
+            PendingCell = 0;
         }
 
         internal readonly NativeKind ReadKind(NativeOffset offset) => (NativeKind)bytes[offset.Bytes];
@@ -142,6 +151,17 @@ public sealed partial class NativeStorage
             if (value.Kind == NativeKind.Address)
             {
                 roots.WriteAllocation(offset.References, value.Root(0).Allocation!);
+                roots.WriteStorageType(offset.References + 1, value.Root(1).StorageType);
+                first = 2;
+            }
+            else if (value.RangePlan != 0)
+            {
+                roots.WritePlan(offset.References, value.RangePlanArena, value.RangePlan);
+                first = 1;
+            }
+            else if (value.NativeStringEdge != 0)
+            {
+                roots.WriteTextEdge(offset.References, value.NativeStringEdge, value.NativeStringArena);
                 first = 1;
             }
             else if (value.Kind == NativeKind.Function)

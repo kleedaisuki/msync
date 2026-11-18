@@ -4,6 +4,8 @@ namespace Msync.Core.Native;
 
 public readonly partial struct NativeValue : IEquatable<NativeValue>
 {
+    private static readonly TypeRef StringRangeType = new(TypeKind.Range, TypeRef.String);
+    private static readonly TypeRef NumberRangeType = new(TypeKind.Range, TypeRef.Number);
     private static readonly TypeRef RangeType = new(TypeKind.Range);
     private readonly ulong bits;
     private readonly byte flags;
@@ -47,7 +49,8 @@ public readonly partial struct NativeValue : IEquatable<NativeValue>
     public static NativeValue FromRange(NativeRange value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        return new(NativeKind.Range, root0: new() { Range = value });
+        return value.PlanEdge == 0 || value.ItemType != NativeRange.PlanItemType(value.PlanArena!, value.PlanEdge) ? new(NativeKind.Range, root0: new() { Range = value })
+            : FromRangePlan(value.PlanArena!, value.PlanEdge);
     }
     public static NativeValue FromProcess(NativeProcess value)
     {
@@ -68,7 +71,45 @@ public readonly partial struct NativeValue : IEquatable<NativeValue>
 
     public bool AsBool() { Require(NativeKind.Bool); return bits != 0; }
     public double AsNumber() { Require(NativeKind.Number); return BitConverter.UInt64BitsToDouble(bits); }
-    public string AsString() { Require(NativeKind.String); return root0.Text!; }
+    public string AsString()
+    {
+        Require(NativeKind.String);
+        return bits == 0 ? root0.Text! : new string(NativeGuestObjectTable.TextSpan((nint)bits));
+    }
+
+    internal ReadOnlySpan<char> AsStringSpan()
+    {
+        Require(NativeKind.String);
+        return bits == 0 ? root0.Text.AsSpan() : NativeGuestObjectTable.TextSpan((nint)bits);
+    }
+
+    internal NativeValue BuildString(ReadOnlySpan<char> first, ReadOnlySpan<char> second = default)
+    {
+        if (NativeStringEdge == 0) return FromString(string.Concat(first, second));
+        var arena = (NativeGuestObjectTable)NativeStringArena!;
+        nint edge = arena.AllocateTextBuffer!(checked(first.Length + second.Length)) | NativeGuestObjectTable.TextTag;
+        Span<char> destination = NativeGuestObjectTable.TextBuffer(edge);
+        first.CopyTo(destination);
+        second.CopyTo(destination[first.Length..]);
+        return FromTextEdge(arena, edge);
+    }
+
+    internal NativeValue OpenTextBuffer(int length, out Span<char> buffer)
+    {
+        var arena = (NativeGuestObjectTable)NativeStringArena!;
+        nint edge = arena.AllocateTextBuffer!(length) | NativeGuestObjectTable.TextTag;
+        buffer = NativeGuestObjectTable.TextBuffer(edge);
+        return FromTextEdge(arena, edge);
+    }
+
+    internal static NativeValue FromTextEdge(NativeGuestObjectTable arena, nint edge) =>
+        new(NativeKind.String, (ulong)edge, root0: new() { Value = arena });
+
+    internal static NativeValue ConcatStrings(NativeValue left, NativeValue right) =>
+        (left.NativeStringEdge != 0 ? left : right).BuildString(left.AsStringSpan(), right.AsStringSpan());
+
+    internal nint NativeStringEdge => Kind == NativeKind.String ? (nint)bits : 0;
+    internal object? NativeStringArena => root0.Value;
     public NativeConnection AsConnection() { Require(NativeKind.Connection); return root0.Connection!.Connection; }
     public NativePath AsPath()
     {
@@ -81,7 +122,15 @@ public readonly partial struct NativeValue : IEquatable<NativeValue>
         Require(NativeKind.Function);
         return new(unchecked((int)(uint)bits), root0.Environment, root1.Text);
     }
-    public NativeRange AsRange() { Require(NativeKind.Range); return root0.Range!; }
+    internal static NativeValue FromRangePlan(NativeGuestObjectTable arena, nint edge) =>
+        new(NativeKind.Range, (ulong)edge, root0: new() { Value = arena });
+    internal nint RangePlan => Kind == NativeKind.Range ? (nint)bits : 0;
+    internal NativeGuestObjectTable RangePlanArena => (NativeGuestObjectTable)root0.Value!;
+    public NativeRange AsRange()
+    {
+        Require(NativeKind.Range);
+        return bits == 0 ? root0.Range! : NativeRange.FromPlan(RangePlanArena, (nint)bits);
+    }
     public NativeProcess AsProcess() { Require(NativeKind.Process); return root0.Process!; }
     public TypeRef AsType() { Require(NativeKind.Type); return root0.Type!; }
     public NativeAddress AsAddress()
@@ -90,7 +139,13 @@ public readonly partial struct NativeValue : IEquatable<NativeValue>
         return root0.Allocation!.AddressAt(Unpack(bits), root1.StorageType);
     }
 
-    public TypeRef Type => Kind == NativeKind.Range ? root0.Range!.Type : TypeOfKind(Kind);
+    public TypeRef Type => Kind == NativeKind.Range ? (bits == 0 ? root0.Range!.Type : PlanRangeType(RangePlanArena, (nint)bits)) : TypeOfKind(Kind);
+
+    private static TypeRef PlanRangeType(NativeGuestObjectTable arena, nint edge)
+    {
+        ref NativeRangeNode node = ref NativeRangeNode.At(edge);
+        return node.Shape == 0 ? node.StringItems ? StringRangeType : NumberRangeType : arena.RangeShape(node.Shape).Range;
+    }
 
     internal static TypeRef TypeOfKind(NativeKind kind) => kind switch
     {
@@ -123,14 +178,20 @@ public readonly partial struct NativeValue : IEquatable<NativeValue>
         4 => root4,
         _ => throw new ArgumentOutOfRangeException(nameof(index))
     };
-    internal static NativeValue Restore(NativeKind kind, ulong bits, byte flags, NativeRootBank roots, int start, int count) =>
-        new(kind, bits, flags, kind switch
+    internal static NativeValue Restore(NativeKind kind, ulong bits, byte flags, NativeRootBank roots, int start, int count)
+    {
+        if (kind == NativeKind.Range && roots.PlanEdge(start) is > 0 and var plan)
+            return FromRangePlan(roots.ReferenceTable!, plan);
+        if (kind == NativeKind.String && roots.TextEdge(start) is > 0 and var edge)
+            return new(kind, (ulong)edge, root0: new() { Value = roots.ReferenceTable });
+        return new(kind, bits, flags, kind switch
         {
             NativeKind.Address => new() { Allocation = roots.ReadAllocation(start) },
             NativeKind.Function => new() { Environment = roots.ReadEnvironment(start) },
             _ => count > 0 ? roots.ReadHost(start) : default,
         }, count > 1 ? roots.ReadHost(start + 1) : default, count > 2 ? roots.ReadHost(start + 2) : default,
             count > 3 ? roots.ReadHost(start + 3) : default, count > 4 ? roots.ReadHost(start + 4) : default);
+    }
     internal static ulong Pack(NativeOffset offset) => unchecked((uint)offset.Bytes | ((ulong)(uint)offset.References << 32));
     internal static NativeOffset Unpack(ulong bits) => new(unchecked((int)(uint)bits), unchecked((int)(uint)(bits >> 32)));
 
@@ -139,11 +200,11 @@ public readonly partial struct NativeValue : IEquatable<NativeValue>
         NativeKind.Null => true,
         NativeKind.Bool or NativeKind.Number => bits == other.bits,
         NativeKind.MachineInteger or NativeKind.MachineFloat => MachineEquals(other),
-        NativeKind.String => root0.Text == other.root0.Text,
+        NativeKind.String => AsStringSpan().SequenceEqual(other.AsStringSpan()),
         NativeKind.Path => AsPath() == other.AsPath(),
         NativeKind.Connection => AsConnection() == other.AsConnection(),
         NativeKind.Function => AsFunction() == other.AsFunction(),
-        NativeKind.Range => ReferenceEquals(root0.Range, other.root0.Range),
+        NativeKind.Range => bits == other.bits && ReferenceEquals(root0.Value, other.root0.Value),
         NativeKind.Process => ReferenceEquals(root0.Process, other.root0.Process),
         NativeKind.Type => root0.Type == other.root0.Type,
         NativeKind.Address => ReferenceEquals(root0.Allocation, other.root0.Allocation) && bits == other.bits,
@@ -155,11 +216,11 @@ public readonly partial struct NativeValue : IEquatable<NativeValue>
         NativeKind.Null => 0,
         NativeKind.Bool or NativeKind.Number => HashCode.Combine(Kind, bits),
         NativeKind.MachineInteger or NativeKind.MachineFloat => MachineHashCode(),
-        NativeKind.String => HashCode.Combine(Kind, root0.Text),
+        NativeKind.String => HashCode.Combine(Kind, string.GetHashCode(AsStringSpan())),
         NativeKind.Path => HashCode.Combine(Kind, AsPath()),
         NativeKind.Connection => HashCode.Combine(Kind, AsConnection()),
         NativeKind.Function => HashCode.Combine(Kind, AsFunction()),
-        NativeKind.Range => HashCode.Combine(Kind, root0.Range),
+        NativeKind.Range => HashCode.Combine(Kind, bits, root0.Value),
         NativeKind.Process => HashCode.Combine(Kind, root0.Process),
         NativeKind.Type => HashCode.Combine(Kind, root0.Type),
         NativeKind.Address => HashCode.Combine(Kind, root0.Allocation, bits),

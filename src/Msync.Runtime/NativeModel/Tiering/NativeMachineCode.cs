@@ -4,7 +4,7 @@ using Msync.Core.Native;
 
 namespace Msync.Runtime.Native;
 
-internal readonly record struct NativeInitializationElisions(int Checks, int Writes);
+internal readonly record struct NativeInitializationElisions(int Checks, int Writes, int FrameCallSites = 0, int FrameArgumentSites = 0);
 
 internal static partial class NativeMachineCode
 {
@@ -21,14 +21,15 @@ internal static partial class NativeMachineCode
         Architecture architecture, bool windows, nint bridge, nint number, nint boolean,
         IReadOnlyList<NativeConstant> constants, out NativeInitializationElisions initializationElisions,
         NativeTierLayout? layout = null, nint commit = 0, IReadOnlyDictionary<int, NativeMachineCall>? calls = null,
-        bool guestLeaf = false)
+        bool guestLeaf = false, int returnWindowCopy = -1, nint frameCall = 0, nint frameReturn = 0, bool fixedRepeats = false)
     {
         layout ??= NativeTierLayout.Create(function, operations);
         if (architecture == Architecture.X64)
         {
-            X64 emitter = new(function, operations, constants, layout, windows, bridge, number, boolean, commit, calls, guestLeaf);
+            X64 emitter = new(function, operations, constants, layout, windows, bridge, number, boolean, commit, calls, guestLeaf, returnWindowCopy, frameCall, frameReturn, fixedRepeats);
             byte[] bytes = emitter.Emit();
-            initializationElisions = new(emitter.InitializationChecksElided, emitter.InitializationWritesElided);
+            initializationElisions = new(emitter.InitializationChecksElided, emitter.InitializationWritesElided,
+                emitter.FrameCallSites, emitter.FrameArgumentSites);
             return bytes;
         }
         if (architecture == Architecture.Arm64 && !windows)
@@ -43,10 +44,12 @@ internal static partial class NativeMachineCode
 
     private sealed partial class X64(NativeExecutionFunction function, NativeFastOperation[] operations,
         IReadOnlyList<NativeConstant> constants, NativeTierLayout layout, bool windows, nint bridge, nint number, nint boolean, nint commit,
-        IReadOnlyDictionary<int, NativeMachineCall>? calls, bool guestLeaf)
+        IReadOnlyDictionary<int, NativeMachineCall>? calls, bool guestLeaf, int returnWindowCopy, nint frameCall, nint frameReturn, bool fixedRepeats)
     {
         internal int InitializationChecksElided { get; private set; }
         internal int InitializationWritesElided { get; private set; }
+        internal int FrameCallSites { get; private set; }
+        internal int FrameArgumentSites { get; private set; }
         private readonly List<byte> code = [];
         private readonly List<(int Offset, int Target)> jumps = [];
         private readonly List<(int Pc, bool Demand)> guardPcs = [];
@@ -57,7 +60,7 @@ internal static partial class NativeMachineCode
             .ToDictionary(item => item.Value.Source!.Value.Pc, item => item.Key);
         private int ShadowBytes => windows ? 32 : 0;
         private int CallScratch => ShadowBytes + layout.StackBytes;
-        private int StackBytes => CallScratch + (calls?.Values.Max(call => call.Leaf.WorkspaceBytes) ?? 0);
+        private int StackBytes => CallScratch + (calls?.Values.Max(call => call.WorkspaceBytes) ?? 0);
         private int tableReference, dispatch, exit, guard;
         internal byte[] Emit()
         {
@@ -105,7 +108,24 @@ internal static partial class NativeMachineCode
                 }
                 if (operations[pc] is NativeFastOperation.GuestCopy or NativeFastOperation.GuestView)
                 {
+                    if (pc == returnWindowCopy)
+                    {
+                        Bytes(0x49, 0x83, 0x3c, 0x24, 0x00, 0x0f, 0x85);
+                        int materialized = code.Count; Int(0);
+                        ReturnValue(instruction, NativeFastOperation.AddressReturn, pc);
+                        PatchLocal(materialized);
+                    }
                     GuestCopy(instruction, pc, operations[pc] == NativeFastOperation.GuestView ? layout.GuestViews![pc] : null);
+                    continue;
+                }
+                if (operations[pc] == NativeFastOperation.GuestReferenceLoad)
+                {
+                    GuestReferenceLoad(instruction, pc);
+                    continue;
+                }
+                if (operations[pc] == NativeFastOperation.GuestReferenceStore)
+                {
+                    GuestReferenceStore(instruction, pc);
                     continue;
                 }
                 if (operations[pc].IsGuestAccess())
@@ -125,7 +145,8 @@ internal static partial class NativeMachineCode
                     MachineCall(function.Instructions[callPc], callPc, call, call.Source);
                     continue;
                 }
-                if (operations[pc] is NativeFastOperation.NumberReturn or NativeFastOperation.BoolReturn or NativeFastOperation.NullReturn)
+                if (operations[pc] is NativeFastOperation.NumberReturn or NativeFastOperation.BoolReturn
+                    or NativeFastOperation.NullReturn or NativeFastOperation.AddressReturn)
                 {
                     ReturnValue(instruction, operations[pc], pc);
                     continue;
@@ -135,10 +156,73 @@ internal static partial class NativeMachineCode
                     NullConstant(instruction, pc);
                     continue;
                 }
+                if (operations[pc].IsValueMaterialization())
+                {
+                    MaterializeValue(instruction, operations[pc], pc);
+                    continue;
+                }
 
                 if (operations[pc] == NativeFastOperation.Nop)
                 {
                     Advance(pc, next, instruction.Span, layout.Hits[pc]);
+                    continue;
+                }
+                if (operations[pc] == NativeFastOperation.FrameCall)
+                {
+                    Arguments(pc);
+                    Bytes(0x48, 0xb8); Long(frameCall); Bytes(0xff, 0xd0, 0x85, 0xc0);
+                    Jump(0x0f, 0x88, -1);
+                    FrameCallSites++;
+                    continue; // CALL returns to the statically linked successor.
+                }
+                if (operations[pc] == NativeFastOperation.FrameLoadCall)
+                {
+                    int destination = function.Instructions[next].Result;
+                    NativePhysicalCall? moves = function.FixedMachineMoves(next);
+                    NativeKind kind = moves?.ScalarResult ?? function.FixedScalarResult(destination);
+                    int successor = next + function.Instructions[next].Span;
+                    NativeOffset? extent = kind is NativeKind.Number or NativeKind.Bool && moves is not null
+                        ? function.FixedReturnExtent(next) : null;
+                    int repeat = fixedRepeats && extent.HasValue ? RepeatFixedCall(next, kind, moves!.Moves) : -1;
+                    Arguments(pc);
+                    Bytes(0x48, 0xb8); Long(frameCall); Bytes(0xff, 0xd0, 0x85, 0xc0);
+                    Jump(0x0f, 0x88, -1);
+                    Bytes(0x0f, 0x84); int complete = code.Count; Int(0);
+                    if (moves is not null)
+                    {
+                        Bytes(0x83, 0xf8, NativeInterpreter.FixedPrepareMachineArguments, 0x0f, 0x82);
+                        int initialized = code.Count; Int(0);
+                        if (extent is { } frame)
+                        {
+                            Bytes(0x83, 0xf8, NativeInterpreter.FixedPrepareMachineFrame, 0x0f, 0x85);
+                            int published = code.Count; Int(0);
+                            if (repeat >= 0) PatchLocal(repeat);
+                            PublishFixedFrame(frame);
+                            PatchLocal(published);
+                        }
+                        PlaceFixedArguments(moves.Moves);
+                        PatchLocal(initialized);
+                        FrameArgumentSites++;
+                    }
+                    // A positive prepare result supplies the owned callee context and machine entry.
+                    Bytes(0x49, 0x8b, windows ? (byte)0x4c : (byte)0x7c, 0x24, NativeTierLayout.ChildContextOffset);
+                    Bytes(0x31, windows ? (byte)0xd2 : (byte)0xf6);
+                    Bytes(0x41, 0xff, 0x54, 0x24, NativeTierLayout.ChildEntryOffset);
+                    if (extent is { } returnedFrame)
+                        ReturnUnattached(returnedFrame, destination, kind, successor);
+                    if (windows) Bytes(0x49, 0x89, 0xd0, 0x89, 0xc2, 0x4c, 0x89, 0xe1);
+                    else Bytes(0x89, 0xc6, 0x4c, 0x89, 0xe7);
+                    Bytes(0x48, 0xb8); Long(frameReturn); Bytes(0xff, 0xd0, 0x85, 0xc0);
+                    Jump(0x0f, 0x88, -1);
+                    if (kind is NativeKind.Number or NativeKind.Bool)
+                    {
+                        Bytes(0x0f, 0x84); int managed = code.Count; Int(0);
+                        FixedScalarResult(destination, kind);
+                        PatchLocal(managed);
+                    }
+                    PatchLocal(complete);
+                    FrameCallSites++;
+                    Jump(0xe9, successor);
                     continue;
                 }
                 if (operations[pc] == NativeFastOperation.Bridge)
@@ -195,14 +279,41 @@ internal static partial class NativeMachineCode
             {
                 if (instruction.A >= 0) EmitIsNull(instruction.A, pc);
             }
-            else Scalar(instruction.A, operation == NativeFastOperation.BoolReturn ? NativeKind.Bool : NativeKind.Number, false, pc);
+            else if (operation == NativeFastOperation.AddressReturn) LoadReturnAddress(instruction.A, pc);
+            else
+            {
+                bool boolean = operation == NativeFastOperation.BoolReturn;
+                Scalar(instruction.A, boolean ? NativeKind.Bool : NativeKind.Number, false, pc);
+                if (boolean) Bytes(0x89, 0xc2); // Scalar bits travel alongside the return status.
+                else Bytes(0x66, 0x48, 0x0f, 0x7e, 0xc2);
+            }
             Bytes(0x41, 0xc7, 0x44, 0x24, 0x10); Int(pc);
             Bytes(0x41, 0x83, 0x7c, 0x24, 0x14, 0x00, 0x74); int skipHit = code.Count; Bytes(0);
             Bytes(0x4d, 0x8b, 0x54, 0x24, 0x18);
             Bytes(0x49, 0xff, 0x82); Int(layout.Hits[pc] * 8);
             code[skipHit] = (byte)(code.Count - skipHit - 1);
-            Bytes(0xb8); Int(operation == NativeFastOperation.NullReturn ? -11 : operation == NativeFastOperation.BoolReturn ? -9 : -8);
+            Bytes(0xb8); Int(operation switch
+            {
+                NativeFastOperation.NullReturn => -11,
+                NativeFastOperation.BoolReturn => -9,
+                NativeFastOperation.AddressReturn => NativeInterpreter.TierAddressReturn,
+                _ => -8
+            });
             Jump(0xe9, -1);
+        }
+
+        private void FixedScalarResult(int slot, NativeKind kind, bool fromReturnRegister = false)
+        {
+            int offset = function.FrameSlot(slot).Offset.Bytes;
+            if (!fromReturnRegister)
+                Bytes(0x49, 0x8b, 0x44, 0x24, NativeTierLayout.FixedResultBitsOffset);
+            Bytes(0x4d, 0x8b, 0x54, 0x24, 0x28);
+            Bytes(kind == NativeKind.Number ? (byte)0x49 : (byte)0x41,
+                kind == NativeKind.Number ? (byte)0x89 : (byte)0x88,
+                fromReturnRegister ? (byte)0x92 : (byte)0x82);
+            Int(offset);
+            Bytes(0x4d, 0x8b, 0x54, 0x24, 0x30, 0x41, 0xc6, 0x82);
+            Int(offset); Bytes(1);
         }
 
         private void NullConstant(NativeExecutionInstruction instruction, int pc)

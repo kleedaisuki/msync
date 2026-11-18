@@ -22,7 +22,7 @@ public static partial class NativeBuiltins
             "lines" => StringSlices(Lines(text)),
             "split_whitespace" => StringSlices(Words(text)),
             "char_at" => NativeValue.FromString(CharacterAt(text, TextNatural(args[1], "string.char_at index"))),
-            "substring" => NativeValue.FromString(Substring(text, TextNatural(args[1], "string.substring start"), TextNatural(args[2], "string.substring count"))),
+            "substring" => NativeValue.FromString(Substring(text, TextNatural(args[1], "string.substring start"), TextNatural(args[2], "string.substring count")).ToString()),
             "find" => FindString(text, Text(args[1]), backward: false),
             "rfind" => FindString(text, Text(args[1]), backward: true),
             "compare" => NativeValue.FromNumber(Math.Sign(TextSemantics.CompareOrdinal(text, Text(args[1])))),
@@ -46,7 +46,7 @@ public static partial class NativeBuiltins
         return count;
     }
 
-    private static int ScalarOffset(string text, double position, string role)
+    private static int ScalarOffset(ReadOnlySpan<char> text, double position, string role)
     {
         int offset = 0, index = 0;
         foreach (Rune rune in text.EnumerateRunes())
@@ -59,13 +59,13 @@ public static partial class NativeBuiltins
         throw new MsyncException($"{role} {position} exceeds String length {index} (Unicode scalar values).");
     }
 
-    private static string Substring(string text, double start, double count)
+    private static ReadOnlySpan<char> Substring(ReadOnlySpan<char> text, double start, double count)
     {
         int first = ScalarOffset(text, start, "string.substring start");
         if (count == 0 || first == text.Length) return "";
         int offset = first;
         double remaining = count;
-        foreach (Rune rune in text.AsSpan(first).EnumerateRunes())
+        foreach (Rune rune in text[first..].EnumerateRunes())
         {
             if (remaining == 0) break;
             offset += rune.Utf16SequenceLength;
@@ -81,11 +81,11 @@ public static partial class NativeBuiltins
         return Rune.GetRuneAt(text, offset).ToString();
     }
 
-    private static NativeValue FindString(string text, string part, bool backward)
+    private static NativeValue FindString(ReadOnlySpan<char> text, ReadOnlySpan<char> part, bool backward)
     {
         int offset = backward ? text.LastIndexOf(part, StringComparison.Ordinal) : text.IndexOf(part, StringComparison.Ordinal);
         if (offset < 0) return NativeValue.Null;
-        return NativeValue.FromNumber(ScalarLength(text.AsSpan(0, offset)));
+        return NativeValue.FromNumber(ScalarLength(text[..offset]));
     }
 
     private static string RepeatString(string text, double count)

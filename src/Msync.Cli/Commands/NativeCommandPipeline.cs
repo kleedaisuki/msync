@@ -1,6 +1,7 @@
 using Msync.Core;
 using Msync.Core.Native;
 using Msync.Hir;
+using Msync.Optimization;
 using Msync.Runtime;
 using Msync.Runtime.Native;
 using static Msync.Cli.CommandPipeline;
@@ -73,7 +74,7 @@ internal static class NativeCommandPipeline
         Console.Write(TerminalPresentation.Syntax(NativeArtifact.Disassemble(program), TerminalPresentation.Colors(color)));
 
     internal static NativeProgram Bind(NativeProgram program, string? sourceFile, TelemetrySession? telemetry,
-        ExecutionOptions? options = null, CancellationToken token = default)
+        ExecutionOptions? options = null, CancellationToken token = default, bool inlineExecutable = false)
     {
         if (program.Stage == ArtifactStage.Executable) return program;
         options ??= new();
@@ -85,8 +86,11 @@ internal static class NativeCommandPipeline
         RuntimeTimeline? timeline = telemetry?.Timeline;
         using IDisposable? owner = prepare is null ? null : timeline?.Attach(prepare.Id);
         if (timeline is not null) options = options with { Timeline = timeline };
-        return prepare is null ? NativePreparation.Prepare(program, context, options, token)
-            : prepare.Measure((program, context, options, token, trace: prepare.CompilerTrace), static state => NativePreparation.Prepare(state.program, state.context, state.options, state.token, state.trace));
+        Func<NativeProgram, CompilationTrace?, CancellationToken, NativeProgram>? optimize = inlineExecutable
+            ? NativeOptimizer.InlineExecutable : null;
+        return prepare is null ? NativePreparation.Prepare(program, context, options, token, null, optimize)
+            : prepare.Measure((program, context, options, token, trace: prepare.CompilerTrace, optimize),
+                static state => NativePreparation.Prepare(state.program, state.context, state.options, state.token, state.trace, state.optimize));
     }
 
     private static BindingContext CaptureContext(ExecutionOptions options, string? sourceFile) =>
@@ -115,7 +119,8 @@ internal static class NativeCommandPipeline
             string? sourceFile = options.SourceFile is { } requested ? Path.GetFullPath(requested)
                 : binary || file == "-" ? null : Path.GetFullPath(file);
             program = Bind(program, sourceFile, telemetry,
-                RuntimeOptions(options, sourceFile, null, color, snapshot, input), cancellation.Token);
+                RuntimeOptions(options, sourceFile, null, color, snapshot, input), cancellation.Token,
+                inlineExecutable: options.Command == "bind-ir");
             if (options.Command == "bind-ir")
             {
                 Write(program, options.Output ?? Path.ChangeExtension(file, ".mexe"), telemetry);

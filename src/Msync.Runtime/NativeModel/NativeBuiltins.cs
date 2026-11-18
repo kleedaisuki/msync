@@ -27,8 +27,8 @@ public static partial class NativeBuiltins
             "bool" => (args, _, _, _) => new(BooleanOperation(member, args)),
             "string" => (args, _, _, token) => StringOperationAsync(member, args, token),
             "path" => (args, context, _, _) => new(PathOperation(member, args, context)),
-            "ranges" => (args, _, invoke, token) => RangeOperationAsync(member, args, invoke, token),
-            "regex" => (args, _, _, _) => new(RegexOperation(member, args)),
+            "ranges" => (args, context, invoke, token) => RangeOperationAsync(member, args, context, invoke, token),
+            "regex" => (args, context, _, _) => new(RegexOperation(member, args, context)),
             "text" => (args, _, _, token) => TextOperationAsync(member, args, token),
             "environment" => (args, context, _, _) => new(EnvironmentOperation(member, args, context)),
             "meta" => (args, context, _, _) => new(MetaOperation(member, args, context)),
@@ -81,9 +81,9 @@ public static partial class NativeBuiltins
     internal static NativeRange Range(NativeValue value, string operation) => value.Kind == NativeKind.Range ? value.AsRange()
         : throw new MsyncException($"ranges.{operation} expects Range, received {value.Type}");
 
-    internal static NativeValue Record(NativeLayout layout, params NativeValue[] values)
+    internal static NativeValue Record(NativeRuntimeContext context, NativeLayout layout, params NativeValue[] values)
     {
-        NativeAllocation allocation = new(layout);
+        NativeAllocation allocation = context.BuiltinStorage?.Invoke(layout, 1) ?? new(layout);
         for (int index = 0; index < values.Length; index++) allocation.Field(index).Store(values[index]);
         return NativeValue.FromAddress(allocation.Address);
     }

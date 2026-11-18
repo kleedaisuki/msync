@@ -8,7 +8,10 @@ public sealed class NativeAllocation
     private NativeStorage.Data storage;
     private int allocationSite;
     internal int PendingValues;
-    internal nint MachineCaptures;
+    internal NativeAllocation? PreviousStackView;
+    private nint hostMachineCaptures;
+    internal ref nint MachineCaptures => ref GuestReferences is null
+        ? ref hostMachineCaptures : ref NativeGuestObjectTable.CaptureCell(storage.RawAddress);
     internal NativeEnvironment? GuestEnvironment;
     private NativeEnvironment? reusableEnvironment;
     public NativeAllocation(NativeLayout layout, int layoutId = -1, int elementCount = 1)
@@ -40,19 +43,18 @@ public sealed class NativeAllocation
         (NativeHeapOwner, GuestReferences, Layout) = (owner, references, null!);
 
     internal void BindGuest(NativeLayout layout, NativeLayout storageLayout, int id, int elementCount, int site,
-        nint raw, nint callableCells, nint edges)
+        nint raw, nint callableCells, nint edges, nint pendingCell)
     {
         Layout = layout;
         LayoutId = id;
         ElementCount = elementCount;
         allocationSite = site;
-        MachineCaptures = 0;
-        storage = new(storageLayout, raw, callableCells, GuestReferences, edges, storage.roots.Buffer);
+        storage = new(storageLayout, raw, callableCells, GuestReferences, edges, pendingCell);
     }
 
     internal void ClearGuestRoots()
     {
-        storage.roots.ClearHost();
+        storage.roots.Clear();
         GuestEnvironment = null;
     }
 
@@ -408,6 +410,25 @@ public sealed partial class NativeStorage
         return storage.roots.ReadAllocation(address.Offset.References)!.AddressAt(NativeValue.Unpack(bits),
             storage.roots.ReadHost(address.Offset.References + 1).StorageType);
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static NativeAddress LoadBinding(NativeAllocation frame, NativeOffset cell)
+    {
+        ref Data storage = ref frame.Storage;
+        NativeAllocation? owner = storage.roots.ReadBinding(cell.References, frame);
+        if (owner is null) return default;
+        ulong bits = BinaryPrimitives.ReadUInt64LittleEndian(storage.bytes.Slice(cell.Bytes, 8));
+        return owner.AddressAt(NativeValue.Unpack(bits), storage.roots.ReadHost(cell.References + 1).StorageType);
+    }
+
+    internal static void StoreBinding(NativeAllocation frame, NativeOffset cell, NativeAddress value)
+    {
+        ref Data storage = ref frame.Storage;
+        BinaryPrimitives.WriteUInt64LittleEndian(storage.bytes.Slice(cell.Bytes, 8), NativeValue.Pack(value.Offset));
+        storage.roots.WriteBinding(cell.References, frame, value.Allocation);
+        storage.roots.WriteStorageType(cell.References + 1, value.StorageType);
+    }
+
     private static ref Data Readable(NativeAddress address)
     {
         ref Data storage = ref address.Allocation.Storage;
@@ -526,6 +547,6 @@ public sealed partial class NativeStorage
         ref Data storage = ref address.Allocation.Storage;
         BinaryPrimitives.WriteUInt64LittleEndian(storage.bytes.Slice(address.Offset.Bytes, 8), NativeValue.Pack(value.Offset));
         storage.roots.WriteAllocation(address.Offset.References, value.Allocation);
-        storage.roots.WriteHost(address.Offset.References + 1, new() { StorageType = value.StorageType });
+        storage.roots.WriteStorageType(address.Offset.References + 1, value.StorageType);
     }
 }

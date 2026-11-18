@@ -14,23 +14,25 @@ internal static class NativeInlining
     }
 
     internal static NativeProgram Run(NativeProgram program, int level, NativeOptimizationProfile? profile, int[] budgets,
-        ref NativeAddressAnalysis.ProgramFacts? sharedFacts)
+        ref NativeAddressAnalysis.ProgramFacts? sharedFacts, bool executable = false,
+        CancellationToken cancellationToken = default)
     {
         if (level < 2) return program;
         bool changed;
-        do { program = Round(program, level, profile, budgets, ref sharedFacts, out changed); } while (changed);
+        do { program = Round(program, level, profile, budgets, ref sharedFacts, executable, cancellationToken, out changed); } while (changed);
         return program;
     }
 
     private static NativeProgram Round(NativeProgram program, int level, NativeOptimizationProfile? profile, int[] budgets,
-        ref NativeAddressAnalysis.ProgramFacts? sharedFacts, out bool changed)
+        ref NativeAddressAnalysis.ProgramFacts? sharedFacts, bool executable, CancellationToken cancellationToken, out bool changed)
     {
-        Builder builder = new(program, level == 2 ? 48 : 144, budgets, profile is not null, sharedFacts);
+        Builder builder = new(program, level == 2 ? 48 : 144, budgets, profile is not null, sharedFacts, executable);
         NativeFunctionCode[] functions = program.Functions.ToArray();
         int[][] positions = new int[functions.Length][];
         List<int>? modified = null;
         for (int index = 0; index < functions.Length; index++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             profile?.Function(index);
             var started = profile?.Start(NativeOptimizationProfile.Pass.Inlining, program.Functions[index]) ?? default;
             (functions[index], positions[index]) = builder.Function(index);
@@ -47,7 +49,8 @@ internal static class NativeInlining
             Functions = functions,
             Types = builder.Types.ToArray(),
             Layouts = builder.Layouts.ToArray(),
-            Allocations = program.Allocations.Where(plan => ReferenceEquals(functions[plan.Function], program.Functions[plan.Function])).ToArray(),
+            Allocations = executable && modified is not null ? RelocateAllocations(program, functions, positions, modified)
+                : program.Allocations.Where(plan => ReferenceEquals(functions[plan.Function], program.Functions[plan.Function])).ToArray(),
             ExecutionPlans = program.ExecutionPlans?.Select(plan => plan with
             { Start = Boundary(positions[plan.Function], plan.Start), End = Boundary(positions[plan.Function], plan.End) }).ToArray()
         };
@@ -59,12 +62,33 @@ internal static class NativeInlining
         return next;
     }
 
+    private static NativeAllocationPlan[] RelocateAllocations(NativeProgram program, NativeFunctionCode[] functions,
+        int[][] positions, List<int> modified)
+    {
+        List<NativeAllocationPlan> plans = program.Allocations.Select(plan =>
+            plan with { Instruction = positions[plan.Function][plan.Instruction] }).ToList();
+        HashSet<(int Function, int Instruction)> existing = plans.Select(plan => (plan.Function, plan.Instruction)).ToHashSet();
+        foreach (int index in modified)
+        {
+            var instructions = functions[index].Instructions;
+            for (int pc = 0; pc < instructions.Count; pc++)
+                if (instructions[pc].Op == NativeOp.Allocate && existing.Add((index, pc)))
+                    plans.Add(new(pc, instructions[pc].A, Function: index));
+        }
+        return plans.ToArray();
+    }
+
     internal static int Boundary(int[] positions, int pc) => pc < positions.Length
         ? positions[pc] : checked(pc - (positions.Length - 1) + positions[^1]);
 
-    private enum Decision { Allowed, Dynamic, Recursive, Arity, Template, Size, Effects, EscapingLocation, CaptureAbi, Budget, UnknownOrigin }
+    private enum Decision
+    {
+        Allowed, Dynamic, Recursive, Arity, Template, Size, Effects, EscapingLocation, CaptureAbi, Budget, UnknownOrigin,
+        ReferenceAbi, ReadyScalarControlFlow
+    }
 
-    private sealed class Builder(NativeProgram program, int bodyBudget, int[] budgets, bool observed, NativeAddressAnalysis.ProgramFacts? sharedFacts)
+    private sealed class Builder(NativeProgram program, int bodyBudget, int[] budgets, bool observed,
+        NativeAddressAnalysis.ProgramFacts? sharedFacts, bool executable)
     {
         private readonly Dictionary<int, Decision> admitted = [];
         private readonly bool[] transparent = TransparentFunctions(program);
@@ -109,9 +133,14 @@ internal static class NativeInlining
                 bool usesCaptures = UsesAnyCapture(call.B, target);
                 IReadOnlyCollection<NativeCallableOrigin>? targets = provenance.CallablesAt(pc, call.A);
                 NativeCallableOrigin? construction = targets is { Count: 1 } single ? single.First() : null;
-                if (construction is { NativeName: not null })
+                if (executable && construction is null)
+                {
+                    construction = SplitDescriptor(function, target, provenance, privateInputs, pc, call.A);
+                    if (construction is not null) Count("inline.split_descriptor_proved");
+                }
+                if (construction is { NativeName: not null } || executable && construction is null)
                 { Record(Decision.UnknownOrigin); continue; }
-                if (usesCaptures)
+                if (usesCaptures || executable)
                 {
                     if (construction is null) { Record(Decision.UnknownOrigin); continue; }
                     if (target.CaptureCount != program.Functions[construction.Function].CaptureCount || !CapturesMatch(target, construction))
@@ -130,6 +159,8 @@ internal static class NativeInlining
                 growth += cost;
                 if (!usesCaptures && construction is null && Statistics is not null)
                     Statistics["inline.captureless_direct"] = Statistics.GetValueOrDefault("inline.captureless_direct") + 1;
+                if (usesCaptures)
+                    Count("inline.location_captures", target.Signature.Captures.Count(capture => capture.Mode == NativeCaptureMode.Location));
                 Record(Decision.Allowed);
             }
             int[] positions = new int[function.Instructions.Count + 1];
@@ -154,17 +185,55 @@ internal static class NativeInlining
                     code.AddRange(expansion.Select(instruction => NativeCodeRelocation.Targets(instruction, target => positions[pc] + target)));
                 else code.Add(NativeCodeRelocation.Targets(function.Instructions[pc], target => positions[target]));
             }
-            return (function with { Slots = slots.ToArray(), Instructions = code.ToArray() }, positions);
+            return (function with { Slots = slots.ToArray(), Instructions = code.ToArray(), Storage = null }, positions);
+        }
+
+        private void Count(string key, int count = 1)
+        {
+            if (Statistics is { } metrics)
+                metrics[key] = metrics.GetValueOrDefault(key) + (uint)count;
+        }
+
+        private NativeCallableOrigin? SplitDescriptor(NativeFunctionCode caller, NativeFunctionCode target,
+            NativeAddressAnalysis provenance, bool[] privateSlots, int pc, int slot)
+        {
+            int compose = Definition(pc, slot);
+            if (compose < 0 || caller.Instructions[compose] is not { Op: NativeOp.ComposeFunction, Inputs: [int code, int environment, int name] }
+                || Literal(compose, name)?.Kind != NativeKind.Null
+                || Literal(compose, code) is not { Kind: NativeKind.MachineInteger } literal) return null;
+            ulong tag = literal.ToMachineValue().AsMachineInteger().GetZExtValue();
+            if (tag == 0 || tag > (ulong)program.Functions.Count) return null;
+            int identity = (int)(tag - 1);
+            if (Literal(compose, environment)?.Kind == NativeKind.Null)
+                return target.CaptureCount == 0 ? new(identity, -1, true, -1, compose, null, 0) : null;
+            // Layout proof alone does not prove that the descriptor is ready.
+            // A local allocation supplies both the physical schema and readiness.
+            int producer = Definition(compose, environment);
+            if (producer < 0 || caller.Instructions[producer] is not { Op: NativeOp.Allocate, A: int layout }) return null;
+            return Layouts[layout].Fields.Count == target.CaptureCount
+                ? new(identity, layout, false, -1, compose, null, target.CaptureCount) : null;
+
+            int Definition(int at, int input) => privateSlots[input] ? provenance.SingleDefinitionAt(at, input) : -1;
+            NativeConstant? Literal(int at, int input)
+            {
+                int definition = Definition(at, input);
+                return definition >= 0 && caller.Instructions[definition] is { Op: NativeOp.Constant } constant
+                    ? program.Constants[constant.A] : null;
+            }
         }
 
         private Decision Admission(int caller, NativeInstruction instruction)
         {
             if (instruction.B < 0 || instruction.C >= 0) return Decision.Dynamic;
+            if (executable && program.Types[program.Functions[caller].Slots[instruction.A].Type].Kind != TypeKind.Function)
+                return Decision.UnknownOrigin;
             if (instruction.B == caller) return Decision.Recursive;
             NativeFunctionCode function = program.Functions[instruction.B];
             if (function.ParameterCount != (instruction.Inputs?.Count ?? 0)) return Decision.Arity;
             if (admitted.TryGetValue(instruction.B, out Decision result)) return result;
             result = function.IsTemplate || function.Instructions.Count == 0 ? Decision.Template
+                : executable && !ScalarAbi(function.Signature) ? Decision.ReferenceAbi
+                : executable && function.SsaBody is { Blocks.Length: > 1 } ? Decision.ReadyScalarControlFlow
                 : function.Instructions.Count(instruction => instruction.Op is not (NativeOp.Nop or NativeOp.FrameAddress
                     or NativeOp.Copy or NativeOp.Move or NativeOp.Drop or NativeOp.Narrow)) > bodyBudget ? Decision.Size
                 : !transparent[instruction.B] ? Decision.Effects
@@ -173,6 +242,13 @@ internal static class NativeInlining
             admitted.Add(instruction.B, result);
             return result;
         }
+
+        // Leave reference-carrier helpers independently tierable. Their fixed
+        // offsets and bridge groups are more valuable than removing a frame.
+        private bool ScalarAbi(Msync.Core.Native.NativeSignature signature) =>
+            Scalar(signature.Result) && signature.Parameters.All(Scalar) && signature.Captures.All(capture => Scalar(capture.Type));
+
+        private bool Scalar(int type) => program.Types[type] is { Pointee: < 0, Kind: TypeKind.Number or TypeKind.Bool or TypeKind.Null };
 
         private bool CapturesMatch(NativeFunctionCode function, NativeCallableOrigin construction)
         {

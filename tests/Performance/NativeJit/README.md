@@ -248,3 +248,18 @@ The test first warms valid Heap writes. It then selects index 99 on a
 3-element vector owner and compares the actual error, output prefix, original
 source attribution and complete logical profile auto/off. The native
 arm must have executed a writer before the selected index guard miss.
+
+## Native demand windows
+
+On Linux, compare the same detached Range workload in two Native AOT
+binaries (pin to a core available to the process):
+
+```sh
+python3 tests/Performance/NativeJit/measure_range_window.py \
+  --baseline BASELINE/msync --candidate CANDIDATE/msync --cpu 6 \
+  --output .temp/range-window.json
+```
+
+The runner binds [range-window.msync](range-window.msync) once, alternates
+process order, verifies each sum, and records artifact/binary hashes and
+the individual timings. It has no elapsed-time pass/fail gate.

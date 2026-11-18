@@ -10,6 +10,7 @@ namespace Msync.Runtime.Native;
 internal readonly struct NativeExecutionInstruction
 {
     internal readonly NativeOp Op;
+    internal readonly ushort ForwardedCopies;
     internal readonly int Result;
     internal readonly int A;
     internal readonly int B;
@@ -30,6 +31,19 @@ internal readonly struct NativeExecutionInstruction
     {
         this = source;
         Immediate = immediate;
+    }
+
+    internal NativeExecutionInstruction ForwardTo(int result)
+    {
+        return new(this, result);
+    }
+
+    private NativeExecutionInstruction(in NativeExecutionInstruction source, int result)
+    {
+        this = source;
+        Result = result;
+        Span++;
+        ForwardedCopies++;
     }
 
     internal NativeExecutionInstruction WithSpan(int span) => new(this, span, Immediate);
@@ -118,6 +132,7 @@ internal sealed partial class NativeExecutionFunction : IDisposable
                 NeedsLayoutCheck = code.NeedsLayoutCheck
             }).ToArray();
             rawWritable = backend.RawWritable;
+            FuseScopeCopies();
             LinkCalls();
             return;
         }
@@ -168,6 +183,7 @@ internal sealed partial class NativeExecutionFunction : IDisposable
     internal bool IsUnavailable => Volatile.Read(ref unavailable);
     internal NativeFunctionCode Definition { get; }
     internal NativeInstruction[] Metadata { get; }
+    internal NativeCallWindowCandidate[]? WindowCandidates { get; private set; }
     internal int SequenceOffset(int iterator) => image.Frame(Index).IteratorOffset + iterator * NativeSequenceCursor.Bytes;
     internal NativeExecutionInstruction[] Instructions => instructions;
     private bool Escapes(int slot) => Definition.Slots[slot].Escapes
@@ -191,6 +207,7 @@ internal sealed partial class NativeExecutionFunction : IDisposable
             foreach (int next in flow.Successors[pc]) if (next != pc + 1) entry[next] = true;
         HashSet<int> exposed = Metadata.Where(instruction => instruction.Op is NativeOp.FrameAddress or NativeOp.BindLocation)
             .Select(instruction => instruction.A).ToHashSet();
+        WindowCandidates = NativeCallWindowPlanning.Discover(image, Index, flow, live, exposed, trace);
         HashSet<int> rebound = Metadata.Where(instruction => instruction.Op == NativeOp.BindLocation)
             .Select(instruction => instruction.A).ToHashSet();
         bool CanElideTemp(int slot) => slot >= Definition.CaptureCount
@@ -455,9 +472,10 @@ internal sealed partial class NativeExecutionFunction : IDisposable
         && !(image.Program.PreserveLocals && Index == image.Program.EntryPoint
             && (image.Program.SessionRoots?.Contains(slot) ?? Definition.Slots[slot].Role != NativeSlotRole.Temporary));
 
-    internal NativeInstruction Diagnostic(int pc) => Metadata[pc + instructions[pc].Span - 1];
+    internal NativeInstruction Diagnostic(int pc) => Metadata[pc + instructions[pc].Span - instructions[pc].ForwardedCopies - 1];
     internal void Visit(RuntimeProfile.NativeFrameCounters counters, int pc)
     {
+        counters.ForwardedScopeCopies(instructions[pc].ForwardedCopies);
         for (int index = pc; index < pc + instructions[pc].Span; index++)
         {
             if (index != pc) counters.Edge(index - 1, index);
@@ -526,6 +544,7 @@ internal sealed partial class NativeExecutionFunction : IDisposable
     }
     internal void Enter() => Interlocked.Increment(ref calls);
     internal void Backedge() => Interlocked.Increment(ref backedges);
+    internal NativeCompiledFunction? PublishedTier => Volatile.Read(ref compiled);
 
     internal NativeCompiledFunction? TryCompile(NativeTierCounters counters, RuntimeProfile.NativeFrameCounters profile, bool leaf = false)
     {
@@ -648,6 +667,7 @@ internal sealed class NativeTierCounters
         if (recompiled) Interlocked.Increment(ref recompilations);
     }
     internal void Entered() => Interlocked.Increment(ref entries);
+    internal void Entered(int count) => Interlocked.Add(ref entries, count);
     internal void Operation(bool direct, int count = 1)
     {
         Interlocked.Add(ref operations, count);

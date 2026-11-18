@@ -19,9 +19,9 @@ public static partial class NativeBuiltins
             case "variables":
                 NativeValue[] rows = Environment.GetEnvironmentVariables().Cast<DictionaryEntry>()
                     .OrderBy(entry => (string)entry.Key, StringComparer.Ordinal)
-                    .Select(entry => Record(EnvironmentRowLayout,
+                    .Select(entry => Record(context, EnvironmentRowLayout,
                         NativeValue.FromString((string)entry.Key), NativeValue.FromString((string)entry.Value!))).ToArray();
-                return NativeValue.FromRange(NativeRange.Snapshot(rows, TypeRef.Scope));
+                return NativeValue.FromRange(context.Snapshot(rows, TypeRef.Scope));
             case "working_directory": return NativeValue.FromPath(new(context.WorkingDirectory, context.WorkingDirectory, HomeDirectory: context.HomeDirectory));
             case "set_working_directory": return NativeValue.FromPath(context.ChangeWorkingDirectory(args[0]));
             case "home_directory": return NativeValue.FromPath(new(context.HomeDirectory, context.WorkingDirectory, HomeDirectory: context.HomeDirectory));

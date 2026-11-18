@@ -209,6 +209,7 @@ public static partial class LlvmHirLowerer
             owner.trace?.Metric("calls.adapt", adaptationCount);
             owner.trace?.Metric("calls.callee_bundles", sourceCallCount);
             owner.trace?.Metric("control.max_loop_depth", loopDepth);
+            owner.trace?.Detail?.Metric("type_predicate.relocated_constants", constantTypePredicates);
             if (conversionCounts is not null)
                 foreach (var (operation, count) in conversionCounts) owner.trace!.Metric("representation." + operation.ToString().ToLowerInvariant(), count);
             if (opcodeCounts is not null)

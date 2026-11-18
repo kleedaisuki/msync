@@ -13,8 +13,36 @@ internal static class EmissionChecks
         if (IntPtr.Size == 8 && Marshal.SizeOf<NativeExecutionInstruction>() != 40)
             throw new InvalidOperationException("Linked instructions retained redundant metadata or padding.");
         if (IntPtr.Size == 8 && (Marshal.SizeOf<NativeTierContext>() != NativeTierLayout.HeaderBytes
+            || Marshal.OffsetOf<NativeTierContext>(nameof(NativeTierContext.Raw)) != NativeTierLayout.RawOffset
+            || Marshal.OffsetOf<NativeTierContext>(nameof(NativeTierContext.Initialization)) != NativeTierLayout.InitializationOffset
             || Marshal.OffsetOf<NativeTierContext>(nameof(NativeTierContext.GuestEdges)) != NativeTierLayout.GuestEdgesOffset
-            || Marshal.OffsetOf<NativeTierContext>(nameof(NativeTierContext.GuestHostRoots)) != NativeTierLayout.GuestHostRootsOffset
+            || Marshal.OffsetOf<NativeTierContext>(nameof(NativeTierContext.ChildContext)) != NativeTierLayout.ChildContextOffset
+            || Marshal.OffsetOf<NativeTierContext>(nameof(NativeTierContext.ChildEntry)) != NativeTierLayout.ChildEntryOffset
+            || Marshal.OffsetOf<NativeTierContext>(nameof(NativeTierContext.FixedResultBits)) != NativeTierLayout.FixedResultBitsOffset
+            || Marshal.OffsetOf<NativeTierContext>(nameof(NativeTierContext.StackCursor)) != NativeTierLayout.StackCursorOffset
+            || Marshal.OffsetOf<NativeTierContext>(nameof(NativeTierContext.FixedReturnTop)) != NativeTierLayout.FixedReturnTopOffset
+            || Marshal.OffsetOf<NativeTierContext>(nameof(NativeTierContext.FixedReturnState)) != NativeTierLayout.FixedReturnStateOffset
+            || Marshal.OffsetOf<NativeTierContext>(nameof(NativeTierContext.FixedCallStart)) != NativeTierLayout.FixedCallStartOffset
+            || Marshal.OffsetOf<NativeTierContext>(nameof(NativeTierContext.FixedPending)) != NativeTierLayout.FixedPendingOffset
+            || Marshal.OffsetOf<NativeTierContext>(nameof(NativeTierContext.FixedCallableInit)) != NativeTierLayout.FixedCallableInitOffset
+            || Marshal.OffsetOf<NativeTierContext>(nameof(NativeTierContext.FixedCallableEdges)) != NativeTierLayout.FixedCallableEdgesOffset
+            || Marshal.OffsetOf<NativeTierContext>(nameof(NativeTierContext.FixedEnvironment)) != NativeTierLayout.FixedEnvironmentOffset
+            || Marshal.OffsetOf<NativeTierContext>(nameof(NativeTierContext.FixedRepeatPc)) != NativeTierLayout.FixedRepeatPcOffset
+            || Marshal.OffsetOf<NativeTierContext>(nameof(NativeTierContext.FixedRepeats)) != NativeTierLayout.FixedRepeatsOffset
+            || Marshal.OffsetOf<NativeTierContext>(nameof(NativeTierContext.FixedRepeatFuel)) != NativeTierLayout.FixedRepeatFuelOffset
+            || Marshal.OffsetOf<NativeStackCursor>(nameof(NativeStackCursor.Frame)) != NativeStackCursor.X64FrameOffset
+            || Marshal.OffsetOf<NativeStackCursor>(nameof(NativeStackCursor.Top)) != NativeStackCursor.X64TopOffset
+            || Marshal.OffsetOf<NativeStackCursor>(nameof(NativeStackCursor.Data)) != NativeStackCursor.X64DataOffset
+            || Marshal.OffsetOf<NativeStackCursor>(nameof(NativeStackCursor.Initialization)) != NativeStackCursor.X64InitializationOffset
+            || Marshal.OffsetOf<NativeStackCursor>(nameof(NativeStackCursor.References)) != NativeStackCursor.X64ReferencesOffset
+            || Marshal.SizeOf<NativeOffset>() != sizeof(long)
+            || Marshal.SizeOf<NativeStackHeader>() != NativeStackHeader.X64Bytes
+            || Marshal.OffsetOf<NativeStackHeader>(nameof(NativeStackHeader.Data)) != NativeStackHeader.X64DataOffset
+            || Marshal.OffsetOf<NativeStackHeader>(nameof(NativeStackHeader.Initialization)) != NativeStackHeader.X64InitializationOffset
+            || Marshal.OffsetOf<NativeStackHeader>(nameof(NativeStackHeader.References)) != NativeStackHeader.X64ReferencesOffset
+            || Marshal.OffsetOf<NativeStackHeader>(nameof(NativeStackHeader.Previous)) != NativeStackHeader.X64PreviousOffset
+            || Marshal.OffsetOf<NativeStackHeader>(nameof(NativeStackHeader.Arena)) != NativeStackHeader.X64ArenaOffset
+            || Marshal.OffsetOf<NativeStackHeader>(nameof(NativeStackHeader.ReferenceCount)) != NativeStackHeader.X64ReferenceCountOffset
             || Marshal.SizeOf<NativeTierSlot>() != 32))
             throw new InvalidOperationException("Native descriptor ABI disagrees with the machine emitter.");
         int checks = 1;

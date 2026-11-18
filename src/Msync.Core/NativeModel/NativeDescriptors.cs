@@ -183,6 +183,8 @@ public sealed class NativeRange
         Type = new(TypeKind.Range, itemType);
         RetainedValues = source.RetainedValues;
         SnapshotValues = source.SnapshotValues;
+        PlanEdge = source.PlanEdge;
+        PlanArena = source.PlanArena;
         NumberSequence = source.NumberSequence;
         Selection = source.Selection;
         Resolve = source.Resolve is { } resolve
@@ -209,8 +211,20 @@ public sealed class NativeRange
     public NativePathSelection? Selection { get; }
     public Func<CancellationToken, ValueTask<NativeRange>>? Resolve { get; }
     public IReadOnlyList<NativeValue>? SnapshotValues { get; }
+    internal NativeOffset SnapshotStride => SnapshotValues is NativeSnapshot snapshot ? snapshot.Stride : default;
     internal NativeAddress SnapshotStorage => SnapshotValues is NativeSnapshot snapshot ? snapshot.Storage : default;
     internal NativeNumberSequence? NumberSequence { get; }
+    internal static NativeRange FromPlan(NativeGuestObjectTable arena, nint edge) =>
+        new(NativeRangePlanAdapter.Export(arena, edge), PlanItemType(arena, edge),
+            physicalItemType: NativeRangeNode.At(edge).Shape == 0 ? null : arena.RangeShape(NativeRangeNode.At(edge).Shape).Physical) { PlanArena = arena, PlanEdge = edge };
+
+    internal static TypeRef PlanItemType(NativeGuestObjectTable arena, nint edge)
+    {
+        ref NativeRangeNode node = ref NativeRangeNode.At(edge);
+        return node.Shape == 0 ? node.StringItems ? TypeRef.String : TypeRef.Number : arena.RangeShape(node.Shape).Item;
+    }
+    internal NativeGuestObjectTable? PlanArena { get; private init; }
+    internal nint PlanEdge { get; private init; }
     internal static NativeRange Sequence(NativeNumberSequence sequence) => new(sequence);
 
     public static NativeRange Snapshot(IEnumerable<NativeValue> values, TypeRef itemType) =>
@@ -218,6 +232,11 @@ public sealed class NativeRange
 
     public static NativeRange Snapshot(IEnumerable<NativeValue> values, TypeRef itemType, NativeType physicalItemType) =>
         new(new NativeSnapshot(values, itemType, physicalItemType, validateLogical: false), itemType);
+
+    internal static NativeRange Snapshot(IEnumerable<NativeValue> values, TypeRef itemType, NativeType? physicalItemType,
+        Func<NativeLayout, int, NativeAllocation> allocate) =>
+        new(new NativeSnapshot(values, itemType, physicalItemType ?? NativeType.FromTypeRef(itemType),
+            validateLogical: physicalItemType is null, allocate), itemType);
 
     public static NativeRange FromMemory(NativeAddress address, int count, NativeLayout element, TypeRef itemType, int field = 0)
     {
@@ -244,15 +263,16 @@ public sealed class NativeRange
         private readonly NativeAddress first;
         private readonly NativeOffset stride;
         private readonly NativeType type;
-        public NativeSnapshot(IEnumerable<NativeValue> values, TypeRef itemType, NativeType physicalItemType, bool validateLogical)
+        public NativeSnapshot(IEnumerable<NativeValue> values, TypeRef itemType, NativeType physicalItemType, bool validateLogical,
+            Func<NativeLayout, int, NativeAllocation>? allocate = null)
         {
             ArgumentNullException.ThrowIfNull(itemType);
             ArgumentNullException.ThrowIfNull(physicalItemType);
-            NativeValue[] inputs = values.ToArray();
+            IReadOnlyList<NativeValue> inputs = allocate is not null && values is IReadOnlyList<NativeValue> known ? known : values.ToArray();
             type = physicalItemType;
-            Count = inputs.Length;
+            Count = inputs.Count;
             NativeLayout element = new(type);
-            NativeAllocation storage = new(element, elementCount: Count);
+            NativeAllocation storage = allocate?.Invoke(element, Count) ?? new(element, elementCount: Count);
             first = storage.Address.OffsetBy(element[0].Offset, type);
             stride = element.Extent;
             for (int index = 0; index < Count; index++)
@@ -275,6 +295,7 @@ public sealed class NativeRange
         }
         public NativeType PhysicalType => type;
         internal NativeAddress Storage => first;
+        internal NativeOffset Stride => stride;
         public int Count { get; }
         public NativeValue this[int index]
         {

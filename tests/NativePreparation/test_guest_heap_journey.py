@@ -86,6 +86,11 @@ def journey(binary: Path, work: Path) -> dict[str, object]:
         assert totals["native_heap_descriptors_reused"] >= 4 * 8000, totals
         assert all(row["heap.raw_edges"] >= 2 for row in sweeps), sweeps
         assert all(row["heap.raw_objects_traced"] >= 2 for row in sweeps), sweeps
+        assert all(
+            row["heap.raw_header_scans"] == row["heap.raw_objects_traced"]
+            and row["heap.raw_descriptor_scans"] == 0
+            for row in sweeps
+        ), sweeps
     return {"output": expected, "collections": sweeps, "allocations": totals}
 
 
@@ -109,9 +114,22 @@ def command_journey(binary: Path, work: Path) -> dict[str, object]:
         fn captured(root: Scope) { fn { root::next::next::value } };
         let read = captured(pair(17));
         let snapshots = [pair(11), pair(13)];
+        fn shared(seed: Number) {
+            scope {
+                write: fn(delta: Number) { seed = seed + delta; seed },
+                read: fn { seed }
+            }
+        };
+        let aliases = shared(20);
+        let write = aliases::write;
+        let read_alias = aliases::read;
+        $std::io::println(write(2) as String);
         $std::io::println(batch(retained, 40000) as String);
         $std::io::println(retained::next::next::value as String);
         $std::io::println(read() as String);
+        $std::io::println(read_alias() as String);
+        $std::io::println(write(3) as String);
+        $std::io::println(read_alias() as String);
         let range_total = 0;
         for item in snapshots { range_total = range_total + item::next::next::value; };
         $std::io::println(range_total as String);
@@ -145,7 +163,7 @@ def command_journey(binary: Path, work: Path) -> dict[str, object]:
         timeout=30,
     )
     receipts: dict[str, object] = {}
-    expected: str = f"{40000 * 40001 // 2 + 7}\n7\n17\n24\n"
+    expected: str = f"22\n{40000 * 40001 // 2 + 7}\n7\n17\n22\n25\n25\n24\n"
     for policy in ("off", "force"):
         database: Path = work / f"heap-command-{policy}.sqlite"
         result: subprocess.CompletedProcess[str] = subprocess.run(
@@ -191,10 +209,20 @@ def command_journey(binary: Path, work: Path) -> dict[str, object]:
             )
             assert counts["heap.objects.reclaimed"][2] >= 75000, counts
             if sys.maxsize > 2**32:
+                assert counts["heap.native_stack_frames"] == counts["heap.frames"], counts
+                assert counts["heap.native_stack_root_slots"][1] >= 2, counts
                 assert counts["heap.raw_edges"][1] >= 2, counts
                 assert counts["heap.raw_environment_edges"][1] >= 1, counts
                 assert counts["heap.raw_objects_traced"][1] >= 2, counts
-            receipts[policy] = counts
+            bindings: dict[str, int] = dict(db.execute("""
+                SELECT m.key,sum(m.value_int) FROM records r JOIN metrics m ON r.id=m.record_id
+                WHERE r.name='vm.function' AND m.key IN ('frame_binding_slots','frame_native_binding_slots')
+                GROUP BY m.key
+            """))
+            assert bindings["frame_binding_slots"] > 0, bindings
+            if sys.maxsize > 2**32:
+                assert bindings["frame_native_binding_slots"] == bindings["frame_binding_slots"], bindings
+            receipts[policy] = {"collections": counts, "bindings": bindings}
     return receipts
 
 

@@ -6,21 +6,31 @@ internal readonly record struct FixedTierSlot(int Slot, int Scalar, int ByteOffs
 internal enum NativeCallProducer : byte { None, Field, FieldWithArgument, Compose }
 internal readonly record struct FlushEntry(int Pc, int HitIndex, int TakenIndex, int Span, NativeOp Op, int TargetA, int TargetB, int TargetC,
     bool MachineCall, bool MachineClosureCall, NativeCallProducer MachineSource, bool GuestAccess, bool MachinePointerCall,
-    bool LayoutBranch, bool GuestCopy, bool GuestView);
+    bool LayoutBranch, bool GuestCopy, bool GuestView, bool GuestReferenceLoad, bool GuestReferenceStore,
+    bool MachineAddressResult, bool MachineArgumentWindow, NativeFastOperation Materialization);
 
 internal sealed partial class NativeTierLayout(int[] scalars, int[] nativePcs, NativeRegisterRegion[]? regions = null, int[]? branches = null,
     FixedTierSlot[]? fixedSlots = null, int[]? fixedBySlot = null, FixedTierSlot[]? dynamicLocalSlots = null,
     int[]? dynamicExternalSlots = null, FlushEntry[]? flushEntries = null, bool[]? machineClosures = null, bool[]? machineBases = null,
-    bool guestAccess = false, bool[]? borrowedGuestBases = null, HashSet<int>? layoutBranches = null, bool guestCopies = false,
+    bool guestAccess = false, bool[]? borrowedGuestBases = null, HashSet<int>? layoutBranches = null,
     IReadOnlyDictionary<int, NativeGuestView>? guestViews = null)
 {
+    internal const int RawOffset = 40, InitializationOffset = 48;
     internal const int GuestEdgesOffset = 64;
-    internal const int GuestHostRootsOffset = 72;
-    internal const int HeaderBytes = 80;
+    internal const int ChildContextOffset = 72, ChildEntryOffset = 80;
+    internal const int FixedResultBitsOffset = 88;
+    internal const int StackCursorOffset = 96;
+    internal const int FixedReturnTopOffset = 104, FixedReturnStateOffset = 112;
+    internal const int FixedCallStartOffset = 116;
+    internal const int FixedPendingOffset = 128, FixedCallableInitOffset = 136;
+    internal const int FixedCallableEdgesOffset = 144, FixedEnvironmentOffset = 152;
+    internal const int FixedRepeatPcOffset = 160, FixedRepeatsOffset = 164, FixedRepeatFuelOffset = 168;
+    internal const int HeaderBytes = 176;
     internal bool GuestAccess { get; } = guestAccess;
+    internal bool CanRunFixedRaw => DynamicLocalSlots.Length == 0 && DynamicExternalSlots.Length == 0
+        && MachineClosures is null && MachineBases is null;
     internal bool[]? BorrowedGuestBases { get; } = borrowedGuestBases;
     internal HashSet<int>? LayoutBranches { get; } = layoutBranches;
-    internal bool GuestCopies { get; } = guestCopies;
     internal IReadOnlyDictionary<int, NativeGuestView>? GuestViews { get; } = guestViews;
     private readonly int[]? fixedBySlot = fixedBySlot;
     internal NativeRegisterRegion[] Regions { get; } = regions ?? [];
@@ -64,7 +74,6 @@ internal sealed partial class NativeTierLayout(int[] scalars, int[] nativePcs, N
         List<int> pcs = [];
         List<int> branches = [];
         bool hasGuestAccess = calls?.Values.Any(call => call.Leaf.GuestReferences != 0) == true;
-        bool guestCopies = false;
         bool[]? borrowedGuestBases = null;
         NativeFrameSlot[]? frameSlots = image?.Frame(function.Index).Slots;
         for (int pc = 0; pc < operations.Length; pc++)
@@ -80,14 +89,25 @@ internal sealed partial class NativeTierLayout(int[] scalars, int[] nativePcs, N
             pcs.Add(pc);
             NativeExecutionInstruction instruction = function.Instructions[pc];
             if (operations[pc] is NativeFastOperation.Jump or NativeFastOperation.Nop) continue;
+            if (operations[pc].IsValueMaterialization())
+            {
+                hasGuestAccess |= operations[pc] != NativeFastOperation.Integer64Constant;
+                slots.Add(instruction.Result);
+                if (operations[pc] == NativeFastOperation.GuestComposeFunction)
+                    foreach (int part in function.Metadata[pc].Inputs!) slots.Add(part);
+                continue;
+            }
+            if (operations[pc] == NativeFastOperation.AddressReturn)
+            {
+                hasGuestAccess = true;
+                continue;
+            }
             if (operations[pc].IsGuestAccess())
             {
                 hasGuestAccess = true;
-                if (operations[pc] is NativeFastOperation.GuestCopy or NativeFastOperation.GuestView)
-                {
-                    guestCopies = true;
+                if (operations[pc] is NativeFastOperation.GuestCopy or NativeFastOperation.GuestView
+                    or NativeFastOperation.GuestReferenceLoad or NativeFastOperation.GuestReferenceStore)
                     continue;
-                }
                 if (frameSlots?[instruction.A].Binding >= 0)
                 {
                     (borrowedGuestBases ??= new bool[function.Definition.Slots.Count])[instruction.A] = true;
@@ -145,7 +165,12 @@ internal sealed partial class NativeTierLayout(int[] scalars, int[] nativePcs, N
         }
         int[] map = Enumerable.Repeat(-1, function.Definition.Slots.Count).ToArray();
         int index = 0;
-        foreach (int slot in slots.Order()) map[slot] = index++;
+        foreach (int slot in slots.Order())
+        {
+            if ((uint)slot >= (uint)map.Length)
+                throw new InvalidOperationException($"Invalid tier slot {slot} of {map.Length} in '{function.Definition.Name}'.");
+            map[slot] = index++;
+        }
         List<FixedTierSlot> fixedSlots = [];
         int[] fixedBySlot = Enumerable.Repeat(-1, map.Length).ToArray();
         List<FixedTierSlot> dynamicLocalSlots = [];
@@ -185,14 +210,18 @@ internal sealed partial class NativeTierLayout(int[] scalars, int[] nativePcs, N
             NativeExecutionInstruction instr = function.Instructions[pc];
             int takenIndex = provisional.TrueHits.TryGetValue(pc, out int taken) ? taken : -1;
             int span = provisional.RegionsByPc.TryGetValue(pc, out NativeRegisterRegion? region) ? region.End - pc : instr.Span;
-            NativeMachineLeaf? target = calls?.GetValueOrDefault(pc)?.Leaf;
+            NativeMachineCall? linkedCall = calls?.GetValueOrDefault(pc);
+            NativeMachineLeaf? target = linkedCall?.Leaf;
             flushEntries[i] = new(pc, provisional.Hits[pc], takenIndex, span, instr.Op, instr.A, instr.B, instr.C,
                 target is not null, target?.Captures.Length > 0,
                 operations[pc] != NativeFastOperation.MachineFusedCall ? NativeCallProducer.None
                     : sources![pc].InlineArgument >= 0 ? NativeCallProducer.FieldWithArgument
                     : sources[pc].Field.HasValue ? NativeCallProducer.Field : NativeCallProducer.Compose,
                 operations[pc].IsGuestAccess(), target?.GuestReferences > 0, layoutBranches?.Contains(pc) == true,
-                operations[pc] == NativeFastOperation.GuestCopy, operations[pc] == NativeFastOperation.GuestView);
+                operations[pc] == NativeFastOperation.GuestCopy, operations[pc] == NativeFastOperation.GuestView,
+                operations[pc] == NativeFastOperation.GuestReferenceLoad,
+                operations[pc] == NativeFastOperation.GuestReferenceStore, target?.ResultKind == NativeKind.Address,
+                linkedCall?.ArgumentWindow.HasValue == true, operations[pc].IsValueMaterialization() ? operations[pc] : default);
         }
         bool[]? closures = null, bases = null;
         if (calls is not null)
@@ -204,7 +233,7 @@ internal sealed partial class NativeTierLayout(int[] scalars, int[] nativePcs, N
             }
         return new(map, provisional.NativePcs, regions, branches.ToArray(),
             fixedArray, fixedBySlot, localArray, externalArray, flushEntries, closures, bases, hasGuestAccess, borrowedGuestBases,
-            layoutBranches, guestCopies, views);
+            layoutBranches, views);
     }
 
     internal static NativeTierLayout Identity(NativeExecutionFunction function) => new(

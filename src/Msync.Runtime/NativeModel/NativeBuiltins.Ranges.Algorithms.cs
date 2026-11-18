@@ -13,11 +13,12 @@ public static partial class NativeBuiltins
         or "set_symmetric_difference" or "set_symmetric_difference_with";
 
     private static async ValueTask<NativeValue> ExtendedRangeOperationAsync(string operation, IReadOnlyList<NativeValue> args,
+        NativeRuntimeContext context,
         Func<NativeValue, IReadOnlyList<NativeValue>, CancellationToken, ValueTask<NativeValue>> invoke, CancellationToken token)
     {
         NativeRange source = Range(args[0], operation);
         if (operation == "at") return await ElementAt(source, Ordinal(args[1], operation, false), token);
-        if (operation == "materialize") return NativeValue.FromRange(await Materialized(source, token));
+        if (operation == "materialize") return NativeValue.FromRange(await Materialized(source, context, token));
         if (operation == "size") return NativeValue.FromNumber(await CountRange(source, token));
         if (SortedCombination(operation) is { } combination)
         {
@@ -34,10 +35,10 @@ public static partial class NativeBuiltins
             "concat" => new(Concatenated(source, Range(args[1], operation), token), TypeRef.Union(source.ItemType, args[1].AsRange().ItemType), args,
                 physicalItemType: NativeType.Union(source.PhysicalItemType, args[1].AsRange().PhysicalItemType)),
             "flatten" => new(Flattened(source, token), source.ItemType.Element ?? TypeRef.Any, args),
-            "zip" => new(Zipped(source, Range(args[1], operation), token), TypeRef.Scope, args),
-            "enumerate_from" => new(Indexed(source, FiniteNumber(args[1], operation), token), TypeRef.Scope, args),
-            "chunk" => new(Partitioned(source, Ordinal(args[1], operation, true), false, token), new(TypeKind.Range, source.ItemType), args),
-            "slide" => new(Partitioned(source, Ordinal(args[1], operation, true), true, token), new(TypeKind.Range, source.ItemType), args),
+            "zip" => new(Zipped(source, Range(args[1], operation), context, token), TypeRef.Scope, args),
+            "enumerate_from" => new(Indexed(source, FiniteNumber(args[1], operation), context, token), TypeRef.Scope, args),
+            "chunk" => new(Partitioned(source, Ordinal(args[1], operation, true), false, context, token), new(TypeKind.Range, source.ItemType), args),
+            "slide" => new(Partitioned(source, Ordinal(args[1], operation, true), true, context, token), new(TypeKind.Range, source.ItemType), args),
             "sort" or "sort_with" => Adapt(source, source.ItemType,
                 (range, cancellation) => Sorted(range, operation == "sort_with" ? args[1] : (NativeValue?)null, invoke, cancellation), token, args.Skip(1).ToArray()),
             "scan" => new(Scanned(source, args[1], args[2], invoke, token), TypeRef.Any, args),
@@ -67,13 +68,13 @@ public static partial class NativeBuiltins
         return count;
     }
 
-    private static async ValueTask<NativeRange> Materialized(NativeRange source, CancellationToken token)
+    private static async ValueTask<NativeRange> Materialized(NativeRange source, NativeRuntimeContext context, CancellationToken token)
     {
         TypeRef type = source.ItemType;
         source = await DemandRangeAsync(source, token);
         List<NativeValue> values = [];
         await foreach (NativeValue value in source.Items.WithCancellation(token)) values.Add(value);
-        return NativeRange.Snapshot(values, type, source.PhysicalItemType);
+        return context.Snapshot(values, type, source.PhysicalItemType);
     }
 
     private static async IAsyncEnumerable<NativeValue> Concatenated(NativeRange first, NativeRange second,
@@ -90,31 +91,31 @@ public static partial class NativeBuiltins
             await foreach (NativeValue value in Range(range, "flatten").Items.WithCancellation(token)) yield return value;
     }
 
-    private static async IAsyncEnumerable<NativeValue> Zipped(NativeRange first, NativeRange second,
+    private static async IAsyncEnumerable<NativeValue> Zipped(NativeRange first, NativeRange second, NativeRuntimeContext context,
         [EnumeratorCancellation] CancellationToken token)
     {
         NativeLayout layout = NativeBuiltinLayouts.Zip(first.PhysicalItemType, second.PhysicalItemType);
         await using IAsyncEnumerator<NativeValue> left = first.Items.GetAsyncEnumerator(token);
         await using IAsyncEnumerator<NativeValue> right = second.Items.GetAsyncEnumerator(token);
         while (await left.MoveNextAsync() && await right.MoveNextAsync())
-            yield return Record(layout, left.Current, right.Current);
+            yield return Record(context, layout, left.Current, right.Current);
     }
 
-    private static async IAsyncEnumerable<NativeValue> Indexed(NativeRange source, double start,
+    private static async IAsyncEnumerable<NativeValue> Indexed(NativeRange source, double start, NativeRuntimeContext context,
         [EnumeratorCancellation] CancellationToken token)
     {
         NativeLayout layout = NativeBuiltinLayouts.Enumerate(source.PhysicalItemType);
         double index = start;
         await foreach (NativeValue value in source.Items.WithCancellation(token))
         {
-            yield return Record(layout, NativeValue.FromNumber(index), value);
+            yield return Record(context, layout, NativeValue.FromNumber(index), value);
             double next = index + 1;
             if (next == index) throw new MsyncException("ranges.enumerate_from index no longer advances the Number value");
             index = next;
         }
     }
 
-    private static async IAsyncEnumerable<NativeValue> Partitioned(NativeRange source, long count, bool sliding,
+    private static async IAsyncEnumerable<NativeValue> Partitioned(NativeRange source, long count, bool sliding, NativeRuntimeContext context,
         [EnumeratorCancellation] CancellationToken token)
     {
         Queue<NativeValue> window = [];
@@ -122,10 +123,10 @@ public static partial class NativeBuiltins
         {
             window.Enqueue(value);
             if (window.Count != count) continue;
-            yield return NativeValue.FromRange(NativeRange.Snapshot(window, source.ItemType, source.PhysicalItemType));
+            yield return NativeValue.FromRange(context.Snapshot(window, source.ItemType, source.PhysicalItemType));
             if (sliding) window.Dequeue(); else window.Clear();
         }
-        if (!sliding && window.Count > 0) yield return NativeValue.FromRange(NativeRange.Snapshot(window, source.ItemType, source.PhysicalItemType));
+        if (!sliding && window.Count > 0) yield return NativeValue.FromRange(context.Snapshot(window, source.ItemType, source.PhysicalItemType));
     }
 
     private static async IAsyncEnumerable<NativeValue> Scanned(NativeRange source, NativeValue initial, NativeValue operation,
@@ -154,6 +155,7 @@ public static partial class NativeBuiltins
     {
         if (left.Kind == NativeKind.Number && right.Kind == NativeKind.Number) return left.AsNumber().CompareTo(right.AsNumber());
         if (left.Kind == NativeKind.Bool && right.Kind == NativeKind.Bool) return left.AsBool().CompareTo(right.AsBool());
+        if (left.Kind == NativeKind.String && right.Kind == NativeKind.String) return TextSemantics.CompareOrdinal(left.AsStringSpan(), right.AsStringSpan());
         if (left.Kind is NativeKind.String or NativeKind.Path && right.Kind is NativeKind.String or NativeKind.Path)
             return TextSemantics.CompareOrdinal(Text(left), Text(right));
         throw new MsyncException($"Natural range ordering cannot compare {left.Type} and {right.Type}; supply a strict comparator");

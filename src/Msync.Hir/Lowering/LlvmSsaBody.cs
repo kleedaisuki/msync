@@ -28,11 +28,25 @@ internal static class LlvmSsaBody
         List<NativeSsaLiteral> literals = [];
         LlvmBasicBlock[] blocks = function.BasicBlocks.ToArray();
         Dictionary<LlvmBasicBlock, int> labels = new(blocks.Length);
+        HashSet<LlvmInstruction>? nonNullTests = null;
+        Dictionary<LlvmInstruction, LlvmValue>? tagPacks = null;
         for (int i = 0; i < blocks.Length; i++) labels.Add(blocks[i], i);
         foreach (LlvmBasicBlock block in blocks)
         foreach (LlvmInstruction instruction in block.Instructions)
         {
             if (instruction.IsTerminator || IsReadyDemand(instruction)) continue;
+            if (IsNonNullTest(instruction))
+            {
+                (nonNullTests ??= []).Add(instruction);
+                continue;
+            }
+            if (Kind(instruction) is null && Represented(instruction) is { } scalar && Kind(scalar) is { } scalarKind
+                && instruction.Users.All(user => IsNonNullTest(user)
+                    || Represented(user) == instruction && Kind(user) == scalarKind))
+            {
+                (tagPacks ??= []).Add(instruction, scalar);
+                continue;
+            }
             if (Kind(instruction) is null || Form(instruction).Op == LlvmOpcode.Call && DirectTarget(instruction) < 0)
                 return Reject(instruction is LlvmCallInstruction call ? "call." + call.CalledFunction?.Name : instruction.Opcode.ToString());
             ids.Add(instruction, ids.Count);
@@ -46,6 +60,7 @@ internal static class LlvmSsaBody
             foreach (LlvmInstruction instruction in block.Instructions)
             {
                 if (instruction.IsTerminator || instruction is LlvmPhiInstruction) continue;
+                if (nonNullTests?.Contains(instruction) == true || tagPacks?.ContainsKey(instruction) == true) continue;
                 if (IsReadyDemand(instruction))
                 {
                     Value(((LlvmCallInstruction)instruction).GetArgument(0));
@@ -84,6 +99,8 @@ internal static class LlvmSsaBody
         trace?.Metric("ssa.whole_functions", 1);
         trace?.Metric("ssa.whole_blocks", plans.Length);
         trace?.Metric("ssa.whole_values", ids.Count);
+        trace?.Metric("ssa.nonnull_tests_elided", nonNullTests?.Count ?? 0);
+        trace?.Metric("ssa.tag_packs_elided", tagPacks?.Count ?? 0);
         NativeKind[] kinds = new NativeKind[ids.Count];
         foreach (var (value, index) in ids) kinds[index] = Kind(value)!.Value;
         return new(kinds, linked.ParameterCount, result.Value, literals.ToArray(), plans);
@@ -99,6 +116,20 @@ internal static class LlvmSsaBody
             instruction is LlvmCallInstruction { CalledFunction: { } target, ArgumentCount: 1 } call
             && Kind(call.GetArgument(0)) == NativeKind.Bool
             && graph.ValueOperations.TryGetValue(target, out var value) && value.Operation == LlvmRuntimeValueOperation.DemandBool;
+
+        LlvmValue? Represented(LlvmValue instruction) =>
+            instruction is LlvmCallInstruction { CalledFunction: { } target, ArgumentCount: 1 } call
+            && graph.RuntimeConversions.TryGetValue(target, out var binding)
+            && binding.Operation == LlvmRuntimeConversionOperation.Represent ? call.GetArgument(0) : null;
+
+        bool IsNonNullTest(LlvmValue instruction) =>
+            instruction is LlvmCallInstruction { CalledFunction: { } target, ArgumentCount: 1 } call
+            && graph.RuntimeConversions.TryGetValue(target, out var binding)
+            && binding.Operation == LlvmRuntimeConversionOperation.IsNull
+            && ScalarKind(call.GetArgument(0)) is not null;
+
+        NativeKind? ScalarKind(LlvmValue value) => Kind(value)
+            ?? (Represented(value) is { } scalar ? Kind(scalar) : null);
 
         int DirectTarget(LlvmInstruction instruction)
         {
@@ -116,8 +147,7 @@ internal static class LlvmSsaBody
         {
             if (instruction is LlvmCallInstruction { CalledFunction: { } target } call)
             {
-                if (call.ArgumentCount == 1 && call.Type == call.GetArgument(0).Type
-                    && graph.RuntimeConversions.TryGetValue(target, out var conversion) && conversion.Operation == LlvmRuntimeConversionOperation.Represent)
+                if (Represented(call) is { } represented && Kind(call) == ScalarKind(represented))
                     return (LlvmOpcode.Freeze, default);
                 if (call.ArgumentCount == 2 && Kind(call.GetArgument(0)) == NativeKind.Number
                     && Kind(call.GetArgument(1)) == NativeKind.Number && graph.RuntimeCalls.TryGetValue(target, out var binary))
@@ -142,6 +172,10 @@ internal static class LlvmSsaBody
 
         int Value(LlvmValue value)
         {
+            if (value is LlvmInstruction test && nonNullTests?.Contains(test) == true)
+                value = LlvmConstantInt.GetFalse(function.Context);
+            else if (value is LlvmInstruction pack && tagPacks?.TryGetValue(pack, out LlvmValue? scalar) == true)
+                value = scalar;
             if (ids.TryGetValue(value, out int index)) return index;
             ulong? bits = value switch
             {

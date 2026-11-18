@@ -16,6 +16,8 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
     internal NativeTierLayout Layout { get; } = layout;
     internal NativeCodegenStatistics Statistics { get; } = statistics;
     internal NativeMachineLeaf? Leaf { get; } = leaf;
+    internal bool ReadsParametersOnBind { get; private init; }
+    internal int DeferredLocationCaptures => Statistics.DeferredLocationCaptures;
     internal static bool MachineCallsSupported => RuntimeInformation.ProcessArchitecture == Architecture.X64 && NativeCodePage.IsSupported;
 
     internal static NativeCompiledFunction? Compile(NativeImage image, NativeExecutionFunction function, NativeJitPolicy policy,
@@ -34,7 +36,8 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
                 scopedGuestMemory && architecture == Architecture.X64);
         if (leafOnly)
             for (int pc = 0; pc < operations.Length; pc += function.Instructions[pc].Span)
-                if (operations[pc] == NativeFastOperation.Bridge) return null;
+                if (operations[pc] == NativeFastOperation.Bridge
+                    && !NativeMachineLeaf.CanReplayBridge(function, pc)) return null;
         List<NativeCodePage>? dependencies = null;
         IReadOnlyDictionary<int, NativeMachineCall>? calls = null;
         try
@@ -50,7 +53,8 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
             if (!leafOnly && policy == NativeJitPolicy.Auto && (!NativeMachineCode.HasDirectPaths
                 || !IsProfitableForAuto(function, operations))) return null;
             NativeCompiledFunction? result = Publish(image, function, operations, architecture, observeRegisterPlanning,
-                leafOnly, calls, dependencies, Stopwatch.GetElapsedTime(started).Ticks * 100, keptWithBridge, referencesKept, views);
+                leafOnly, calls, dependencies, Stopwatch.GetElapsedTime(started).Ticks * 100, keptWithBridge, referencesKept, views,
+                scopedGuestMemory);
             if (result is not null) dependencies = null;
             return result;
         }
@@ -65,7 +69,7 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
         NativeFastOperation[] operations, Architecture architecture, bool observeRegisterPlanning, bool leafOnly,
         IReadOnlyDictionary<int, NativeMachineCall>? calls, List<NativeCodePage>? dependencies, long selection,
         (int Fields, int Layouts) keptWithBridge, (int Copies, int Views) referencesKept,
-        IReadOnlyDictionary<int, NativeGuestView>? views)
+        IReadOnlyDictionary<int, NativeGuestView>? views, bool scopedGuestMemory)
     {
         long started = Stopwatch.GetTimestamp();
         NativeRegisterPlanMetrics? registerMetrics = observeRegisterPlanning ? new() : null;
@@ -76,12 +80,16 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
                 operations[pc + function.Instructions[pc].Span] = NativeFastOperation.Bridge;
         NativeMachineLeaf? leaf = NativeMachineLeaf.Describe(image, function, operations, layout);
         if (leafOnly && leaf is null) return null;
+        if (!leafOnly && architecture == Architecture.X64)
+            LinkFrameContinuations(function, operations);
         long allocation = Stopwatch.GetElapsedTime(started).Ticks * 100;
         started = Stopwatch.GetTimestamp();
         byte[] bytes = NativeMachineCode.Emit(function, operations, architecture,
             OperatingSystem.IsWindows(), NativeInterpreter.TierBridgeAddress, NativeInterpreter.TierNumberAddress,
             NativeInterpreter.TierBoolAddress, image.Program.Constants, out NativeInitializationElisions initializationElisions,
-            layout, NativeInterpreter.TierCommitAddress, calls, leaf?.GuestReferences > 0);
+            layout, NativeInterpreter.TierCommitAddress, calls, leaf?.GuestReferences > 0, leaf?.ReturnWindow?.CopyPc ?? -1,
+            leafOnly ? 0 : NativeInterpreter.TierFrameCallAddress, leafOnly ? 0 : NativeInterpreter.TierFixedReturnAddress,
+            fixedRepeats: scopedGuestMemory && !leafOnly);
         long emission = Stopwatch.GetElapsedTime(started).Ticks * 100;
         started = Stopwatch.GetTimestamp();
         NativeCodePage? page = NativeCodePage.Create(bytes, dependencies);
@@ -96,6 +104,9 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
                 operation != NativeFastOperation.Bridge && function.Instructions[pc].Op == NativeOp.MachineCompare).Count() : 0,
             UnaryMathSites = observeRegisterPlanning ? operations.Count(static operation => operation.IsUnaryMath()) : 0,
             GuestLoadSites = observeRegisterPlanning ? operations.Count(static operation => operation == NativeFastOperation.GuestLoad) : 0,
+            GuestReferenceLoadSites = observeRegisterPlanning ? operations.Count(static operation => operation == NativeFastOperation.GuestReferenceLoad) : 0,
+            GuestReferenceStoreSites = observeRegisterPlanning ? operations.Count(static operation => operation == NativeFastOperation.GuestReferenceStore) : 0,
+            ValueMaterializationSites = observeRegisterPlanning ? operations.Count(static operation => operation.IsValueMaterialization()) : 0,
             GuestStoreSites = observeRegisterPlanning ? operations.Count(static operation => operation == NativeFastOperation.GuestStore) : 0,
             GuestLayoutSites = observeRegisterPlanning ? operations.Count(static operation => operation == NativeFastOperation.GuestHasLayout) : 0,
             GuestLayoutBranchSites = observeRegisterPlanning ? layout.LayoutBranches?.Count ?? 0 : 0,
@@ -106,11 +117,68 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
             GuestAccessKeptWithBridge = keptWithBridge.Fields,
             GuestLayoutKeptWithBridge = keptWithBridge.Layouts,
             MachineCallSites = calls?.Count ?? 0,
+            FrameCallSites = initializationElisions.FrameCallSites,
+            DeferredLocationCaptures = CountDeferredLocationCaptures(function, layout),
+            FrameArgumentSites = initializationElisions.FrameArgumentSites,
             MachinePointerCallSites = observeRegisterPlanning ? calls?.Values.Count(call => call.Leaf.GuestReferences != 0) ?? 0 : 0,
+            MachineAddressResultSites = observeRegisterPlanning ? calls?.Values.Count(call => call.Leaf.ResultKind == NativeKind.Address) ?? 0 : 0,
+            MachineArgumentWindowSites = observeRegisterPlanning ? calls?.Values.Count(call => call.ArgumentWindow.HasValue) ?? 0 : 0,
             UnsignedValues = layout.Regions.Sum(region => region.Values.Count(value => value.Unsigned)),
             UnsignedOperations = layout.Regions.Sum(region => region.Operations.Count(operation => operation.Form != NativeNumberForm.Float64))
         };
-        return page is null ? null : new(page, bytes.Length, operations, layout, statistics, leaf);
+        return page is null ? null : new(page, bytes.Length, operations, layout, statistics, leaf)
+        {
+            ReadsParametersOnBind = ReadsParameters(layout, function.Definition.CaptureCount, function.Definition.ParameterCount)
+        };
+    }
+
+    private static int CountDeferredLocationCaptures(NativeExecutionFunction function, NativeTierLayout layout)
+    {
+        int deferred = 0;
+        for (int slot = 0; slot < function.Definition.CaptureCount; slot++)
+        {
+            if (function.Definition.Signature.Captures[slot].Mode != NativeCaptureMode.Location) continue;
+            // Direct accesses to a binding must go through a tier descriptor.
+            if (layout.Scalars[slot] >= 0) return 0;
+            deferred++;
+        }
+        return deferred;
+    }
+
+    private static bool ReadsParameters(NativeTierLayout layout, int first, int count)
+    {
+        if (layout.MachineClosures is null && layout.MachineBases is null) return false;
+        for (int slot = first; slot < first + count; slot++)
+            if (layout.MachineClosures?[slot] == true || layout.MachineBases?[slot] == true) return true;
+        return false;
+    }
+
+    private static void LinkFrameContinuations(NativeExecutionFunction function, NativeFastOperation[] operations)
+    {
+        CallableFlow? flow = null;
+        NativeControlFlow? control = null;
+        for (int pc = 0, previous = -1; pc < operations.Length; previous = pc, pc += function.Instructions[pc].Span)
+        {
+            if (operations[pc] != NativeFastOperation.Bridge || function.Instructions[pc].Op != NativeOp.Call) continue;
+            if (function.HasFrameCall(pc))
+            {
+                operations[pc] = NativeFastOperation.FrameCall;
+                continue;
+            }
+            NativeInstruction call = function.Metadata[pc];
+            if (call.B < 0 || call.C >= 0 || call.Result < 0 || previous < 0 || operations[previous] != NativeFastOperation.Bridge) continue;
+            ref readonly NativeExecutionInstruction load = ref function.Instructions[previous];
+            if (load.Handler != NativeInterpreter.FrameLoadHandler || load.Result != call.A
+                || !function.HasKind(load.A, NativeKind.Function) || !function.HasKind(load.Result, NativeKind.Function)
+                || !function.RawWritable[load.Result] || function.FrameSlot(load.Result).Binding >= 0
+                || NativeInterpreter.HasTailContinuation(function, pc, call.Result)) continue;
+            flow ??= new(function);
+            if (flow.Reads[load.Result] != 1) continue;
+            control ??= new(function.Metadata);
+            if (control.Blocks.Any(block => block.Start == pc)) continue;
+            operations[previous] = NativeFastOperation.FrameLoadCall;
+            operations[pc] = NativeFastOperation.FrameCall;
+        }
     }
 
     private static (int Fields, int Layouts) KeepBridgeGroups(NativeExecutionFunction function, NativeFastOperation[] operations)
@@ -121,7 +189,8 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
             int next = pc + function.Instructions[pc].Span;
             // An isolated operation between bridges already runs
             // inside their dispatch loop. Pulling it out adds a round trip.
-            if (operations[pc].IsGuestAccess() && operations[pc] is not (NativeFastOperation.GuestCopy or NativeFastOperation.GuestView)
+            if (operations[pc].IsGuestAccess() && operations[pc] is not
+                (NativeFastOperation.GuestCopy or NativeFastOperation.GuestView or NativeFastOperation.GuestReferenceStore)
                 && previous >= 0 && next < operations.Length
                 && operations[previous] == NativeFastOperation.Bridge && operations[next] == NativeFastOperation.Bridge)
             {
@@ -182,9 +251,10 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
             NativeExecutionInstruction instruction = caller.Instructions[pc];
             NativeInstruction call = caller.Metadata[pc];
             if (instruction.Op != NativeOp.Call || instruction.Handler != NativeInterpreter.DirectCallHandler
-                || call.B < 0 || call.C >= 0 || !caller.CanWriteRaw(call.Result)
+                || call.B < 0 || call.C >= 0 || call.Result < 0 || !caller.RawWritable[call.Result]
                 || slots[call.Result].Binding >= 0 || slots[call.A].Binding >= 0 || !caller.HasKind(call.A, NativeKind.Function))
                 continue;
+            if (!(caller.CanWriteRaw(call.Result) || machineClosures && caller.HasKind(call.Result, NativeKind.Address))) continue;
             if (!machineClosures && image.Program.Functions[call.B].CaptureCount != 0) continue;
             if (link(call.B) is not { Leaf: { } leaf } code || !caller.HasKind(call.Result, leaf.ResultKind)) continue;
             if (leaf.Captures.Length != 0 && !caller.RawWritable[call.A]) continue;
@@ -211,7 +281,7 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
                 if (field is { Field: not null } projection) source = projection with { InlineArgument = loadPc };
             }
             if (source is { } fused) operations[fused.Pc] = NativeFastOperation.MachineFusedCall;
-            (calls ??= []).Add(pc, new(call.B, leaf, inputs, address, source));
+            (calls ??= []).Add(pc, new(call.B, leaf, inputs, address, source, NativeMachineCall.LinkWindow(leaf, inputs, slots)));
             operations[pc] = NativeFastOperation.MachineCall;
         }
         return calls;
@@ -317,6 +387,7 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
             if (op is NativeFastOperation.MachineCall or NativeFastOperation.MachineFusedCall or NativeFastOperation.FloatRemainder or NativeFastOperation.Branch or NativeFastOperation.IsNull
                 or NativeFastOperation.NumberNegate or NativeFastOperation.BoolNot
                 or NativeFastOperation.BoolEqual or NativeFastOperation.BoolNotEqual
+                or NativeFastOperation.GuestComposeFunction
                 or >= NativeFastOperation.NumberAdd || op.IsUnaryMath() || op.IsGuestAccess())
             {
                 directCompute++;
@@ -346,10 +417,16 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
         if (instruction.Handler == NativeInterpreter.NopHandler) return NativeFastOperation.Nop;
         if (instruction.Op == NativeOp.Jump) return NativeFastOperation.Jump;
         if (instruction.Op == NativeOp.Branch) return NativeFastOperation.Branch;
+        if (guestMemory && executable.TryGuestReferenceLoad(pc, in instruction, out _))
+            return NativeFastOperation.GuestReferenceLoad;
+        if (guestMemory && executable.TryGuestReferenceStore(pc, in instruction, out _))
+            return NativeFastOperation.GuestReferenceStore;
         if (guestMemory && executable.TryGuestAccess(pc, out _))
             return instruction.Op == NativeOp.Load ? NativeFastOperation.GuestLoad : NativeFastOperation.GuestStore;
         if (guestMemory && executable.TryGuestLayoutCheck(pc, out _)) return NativeFastOperation.GuestHasLayout;
         if (guestMemory && executable.TryGuestCopy(pc, in instruction)) return NativeFastOperation.GuestCopy;
+        if (guestMemory && instruction.Op == NativeOp.ComposeFunction && executable.CanComposeGuestFunction(pc, instruction.Result))
+            return NativeFastOperation.GuestComposeFunction;
         if (nativeSequences && instruction.Op == NativeOp.NextIterator && Kind(instruction.Result, TypeKind.Number)
             && image.Frame(executable.Index).Slots[instruction.Result].Binding < 0)
             return NativeFastOperation.SequenceNext;
@@ -379,6 +456,8 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
             if (instruction.A < 0 || Kind(instruction.A, TypeKind.Null)) return NativeFastOperation.NullReturn;
             if (Kind(instruction.A, TypeKind.Number)) return NativeFastOperation.NumberReturn;
             if (Kind(instruction.A, TypeKind.Bool)) return NativeFastOperation.BoolReturn;
+            if (guestMemory && executable.HasKind(instruction.A, NativeKind.Address)
+                && executable.FrameSlot(instruction.A).Binding < 0) return NativeFastOperation.AddressReturn;
         }
         if (instruction.Op == NativeOp.Constant)
             return image.Program.Constants[instruction.A].Kind switch
@@ -386,12 +465,20 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
                 NativeKind.Number => NativeFastOperation.NumberConstant,
                 NativeKind.Bool => NativeFastOperation.BoolConstant,
                 NativeKind.Null when Kind(instruction.Result, TypeKind.Null) => NativeFastOperation.NullConstant,
+                NativeKind.Null when guestMemory && executable.CanStoreGuestNull(instruction.Result) => NativeFastOperation.GuestNullConstant,
+                NativeKind.MachineInteger when nativeSequences && executable.CanWriteRaw(instruction.Result)
+                    && executable.IsPrivateInteger64(instruction.Result)
+                    && image.Program.Constants[instruction.A].MachineType?.BitWidth == 64 => NativeFastOperation.Integer64Constant,
                 _ => NativeFastOperation.Bridge
             };
         if (instruction.Op == NativeOp.Copy)
         {
-            if (Kind(instruction.A, TypeKind.Number)) return NativeFastOperation.NumberCopy;
-            if (Kind(instruction.A, TypeKind.Bool)) return NativeFastOperation.BoolCopy;
+            if (Kind(instruction.A, TypeKind.Number)
+                || Kind(instruction.Result, TypeKind.Number) && executable.AdmitsKind(instruction.A, NativeKind.Number))
+                return NativeFastOperation.NumberCopy;
+            if (Kind(instruction.A, TypeKind.Bool)
+                || Kind(instruction.Result, TypeKind.Bool) && executable.AdmitsKind(instruction.A, NativeKind.Bool))
+                return NativeFastOperation.BoolCopy;
         }
         if (instruction.Op == NativeOp.Load && instruction.Handler == NativeInterpreter.FrameLoadHandler)
         {
@@ -452,6 +539,8 @@ internal sealed class NativeCompiledFunction(NativeCodePage page, int bytes,
 
     private readonly NativeCodePage codePage = page;
     internal NativeCodePage.Entry OpenEntry() => codePage.OpenEntry();
+    internal nint RetainEntry() => codePage.Retain();
+    internal void ReleaseEntry() => codePage.DangerousRelease();
     internal unsafe int Run(nint context, int pc)
     {
         using var entry = OpenEntry();
@@ -471,6 +560,9 @@ internal readonly record struct NativeCodegenStatistics(long SelectionNanosecond
     internal int DoubleComparisonSites { get; init; }
     internal int UnaryMathSites { get; init; }
     internal int GuestLoadSites { get; init; }
+    internal int GuestReferenceLoadSites { get; init; }
+    internal int GuestReferenceStoreSites { get; init; }
+    internal int ValueMaterializationSites { get; init; }
     internal int GuestStoreSites { get; init; }
     internal int GuestLayoutSites { get; init; }
     internal int GuestLayoutBranchSites { get; init; }
@@ -481,5 +573,10 @@ internal readonly record struct NativeCodegenStatistics(long SelectionNanosecond
     internal int GuestLayoutKeptWithBridge { get; init; }
     internal int GuestAccessKeptWithBridge { get; init; }
     internal int MachineCallSites { get; init; }
+    internal int FrameCallSites { get; init; }
+    internal int DeferredLocationCaptures { get; init; }
+    internal int FrameArgumentSites { get; init; }
     internal int MachinePointerCallSites { get; init; }
+    internal int MachineAddressResultSites { get; init; }
+    internal int MachineArgumentWindowSites { get; init; }
 }

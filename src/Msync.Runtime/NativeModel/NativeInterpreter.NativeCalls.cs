@@ -9,6 +9,8 @@ public sealed partial class NativeInterpreter
     private async ValueTask<NativeDatum> InvokeNativeDatumAsync(string name, IReadOnlyList<NativeDatum> arguments,
         NativeRuntimeContext origin, SourceSpan? source, CancellationToken token, NativeType? rangePhysicalType = null, Msync.Core.NativeSignature? signature = null)
     {
+        if (TryPlanRange(name, arguments, token, out NativeDatum plan)
+            || TryConsumeRangePlan(name, arguments, token, out plan)) return plan;
         Task predecessor = ordering;
         List<NativeFuture>? dependencies = null;
         foreach (NativeDatum argument in arguments)

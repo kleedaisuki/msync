@@ -85,12 +85,14 @@ internal sealed class NativeFuture(Task<NativeValue> completion,
     }
 }
 
-internal sealed class NativeMemory(RuntimeProfile.NativeStorageCounters? storageCounters = null)
+internal sealed class NativeMemory(RuntimeProfile.NativeStorageCounters? storageCounters = null) : IDisposable
 {
     internal void RecordScalarWrite(NativeAddress address, NativeKind kind) => storageCounters?.Scalar(address.Type, kind);
+    private NativePendingIndex? nativePending;
     private ConditionalWeakTable<NativeAllocation, ConcurrentDictionary<NativeOffset, NativeFuture>>? pending;
     private long pendingRevision;
     private int activePending;
+    internal ref int ActivePendingCount => ref activePending;
     internal long PendingRevision => Volatile.Read(ref pendingRevision);
     internal bool HasAnyPending
     {
@@ -99,9 +101,21 @@ internal sealed class NativeMemory(RuntimeProfile.NativeStorageCounters? storage
     }
     internal bool IsPending(NativeAddress address) => TryPending(address, out _);
 
+    public void Dispose() => nativePending?.Dispose();
+
     internal void ResetFrame(NativeAllocation allocation)
     {
-        if (Volatile.Read(ref allocation.PendingValues) != 0 && pending is { } table
+        nint cell = allocation.Storage.PendingCell;
+        if (cell != 0)
+        {
+            if (NativePendingIndex.HasEntries(cell))
+            {
+                int removed = nativePending!.Reset(cell);
+                Interlocked.Add(ref activePending, -removed);
+                Interlocked.Increment(ref pendingRevision);
+            }
+        }
+        else if (Volatile.Read(ref allocation.PendingValues) != 0 && pending is { } table
             && table.TryGetValue(allocation, out ConcurrentDictionary<NativeOffset, NativeFuture>? values)
             && table.Remove(allocation))
         {
@@ -149,6 +163,15 @@ internal sealed class NativeMemory(RuntimeProfile.NativeStorageCounters? storage
         {
             NativeStorage.ClearCompiled(address.Type, address);
             storageCounters?.Clear(address.Type);
+            nint cell = address.Allocation.Storage.PendingCell;
+            if (cell != 0)
+            {
+                NativePendingIndex index = LazyInitializer.EnsureInitialized(ref nativePending, () => new(storageCounters));
+                Interlocked.Increment(ref activePending);
+                if (!index.Write(cell, address.Offset, future)) Interlocked.Decrement(ref activePending);
+                Interlocked.Increment(ref pendingRevision);
+                return;
+            }
             ConcurrentDictionary<NativeOffset, NativeFuture> values = Pending().GetValue(address.Allocation, static _ => new());
             // Increment before publishing so readers/removers never observe HasAnyPending == false for a live entry.
             Interlocked.Increment(ref address.Allocation.PendingValues);
@@ -331,12 +354,34 @@ internal sealed class NativeMemory(RuntimeProfile.NativeStorageCounters? storage
                 Clear(address.OffsetBy(layout.Extent * element + field.Offset, field.Type));
     }
 
-    internal bool HasPending(NativeAllocation allocation) => Volatile.Read(ref allocation.PendingValues) != 0 && pending is { } table
-        && table.TryGetValue(allocation, out ConcurrentDictionary<NativeOffset, NativeFuture>? values) && !values.IsEmpty;
+    internal bool HasPending(NativeAllocation allocation)
+    {
+        if (!HasAnyPending) return false;
+        nint cell = allocation.Storage.PendingCell;
+        if (cell != 0) return NativePendingIndex.HasEntries(cell);
+        return Volatile.Read(ref allocation.PendingValues) != 0 && pending is { } table
+            && table.TryGetValue(allocation, out ConcurrentDictionary<NativeOffset, NativeFuture>? values) && !values.IsEmpty;
+    }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryPending(NativeAddress address, out NativeFuture? future)
     {
-        if (Volatile.Read(ref address.Allocation.PendingValues) == 0)
+        if (HasAnyPending) return TryPendingSlow(address, out future);
+        future = null;
+        return false;
+    }
+
+    private bool TryPendingSlow(NativeAddress address, out NativeFuture? future)
+    {
+        NativeAllocation allocation = address.Allocation;
+        nint cell = allocation.Storage.PendingCell;
+        if (cell != 0)
+        {
+            if (NativePendingIndex.HasEntries(cell)) return nativePending!.TryRead(cell, address.Offset, out future);
+            future = null;
+            return false;
+        }
+        if (Volatile.Read(ref allocation.PendingValues) == 0)
         {
             future = null;
             return false;
@@ -348,9 +393,23 @@ internal sealed class NativeMemory(RuntimeProfile.NativeStorageCounters? storage
         return false;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal void RemovePending(NativeAddress address)
     {
-        if (Volatile.Read(ref address.Allocation.PendingValues) != 0 && pending is { } table
+        if (HasAnyPending) RemovePendingSlow(address);
+    }
+
+    private void RemovePendingSlow(NativeAddress address)
+    {
+        NativeAllocation allocation = address.Allocation;
+        nint cell = allocation.Storage.PendingCell;
+        if (cell != 0)
+        {
+            if (NativePendingIndex.HasEntries(cell) && nativePending!.Remove(cell, address.Offset))
+                Interlocked.Decrement(ref activePending);
+            return;
+        }
+        if (Volatile.Read(ref allocation.PendingValues) != 0 && pending is { } table
             && table.TryGetValue(address.Allocation, out ConcurrentDictionary<NativeOffset, NativeFuture>? values)
             && values.TryRemove(address.Offset, out _))
         {

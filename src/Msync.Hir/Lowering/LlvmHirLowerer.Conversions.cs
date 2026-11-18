@@ -78,6 +78,12 @@ public static partial class LlvmHirLowerer
                 arguments.Add(node.Children.Count == 2 ? Child(node, 1) : TypeValue(new(node.Data)));
             if (block.HasTerminator) return owner.Null;
             current = node;
+            if (node.Kind == HirKind.IsType && RelocatedType(value) is { } actual
+                && RelocatedType(arguments[1]) is { } expected)
+            {
+                constantTypePredicates++;
+                return LlvmConstantInt.GetBool(owner.context, expected.Accepts(actual));
+            }
             var operation = node.Kind switch
             {
                 HirKind.IsNull => LlvmRuntimeConversionOperation.IsNull,
@@ -86,6 +92,13 @@ public static partial class LlvmHirLowerer
             };
             return ConversionCall(operation, owner.Type(node.Type), owner.metadata.Type(node.Type), arguments);
         }
+        private long constantTypePredicates;
+
+        private TypeRef? RelocatedType(LlvmValue value) =>
+            value is LlvmLoadInstruction { PointerOperand: LlvmGlobalVariable global }
+            && owner.constants.TryGetValue(global, out var literal) && literal.Kind == NativeKind.Type
+                ? literal.Type : null;
+
         private LlvmValue TypeValue(HirTypeId type)
         {
             var source = Hir.Types[type.Value];

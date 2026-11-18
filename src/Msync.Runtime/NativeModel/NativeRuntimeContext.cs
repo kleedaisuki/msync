@@ -61,6 +61,7 @@ public sealed class NativeRuntimeContext
         DescribeFunction = source.DescribeFunction;
         DescribeValue = source.DescribeValue;
         DescribeField = source.DescribeField;
+        BuiltinStorage = source.BuiltinStorage;
         captured = snapshot ? this : null;
     }
 
@@ -84,6 +85,20 @@ public sealed class NativeRuntimeContext
     public Func<NativeFunction, NativeCallableDescription?>? DescribeFunction { get; set; }
     public Func<NativeValue, TypeRef>? DescribeValue { get; set; }
     public Func<NativeAddress, int, NativeFieldDescription>? DescribeField { get; set; }
+
+    internal Func<NativeLayout, int, NativeAllocation>? BuiltinStorage
+    {
+        get;
+        set
+        {
+            field = value;
+            if (captured is { } snapshot && !ReferenceEquals(snapshot, this)) snapshot.BuiltinStorage = value;
+        }
+    }
+
+    internal NativeRange Snapshot(IEnumerable<NativeValue> items, TypeRef logical, NativeType? physical = null) =>
+        BuiltinStorage is { } allocate ? NativeRange.Snapshot(items, logical, physical, allocate)
+        : physical is null ? NativeRange.Snapshot(items, logical) : NativeRange.Snapshot(items, logical, physical);
 
     public NativeRuntimeContext CaptureDirectory() => captured ??= new(this, snapshot: true);
     internal NativeRuntimeContext ForProcessSubmission(Action<NativeProcess>? observer) =>

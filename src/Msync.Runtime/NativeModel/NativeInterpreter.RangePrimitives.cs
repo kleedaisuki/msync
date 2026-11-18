@@ -32,7 +32,7 @@ public sealed partial class NativeInterpreter
         NativeRange source = (await args[0].ResolveAsync(token)).AsRange();
         if (operation is "identity" or "all") return args[0];
         if (operation == "materialize")
-            return new NativeDatum(NativeValue.FromRange(DatumSnapshot(await CollectDatums(source, token), source.ItemType, source.PhysicalItemType)));
+            return await MaterializeDatums(source, origin, token);
         if (operation is "front" or "first" or "back" or "last" or "at" or "size" or "empty")
             return await SelectDatum(source, operation, args, token);
         if (operation is "contains" or "find" or "find_if" or "any" or "any_of" or "all_of" or "none" or "none_of")
@@ -131,7 +131,7 @@ public sealed partial class NativeInterpreter
     }
 
     private bool DatumMayDefer(NativeDatum value) => !value.IsReady || value.Value.Kind == NativeKind.Range
-        && datumRanges.TryGetValue(value.Value.AsRange(), out DatumRange? range) && range.MayDefer;
+        && value.Value.RangePlan == 0 && datumRanges.TryGetValue(value.Value.AsRange(), out DatumRange? range) && range.MayDefer;
 
     private NativeRange ReadySnapshot(IReadOnlyList<NativeDatum> values, TypeRef itemType, NativeType physicalItemType)
     {
@@ -215,8 +215,22 @@ public sealed partial class NativeInterpreter
     private async ValueTask<List<NativeDatum>> CollectDatums(NativeRange range, CancellationToken token)
     {
         List<NativeDatum> result = [];
-        await foreach (NativeDatum value in DatumItems(range, token)) result.Add(value);
+        await using IAsyncEnumerator<NativeDatum> iterator = GetDatumIterator(range, token);
+        while (await iterator.MoveNextAsync()) result.Add(iterator.Current);
         return result;
+    }
+
+    private async ValueTask<NativeDatum> MaterializeDatums(NativeRange source, SourceSpan? origin, CancellationToken token)
+    {
+        using var trace = context.Timeline?.Begin("range.materialize.datum");
+        trace?.SetSource(origin);
+        try
+        {
+            List<NativeDatum> elements = await CollectDatums(source, token);
+            trace?.SetMetric("elements.observed", elements.Count);
+            return new(NativeValue.FromRange(DatumSnapshot(elements, source.ItemType, source.PhysicalItemType)));
+        }
+        catch (Exception error) { trace?.Fail(error); throw; }
     }
 
     private async ValueTask<NativeDatum> PatternPrefixAsync(IReadOnlyList<NativeDatum> args, SourceSpan? origin, CancellationToken token)

@@ -423,6 +423,13 @@ internal sealed partial class NativeAddressAnalysis
     internal Points Binding(int slot) { lock (owner.Gate) { Solve(); return bindings[slot]; } }
     internal Points At(int pc, int slot) { lock (owner.Gate) { Solve(); return Input(pc, slot); } }
 
+    internal int SingleDefinitionAt(int pc, int slot)
+    {
+        lock (owner.Gate)
+            return Flow.Values(pc, slot) is [int definition] && definition >= 2 * function.Slots.Count
+                ? definition - 2 * function.Slots.Count : -1;
+    }
+
     private Points Input(int pc, int slot, bool location = false)
     {
         if (!inputs.TryGetValue((pc, slot, location), out Points? result)) inputs.Add((pc, slot, location), result = new());

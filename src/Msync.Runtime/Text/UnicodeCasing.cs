@@ -44,6 +44,38 @@ public static class UnicodeCasing
         result.Append(text.AsSpan(mappings[index + 1], mappings[index + 2]));
     }
 
+    internal static int ChangeSpan(ReadOnlySpan<char> value, Span<char> destination, bool upper)
+    {
+        int written = 0, offset = 0;
+        bool precededByCased = false;
+        while (offset < value.Length)
+        {
+            int start = offset;
+            int scalar = Scalar(value, ref offset);
+            if (scalar < 128 || !upper && scalar == 0x03A3 && precededByCased && !FollowedByCased(value, offset))
+            {
+                int mapped = scalar == 0x03A3 ? 0x03C2
+                    : upper && scalar is >= 'a' and <= 'z' ? scalar - 32
+                    : !upper && scalar is >= 'A' and <= 'Z' ? scalar + 32 : scalar;
+                if (!destination.IsEmpty) destination[written] = (char)mapped;
+                written++;
+            }
+            else
+            {
+                ReadOnlySpan<int> table = upper ? UnicodeCasingData.UpperMappings : UnicodeCasingData.LowerMappings;
+                int mapping = FindMapping(table, scalar);
+                ReadOnlySpan<char> mapped = mapping < 0 ? value[start..offset]
+                    : (upper ? UnicodeCasingData.UpperText : UnicodeCasingData.LowerText)
+                        .AsSpan(table[mapping + 1], table[mapping + 2]);
+                if (!destination.IsEmpty) mapped.CopyTo(destination[written..]);
+                written = checked(written + mapped.Length);
+            }
+            if (!upper && !Contains(UnicodeCasingData.CaseIgnorable, scalar))
+                precededByCased = Contains(UnicodeCasingData.Cased, scalar);
+        }
+        return written;
+    }
+
     private static int FindMapping(ReadOnlySpan<int> mappings, int scalar)
     {
         int low = 0, high = mappings.Length / 3 - 1;
@@ -59,7 +91,7 @@ public static class UnicodeCasing
         return -1;
     }
 
-    private static bool FollowedByCased(string value, int offset)
+    private static bool FollowedByCased(ReadOnlySpan<char> value, int offset)
     {
         while (offset < value.Length)
         {
@@ -83,7 +115,7 @@ public static class UnicodeCasing
         return false;
     }
 
-    private static int Scalar(string value, ref int offset)
+    private static int Scalar(ReadOnlySpan<char> value, ref int offset)
     {
         char first = value[offset++];
         if (char.IsHighSurrogate(first) && offset < value.Length && char.IsLowSurrogate(value[offset]))

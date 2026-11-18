@@ -97,7 +97,11 @@ public static partial class LlvmNativeLowerer
                     break;
             }
             trace?.Metric("operations.arguments", call.ArgumentCount);
-            trace?.Metric("operations.result_type", owner.Type(call));
+            if (trace is not null)
+            {
+                if (call.Type.IsVoidTy()) trace.Metric("operations.void_result", 1);
+                else trace.Metric("operations.result_type", owner.Type(call));
+            }
         }
 
         private readonly List<int> boolDemandContinuations = [];

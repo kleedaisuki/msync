@@ -24,7 +24,8 @@ internal sealed record NativeSiteShape(NativeKind First, NativeKind Second);
 
 internal enum NativeFastOperation : byte
 {
-    Bridge, MachineCall, MachineFusedCall, SequenceNext, GuestLoad, GuestStore, GuestHasLayout, GuestCopy, GuestView, Nop, Jump, Branch, NumberReturn, BoolReturn, NullReturn, NumberConstant, BoolConstant, NullConstant,
+    Bridge, FrameCall, FrameLoadCall, MachineCall, MachineFusedCall, SequenceNext, GuestLoad, GuestStore, GuestHasLayout, GuestCopy, GuestView, GuestReferenceLoad, Nop, Jump, Branch, NumberReturn, BoolReturn, NullReturn, AddressReturn, NumberConstant, BoolConstant, NullConstant,
+    GuestReferenceStore, Integer64Constant, GuestNullConstant, GuestComposeFunction,
     NumberCopy, BoolCopy, NumberMove, BoolMove, IsNull, NumberNegate, BoolNot,
     NumberFloor, NumberCeiling, NumberTruncate, NumberRoundEven, NumberAbs, NumberSqrt,
     NumberSelect, BoolSelect, FloatRemainder, BoolEqual, BoolNotEqual,
@@ -37,9 +38,13 @@ internal enum NativeFastOperation : byte
 
 internal static class NativeFastOperations
 {
+    internal static bool IsValueMaterialization(this NativeFastOperation op) =>
+        op is NativeFastOperation.Integer64Constant or NativeFastOperation.GuestNullConstant or NativeFastOperation.GuestComposeFunction;
+
     internal static bool IsGuestAccess(this NativeFastOperation op) =>
         op is NativeFastOperation.GuestLoad or NativeFastOperation.GuestStore or NativeFastOperation.GuestHasLayout
-            or NativeFastOperation.GuestCopy or NativeFastOperation.GuestView;
+            or NativeFastOperation.GuestCopy or NativeFastOperation.GuestView or NativeFastOperation.GuestReferenceLoad
+            or NativeFastOperation.GuestReferenceStore;
 
     internal static bool IsScalarSelect(this NativeFastOperation op) =>
         op is NativeFastOperation.NumberSelect or NativeFastOperation.BoolSelect;

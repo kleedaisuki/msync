@@ -53,10 +53,10 @@ public static partial class NativeBuiltins
         return operation switch
         {
             "parameter_count" => signature is null ? NativeValue.Null : NativeValue.FromNumber(signature.Parameters.Count),
-            "parameter_types" => signature is null ? NativeValue.Null : NativeValue.FromRange(NativeRange.Snapshot(signature.Parameters.Select(NativeValue.FromType), TypeRef.Type)),
+            "parameter_types" => signature is null ? NativeValue.Null : NativeValue.FromRange(context.Snapshot(signature.Parameters.Select(NativeValue.FromType), TypeRef.Type)),
             "is_variadic" => Bool(signature?.Variadic == true),
-            "signature_of" => signature is null ? NativeValue.Null : Record(SignatureLayout,
-                NativeValue.FromRange(NativeRange.Snapshot(signature.Parameters.Select(NativeValue.FromType), TypeRef.Type)),
+            "signature_of" => signature is null ? NativeValue.Null : Record(context, SignatureLayout,
+                NativeValue.FromRange(context.Snapshot(signature.Parameters.Select(NativeValue.FromType), TypeRef.Type)),
                 NativeValue.FromNumber(signature.Parameters.Count), NativeValue.FromType(signature.Result), NativeValue.True, Bool(signature.Variadic)),
             _ => throw new MsyncException($"Unknown callable meta native '{operation}'")
         };
@@ -69,13 +69,13 @@ public static partial class NativeBuiltins
         IReadOnlyList<NativeFieldLayout> fields = address.IsNull ? [] : address.Allocation.Layout.Fields;
         int[] ordered = Enumerable.Range(0, fields.Count).OrderBy(index => fields[index].Name, StringComparer.Ordinal).ToArray();
         if (operation == "member_count") return NativeValue.FromNumber(fields.Count);
-        if (operation == "member_names") return NativeValue.FromRange(NativeRange.Snapshot(
+        if (operation == "member_names") return NativeValue.FromRange(context.Snapshot(
             ordered.Select(index => NativeValue.FromString(fields[index].Name)), TypeRef.String));
-        if (operation == "members_of") return NativeValue.FromRange(NativeRange.Snapshot(ordered.Select(index =>
+        if (operation == "members_of") return NativeValue.FromRange(context.Snapshot(ordered.Select(index =>
         {
             NativeValue value = address.Field(index).Load();
             TypeRef storage = context.DescribeField?.Invoke(address, index).StorageType ?? SourceType(fields[index].Type);
-            return Record(MemberLayout, NativeValue.FromString(fields[index].Name),
+            return Record(context, MemberLayout, NativeValue.FromString(fields[index].Name),
                 NativeValue.FromType(context.DescribeValue?.Invoke(value) ?? value.Type), NativeValue.FromType(storage), Bool(storage.Nullable));
         }), TypeRef.Scope));
         string name = Text(args[1]);

@@ -14,6 +14,7 @@ public sealed partial class RuntimeProfile
     {
         private const int Union = (int)NativeKind.MachineFloat + 1, Never = Union + 1, Buckets = Never + 1, Width = 6;
         private const int Writes = 0, Copies = 1, Clears = 2, Flags = 3, Avoided = 4, PendingCopies = 5;
+        private long pendingOpens, pendingResizes, pendingBytes, pendingHits, pendingMisses, pendingAdds, pendingReplaces, pendingRetired;
         private readonly long[] counts = new long[Buckets * Width];
 
         internal void Write(NativeType type) => Record(type, Writes, Math.Max(1, type.Representation.Bytes));
@@ -28,6 +29,27 @@ public sealed partial class RuntimeProfile
         internal void Scalar(NativeType type, NativeKind kind) => Record(type, Writes,
             (kind == NativeKind.Number ? 8 : 1) + (type.Representation.PayloadOffset != 0 ? 1 : 0));
         internal void Address(NativeType type) => Record(type, Writes, 8);
+
+        internal void PendingIndexReserve(long bytes, bool opened)
+        {
+            if (opened) Interlocked.Increment(ref pendingOpens);
+            else Interlocked.Increment(ref pendingResizes);
+            Interlocked.Add(ref pendingBytes, bytes);
+        }
+
+        internal void PendingIndexLookup(bool hit)
+        {
+            if (hit) Interlocked.Increment(ref pendingHits);
+            else Interlocked.Increment(ref pendingMisses);
+        }
+
+        internal void PendingIndexWrite(bool added)
+        {
+            if (added) Interlocked.Increment(ref pendingAdds);
+            else Interlocked.Increment(ref pendingReplaces);
+        }
+
+        internal void PendingIndexRetire(int count) => Interlocked.Add(ref pendingRetired, count);
 
         private static int Index(NativeType type)
         {
@@ -46,6 +68,18 @@ public sealed partial class RuntimeProfile
 
         internal void Collect(List<RuntimeProfileSample> samples)
         {
+            long opens = Interlocked.Exchange(ref pendingOpens, 0), resizes = Interlocked.Exchange(ref pendingResizes, 0);
+            long bytes = Interlocked.Exchange(ref pendingBytes, 0), hits = Interlocked.Exchange(ref pendingHits, 0);
+            long misses = Interlocked.Exchange(ref pendingMisses, 0), adds = Interlocked.Exchange(ref pendingAdds, 0);
+            long replaces = Interlocked.Exchange(ref pendingReplaces, 0), retired = Interlocked.Exchange(ref pendingRetired, 0);
+            if ((opens | resizes | hits | misses | adds | replaces | retired) != 0)
+                samples.Add(new("vm.storage.pending_index", new() { ["storage.owner"] = "native" }, new()
+                {
+                    ["owners_opened"] = (ulong)opens, ["owners_resized"] = (ulong)resizes,
+                    ["reserved_bytes"] = (ulong)bytes, ["lookup_hits"] = (ulong)hits, ["lookup_misses"] = (ulong)misses,
+                    ["slots_added"] = (ulong)adds, ["slots_replaced"] = (ulong)replaces, ["slots_retired"] = (ulong)retired
+                }));
+
             for (int bucket = 0; bucket < Buckets; ++bucket)
             {
                 int index = bucket * Width;

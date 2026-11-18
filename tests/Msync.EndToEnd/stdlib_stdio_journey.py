@@ -6,7 +6,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import sqlite3
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -97,8 +99,46 @@ async def pipe_prompt(binary: Path, directory: Path) -> None:
         encoding="utf-8",
         newline="\n",
     )
+    await pipe_reply(binary, directory, source.name, b"name? ", "hello 小可莉🙂")
+
+
+async def pipe_pending_scope(binary: Path, directory: Path) -> None:
+    source: Path = directory / "pending.msync"
+    source.write_text(
+        'fn defer_line() { scope { line?: $std::io::read_line() } };\n'
+        'let handoff = defer_line();\n'
+        '$std::io::print("returned"); $std::io::flush();\n'
+        'let line? = handoff::line;\n'
+        'if line is not null { $std::io::println(line); };\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    run(binary, directory, "compile", "-O2", source.name, "-o", "pending.mso")
+    run(binary, directory, "bind-ir", "pending.mso", "-o", "pending.mexe")
+    source.unlink()
+    (directory / "pending.mso").unlink()
+    database: Path = directory / "pending.sqlite"
+    await pipe_reply(binary, directory, "pending.mexe", b"returned", "小可莉🙂", database)
+    if sys.maxsize > 2**32:
+        with sqlite3.connect(database) as db:
+            counts: dict[str, int] = dict(db.execute("""
+                SELECT m.key,sum(m.value_int) FROM records r JOIN metrics m ON m.record_id=r.id
+                WHERE r.name='vm.storage.pending_index' GROUP BY m.key
+            """))
+        assert counts["owners_opened"] > 0 and counts["slots_added"] > 0, counts
+        assert counts["lookup_hits"] > 0 and counts["slots_retired"] > 0, counts
+
+
+async def pipe_reply(
+    binary: Path, directory: Path, artifact: str, marker: bytes, reply: str,
+    database: Path | None = None,
+) -> None:
+    argv: list[str] = command(binary, "run", artifact) if database is None else [
+        str(binary), "--no-config", "--color", "never", "--telemetry-db",
+        str(database), "--telemetry-level", "diagnostics", "run", artifact,
+    ]
     process: asyncio.subprocess.Process = await asyncio.create_subprocess_exec(
-        *command(binary, "run", source.name),
+        *argv,
         cwd=directory,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
@@ -107,14 +147,14 @@ async def pipe_prompt(binary: Path, directory: Path) -> None:
     assert process.stdin is not None and process.stdout is not None
     try:
         prompt: bytes = await asyncio.wait_for(
-            process.stdout.readexactly(6), timeout=15
+            process.stdout.readexactly(len(marker)), timeout=15
         )
-        assert prompt == b"name? ", prompt
+        assert prompt == marker, prompt
         rest, errors = await asyncio.wait_for(
             process.communicate("小可莉🙂\n".encode()), timeout=15
         )
         assert process.returncode == 0 and not errors, (rest, errors)
-        assert rest == ("hello 小可莉🙂" + os.linesep).encode(), rest
+        assert rest == (reply + os.linesep).encode(), rest
     finally:
         if process.returncode is None:
             process.kill()
@@ -239,6 +279,7 @@ def journey(binary: Path, directory: Path, tty: bool) -> None:
     )
     assert result.stdout == ("eof" + os.linesep).encode() and not result.stderr, result
     asyncio.run(pipe_prompt(binary, directory))
+    asyncio.run(pipe_pending_scope(binary, directory))
     if tty:
         terminal_prompt(binary, directory)
 

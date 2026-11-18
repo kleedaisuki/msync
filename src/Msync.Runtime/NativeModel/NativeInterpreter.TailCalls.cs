@@ -53,6 +53,9 @@ public sealed partial class NativeInterpreter
 
     private bool IsTailCall(Activation activation, int pc) => TailCallPlan(activation, pc) is not null;
 
+    internal static bool HasTailContinuation(NativeExecutionFunction executable, int pc, int result) =>
+        executable.RawWritable[result] && TailPath(executable.Definition, pc + 1, result, executable.RawWritable) is not null;
+
     private TailPlan? TailCallPlan(Activation activation, int pc)
     {
         NativeFunctionCode function = activation.Function;

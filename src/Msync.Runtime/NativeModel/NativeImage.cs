@@ -38,14 +38,22 @@ internal sealed class NativeImage
         environmentLayouts = new NativeEnvironmentLayout?[layouts.Length];
         ILookup<int, NativeAllocationPlan> framePlans = program.Allocations
             .Where(plan => plan.Placement == NativeAllocationPlacement.Frame).ToLookup(plan => plan.Function);
+        HashSet<int>? incoming = null;
+        foreach (NativeFunctionCode code in program.Functions)
+            foreach (NativeCallStorage call in code.Storage!.Calls)
+                if ((code.Storage.Instructions[call.Instruction] & NativeInstructionStorage.OwnArguments) != 0)
+                    (incoming ??= []).Add(code.Instructions[call.Instruction].B);
         frames = program.Functions.Select((function, number) => new FrameAllocation(program, number,
             new NativeLayout(function.Slots.Select((slot, index) =>
-                new NativeField(slot.Name ?? $"%{index}", types[slot.Type]))), types, framePlans[number].ToArray(), Layout)).ToArray();
+                new NativeField(slot.Name ?? $"%{index}", types[slot.Type]))), types, framePlans[number].ToArray(), Layout,
+                incoming?.Contains(number) == true)).ToArray();
         foreach (FrameAllocation frame in frames)
         {
             if (ReferenceEquals(frame.Layout, frame.Registers)) continue;
-            frameRegions.Add(frame.Layout, [new(default, frame.Registers),
-                .. frame.Regions.Select(region => new NativeFrameRegion(region.Offset, layouts[region.Layout]))]);
+            List<NativeFrameRegion> regions = [new(default, frame.Registers),
+                .. frame.Regions.Select(region => new NativeFrameRegion(region.Offset, layouts[region.Layout]))];
+            if (frame.AppendedWindow is { } window) regions.Add(window);
+            frameRegions.Add(frame.Layout, regions.ToArray());
             foreach (NativeFrameAllocation region in frame.Regions)
                 frameLayouts.Add((frame.Layout, region.Offset), region.Layout);
         }

@@ -5,6 +5,51 @@ namespace Msync.Optimization;
 
 public static partial class NativeOptimizer
 {
+    public static NativeProgram InlineExecutable(NativeProgram program, CompilationTrace? trace = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (program.Stage != ArtifactStage.Executable || program.Backend is not null)
+            throw new ArgumentException("Executable inlining requires context-bound code before backend selection.", nameof(program));
+        if (program.OptimizationLevel < 2 || program.PreserveLocals) return program;
+        var state = (program, trace, cancellationToken);
+        return trace?.Detail is not { } detail ? InlineBound(state)
+            : detail.MeasureDetailed("backend.inline_executable", state, InlineBound,
+                CompilationSize.Of(program), CompilationSize.Of);
+    }
+
+    private static NativeProgram InlineBound((NativeProgram Program, CompilationTrace? Trace, CancellationToken Token) state)
+    {
+        var (program, trace, token) = state;
+        int level = program.OptimizationLevel;
+        int[] budgets = Enumerable.Repeat(level == 2 ? 384 : 1536, program.Functions.Count).ToArray();
+        NativeOptimizationProfile? profile = trace?.IncludeOptimizerPasses == true ? new(trace) : null;
+        NativeAddressAnalysis.ProgramFacts? facts = null;
+        try
+        {
+            NativeProgram expanded = NativeInlining.Run(program, level, profile, budgets, ref facts,
+                executable: true, cancellationToken: token);
+            if (ReferenceEquals(expanded, program)) return program;
+            int rewritten = expanded.Functions.Count(function => function.Storage is null);
+            trace?.Detail?.Metric("inline.replanned_functions", rewritten);
+            trace?.Detail?.Metric("inline.added_allocation_sites", expanded.Allocations.Count - program.Allocations.Count);
+            trace?.Detail?.Metric("inline.relocated_plan_ranges", (program.ExecutionPlans ?? [])
+                .Zip(expanded.ExecutionPlans ?? []).Count(pair => pair.First.Start != pair.Second.Start || pair.First.End != pair.Second.End));
+            NativeProgram planned = NativeStoragePlanning.Run(expanded, trace, facts);
+            return planned with
+            {
+                Allocations = planned.Allocations.Select(plan =>
+                    expanded.Functions[plan.Function].Storage is not null || plan.Placement != NativeAllocationPlacement.Frame
+                        ? plan : plan with
+                        {
+                            Placement = (planned.Functions[plan.Function].Storage!.Instructions[plan.Instruction] & NativeInstructionStorage.FrameAllocation) != 0
+                                ? NativeAllocationPlacement.Frame : NativeAllocationPlacement.LogicalHeap
+                        }).ToArray()
+            };
+        }
+        catch (Exception error) { profile?.Fail(error); throw; }
+        finally { profile?.Publish(); }
+    }
+
     private static NativeProgram InlineCleaned(NativeProgram program, int level, NativeOptimizationProfile? profile,
         int[] budgets, ref NativeAddressAnalysis.ProgramFacts? shared)
     {

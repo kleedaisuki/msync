@@ -27,7 +27,16 @@ internal unsafe struct NativeTierContext
     internal nint Initialization;
     internal long MachineCalls;
     internal nint GuestEdges;
-    internal nint GuestHostRoots;
+    internal nint ChildContext;
+    internal nint ChildEntry;
+    internal ulong FixedResultBits;
+    internal nint StackCursor;
+    internal NativeOffset FixedReturnTop;
+    internal int FixedReturnState;
+    internal NativeOffset FixedCallStart;
+    internal nint FixedPending;
+    internal nint FixedCallableInit, FixedCallableEdges, FixedEnvironment;
+    internal int FixedRepeatPc, FixedRepeats, FixedRepeatFuel;
 }
 
 internal unsafe sealed class NativeTierMemory : IDisposable
@@ -104,13 +113,7 @@ internal unsafe sealed class NativeTierMemory : IDisposable
         layout = version?.Layout ?? NativeTierLayout.Identity(function);
         pendingRevision = 0;
         materializedFutures = 0;
-        nuint bytes = layout.Bytes;
-        if (bytes > capacity)
-        {
-            if (Context is not null) System.Runtime.InteropServices.NativeMemory.Free(Context);
-            Context = (NativeTierContext*)System.Runtime.InteropServices.NativeMemory.AllocZeroed(bytes);
-            capacity = bytes;
-        }
+        EnsureContext(layout.Bytes);
         try
         {
             Context->Handle = Handle;
@@ -125,6 +128,8 @@ internal unsafe sealed class NativeTierMemory : IDisposable
             Context->Raw = pinnedBytes;
             Context->Initialization = pinnedFlags;
             Context->MachineCalls = 0;
+            Context->FixedReturnState = 0;
+            Context->FixedPending = 0;
             if (layout.GuestAccess) Context->GuestEdges = frame.Allocation.Storage.roots.GuestAddress;
             if (pinnedFrame is not null)
             {
@@ -162,6 +167,32 @@ internal unsafe sealed class NativeTierMemory : IDisposable
                 foreach (int slot in layout.RefreshSlots) RefreshMachineReference(slot);
         }
         catch { ReleasePins(); throw; }
+    }
+
+    internal void ResetFixedRaw(NativeExecutionFunction executable, NativeTierLayout tierLayout,
+        nint data, nint initialization, nint edges, bool observed)
+    {
+        function = executable;
+        layout = tierLayout;
+        EnsureContext(tierLayout.Bytes);
+        NativeTierSlot* slots = (NativeTierSlot*)((byte*)Context + NativeTierLayout.HeaderBytes);
+        long* hits = (long*)(slots + tierLayout.ScalarCount);
+        *Context = new()
+        {
+            Slots = slots, Hits = hits, Fuel = 256, Raw = data, Initialization = initialization,
+            GuestEdges = edges, Observed = observed ? 1 : 0
+        };
+        if (observed)
+            System.Runtime.InteropServices.NativeMemory.Clear(hits, (nuint)((tierLayout.NativePcs.Length + tierLayout.TrueHits.Count) * 8));
+    }
+
+    private void EnsureContext(nuint bytes)
+    {
+        if (bytes <= capacity) return;
+        NativeTierContext* next = (NativeTierContext*)System.Runtime.InteropServices.NativeMemory.AllocZeroed(bytes);
+        System.Runtime.InteropServices.NativeMemory.Free(Context);
+        Context = next;
+        capacity = bytes;
     }
 
     internal void ClearReferences()
@@ -343,7 +374,8 @@ internal unsafe sealed class NativeTierMemory : IDisposable
         Context->PendingMask |= 1U;
     }
 
-    internal void Flush(RuntimeProfile.NativeFrameCounters profile, NativeTierCounters counters, int exitStatus)
+    internal void Flush(RuntimeProfile.NativeFrameCounters profile, NativeTierCounters counters, int exitStatus,
+        int precedingReturns = 0, int precedingFuel = 0)
     {
         if (Context->MachineCalls != 0)
         {
@@ -352,9 +384,10 @@ internal unsafe sealed class NativeTierMemory : IDisposable
         }
         if (!profile.Observed)
         {
-            long direct = 256L - Context->Fuel;
+            long direct = precedingFuel + 256L - Context->Fuel;
             if (direct != 0) counters.DirectBatch(direct);
-            if (exitStatus is -8 or -9 or -11) counters.BridgeBatch(1, 0);
+            long returns = precedingReturns + (exitStatus is -8 or -9 or -11 ? 1 : 0);
+            if (returns != 0) counters.BridgeBatch(returns, 0);
             return;
         }
         if (materializedFutures != 0)
@@ -408,18 +441,28 @@ internal unsafe sealed class NativeTierMemory : IDisposable
                     profile.BatchCall(entry.Pc, entry.TargetB, hits);
                     profile.GuestView(hits);
                 }
-                else if (entry.GuestCopy) profile.GuestCopy(hits);
+                else if (entry.GuestCopy)
+                {
+                    NativeExecutionInstruction copy = function.Instructions[entry.Pc];
+                    profile.GuestCopy(hits, entry.Op is NativeOp.Convert or NativeOp.Narrow,
+                        function.FrameSlot(copy.A).Type.IsUnion != function.FrameSlot(copy.Result).Type.IsUnion);
+                }
+                else if (entry.GuestReferenceLoad) profile.GuestReferenceLoad(hits);
+                else if (entry.GuestReferenceStore) profile.GuestReferenceStore(hits);
                 else if (entry.Op == NativeOp.Unary) profile.GuestLayoutCheck(hits, entry.LayoutBranch);
                 else profile.GuestFieldAccess(entry.Op == NativeOp.Load, hits);
             }
             if (entry.MachineSource != NativeCallProducer.None)
                 profile.MachineSourceCalls(hits, entry.MachineSource != NativeCallProducer.Compose,
                     entry.MachineSource == NativeCallProducer.FieldWithArgument);
+            if (entry.Materialization.IsValueMaterialization())
+                profile.ValueMaterialized(entry.Materialization, hits);
             if (entry.MachineCall)
             {
                 profile.BatchCall(entry.Pc, entry.TargetB, hits);
-                profile.MachineCalls(hits, entry.MachineClosureCall, entry.MachinePointerCall);
+                profile.MachineCalls(hits, entry.MachineClosureCall, entry.MachinePointerCall, entry.MachineAddressResult, entry.MachineArgumentWindow);
             }
+            profile.ForwardedScopeCopies(hits * function.Instructions[entry.Pc].ForwardedCopies);
             int end = entry.Pc + entry.Span;
             for (int original = entry.Pc; original < end; original++)
             {

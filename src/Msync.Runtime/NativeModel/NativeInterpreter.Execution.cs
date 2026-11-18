@@ -35,30 +35,72 @@ public sealed partial class NativeInterpreter
         return new NativeStep(pc + instruction.Span);
     }
 
-    private static NativeStep ExecuteOffsetLoad(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
+    private enum IndirectAddress : byte { Pointer, Field, Projection }
+
+    private enum IndirectAccess : byte { Native, Pending, Owner, Layout, Uninitialized, Carrier }
+
+    private static NativeStep ExecuteOffsetLoad(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token) =>
+        owner.IndirectCopy(activation, in instruction, pc, IndirectAddress.Field, store: false);
+
+    private static NativeStep ExecuteProjectLoad(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token) =>
+        owner.IndirectCopy(activation, in instruction, pc, IndirectAddress.Projection, store: false);
+
+    private static NativeStep ExecuteOffsetStore(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token) =>
+        owner.IndirectCopy(activation, in instruction, pc, IndirectAddress.Field, store: true);
+
+    private static NativeStep ExecuteProjectStore(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token) =>
+        owner.IndirectCopy(activation, in instruction, pc, IndirectAddress.Projection, store: true);
+
+    private NativeStep IndirectCopy(Activation activation, in NativeExecutionInstruction instruction, int pc, IndirectAddress address, bool store)
     {
         NativeFrame frame = activation.Frame;
-        owner.memory.Copy(activation.Execution.Operands[pc].AddressField(frame.Pointer(instruction.A)), frame.Location(instruction.Result));
+        ref readonly NativeExecutionOperand operand = ref activation.Execution.Operands[pc];
+        int value = store ? instruction.B : instruction.Result;
+        IndirectAccess outcome = CopyNativeIndirect(frame, instruction.A, value, in operand, address, store);
+        if (profile is not null) activation.Work.Counters.IndirectAccess((int)outcome, store);
+        if (outcome == IndirectAccess.Native) return new NativeStep(pc + instruction.Span);
+
+        NativeAddress pointer = frame.Pointer(instruction.A);
+        NativeAddress location = address switch
+        {
+            IndirectAddress.Field => operand.AddressField(pointer),
+            IndirectAddress.Projection => operand.Project(image, pointer),
+            _ => pointer
+        };
+        if (store) return StoreToAddress(this, frame, value, location, pc + instruction.Span);
+        memory.Copy(location, frame.Location(value));
         return new NativeStep(pc + instruction.Span);
     }
 
-    private static NativeStep ExecuteProjectLoad(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
+    private IndirectAccess CopyNativeIndirect(NativeFrame frame, int pointer, int value, in NativeExecutionOperand operand,
+        IndirectAddress address, bool store)
     {
-        NativeFrame frame = activation.Frame;
-        owner.memory.Copy(activation.Execution.Operands[pc].Project(owner.image, frame.Pointer(instruction.A)), frame.Location(instruction.Result));
-        return new NativeStep(pc + instruction.Span);
-    }
+        if (!frame.TryNativePointer(pointer, out var indirect, out nint typeWord, out bool pointerPending))
+            return pointerPending ? IndirectAccess.Pending : IndirectAccess.Owner;
+        if (!frame.TryNativeLocation(value, out var other, out NativeType otherType)) return IndirectAccess.Owner;
+        if (indirect.HasPending || other.HasPending) return IndirectAccess.Pending;
 
-    private static NativeStep ExecuteOffsetStore(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
-    {
-        NativeFrame frame = activation.Frame;
-        return StoreToAddress(owner, frame, instruction.B, activation.Execution.Operands[pc].AddressField(frame.Pointer(instruction.A)), pc + instruction.Span);
-    }
+        NativeType? targetType;
+        if (address == IndirectAddress.Pointer)
+        {
+            if (typeWord < 0) return IndirectAccess.Carrier;
+            targetType = typeWord == 0 ? frame.Pointee(pointer) : NativeStorageTypeWord.Decode(typeWord);
+            if (targetType is null) return IndirectAccess.Carrier;
+        }
+        else
+        {
+            NativeFieldLayout field;
+            if (address == IndirectAddress.Field) field = operand.Field;
+            else if (!operand.TryProjectNative(indirect.Layout, out field)) return IndirectAccess.Layout;
+            indirect = indirect.At(field.Offset);
+            targetType = field.Type;
+        }
 
-    private static NativeStep ExecuteProjectStore(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
-    {
-        NativeFrame frame = activation.Frame;
-        return StoreToAddress(owner, frame, instruction.B, activation.Execution.Operands[pc].Project(owner.image, frame.Pointer(instruction.A)), pc + instruction.Span);
+        if (store ? !(other.IsInitialized || frame.IsPrivate(value)) : !indirect.IsInitialized)
+            return IndirectAccess.Uninitialized;
+        bool copied = store ? other.TryCopy(otherType, indirect, targetType, guestHeap.References)
+            : indirect.TryCopy(targetType, other, otherType, guestHeap.References);
+        return copied ? IndirectAccess.Native : IndirectAccess.Carrier;
     }
 
     private static NativeStep ExecuteOffsetBind(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
@@ -193,22 +235,11 @@ public sealed partial class NativeInterpreter
         frame.SetPointer(instruction.Result, activation.Execution.Operands[pc].Project(owner.image, frame.Pointer(instruction.A))); return new NativeStep(pc + instruction.Span);
     }
 
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private static NativeStep ExecuteLoad(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
-    {
-        NativeFrame frame = activation.Frame;
-        owner.memory.Copy(frame.Pointer(instruction.A), frame.Location(instruction.Result)); return new NativeStep(pc + instruction.Span);
-    }
+    private static NativeStep ExecuteLoad(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token) =>
+        owner.IndirectCopy(activation, in instruction, pc, IndirectAddress.Pointer, store: false);
 
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private static NativeStep ExecuteStore(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
-    {
-        NativeFrame frame = activation.Frame;
-        NativeAddress target = frame.Pointer(instruction.A);
-        if (!frame.TryCopyReady(instruction.B, target))
-            owner.memory.Write(target, owner.CoerceStore(frame.GetDatum(instruction.B), target.Type));
-        return new NativeStep(pc + instruction.Span);
-    }
+    private static NativeStep ExecuteStore(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token) =>
+        owner.IndirectCopy(activation, in instruction, pc, IndirectAddress.Pointer, store: true);
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static NativeStep ExecuteUnary(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
@@ -223,8 +254,10 @@ public sealed partial class NativeInterpreter
     private static NativeStep ExecuteBinary(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
     {
         NativeFrame frame = activation.Frame;
-        NativeDatum left = frame.GetDatum(instruction.A), right = frame.GetDatum(instruction.B);
         NativeBinary operation = (NativeBinary)instruction.Immediate;
+        if (owner.TryNativeTextBinary(frame, operation, instruction.A, instruction.B, instruction.Result, activation.Work.Counters))
+            return new NativeStep(pc + instruction.Span);
+        NativeDatum left = frame.GetDatum(instruction.A), right = frame.GetDatum(instruction.B);
         NativeRuntimeContext? origin = operation is NativeBinary.PathJoin or NativeBinary.Qualify ? owner.context.CaptureDirectory() : null;
         frame.SetDatum(instruction.Result, left.IsReady && right.IsReady
             ? new(BinaryValue(operation, left.Value, right.Value, origin))
@@ -497,7 +530,7 @@ public sealed partial class NativeInterpreter
 
     private static NativeStep ExecuteNextIterator(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)
     {
-        return NextIterator(activation, activation.Execution.Metadata[pc], pc, token);
+        return owner.NextIterator(activation, activation.Execution.Metadata[pc], pc, token);
     }
 
     private static NativeStep ExecuteCloseIterator(NativeInterpreter owner, Activation activation, in NativeExecutionInstruction instruction, int pc, CancellationToken token)

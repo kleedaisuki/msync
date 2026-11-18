@@ -17,6 +17,11 @@ public static class NativePreparation
 
     public static NativeProgram Prepare(NativeProgram program, BindingContext binding, ExecutionOptions? options = null,
         CancellationToken cancellationToken = default, CompilationTrace? trace = null)
+        => Prepare(program, binding, options, cancellationToken, trace, optimizeExecutable: null);
+
+    internal static NativeProgram Prepare(NativeProgram program, BindingContext binding, ExecutionOptions? options,
+        CancellationToken cancellationToken, CompilationTrace? trace,
+        Func<NativeProgram, CompilationTrace?, CancellationToken, NativeProgram>? optimizeExecutable)
     {
         if (program.Stage == ArtifactStage.Executable) return program;
         cancellationToken.ThrowIfCancellationRequested();
@@ -30,6 +35,7 @@ public static class NativePreparation
                 ["allocation.sites"] = (ulong)code.Allocations.Count,
                 ["entry.instructions"] = (ulong)code.Functions[code.EntryPoint].Instructions.Count
             });
+        if (optimizeExecutable is not null) prepared = optimizeExecutable(prepared, trace, cancellationToken);
         return NativeBackendCompiler.Compile(prepared, new(options, binding), trace, cancellationToken);
     }
 

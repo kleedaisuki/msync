@@ -102,7 +102,12 @@ internal sealed class NativeWorkScope(NativeWorkScope? parent, NativeWorkFrontie
         if (future.IsTransfer || future.Submission is not null) job?.AddChild(future);
     }
 
-    private (NativeFuture[] Futures, NativeProcess[] Processes) TakeWork()
+    internal readonly record struct Batch(NativeFuture[] Futures, NativeProcess[] Processes)
+    {
+        internal bool NeedsReachability => Processes.Length != 0 || Futures.Any(static future => !SettledValue(future));
+    }
+
+    internal Batch TakeWork()
     {
         lock (gate)
         {
@@ -112,18 +117,29 @@ internal sealed class NativeWorkScope(NativeWorkScope? parent, NativeWorkFrontie
             futures?.Clear();
             processes?.Clear();
             Volatile.Write(ref hasWork, false);
-            return (pending, running);
+            return new(pending, running);
         }
     }
 
-    internal async ValueTask FinishAsync(NativeReachable reachable, Action failedTransfer, CancellationToken token)
+    private static bool SettledValue(NativeFuture future)
+    {
+        if (future.IsTransfer || !future.Completion.IsCompletedSuccessfully || !future.ResourceCompletion.IsCompletedSuccessfully)
+            return false;
+        if (future.Submission is { } submission) return submission.Kind == NativeSubmissionKind.Input;
+        return future.Processes.Count == 0
+            && future.Completion.Result.Kind is not (NativeKind.Address or NativeKind.Function or NativeKind.Range or NativeKind.Process);
+    }
+
+    internal ValueTask FinishAsync(NativeReachable reachable, Action failedTransfer, CancellationToken token) =>
+        FinishAsync(TakeWork(), reachable, failedTransfer, token);
+
+    internal async ValueTask FinishAsync(Batch batch, NativeReachable? reachable, Action failedTransfer, CancellationToken token)
     {
         List<Exception>? failures = null;
-        (NativeFuture[] pending, NativeProcess[] running) = TakeWork();
-        while (pending.Length != 0 || running.Length != 0)
+        while (batch.Futures.Length != 0 || batch.Processes.Length != 0)
         {
-            failures = await FinishBatchAsync(pending, running, reachable, failedTransfer, token, failures).ConfigureAwait(false);
-            (pending, running) = TakeWork();
+            failures = await FinishBatchAsync(batch.Futures, batch.Processes, reachable, failedTransfer, token, failures).ConfigureAwait(false);
+            batch = TakeWork();
         }
         if (failures is { Count: 1 }) ExceptionDispatchInfo.Capture(failures[0]).Throw();
         if (failures is not null && failures.All(static error => error is OperationCanceledException))
@@ -132,7 +148,7 @@ internal sealed class NativeWorkScope(NativeWorkScope? parent, NativeWorkFrontie
     }
 
     private async ValueTask<List<Exception>?> FinishBatchAsync(NativeFuture[] pending, NativeProcess[] running,
-        NativeReachable reachable, Action failedTransfer, CancellationToken token, List<Exception>? failures)
+        NativeReachable? reachable, Action failedTransfer, CancellationToken token, List<Exception>? failures)
     {
         // A transfer's inputs remain live even when the enclosing expression
         // discards the transfer's own result.
@@ -143,9 +159,14 @@ internal sealed class NativeWorkScope(NativeWorkScope? parent, NativeWorkFrontie
                     KeepDependency(dependency, required ??= new(ReferenceEqualityComparer.Instance));
         foreach (NativeFuture future in pending)
         {
-            bool promote = parent is not null && reachable.Retains(future);
             bool requiredByJob = required?.Contains(future) == true;
-            future.Submission?.RecordOwnership(promote, requiredByJob, job is not null, reachable.Futures.Count, reachable.Processes.Count);
+            if (SettledValue(future))
+            {
+                future.Submission?.RecordOwnership(false, requiredByJob, job is not null, null);
+                continue;
+            }
+            bool promote = parent is not null && reachable!.Retains(future);
+            future.Submission?.RecordOwnership(promote, requiredByJob, job is not null, reachable);
             if (promote) { RecordEscape(future); parent!.Add(future); continue; }
             if (!requiredByJob && future.Submission?.Kind is NativeSubmissionKind.Input or NativeSubmissionKind.FileRead or NativeSubmissionKind.Stream)
                 future.Submission.Abort();
@@ -165,7 +186,7 @@ internal sealed class NativeWorkScope(NativeWorkScope? parent, NativeWorkFrontie
         }
         foreach (NativeProcess process in running)
         {
-            if (reachable.Processes.Contains(process)) { job?.AddChild(process); parent?.Add(process); continue; }
+            if (reachable!.Processes.Contains(process)) { job?.AddChild(process); parent?.Add(process); continue; }
             try { await process.WaitAsync(token).ConfigureAwait(false); }
             catch (Exception error) { (failures ??= []).Add(error); }
         }

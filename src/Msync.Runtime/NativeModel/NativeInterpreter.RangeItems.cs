@@ -30,8 +30,10 @@ public sealed partial class NativeInterpreter
         [EnumeratorCancellation] CancellationToken token)
     {
         bool dropping = operation == "drop_while";
-        await foreach (NativeDatum value in DatumItems(source, token))
+        await using IAsyncEnumerator<NativeDatum> iterator = GetDatumIterator(source, token);
+        while (await iterator.MoveNextAsync())
         {
+            NativeDatum value = iterator.Current;
             if (operation == "drop_while" && !dropping) { yield return value; continue; }
             NativeDatum result = await InvokeDatumAsync(callback, [value], token);
             if (operation == "transform") { yield return result; continue; }
@@ -78,9 +80,10 @@ public sealed partial class NativeInterpreter
     private async IAsyncEnumerable<NativeDatum> IndexedDatums(NativeRange source, double index, [EnumeratorCancellation] CancellationToken token)
     {
         NativeLayout layout = NativeBuiltinLayouts.Enumerate(source.PhysicalItemType);
-        await foreach (NativeDatum value in DatumItems(source, token))
+        await using IAsyncEnumerator<NativeDatum> iterator = GetDatumIterator(source, token);
+        while (await iterator.MoveNextAsync())
         {
-            yield return DatumRecord(layout, new(NativeValue.FromNumber(index)), value);
+            yield return DatumRecord(layout, new(NativeValue.FromNumber(index)), iterator.Current);
             double next = index + 1;
             if (next == index) throw new MsyncException("ranges.enumerate_from index no longer advances the Number value");
             index = next;

@@ -17,6 +17,10 @@ outputs when building concurrently. Functional runs are not latency evidence.
 | `stdlib_iterators_journey.py` | Type-witness construction, explicit cursors, lazy sorted algorithms, stable alias identity and typed tree pages through source, detached HIR and native artifacts. |
 | `static_optimization_journey.py` | Distinct static field writes, retained aliases and selecting the callee before evaluating an argument that replaces it; structured native-IR inspection and exact file outputs. |
 | `managed_word_transport_journey.py` | Exact Word32 results through linked namespaces and numeric joins, signed zero, selected diagnostic spans, deferred Process data and actual native-call telemetry with guest tiers off. |
+| `native_owned_call_window_journey.py` | Detached writable parameter handoff, live-after input preservation, a shared Scope across active GC, and a pending call that cannot demand stdin ahead of visible output. |
+| `native_machine_reference_call_journey.py` | Alias identity through a native reference return, distinguishing caller-owned read-only window reuse from shaped native scratch. |
+| `native_reference_store_journey.py` | Detached repeated Scope field link/clear, preserving alias identity and measuring machine writes in both directions. |
+| `native_fixed_continuation_journey.py` | Fixed captured calls retain the caller's continuation; a bridge-free repeated call attaches its original frame on cold stdin and does not replay a shared-object write. |
 | `rb_set_journey.py` | An independent Python set model and red-black graph checks after every mutation: ordering, parent links, unique reachability, black root/NIL, equal black heights and no red-red edges. Also policies, snapshots, nullable keys and retained Scope instances. |
 | `btree_bplus_journey.py` | Independent map results after mutation, page occupancy/height/leaf-chain validation, ranges, policy keys, snapshots and clearing/repopulation through source and detached artifacts. |
 

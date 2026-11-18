@@ -107,12 +107,10 @@ internal static class NativeRegisterPlan
     private static long Elapsed(long started) => Stopwatch.GetElapsedTime(started).Ticks * 100;
 
     private static bool Eligible(NativeExecutionFunction function, NativeFastOperation[] operations, int pc) =>
-        operations[pc] is not (NativeFastOperation.Bridge or NativeFastOperation.MachineCall or NativeFastOperation.MachineFusedCall or NativeFastOperation.Nop or NativeFastOperation.Jump
-            or NativeFastOperation.Branch or NativeFastOperation.SequenceNext or NativeFastOperation.NumberReturn or NativeFastOperation.BoolReturn
-            or NativeFastOperation.NullReturn or NativeFastOperation.NullConstant or NativeFastOperation.FloatRemainder
-            or NativeFastOperation.NumberMove or NativeFastOperation.BoolMove or NativeFastOperation.IsNull)
-        && !operations[pc].IsGuestAccess()
-        && !operations[pc].IsScalarSelect()
+        (operations[pc] is NativeFastOperation.NumberConstant or NativeFastOperation.BoolConstant
+            or NativeFastOperation.NumberCopy or NativeFastOperation.BoolCopy
+            or NativeFastOperation.NumberNegate or NativeFastOperation.BoolNot or >= NativeFastOperation.BoolEqual
+         || operations[pc].IsUnaryMath())
         && function.CanWriteRaw(function.Instructions[pc].Result);
 
     private static NativeKind ResultKind(NativeFastOperation op) =>

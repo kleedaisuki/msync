@@ -94,9 +94,16 @@ public sealed record NativeFunctionCode(string Name, IReadOnlyList<NativeSlot> S
 }
 
 [Flags]
-public enum NativeSlotStorage : byte { None = 0, Escapes = 1, PrivateArgument = 2, ReadOnlyParameter = 4, UnobservedInitialization = 8 }
+public enum NativeSlotStorage : byte
+{
+    None = 0, Escapes = 1, PrivateArgument = 2, ReadOnlyParameter = 4,
+    UnobservedInitialization = 8, UnreadParameter = 16, WindowProducer = 32
+}
 [Flags]
-public enum NativeInstructionStorage : byte { None = 0, FrameAlias = 1, NarrowLayout = 2, FrameAllocation = 4 }
+public enum NativeInstructionStorage : byte
+{
+    None = 0, FrameAlias = 1, NarrowLayout = 2, FrameAllocation = 4, OwnArguments = 16
+}
 public sealed record NativeStoragePlan(IReadOnlyList<NativeSlotStorage> Slots,
     IReadOnlyList<NativeInstructionStorage> Instructions)
 {

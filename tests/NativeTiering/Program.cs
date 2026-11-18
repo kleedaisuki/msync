@@ -10,6 +10,20 @@ if (args.Contains("--emission"))
     return;
 }
 
+if (args.Contains("--stack-window-boundary"))
+{
+    StackWindowChecks.Run();
+    Console.WriteLine("PASS argument window capacity miss and frame restoration");
+    return;
+}
+
+if (args.Contains("--range-cancellation"))
+{
+    RangeCancellationChecks.Run();
+    Console.WriteLine("PASS distinct and shared native Range cancellation; empty demand fence");
+    return;
+}
+
 if (args.Contains("--guest-heap"))
 {
     GuestHeapChecks.Run();
@@ -63,6 +77,7 @@ if (args.Contains("--selection"))
 if (args.Contains("--argument-sources"))
 {
     ArgumentSourceChecks.Run();
+    Console.WriteLine($"PASS {FrameBindingChecks.Run()} binding properties");
     return;
 }
 

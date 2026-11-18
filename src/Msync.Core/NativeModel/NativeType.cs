@@ -177,21 +177,69 @@ public sealed class NativeLayout
         HasCallableCells = fields.Any(static field => IsCallableCell(field.Type));
     }
 
-    private NativeLayout(NativeLayout basis, int rawSize, int alignment)
+    private NativeLayout(NativeLayout basis, int rawSize, int references, int alignment)
     {
         fields = Fields = basis.Fields;
         RawSize = rawSize;
-        ReferenceCount = basis.ReferenceCount;
+        ReferenceCount = references;
         Alignment = alignment;
         HasCallableCells = basis.HasCallableCells;
     }
 
     internal NativeLayout AppendRaw(int bytes, int alignment, out int start)
     {
-        start = Align(RawSize, alignment);
-        int combinedAlignment = Math.Max(Alignment, alignment);
-        return new(this, Align(checked(start + bytes), combinedAlignment), combinedAlignment);
+        NativeLayout result = AppendScratch(new(bytes, 0), alignment, out NativeOffset offset);
+        start = offset.Bytes;
+        return result;
     }
+
+    internal NativeLayout WithoutWindowProducers(IReadOnlySet<int> producers, out int[] keep)
+    {
+        keep = Enumerable.Range(0, Count).Where(slot => !producers.Contains(slot))
+            .OrderBy(slot => fields[slot].Offset.Bytes).ToArray();
+        return new(keep.Select(index => new NativeField(fields[index].Name, fields[index].Type)));
+    }
+
+    internal NativeLayout WithParameterPrefix(int captures, int parameters)
+    {
+        int[] order = [.. Enumerable.Range(captures, parameters), .. Enumerable.Range(0, captures),
+            .. Enumerable.Range(captures + parameters, Count - captures - parameters)];
+        NativeLayout physical = new(order.Select(index => new NativeField(fields[index].Name, fields[index].Type)));
+        NativeFieldLayout[] placed = new NativeFieldLayout[Count];
+        for (int index = 0; index < order.Length; index++) placed[order[index]] = physical[index];
+        return new(placed, physical.RawSize, physical.ReferenceCount, physical.Alignment);
+    }
+
+    internal NativeLayout AppendArgumentWindow(NativeLayout logicalRegisters, int[] keep, IReadOnlyList<int> arguments,
+        IReadOnlySet<int> producers, out NativeOffset window, out NativeLayout parameters)
+    {
+        parameters = new(arguments.Select(index => new NativeField(logicalRegisters[index].Name, logicalRegisters[index].Type)));
+        int alignment = Math.Max(Alignment, 16);
+        // CALL publishes the callee's frame record immediately before the shared suffix.
+        window = new(Align(checked(RawSize + NativeStackHeader.Bytes), alignment), ReferenceCount);
+        NativeFieldLayout[] placed = new NativeFieldLayout[checked(logicalRegisters.Count + Count - keep.Length)];
+        for (int index = 0; index < keep.Length; index++) placed[keep[index]] = fields[index];
+        for (int index = keep.Length; index < Count; index++)
+            placed[logicalRegisters.Count + index - keep.Length] = fields[index];
+        for (int index = 0; index < arguments.Count; index++)
+        {
+            if (!producers.Contains(arguments[index])) continue;
+            NativeFieldLayout field = parameters[index];
+            placed[arguments[index]] = field with { Offset = window + field.Offset };
+        }
+        return new(placed, Align(checked(window.Bytes + parameters.RawSize), alignment),
+            checked(window.References + parameters.ReferenceCount), alignment);
+    }
+
+    // Hidden execution cells participate in storage/reset, not guest-addressable regions.
+    internal NativeLayout AppendScratch(NativeOffset extent, int alignment, out NativeOffset start)
+    {
+        start = new(Align(RawSize, alignment), ReferenceCount);
+        int combinedAlignment = Math.Max(Alignment, alignment);
+        return new(this, Align(checked(start.Bytes + extent.Bytes), combinedAlignment),
+            checked(start.References + extent.References), combinedAlignment);
+    }
+
     public NativeLayout(params NativeType[] types)
         : this(types.Select((type, index) => new NativeField(index.ToString(System.Globalization.CultureInfo.InvariantCulture), type))) { }
     public IReadOnlyList<NativeFieldLayout> Fields { get; }

@@ -65,6 +65,27 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
         guestHeap = new(scopedGuestValues && NativeCompiledFunction.MachineCallsSupported
             && tierOptions.Policy is NativeJitPolicy.Auto or NativeJitPolicy.Force,
             rawEdges: scopedGuestValues && IntPtr.Size == 8);
+        if (guestHeap.References is { } table)
+        {
+            table.AllocateText = AllocateGuestText;
+            table.AllocateTextBuffer = AllocateGuestTextBuffer;
+            table.RunRangeCallback = DispatchRangeCallback;
+            table.CompareRangeValues = NativeBuiltins.CompareRangeValues;
+        }
+        if (scopedGuestValues) sessionContext.BuiltinStorage = AllocateBuiltinStorage;
+    }
+
+    private nint AllocateGuestText(string text) =>
+        guestHeap.NewText(text, currentWork.Value?.Counters ?? default);
+
+    private nint AllocateGuestTextBuffer(int length) =>
+        guestHeap.NewTextBuffer(length, currentWork.Value?.Counters ?? default);
+
+    private NativeAllocation AllocateBuiltinStorage(NativeLayout layout, int count)
+    {
+        RuntimeProfile.NativeFrameCounters counters = currentWork.Value?.Counters ?? default;
+        counters.BuiltinStorage(count);
+        return guestHeap.NewObject(layout, -1, count, 0, counters);
     }
 
     /// <summary>Publishes a session image without reanchoring existing storage or suspended frames.</summary>
@@ -258,25 +279,53 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
         catch (Exception error) { iteratorFailure = error; }
         if (activation.OwnsWork && activation.Work.HasWork)
         {
-            NativeReachable reachable = new(memory, GetRangeRoots, image);
-            reachable.Add(result);
-            for (int index = 0; index < arguments.Count; index++) reachable.Add(arguments.Read(index, memory));
-            foreach (StaticState state in statics)
-                if (Volatile.Read(ref state.Allocation) is { } allocation)
-                    reachable.Add(new NativeDatum(NativeValue.FromAddress(allocation.Address)));
-            if (environment is not null)
-                for (int capture = 0; capture < activation.Function.CaptureCount; capture++)
-                {
-                    if (environment.Layout.Captures[capture].Location) reachable.AddLocation(environment[capture].Location);
-                    else reachable.AddLocation(environment.CaptureAddress(capture));
-                }
-            if (activation.FunctionIndex == image.Program.EntryPoint && image.Program.SessionRoots is { } roots)
-                AddSessionRoots(activation.Frame, roots, reachable, recovering);
-            try { await activation.Work.FinishAsync(reachable, () => Interlocked.Increment(ref failedTransfers), token); }
+            try { await FinishActivationWork(activation, environment, arguments, result, token, recovering); }
             catch (Exception error) when (iteratorFailure is not null)
             { throw new AggregateException("Native iterator and work cleanup failed.", iteratorFailure, error); }
         }
         if (iteratorFailure is not null) ExceptionDispatchInfo.Capture(iteratorFailure).Throw();
+    }
+
+    private ValueTask FinishActivationWork(Activation activation, NativeEnvironment? environment,
+        NativeArguments arguments, NativeDatum result, CancellationToken token, bool recovering)
+    {
+        // Activations have a parent: once this batch is closed, later additions
+        // go there rather than invalidating the decision not to walk these roots.
+        NativeWorkScope.Batch batch = activation.Work.TakeWork();
+        NativeReachable? reachable = null;
+        using (RuntimeTimelineScope? scan = context.Timeline?.Begin("work.retention_scan"))
+        {
+            bool needed = batch.NeedsReachability;
+            scan?.SetAttribute("function.name", activation.Function.Name);
+            scan?.SetAttribute("work.outcome", needed ? "traversed" : "settled-values-only");
+            scan?.SetMetric("owned.futures", batch.Futures.Length);
+            scan?.SetMetric("owned.processes", batch.Processes.Length);
+            if (needed)
+            {
+                reachable = WorkRoots(activation, environment, arguments, result, recovering);
+                scan?.SetMetric("reachable.futures", reachable.Futures.Count);
+                scan?.SetMetric("reachable.processes", reachable.Processes.Count);
+            }
+        }
+        return activation.Work.FinishAsync(batch, reachable, () => Interlocked.Increment(ref failedTransfers), token);
+    }
+
+    private NativeReachable WorkRoots(Activation activation, NativeEnvironment? environment, NativeArguments arguments,
+        NativeDatum result, bool recovering)
+    {
+        NativeReachable reachable = new(memory, GetRangeRoots, image);
+        reachable.Add(result);
+        for (int index = 0; index < arguments.Count; index++) reachable.Add(arguments.Read(index, memory));
+        foreach (StaticState state in statics)
+            if (Volatile.Read(ref state.Allocation) is { } allocation)
+                reachable.Add(new NativeDatum(NativeValue.FromAddress(allocation.Address)));
+        if (environment is not null)
+            for (int capture = 0; capture < activation.Function.CaptureCount; capture++)
+                reachable.AddLocation(environment.Layout.Captures[capture].Location
+                    ? environment[capture].Location : environment.CaptureAddress(capture));
+        if (activation.FunctionIndex == image.Program.EntryPoint && image.Program.SessionRoots is { } roots)
+            AddSessionRoots(activation.Frame, roots, reachable, recovering);
+        return reachable;
     }
 
     private void AddSessionRoots(NativeFrame frame, IReadOnlyList<int> roots, NativeReachable reachable, bool recovering)
@@ -448,6 +497,8 @@ public sealed partial class NativeInterpreter : IAsyncDisposable
             foreach (KeyValuePair<NativeImage, NativeExecutionImage> entry in executableImages) entry.Value.Dispose();
             DisposeTierPool();
             transferSlots.Dispose();
+            if (scopedGuestValues) sessionContext.BuiltinStorage = null;
+            memory.Dispose();
             guestHeap.Retire(Volatile.Read(ref guestReferencesExported));
             if (ownsSshMultiplexing)
                 await sessionContext.Connections.ReleaseMultiplexingAsync(sessionContext);

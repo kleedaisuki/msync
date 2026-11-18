@@ -8,10 +8,10 @@ internal sealed unsafe class NativeGuestHeap(bool machineCallables = false, bool
 {
     private const nuint SlabBytes = 64 * 1024;
     private const nuint Alignment = 16, HeaderBytes = NativeGuestObjectTable.HeaderBytes, SlabHeaderBytes = 32;
-    private const nuint Free = 1, Marked = 2, Descriptor = 4;
+    private const nuint Free = 1, Marked = 2, Descriptor = 4, RangePlan = 8;
     private readonly Lock gate = new();
     private Slab* head;
-    private Block* available;
+    private Block* available, free16, free32, free48, free64;
     private long allocatedSinceSweep;
     private long nextSweep = 256 * 1024;
     private long nextActiveSweep = 256 * 1024;
@@ -33,6 +33,8 @@ internal sealed unsafe class NativeGuestHeap(bool machineCallables = false, bool
         int rawBytes = storage.RawSize * 2;
         int suffix = (referenceBytes | callableBytes) == 0 ? rawBytes : NativeLayout.Align(rawBytes, sizeof(nint));
         int payload = suffix + callableBytes + referenceBytes;
+        int pendingOffset = References is null ? 0 : NativeLayout.Align(payload, sizeof(nint));
+        if (References is not null) payload = checked(pendingOffset + (callableBytes == 0 ? 2 : 3) * sizeof(nint));
         Allocation block;
         NativeAllocation view;
         if (References is { } references)
@@ -41,9 +43,12 @@ internal sealed unsafe class NativeGuestHeap(bool machineCallables = false, bool
             lock (gate)
             {
                 block = AllocateLocked((nuint)payload);
-                nint cells = callableBytes == 0 ? 0 : block.Address + suffix;
-                nint edges = referenceBytes == 0 ? 0 : block.Address + suffix + callableBytes;
-                view = references.Publish(layout, storage, id, count, site, block.Address, this, cells, edges, out reused);
+                nint edges = referenceBytes == 0 ? 0 : block.Address + suffix;
+                nint cells = callableBytes == 0 ? 0 : block.Address + suffix + referenceBytes;
+                view = references.Publish(layout, storage, id, count, site, block.Address, this, cells, edges, NativeGuestObjectTable.PendingCell(block.Address), out reused);
+                *(nint*)NativeGuestObjectTable.PendingCell(block.Address) = 0;
+                NativeGuestObjectTable.CaptureCell(block.Address) = 0;
+                if (cells != 0) *(nint*)(NativeGuestObjectTable.PendingCell(block.Address) - 2 * sizeof(nint)) = cells;
                 ((Block*)(block.Address - (nint)HeaderBytes))->SizeAndFlags |= Descriptor;
             }
             counters.NativeGuestDescriptor(reused, referenceBytes);
@@ -57,6 +62,36 @@ internal sealed unsafe class NativeGuestHeap(bool machineCallables = false, bool
         counters.NativeHeapAllocation(storage.RawSize, block.Reserved, block.Reused);
         if (callableBytes != 0) counters.NativeCallableCells(callableBytes);
         return view;
+    }
+
+    internal nint NewText(string text, RuntimeProfile.NativeFrameCounters counters)
+    {
+        nint address = NewTextBuffer(text.Length, counters);
+        text.AsSpan().CopyTo(NativeGuestObjectTable.TextBuffer(address));
+        return address;
+    }
+
+    internal nint NewTextBuffer(int length, RuntimeProfile.NativeFrameCounters counters)
+    {
+        int bytes = checked(sizeof(int) + length * sizeof(char));
+        Allocation block = AllocateMetadata(bytes);
+        *(int*)block.Address = length;
+        counters.NativeText(bytes);
+        return block.Address;
+    }
+
+    internal nint NewRangePlan(NativeRangeNode node, CancellationToken token)
+    {
+        lock (gate)
+        {
+            Allocation block = AllocateLocked((nuint)sizeof(NativeRangeNode));
+            nint edge = block.Address | NativeGuestObjectTable.PlanTag;
+            node.HasCancellation = token.CanBeCanceled;
+            if (node.HasCancellation) References!.SetRangeCancellation(edge, token);
+            *(NativeRangeNode*)block.Address = node;
+            ((Block*)(block.Address - (nint)HeaderBytes))->SizeAndFlags |= RangePlan;
+            return edge;
+        }
     }
 
     internal bool WantsCollection => allocatedSinceSweep >= nextSweep;
@@ -92,32 +127,65 @@ internal sealed unsafe class NativeGuestHeap(bool machineCallables = false, bool
     {
         nuint bytes = ((payloadBytes + Alignment - 1) & ~(Alignment - 1)) + HeaderBytes;
         allocatedSinceSweep += (long)bytes;
+        Block* block = null;
+        if (bytes <= 64)
+        {
+            for (nuint size = bytes; size <= 64; size += Alignment)
+            {
+                ref Block* bin = ref FreeList(size);
+                if (bin == null) continue;
+                block = bin;
+                bin = bin->NextFree;
+                break;
+            }
+        }
+        block = block == null ? TakeLarge(bytes) : block;
+        if (block == null) return Bump(bytes);
+
+        nuint left = block->Size - bytes;
+        if (left >= HeaderBytes)
+        {
+            Block* rest = (Block*)((byte*)block + bytes);
+            rest->SizeAndFlags = left | Free;
+            PutFree(rest);
+            block->SizeAndFlags = bytes;
+        }
+        else block->SizeAndFlags &= ~Free;
+
+        byte* payload = (byte*)block + HeaderBytes;
+        BufferAllocator.Clear(payload, payloadBytes);
+        return new((nint)payload, 0, true);
+    }
+
+    private Block* TakeLarge(nuint bytes)
+    {
         Block* reusable = available;
         Block** link = &reusable;
         while (*link != null)
         {
             Block* block = *link;
             if (block->Size < bytes) { link = &block->NextFree; continue; }
-            nuint left = block->Size - bytes;
-            if (left >= HeaderBytes)
-            {
-                Block* rest = (Block*)((byte*)block + bytes);
-                rest->SizeAndFlags = left | Free;
-                rest->NextFree = block->NextFree;
-                *link = rest;
-                block->SizeAndFlags = bytes;
-            }
-            else
-            {
-                *link = block->NextFree;
-                block->SizeAndFlags &= ~Free;
-            }
+            *link = block->NextFree;
             available = reusable;
-            byte* payload = (byte*)block + HeaderBytes;
-            BufferAllocator.Clear(payload, payloadBytes);
-            return new((nint)payload, 0, true);
+            return block;
         }
-        return Bump(bytes);
+        return null;
+    }
+
+    private ref Block* FreeList(nuint size)
+    {
+        if (size == 16) return ref free16;
+        if (size == 32) return ref free32;
+        if (size == 48) return ref free48;
+        if (size == 64) return ref free64;
+        return ref available;
+    }
+
+    private void PutFree(Block* block)
+    {
+        ref Block* list = ref FreeList(block->Size);
+        block->NextFree = list;
+        list = block;
     }
 
     private Allocation Bump(nuint bytes)
@@ -166,14 +234,15 @@ internal sealed unsafe class NativeGuestHeap(bool machineCallables = false, bool
 
     internal void TraceObject(nint edge)
     {
-        nint address = edge & ~NativeGuestObjectTable.EnvironmentTag;
+        bool plan = NativeGuestObjectTable.IsPlanEdge(edge);
+        nint address = edge & ~7;
         if (!Mark(address)) return;
         if (markCount == markCapacity)
         {
             markCapacity = Math.Max(64, markCapacity * 2);
             markWork = (nint*)BufferAllocator.Realloc(markWork, (nuint)markCapacity * (nuint)sizeof(nint));
         }
-        markWork[markCount++] = address;
+        markWork[markCount++] = plan ? edge : address;
     }
 
     internal bool TakeObject(out nint address)
@@ -185,7 +254,7 @@ internal sealed unsafe class NativeGuestHeap(bool machineCallables = false, bool
 
     private Sweep SweepBlocks()
     {
-        available = null;
+        available = free16 = free32 = free48 = free64 = null;
         long objects = 0, reclaimed = 0, freeBytes = 0, liveBytes = 0;
         for (Slab* slab = head; slab != null; slab = slab->Next)
         {
@@ -201,21 +270,24 @@ internal sealed unsafe class NativeGuestHeap(bool machineCallables = false, bool
                 {
                     block->SizeAndFlags &= ~Marked;
                     liveBytes += (long)size;
+                    if (run != null) PutFree(run);
                     run = null;
                     continue;
                 }
                 if (!block->IsFree) { objects++; reclaimed += (long)(size - HeaderBytes); }
                 if ((block->SizeAndFlags & Descriptor) != 0)
                     References!.Recycle((nint)((byte*)block + HeaderBytes));
+                else if ((block->SizeAndFlags & RangePlan) != 0)
+                    References!.RetireRange((nint)((byte*)block + HeaderBytes) | NativeGuestObjectTable.PlanTag);
                 freeBytes += (long)size;
                 if (run != null) run->SizeAndFlags += size;
                 else
                 {
                     block->SizeAndFlags = size | Free;
-                    block->NextFree = available;
-                    available = run = block;
+                    run = block;
                 }
             }
+            if (run != null) PutFree(run);
         }
         return new(objects, reclaimed, freeBytes, liveBytes);
     }
@@ -224,12 +296,12 @@ internal sealed unsafe class NativeGuestHeap(bool machineCallables = false, bool
     {
         lock (gate)
         {
+            References?.Clear();
             if (exported && head != null)
                 hostLease = new(head);
             else Release(head);
-            available = null;
+            available = free16 = free32 = free48 = free64 = null;
             head = null;
-            References?.Clear();
             BufferAllocator.Free(markWork);
             markWork = null;
             markCount = markCapacity = 0;

@@ -113,48 +113,103 @@ public sealed partial class NativeInterpreter
             : throw new MsyncException($"Function #{original} has no compiled specialization.", source);
     }
 
-    private NativeStep Call(Activation activation, NativeInstruction instruction, int pc, CancellationToken token, bool bounded = false)
+    private NativeFunction ReadCall(Activation activation, NativeInstruction instruction, int pc, CancellationToken token,
+        out NativeArguments arguments) =>
+        ReadCall(activation, activation.Frame.Location(instruction.A), pc, token, out arguments);
+
+    private NativeFunction ReadCall(Activation activation, NativeAddress callee, int pc, CancellationToken token,
+        out NativeArguments arguments)
     {
         NativeFrame frame = activation.Frame;
-        NativeAddress callee = frame.Location(instruction.A);
-        NativeArguments arguments = activation.Execution.Arguments(frame, pc);
-        NativeFunction function = memory.TryPending(callee, out NativeFuture? pendingCallee)
+        bool calleePending = memory.TryPending(callee, out NativeFuture? pendingCallee);
+        arguments = activation.Execution.Arguments(frame, pc, calleePending);
+        return calleePending
             ? Demand(pendingCallee!.CompleteAsync(token)).AsFunction() : NativeStorage.LoadFunctionDirect(callee);
-        ValueTask<NativeDatum> callTask;
+    }
+
+    private bool CallFixedContinuation(Activation activation, NativeInstruction instruction, NativeAddress callee, int pc,
+        CancellationToken token, NativeFunction? ready, TierInvocation? nativeCaller)
+    {
+        NativeArguments arguments;
+        NativeFunction function;
+        if (ready is { } loaded)
+        {
+            function = loaded;
+            arguments = activation.Execution.Arguments(activation.Frame, pc, calleePending: false);
+        }
+        else function = ReadCall(activation, callee, pc, token, out arguments);
         if (function.NativeName is { } nativeName)
-            callTask = InvokeNativeDatumAsync(nativeName, arguments.Materialize(memory), context.CaptureDirectory(), instruction.Source, token, RangeResultPhysical(frame, instruction.Result));
+        {
+            CallHost(activation.Frame, instruction, pc, token, nativeName, arguments);
+            return false;
+        }
+        int target = instruction.B;
+        NativeExecutionFunction executable = ExecutionFunction(image, target);
+        if (executable.IsPureSynchronous)
+            RunDirectFunction(activation, executable, function.Environment, arguments,
+                activation.Frame.Location(instruction.Result), pc, token);
         else
         {
-            int target = Target(function.Function, instruction.B, instruction.C, instruction.Symbol, instruction.Source);
             activation.Work.Counters.Call(pc, target);
-            if (!bounded && (instruction.B < 0 || instruction.C >= 0)) ValidateInvocation(target, arguments.Count);
-            NativeEnvironment? environment = function.Environment;
-            if (!bounded && TailCallPlan(activation, pc) is { } tail)
-            {
-                if (!activation.ReturnDestination.IsNull)
-                    RunDirectTail(activation, target, environment, arguments, pc, tail, token);
-                else activation.Tail = new(target, environment, arguments, pc, activation.Function, instruction, tail);
-                return new NativeStep(pc + 1, true);
-            }
-            NativeExecutionFunction executable = ExecutionFunction(image, target);
-            bool direct = bounded || executable.IsContextFree
-                || executable.IsPureSynchronous && RuntimeHelpers.TryEnsureSufficientExecutionStack();
-            if (direct)
-            {
-                if (profile is not null) activation.Work.Counters.GuestDirectCall(executable.IsContextFree);
-                RunDirectFunction(activation, target, environment, arguments, frame.Location(instruction.Result), token);
-                return new NativeStep(pc + 1);
-            }
-            if (profile is not null && executable.IsPureSynchronous) activation.Work.Counters.StackLimitedCall();
+            if (nativeCaller is not null && TryPrepareFixedTier(nativeCaller, executable, function.Environment,
+                arguments, pc, ready.HasValue, in callee)) return true;
+            activation.Frame.SetDatum(instruction.Result, RunFixedGuest(activation, executable, function.Environment, arguments, token));
+        }
+        return false;
+    }
+
+    private NativeStep CallDirect(Activation activation, NativeInstruction instruction, int pc, CancellationToken token)
+    {
+        NativeFunction function = ReadCall(activation, instruction, pc, token, out NativeArguments arguments);
+        if (function.NativeName is { } nativeName)
+            return CallHost(activation.Frame, instruction, pc, token, nativeName, arguments);
+        int target = Target(function.Function, instruction.B, instruction.C, instruction.Symbol, instruction.Source);
+        RunDirectFunction(activation, ExecutionFunction(image, target), function.Environment, arguments,
+            activation.Frame.Location(instruction.Result), pc, token);
+        return new NativeStep(pc + 1);
+    }
+
+    private NativeStep Call(Activation activation, NativeInstruction instruction, int pc, CancellationToken token)
+    {
+        NativeFunction function = ReadCall(activation, instruction, pc, token, out NativeArguments arguments);
+        NativeFrame frame = activation.Frame;
+        if (function.NativeName is { } nativeName)
+            return CallHost(frame, instruction, pc, token, nativeName, arguments);
+        int target = Target(function.Function, instruction.B, instruction.C, instruction.Symbol, instruction.Source);
+        if (instruction.B < 0 || instruction.C >= 0) ValidateInvocation(target, arguments.Count);
+        NativeEnvironment? environment = function.Environment;
+        if (TailCallPlan(activation, pc) is { } tail)
+        {
+            activation.Work.Counters.Call(pc, target);
             if (!activation.ReturnDestination.IsNull)
-            {
-                if (profile is not null) activation.Work.Counters.GuestLoopHandoff();
-                frame.SetDatum(instruction.Result, RunFunction(target, environment, arguments, token));
-                return new NativeStep(pc + 1);
-            }
-            activation.Call = new(target, environment, arguments, instruction.Result, pc);
+                RunDirectTail(activation, target, environment, arguments, pc, tail, token);
+            else activation.Tail = new(target, environment, arguments, pc, activation.Function, instruction, tail);
             return new NativeStep(pc + 1, true);
         }
+
+        NativeExecutionFunction executable = ExecutionFunction(image, target);
+        if (executable.IsContextFree || executable.IsPureSynchronous && RuntimeHelpers.TryEnsureSufficientExecutionStack())
+        {
+            RunDirectFunction(activation, executable, environment, arguments, frame.Location(instruction.Result), pc, token);
+            return new NativeStep(pc + 1);
+        }
+        activation.Work.Counters.Call(pc, target);
+        if (profile is not null && executable.IsPureSynchronous) activation.Work.Counters.StackLimitedCall();
+        if (!activation.ReturnDestination.IsNull)
+        {
+            if (profile is not null) activation.Work.Counters.GuestLoopHandoff();
+            frame.SetDatum(instruction.Result, RunFunction(target, environment, arguments, token));
+            return new NativeStep(pc + 1);
+        }
+        activation.Call = new(target, environment, arguments, instruction.Result, pc);
+        return new NativeStep(pc + 1, true);
+    }
+
+    private NativeStep CallHost(NativeFrame frame, NativeInstruction instruction, int pc, CancellationToken token,
+        string nativeName, NativeArguments arguments)
+    {
+        ValueTask<NativeDatum> callTask = InvokeNativeDatumAsync(nativeName, arguments.Materialize(memory),
+            context.CaptureDirectory(), instruction.Source, token, RangeResultPhysical(frame, instruction.Result));
         frame.SetDatum(instruction.Result, Demand(callTask));
         return new NativeStep(pc + 1);
     }
@@ -163,6 +218,12 @@ public sealed partial class NativeInterpreter
     {
         NativeFrame frame = activation.Frame;
         if (TryFastUnaryMath(activation.Work, frame, in instruction)) return new NativeStep(pc + 1);
+        if (instruction.C < 0 && instruction.Symbol == "path.join" && instruction.Inputs is { Count: 2 } path
+            && TryNativeTextBinary(frame, NativeBinary.PathJoin, path[0], path[1], instruction.Result, activation.Work.Counters))
+        {
+            activation.Work.Counters.Native("path.join");
+            return new NativeStep(pc + 1);
+        }
         NativeDatum[] inputs;
         if (instruction.Inputs is { Count: > 0 } slotInputs)
         {
@@ -320,12 +381,13 @@ public sealed partial class NativeInterpreter
     {
         NativeDatum rangeDatum = activation.Frame.GetDatum(instruction.A);
         if (!rangeDatum.IsReady) return AwaitOpenIteratorAsync(activation, instruction, pc, rangeDatum, token);
-        return OpenReadyIterator(activation, instruction.B, pc, rangeDatum.Value.AsRange(), token);
+        return OpenReadyIterator(activation, instruction.B, pc, rangeDatum.Value, token);
     }
 
-    private NativeStep OpenReadyIterator(Activation activation, int index, int pc, NativeRange range, CancellationToken token)
+    private NativeStep OpenReadyIterator(Activation activation, int index, int pc, NativeValue range, CancellationToken token)
     {
         activation.Frame.SequenceCursor(index) = default;
+        activation.Frame.RangeCursor(index).Close();
         IAsyncEnumerator<NativeDatum>? previous = activation.RemoveIterator(index);
         if (previous is not null)
         {
@@ -336,8 +398,14 @@ public sealed partial class NativeInterpreter
         return new NativeStep(pc + 1);
     }
 
-    private void StartIterator(Activation activation, int index, NativeRange range, CancellationToken token)
+    private void StartIterator(Activation activation, int index, NativeValue value, CancellationToken token)
     {
+        if (value.RangePlan != 0)
+        {
+            StartRangePlan(activation, index, value.RangePlanArena, value.RangePlan, token);
+            return;
+        }
+        NativeRange range = value.AsRange();
         if (range.NumberSequence is { } sequence && sequence.UsesToken(token))
         {
             activation.Frame.SequenceCursor(index) = new(sequence);
@@ -348,22 +416,23 @@ public sealed partial class NativeInterpreter
 
     private async ValueTask<NativeStep> AwaitOpenIteratorAsync(Activation activation, NativeInstruction instruction, int pc, NativeDatum rangeDatum, CancellationToken token)
     {
-        NativeRange range = (await rangeDatum.ResolveAsync(token)).AsRange();
+        NativeValue range = await rangeDatum.ResolveAsync(token);
         activation.Frame.SequenceCursor(instruction.B) = default;
+        activation.Frame.RangeCursor(instruction.B).Close();
         IAsyncEnumerator<NativeDatum>? previous = activation.RemoveIterator(instruction.B);
         if (previous is not null) await previous.DisposeAsync();
         StartIterator(activation, instruction.B, range, token);
         return new(pc + 1);
     }
 
-    private async ValueTask<NativeStep> AwaitOpenAfterDisposeAsync(Activation activation, int index, int pc, NativeRange range, ValueTask dispose, CancellationToken token)
+    private async ValueTask<NativeStep> AwaitOpenAfterDisposeAsync(Activation activation, int index, int pc, NativeValue range, ValueTask dispose, CancellationToken token)
     {
         await dispose;
         StartIterator(activation, index, range, token);
         return new(pc + 1);
     }
 
-    private static NativeStep NextIterator(Activation activation, NativeInstruction instruction, int pc, CancellationToken token)
+    private NativeStep NextIterator(Activation activation, NativeInstruction instruction, int pc, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         ref NativeSequenceCursor cursor = ref activation.Frame.SequenceCursor(instruction.A);
@@ -372,6 +441,23 @@ public sealed partial class NativeInterpreter
             if (!cursor.Next(out double value)) return new NativeStep(instruction.B);
             activation.Frame.SetSequenceValue(instruction.Result, value);
             activation.Work.Counters.SequenceSteps(1, machine: false);
+            return new NativeStep(pc + 1);
+        }
+        ref NativeRangeCursor plan = ref activation.Frame.RangeCursor(instruction.A);
+        if (plan.Root != 0)
+        {
+            ref NativeRangeNode node = ref NativeRangeNode.At(plan.Root);
+            if (node.StringItems || node.UsesValues)
+            {
+                if (!plan.NextValue(guestHeap.References!, token, out NativeValue text)) return new NativeStep(instruction.B);
+                activation.Frame.Set(instruction.Result, text);
+            }
+            else
+            {
+                if (!plan.Next(guestHeap.References!, token, out double number)) return new NativeStep(instruction.B);
+                activation.Frame.SetSequenceValue(instruction.Result, number);
+            }
+            activation.Work.Counters.RangePlanStep();
             return new NativeStep(pc + 1);
         }
         IAsyncEnumerator<NativeDatum> iterator = activation.Iterator(instruction.A)
@@ -394,6 +480,7 @@ public sealed partial class NativeInterpreter
     private static NativeStep CloseIterator(Activation activation, int index, int pc)
     {
         activation.Frame.SequenceCursor(index) = default;
+        activation.Frame.RangeCursor(index).Close();
         IAsyncEnumerator<NativeDatum>? iterator = activation.RemoveIterator(index);
         if (iterator is not null)
         {

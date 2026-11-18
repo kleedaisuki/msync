@@ -1,0 +1,11 @@
+let r = $std::ranges;
+let io = $std::io;
+let input? = io::read_line();
+if input is not null {
+    let n = input as Number;
+    let source = r::sequence(0, n * 4, 1);
+    let selected = r::take(r::stride(r::drop(source, 1), 4), n);
+    let sum = 0;
+    for item in selected { sum = sum + item; };
+    io::println(sum as String);
+};

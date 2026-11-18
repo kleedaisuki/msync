@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Msync.Core.Native;
 
 namespace Msync.Runtime.Native;
@@ -19,7 +20,7 @@ public sealed partial class NativeInterpreter
 
     private static NativeStep ExecuteDirectCall(NativeInterpreter owner, Activation activation,
         in NativeExecutionInstruction instruction, int pc, CancellationToken token) =>
-        owner.Call(activation, activation.Execution.Metadata[pc], pc, token, bounded: true);
+        owner.CallDirect(activation, activation.Execution.Metadata[pc], pc, token);
 
     internal static unsafe nint ConnectionQualifyHandler => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteConnectionQualify;
 
@@ -38,6 +39,7 @@ public sealed partial class NativeInterpreter
 
     internal static unsafe nint UnsignedBinaryHandler => (nint)(delegate* managed<NativeInterpreter, Activation, in NativeExecutionInstruction, int, CancellationToken, NativeStep>)&ExecuteUnsignedBinary;
 
+    [MethodImpl(MethodImplOptions.NoInlining)]
     private static NativeStep ExecuteUnsignedBinary(NativeInterpreter owner, Activation activation,
         in NativeExecutionInstruction instruction, int pc, CancellationToken token)
     {

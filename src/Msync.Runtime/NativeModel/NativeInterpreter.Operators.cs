@@ -6,6 +6,49 @@ namespace Msync.Runtime.Native;
 
 public sealed partial class NativeInterpreter
 {
+    private static bool TryTextLocation(NativeFrame frame, int slot, out NativeLocation location, out NativeType type) =>
+        frame.TryNativeLocation(slot, out location, out type) && !location.HasPending
+            && (location.IsInitialized || frame.IsPrivate(slot));
+
+    private bool TryNativeTextBinary(NativeFrame frame, NativeBinary op, int a, int b, int result,
+        RuntimeProfile.NativeFrameCounters counters)
+    {
+        bool join = op == NativeBinary.PathJoin;
+        if ((!join && op is not (>= NativeBinary.Equal and <= NativeBinary.GreaterEqual))
+            || !frame.MaybeText(a) || !frame.MaybeText(b)) return false;
+        if (!TryTextLocation(frame, a, out var left, out NativeType first)
+            || !TryTextLocation(frame, b, out var right, out NativeType second)) return false;
+        if (!join)
+        {
+            nint aText = left.TextEdge(first), bText = right.TextEdge(second);
+            if (aText == 0 || bText == 0) return false;
+            int compared = TextSemantics.CompareOrdinal(NativeGuestObjectTable.TextSpan(aText), NativeGuestObjectTable.TextSpan(bText));
+            frame.Set(result, NativeValue.FromBool(NumberSemantics.Compare(op, compared)));
+        }
+        else
+        {
+            if (OperatingSystem.IsWindows() || !first.Accepts(NativeKind.Path)
+                || (first.IsUnion ? left.Kind : first.Kind) != NativeKind.Path
+                || !frame.TryNativeLocation(result, out var output, out NativeType target)
+                || !target.Accepts(NativeKind.Path) || output.HasPending) return false;
+            nint aText = left.TextEdge(first, rawPath: !left.HasPathConnection(first));
+            nint bText = right.TextEdge(second, rawPath: true);
+            if (aText == 0 || bText == 0) return false;
+            ReadOnlySpan<char> prefix = NativeGuestObjectTable.TextSpan(aText).TrimEnd('/');
+            ReadOnlySpan<char> suffix = NativeGuestObjectTable.TextSpan(bText).TrimStart('/');
+            NativeGuestObjectTable arena = guestHeap.References!;
+            if (!left.TryCopy(first, output, target, arena)) return false;
+            nint text = AllocateGuestTextBuffer(checked(prefix.Length + 1 + suffix.Length)) | NativeGuestObjectTable.TextTag;
+            Span<char> destination = NativeGuestObjectTable.TextBuffer(text);
+            prefix.CopyTo(destination);
+            destination[prefix.Length] = '/';
+            suffix.CopyTo(destination[(prefix.Length + 1)..]);
+            output.ReplacePathText(arena, text);
+        }
+        counters.NativeTextOperation(join);
+        return true;
+    }
+
     private bool TryGuestLayout(NativeFrame frame, in NativeExecutionInstruction instruction)
     {
         if (memory.HasAnyPending) return false;
@@ -103,7 +146,7 @@ public sealed partial class NativeInterpreter
         if (operation is >= NativeBinary.Equal and <= NativeBinary.GreaterEqual)
             return NativeValue.FromBool(Compare(operation, left, right));
         if (operation == NativeBinary.Add && left.Kind == NativeKind.String && right.Kind == NativeKind.String)
-            return NativeValue.FromString(left.AsString() + right.AsString());
+            return NativeValue.ConcatStrings(left, right);
         return NativeValue.FromNumber(NumberSemantics.Arithmetic(operation, left.AsNumber(), right.AsNumber()));
     }
 
@@ -119,7 +162,9 @@ public sealed partial class NativeInterpreter
                 : left.Kind == NativeKind.Type && right.Kind == NativeKind.Type
                     ? left.AsType() == right.AsType() ? 0 : 1
                     : left.Kind is NativeKind.String or NativeKind.Path && right.Kind is NativeKind.String or NativeKind.Path
-                        ? TextSemantics.CompareOrdinal(ScalarText(left), ScalarText(right))
+                        ? left.Kind == NativeKind.String && right.Kind == NativeKind.String
+                            ? TextSemantics.CompareOrdinal(left.AsStringSpan(), right.AsStringSpan())
+                            : TextSemantics.CompareOrdinal(ScalarText(left), ScalarText(right))
                         : throw new MsyncException($"Cannot compare {left.Type} and {right.Type}; null supports only 'is' and 'is not'");
         return NumberSemantics.Compare(operation, comparison);
     }

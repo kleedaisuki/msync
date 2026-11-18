@@ -10,11 +10,12 @@ public static partial class NativeBuiltins
         NativeRangeDemand.DemandAsync(range, token);
 
     private static async ValueTask<NativeValue> RangeOperationAsync(string operation, IReadOnlyList<NativeValue> args,
+        NativeRuntimeContext context,
         Func<NativeValue, IReadOnlyList<NativeValue>, CancellationToken, ValueTask<NativeValue>> invoke, CancellationToken token)
     {
-        if (operation == "of") return NativeValue.FromRange(NativeRange.Snapshot(args, ElementType(args)));
-        if (operation == "single") return NativeValue.FromRange(NativeRange.Snapshot([args[0]], args[0].Type));
-        if (operation == "empty_of") return NativeValue.FromRange(NativeRange.Snapshot([], args[0].AsType()));
+        if (operation == "of") return NativeValue.FromRange(context.Snapshot(args, ElementType(args)));
+        if (operation == "single") return NativeValue.FromRange(context.Snapshot([args[0]], args[0].Type));
+        if (operation == "empty_of") return NativeValue.FromRange(context.Snapshot([], args[0].AsType()));
         if (operation == "less") return Bool(CompareRangeValues(args[0], args[1]) < 0);
         if (operation == "repeat") return NativeValue.FromRange(new(Repeated(args[0], Ordinal(args[1], operation, false), token), args[0].Type, [args[0]]));
         if (operation == "sequence")
@@ -37,18 +38,18 @@ public static partial class NativeBuiltins
         if (operation is "take" or "drop" or "stride" or "step")
         {
             long count = Ordinal(args[1], operation, operation is "stride" or "step");
-            if (operation == "take" && count == 0) return NativeValue.FromRange(NativeRange.Snapshot([], source.ItemType, source.PhysicalItemType));
+            if (operation == "take" && count == 0) return NativeValue.FromRange(context.Snapshot([], source.ItemType, source.PhysicalItemType));
             return NativeValue.FromRange(Adapt(source, source.ItemType,
                 (range, cancellation) => CountedRange(range, operation, count, cancellation), token));
         }
         if (operation is "reverse" or "unique")
             return NativeValue.FromRange(Adapt(source, source.ItemType,
                 (range, cancellation) => OrderedRange(range, operation, cancellation), token));
-        if (IsExtendedRangeOperation(operation)) return await ExtendedRangeOperationAsync(operation, args, invoke, token);
+        if (IsExtendedRangeOperation(operation)) return await ExtendedRangeOperationAsync(operation, args, context, invoke, token);
         return await ConsumeRangeAsync(source, operation, args, invoke, token);
     }
 
-    private static double ClosedEndpoint(NativeValue endpoint)
+    internal static double ClosedEndpoint(NativeValue endpoint)
     {
         double value = endpoint.AsNumber();
         const double max = 9007199254740992d;
@@ -161,12 +162,12 @@ public static partial class NativeBuiltins
         };
     }
 
-    private static double FiniteNumber(NativeValue value, string operation, string module = "ranges")
+    internal static double FiniteNumber(NativeValue value, string operation, string module = "ranges")
     {
         double number = Number(value);
         return double.IsFinite(number) ? number : throw new MsyncException($"{module}.{operation} requires finite Number arguments");
     }
-    private static long Ordinal(NativeValue value, string operation, bool positive, string module = "ranges") =>
+    internal static long Ordinal(NativeValue value, string operation, bool positive, string module = "ranges") =>
         Ordinal(FiniteNumber(value, operation, module), operation, positive, module);
     private static long Ordinal(double number, string operation, bool positive, string module)
     {
@@ -186,6 +187,7 @@ public static partial class NativeBuiltins
             if (left.Kind == NativeKind.Number) return left.AsNumber().Equals(right.AsNumber());
             if (left.Kind == NativeKind.Range)
             {
+                if (left.RangePlan != 0 || right.RangePlan != 0) return left.Equals(right);
                 NativeRange a = left.AsRange(), b = right.AsRange();
                 return ReferenceEquals(a, b) || ReferenceEquals(a.Items, b.Items) && a.ItemType == b.ItemType
                     && a.Selection == b.Selection && a.Resolve == b.Resolve;
@@ -195,6 +197,7 @@ public static partial class NativeBuiltins
         public int GetHashCode(NativeValue value) => value.Kind switch
         {
             NativeKind.Number => value.AsNumber().GetHashCode(),
+            NativeKind.Range when value.RangePlan != 0 => value.GetHashCode(),
             NativeKind.Range => HashCode.Combine(value.AsRange().Items, value.AsRange().ItemType, value.AsRange().Selection, value.AsRange().Resolve),
             _ => value.GetHashCode()
         };
