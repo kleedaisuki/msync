@@ -187,6 +187,15 @@ projections, ready versus pending memory reads, or per-field access latency.
 Instruction hits describe IR execution, not physical memory-access counts.
 `vm.opcode` and
 `vm.instruction` sum the same attempted instructions in different dimensions.
+At instruction detail, `bridge.entries` identifies the actual transition
+into the tier bridge; `bridge.executions` counts instructions dispatched
+inside a batch, including its first executed operation. A guard or
+readiness path entering the bridge from otherwise native code also records
+`bridge.guard_entries`. The source opcode and linked backend opcode can
+differ (for example, an address-plus-load pair becomes one offset load);
+bridge records carry both, plus the linked handler and the source span.
+Dedicated frame CALL continuations are not recorded as generic bridge
+entries.
 `vm.edge` measures actual next-instruction transitions after jumps or
 iterator-next; it does not count a successor never entered after an abort.
 `vm.call` captures the actual selected source target; callbacks admitted
@@ -354,7 +363,7 @@ recorder. Diagnostics uses the existing lossless writer admission policy.
 | Standard-source cache | `compiler.standard.document` identifies the module and whether its lazy document was cold or warm. A warm access is not another parse. |
 | Semantics | `compiler.semantic.body` counts analyzed HIR node kinds, including repeated analysis; `compiler.semantic.standard_module` identifies module work. |
 | Specialization | `compiler.semantic.instantiate` records template identity/name, call-site source range, publish/query mode, argument/capture counts and completed/incomplete cache hits or misses. `compiler.semantic.specialization` identifies a newly reserved function and its canonical schema key before body construction; `plan.exits` counts completion/return paths. `compiler.semantic.bind_plan` attributes call-site binding and effect projection to source/function identity, reports formal objects/cells/events and projected writes, and distinguishes applying effects from a query. No late function-folding phase remains. |
-| Range construction | `compiler.semantic.range_literal` counts initialized elements; `compiler.semantic.call` records ordinary callee-then-arguments evaluation. `compiler.bind.source_sugar` records source spans and the source operator, and `compiler.bind.range_comprehension` covers binding the deferred adapters. Runtime `range.initialize` reports source, retained datum count and ready datum count. `range.closed.construct` reports the endpoint count, direction, and endpoint failures; primitive cursor opens and steps use the existing execution counters. Traversal callbacks remain explicit adapter work, not literal-item thunks. |
+| Range construction and materialization | `compiler.semantic.range_literal` counts initialized elements; `compiler.semantic.call` records ordinary callee-then-arguments evaluation. `compiler.bind.source_sugar` records source spans and the source operator, and `compiler.bind.range_comprehension` covers binding the deferred adapters. Runtime `range.initialize` reports source, retained datum count and ready datum count. At diagnostics level, `range.materialize.datum` reports the source, elements collected, and any traversal or snapshot construction failure. `range.closed.construct` reports the endpoint count, direction, and endpoint failures; primitive cursor opens and steps use the existing execution counters. Traversal callbacks remain explicit adapter work, not literal-item thunks. |
 | Source patterns | `compiler.bind.match_decision` records arm count and equal-demand prefix sharing. Semantic metrics count coverage arms and field-layout candidates. Runtime `range.pattern_prefix` records the source, requested and observed elements, and whether it reused a stored snapshot or read a cursor. Generic substitutions and unevaluated type queries record counts in the enclosing compiler phases. |
 | Flow analysis | `compiler.flow.prepare` owns `compiler.flow.graph` and `compiler.flow.solve`; block/edge/operation/input-point counts and actual solver block transfers. Transfers include revisits, not just distinct reachable blocks. |
 | HIR sealing | `compiler.hir.freeze` and `compiler.hir.seal` report nodes, edges, types, locations, functions, templates, layouts and sources. Compare the two censuses to explain discarded construction. |
@@ -1118,6 +1127,138 @@ Direct return telemetry: direct_return_slots counts typed representation/Future
 copies into caller-owned return storage; direct_return_scalars counts native
 Number/Bool bit publication without a generic result container.
 
+`jit_machine_address_result_sites` counts compiled machine-to-machine CALL
+sites whose RET returns a guest reference; `jit_machine_address_results`
+counts completed native calls that publish that result in the caller.
+`jit_machine_argument_window_sites` and `jit_machine_argument_window_calls`
+distinguish the read-only no-copy call window from calls that place arguments
+in machine scratch. Readiness exits continue to use the existing demand
+attribution; a failed native guard never counts a successful return or window
+use. These counters are attributed to the caller and do not invent ordinary
+VM frame entries for a native leaf.
+
+At frame entry, call_physical_transfers and call_physical_arguments count
+calls and arguments placed using prelinked byte/reference displacements.
+call_physical_pending_fallbacks and call_physical_owner_fallbacks count
+eligible call entries that used the pending-aware representation path
+because an owner had pending state or the owners did not share a native
+reference arena. These are actual copies in both paths; they remain included
+in call_arguments_copied, not call_arguments_borrowed. The
+backend.call_parameters phase records eligible functions and unread
+formals, with backend.call_parameters.function rows naming affected
+functions. call_physical_omitted_arguments counts omitted frame writes
+when execution consumes that compiled proof, not argument evaluations
+eliminated.
+
+`backend.call_windows` records eligible and selected writable outgoing
+window sites and their argument counts; `backend.call_windows.site` names
+the selected caller and instruction. Function-level `call_window.*`
+metrics describe candidate, liveness, mixed-placement and shape decisions
+after entering the analysis. Selected sites name the callee and record its
+capture count and the number of directly placed producers.
+`vm.function.call_windows_adopted` and `call_window_arguments`
+record completed frame entries and their adopted arguments, separately
+from physical copies and read-only machine borrowing. The owner, pending
+and capacity miss counters describe failed ownership transitions; the
+existing copy/fallback counters describe what occurred after the miss.
+`call_window_staged_arguments` is the subset of adopted window arguments
+that actually required a store from outside the window. These stores also
+count under `call_arguments_copied`; an unread formal skipped by the
+prelinked proof is not a staged store.
+`call_windows_zero_stage` counts adopted calls that did not enter the
+argument mover at all. `jit_frame_call_sites` counts emitted x64 direct
+frame CALLs with a static continuation; `jit_frame_calls_continued`
+counts successful returns to those continuations, separately from
+machine-only leaf calls.
+`jit_frame_load_calls_continued` is the subset which enters at a
+fused callable read; `jit_frame_callable_copies_elided` counts only
+those reads that obtained a ready callable without materializing
+its temporary. A host-stack exit before starting the invocation
+is reported as `jit_frame_call_activation_exits`.
+`jit_fixed_guest_single_frame_returns` counts effectful-capable
+fixed calls whose first activation returned without opening a
+driver. `jit_fixed_guest_driver_handoffs` counts actual nested or
+tail transfers handed to the guest driver with the first activation
+already executed. Both are attributed to the original caller.
+`jit_fixed_native_entries` counts verified caller-emitted callee
+machine entries (seen on their return/exit), `jit_fixed_native_calls`
+counts their successful completion, and `jit_fixed_native_frame_resumes`
+counts transitions that need to continue the already-started callee
+frame after a machine exit, not callee entry retries.
+`jit_fixed_native_code_leases` counts acquisitions of a published
+callee code lease by the live caller, and
+`jit_fixed_native_code_lease_reuses` counts uses of an already held
+lease for the same version. `jit_fixed_native_scalar_returns` counts
+completed scalar returns authorized for immediate caller-machine
+publication after frame retirement. None of these counters count
+generic instruction bridge entries or kernel syscalls.
+`jit_fixed_native_workless_returns` measures ready scalar fixed
+returns that made no ambient work entry. The
+`jit_fixed_native_work_{bridge,call,resume}_entries` series records
+the first managed work boundary per prepared invocation, attributed
+to the caller. With observation enabled a work scope may still
+exist for counters; the workless count is not an allocation count.
+`jit_location_captures_deferrable` counts location captures proved
+absent from emitted frame descriptors at tier compilation.
+`jit_fixed_native_capture_bindings_deferred`,
+`jit_fixed_native_capture_bindings_materialized`, and
+`jit_fixed_native_capture_bindings_avoided` count runtime binding
+decisions on the caller: initially skipped, later installed on a
+managed boundary, and still skipped at a ready scalar return.
+`jit_fixed_native_raw_returns` counts ready scalar completions
+without a rented child tier invocation. The
+`jit_fixed_native_raw_managed_exits` and
+`jit_fixed_native_raw_other_exits` counters cover exact-PC managed
+operation boundaries and other reasons to materialize the existing
+frame's tier state. These counters do not measure frame allocations.
+`jit_fixed_native_reservations` counts successful reservations using
+the linked callee extent, before executing the child.
+`jit_fixed_native_emitted_frames` counts frames published by the
+x64 CALL prologue, observed at either native return or managed exit.
+`jit_fixed_native_repeated_admissions` counts same-site admissions
+that reuse the retained code and frame recipe without a host call.
+`jit_fixed_native_repeated_attachments` counts the subset that later
+attach the already-started child at a managed exit.
+`jit_fixed_native_unattached_returns` counts scalar returns that
+released their physical reservation without a frame view;
+`jit_fixed_native_frame_attachments` counts same-FP attachments on
+a cold exit. `jit_fixed_native_reservation_misses` counts attempts
+that could not reserve both lanes in the current segment, including
+a missing native lane or opposite arena. All are caller-attributed.
+`jit_fixed_native_inline_returns` is the subset of unattached
+scalar returns that skipped the managed completion callback.
+The counter is recorded when the caller consumes the completed
+native receipt at its next managed entry or tier exit.
+`stack_segment_reentries` counts pushes that cross into an existing
+cached stack segment after a capacity miss. These are distinct from
+`stack_segment_allocations`, which counts frames requiring native
+segment or edge-lane allocation. Both retain function attribution.
+`jit_fixed_native_argument_sites` counts emitted physical placement
+sites. `jit_fixed_native_argument_placements`,
+`jit_fixed_native_arguments_placed`, and
+`jit_fixed_native_argument_reference_words` count observed caller-machine
+placements, live inputs, and copied guest root words respectively, on
+callee exit. The placements also count as physical transfers in the
+callee. The `jit_fixed_native_argument_*_exits` series describes why an
+emitted site used the ordinary frame writer: frame/descriptor binding,
+pending caller storage, or address-keyed host reference leases.
+
+`jit_value_materialization_sites` counts emitted private i64
+constant, nullable Null and guest callable materialization sites.
+`jit_integer64_constants`, `jit_guest_null_constants`, and
+`jit_guest_function_composes` count completed emitted operations.
+Materialization exits are divided by the presence of pending work
+at the guard; a without-pending exit may be a non-Null callable
+component, uninitialized input, or storage with a host lease.
+Ready function composition totals include the native subset.
+
+`jit_guest_reference_store_sites` and `jit_guest_reference_stores`
+distinguish admitted x64 heap reference stores from completed native
+writes. Pending and storage exit counters cover branches taken before
+mutating the destination. Storage exits include ineligible owner/lane,
+uninitialized source or a host token on either side. Scalar guest writes
+continue to use their own series.
+
 Native readiness setup: tier_context_pending counts entries with relevant pending
 slots. tier_context_unrelated_pending counts entries where the VM had pending
 values but the invocation's slot descriptors did not. The coarse native mask now
@@ -1130,12 +1271,81 @@ stack-admitted recursive calls, not only statically bounded sites.
 
 ### Captured acquire frontiers and escaped descendants
 
-work.disposition records each owned submission's promote/join decision, whether
-the owner is a job scope, and reachable Future/Process counts. work.escape links
+work.disposition records each owned submission's disposition and whether the
+owner is a job scope. Promotion/join decisions include reachable
+Future/Process counts; a successful scalar input reports `settled-value`
+without claiming that the root graph was traversed. `work.retention_scan`
+records the owning function, owned Future/Process counts, and whether activation
+exit traversed the roots or closed a batch containing only settled values.
+work.escape links
 the creator job and work transferred beyond its lifetime. The child list is not
 an archive of cancelled/handled internal operations.
 acquire_descendant_futures and acquire_descendant_processes count followed
 escaped-work edges, not newly launched operations or globally unique tasks.
+
+### Native reference storage and tracing
+
+Guest-heap sweeps report `heap.raw_header_scans` and `heap.raw_descriptor_scans`
+separately. `heap.capture_descriptor_reads` counts auxiliary capture-vector
+lookups on otherwise header-scanned objects. `heap.host_tokens` counts the
+marked native slots that actually cross into the host registry; immediate
+source-type words and legacy root slots are reported separately.
+`heap.native_stack_frames` and `heap.native_stack_root_slots` count native
+headers in the collecting arena and reference slots scanned through those
+headers. The caller's adopted suffix is excluded from its published root
+range until RET; it is counted under the callee instead.
+`vm.function.stack_frame_native_roots` is the native subset of
+`stack_frame_roots`; it does not count CLR roots or host handles.
+`vm.function.frame_binding_slots` counts reserved indirect cells per
+activation; `frame_native_binding_slots` is the subset in native lanes.
+This measures placement, not the number of populated bindings or host
+adapter lookups. `call_argument_snapshot_bytes` and
+`call_argument_snapshot_reference_slots` count typed packet extents at
+guest call entry. Ordinary snapshots reuse frame storage, so the existing
+`call_argument_snapshot_allocations` series is zero for this path. Tail
+handoffs retain their separate buffer and reuse counters.
+
+`vm.storage.pending_index` counts native owner tables opened/resized,
+reserved bytes, offset lookup outcomes, new/replaced slots and retirement.
+It excludes the external managed allocation path and emits no sample for a
+no-pending run. `vm.function.native_builtin_storage_allocations` and
+`native_builtin_storage_elements` count guest arena requests from builtin
+factories, attributed to the current function when available; they do not
+count allocations by the standalone host-library API.
+
+`vm.function.native_indirect_loads` and `native_indirect_stores` count
+interpreter/bridge copies that form and use a native location without
+materializing the referent's allocation view. `indirect_pending`,
+`indirect_non_native_owner`, `indirect_unlinked_layout`,
+`indirect_uninitialized`, and `indirect_boundary_carrier` count the
+first reason a copy did not take that route. They are independent of
+machine-direct field counters. `jit_guest_carrier_adaptations` counts
+machine-executed Scope conversions that change between an exact and a
+nullable carrier; same-carrier copies are excluded.
+`vm.function.vm_scope_copies_forwarded` counts logical Copy sites
+absorbed by visited linked field loads, weighted by visits in the interpreter,
+bridge and generated tier. The original instruction and edge counters
+remain logical, so this metric measures removed work separately.
+`native_text_objects` and
+`native_text_bytes` count UTF-16 arena blocks and their logical extents.
+
+`native_range_plan_nodes` and `native_range_plan_edges` count plans
+actually linked in the executing function. `native_range_cursor_opens`,
+`native_range_cursor_bytes`, and `native_range_cursor_yields` report
+workspace and demand, including native numeric reductions. A base
+sequence can still use the separate `native_sequence_*` counters.
+
+`native_range_callback_requests` and `native_range_callback_resumes`
+distinguish dispatch from acknowledgement. `native_range_ordered_nodes`
+counts native natural sort/merge plans. `native_path_joins` and
+`native_text_comparisons` distinguish raw-lane operations from paths
+that materialize values.
+
+`native_range_window_fusions` counts adjacent demand windows absorbed
+during linking. `native_range_window_kernels` counts cursor opens whose
+root combines a demand window and a numeric sequence in one entry.
+Nested kernels can execute below another root without adding to the
+root-open counter.
 
 ### Completed Future materialization in private tier slots
 
@@ -1192,6 +1402,10 @@ kind refinement copies the actual destination payload width. Fallback does not
 inspect an unready payload. These are a scoped view of bridge attempts, not a
 count of every storage copy in the VM. Existing opcode/function/source context
 identifies the operations. Core's small-root helper remains sink-independent.
+The bridge dispatches linked handlers without widening its entry frame;
+observed side-exit classification stays out of line. Direct/fallback counts
+and the original instruction/edge mapping do not depend on where the handler
+body executes.
 
 ### Rendezvous removal
 

@@ -289,6 +289,9 @@ readiness. External admission happens once, actual layout unions select a
 variant, and checked casts inspect actual values. Trusted concrete layout/field
 facts are not revalidated on each access. The Core provenance authority separates
 actual layout evidence from logical Scope carrier domains.
+The [VM-owned writable memory target](native-execution-lowering-v090.md#target-design-the-vm-owns-its-writable-memory)
+replaces CLR-backed runtime state without changing these pending and alias
+semantics or the public embedding API.
 
 The shared address authority tracks reaching **value definitions**, not the
 union of everything ever stored in a register slot. Temporary slot coloring can
