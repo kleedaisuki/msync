@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.2
+
+- Execute eligible repeated fixed guest calls without a per-call host transition.
+- Improve executable inlining, native guest storage, and Range traversal.
+- Preserve standard-library Set behavior and policy.
+
+See the [release notes](docs/releases/0.9.2.md).
+
 ## 0.8.0 — development
 
 - Replace the product implementation with C#/.NET 10 Native AOT and retire the

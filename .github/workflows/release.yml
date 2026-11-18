@@ -129,6 +129,28 @@ jobs:
           for phase in phases:
               arguments.extend(('--phase', phase))
           subprocess.run(arguments, check=True)
+      - name: Exercise native calls from the packaged executable
+        shell: python
+        env:
+          PACKAGE_VERSION: ${{ needs.version.outputs.version }}
+          PACKAGE_NAME: ${{ matrix.name }}
+        run: |
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          windows: bool = os.name == 'nt'
+          binary: Path = Path('artifacts/package') / f"msync-{os.environ['PACKAGE_VERSION']}-{os.environ['PACKAGE_NAME']}" / 'bin' / ('msync.exe' if windows else 'msync')
+          journeys: tuple[str, ...] = ('native_machine_reference_call',) if windows else (
+              'native_fixed_continuation', 'native_machine_reference_call', 'native_range_callback',
+          )
+          for journey in journeys:
+              subprocess.run([sys.executable, f'tests/Msync.EndToEnd/{journey}_journey.py',
+                              '--binary', str(binary.resolve())], check=True)
+          if windows:
+              subprocess.run([sys.executable, 'tests/Msync.EndToEnd/native_fixed_continuation_journey.py',
+                              '--binary', str(binary.resolve()), '--repeated-only'], check=True)
       - name: Verify immutable installer upgrade baseline
         if: runner.os == 'Windows'
         shell: pwsh
