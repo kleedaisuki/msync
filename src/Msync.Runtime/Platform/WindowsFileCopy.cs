@@ -14,11 +14,27 @@ internal static partial class WindowsFileCopy
         internal Exception? Failure;
     }
 
-    internal static unsafe void Copy(string source, string stage, CancellationToken cancellationToken, bool flush = true)
+    internal static unsafe void Copy(string source, string stage, CancellationToken cancellationToken, bool flush = true, RuntimeTimeline? timeline = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var state = new CopyState(cancellationToken, flush);
         var owner = GCHandle.Alloc(state);
+        try
+        {
+            CopyData(source, stage, cancellationToken, state, owner, timeline);
+            if (flush) Sync(stage, state.Destination, timeline);
+        }
+        finally
+        {
+            if (state.Destination != 0) CloseHandle(state.Destination);
+            owner.Free();
+        }
+    }
+
+    private static unsafe void CopyData(string source, string stage, CancellationToken cancellationToken,
+        CopyState state, GCHandle owner, RuntimeTimeline? timeline)
+    {
+        using var span = timeline?.Begin("file.native_copy");
         try
         {
             bool copied = CopyFileEx(NativeFileMetadata.WindowsPath(source), NativeFileMetadata.WindowsPath(stage), &Progress, GCHandle.ToIntPtr(owner), 0, 1);
@@ -26,13 +42,18 @@ internal static partial class WindowsFileCopy
             if (state.Failure is not null) throw state.Failure;
             cancellationToken.ThrowIfCancellationRequested();
             if (!copied) throw new IOException($"CopyFileExW: {new Win32Exception(error).Message}");
-            if (flush && !FlushFileBuffers(state.Destination)) throw new IOException($"FlushFileBuffers: {new Win32Exception(Marshal.GetLastPInvokeError()).Message}");
         }
-        finally
-        {
-            if (state.Destination != 0) CloseHandle(state.Destination);
-            owner.Free();
-        }
+        catch (Exception error) { span?.Fail(error); throw; }
+    }
+
+    private static void Sync(string stage, nint destination, RuntimeTimeline? timeline)
+    {
+        using var span = timeline?.Begin("file.sync");
+        span?.SetAttribute("file.stage_path", stage);
+        if (FlushFileBuffers(destination)) return;
+        IOException error = new($"FlushFileBuffers: {new Win32Exception(Marshal.GetLastPInvokeError()).Message}");
+        span?.Fail(error);
+        throw error;
     }
 
     [UnmanagedCallersOnly(CallConvs = [typeof(CallConvStdcall)])]

@@ -42,7 +42,7 @@ def main() -> None:
         complete = b"completed member"
         payload = (
             header("source", directory=True)
-            + header("source/complete", len(complete))
+            + header("source/implied/complete", len(complete))
             + complete
             + b"\0" * (-len(complete) % 512)
             + header("source/broken", 100)
@@ -59,7 +59,7 @@ def main() -> None:
         )
         launcher.chmod(0o755)
         (root / "copy.msync").write_text(
-            'let remote = ssh://fixture; remote::"/source" -> ./output/;\n',
+            'let remote = ssh://fixture; (remote @ "/source") -> ./output/;\n',
             encoding="utf-8",
         )
         environment = dict(os.environ)
@@ -84,9 +84,9 @@ def main() -> None:
             )
         if (target / "broken").read_bytes() != b"previous target":
             raise AssertionError("Short archive replaced the previous ordinary target")
-        if (target / "complete").read_bytes() != complete:
+        if (target / "implied" / "complete").read_bytes() != complete:
             raise AssertionError("Transfer rolled back a completed independent member")
-        if list(target.glob(".msync-*")):
+        if list(target.rglob(".msync-*")):
             raise AssertionError("Short archive retained its live owned file stage")
         print(
             "Short archive rejected before publication; old target preserved, completed member retained, stage retired."

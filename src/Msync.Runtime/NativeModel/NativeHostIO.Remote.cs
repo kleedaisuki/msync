@@ -56,6 +56,14 @@ public static partial class NativeHostIO
             errors = process.StandardError.ReadToEndAsync();
         }
         internal Process Process { get; }
+        internal async Task<string> ReadReceiptAsync(CancellationToken token)
+        {
+            using var span = timeline?.Begin("transport.receipt_wait");
+            span?.SetMetric("transport.pid", Process.Id);
+            try { return await Process.StandardOutput.ReadToEndAsync(token); }
+            catch (Exception error) { span?.Fail(error); throw; }
+        }
+
         internal async Task FinishAsync(CancellationToken token)
         {
             using var span = timeline?.Begin("transport.exit_wait");
@@ -95,10 +103,11 @@ public static partial class NativeHostIO
         List<string> args = [target.Raw, recordedMode ?? Mode(container, replace)];
         if (!cohort) args.Add("single");
         args.AddRange(sources.Select(path => path.Raw));
-        string output = await RunCommandAsync(Remote(target)!.Value,
-            recordedMode is null ? NativeTransferProtocol.NativeCopyProgram(cohort)
-                : NativeTransferProtocol.NativeRecordedCopyProgram(kind), args, context, token);
-        RequireReceipt(output, "copy");
+        string program = recordedMode is null ? NativeTransferProtocol.NativeCopyProgram(cohort)
+            : NativeTransferProtocol.NativeRecordedCopyProgram(kind);
+        string output = await RunCommandAsync(Remote(target)!.Value, ObserveInstall(program, context),
+            args, context, token);
+        RequireReceipt(output, "copy", context.Timeline);
     }
 
     private static async Task UploadAsync(IReadOnlyList<NativeValue> sources, NativePathValue target,
@@ -108,8 +117,9 @@ public static partial class NativeHostIO
         string name = sources[0].Kind == NativeKind.Path ? Basename(sources[0].AsPath()) : "";
         string[] args = [target.Raw, recordedMode ?? Mode(container, replace), name, cohort ? "cohort" : "single",
             sources[0].Kind == NativeKind.String ? "literal" : "filesystem"];
-        using RemoteOperation remote = StartRemote(Remote(target)!.Value,
-            recordedMode is null ? NativeTransferProtocol.NativeUploadProgram : NativeTransferProtocol.NativeRecordedUploadProgram, args, true, context);
+        string program = recordedMode is null ? NativeTransferProtocol.NativeUploadProgram
+            : NativeTransferProtocol.NativeRecordedUploadProgram;
+        using RemoteOperation remote = StartRemote(Remote(target)!.Value, ObserveInstall(program, context), args, true, context);
         using CancellationTokenRegistration cancel = token.Register(() => Stop(remote.Process));
         try
         {
@@ -133,9 +143,9 @@ public static partial class NativeHostIO
                 }
             }
             remote.Process.StandardInput.Close();
-            string output = await remote.Process.StandardOutput.ReadToEndAsync(token);
+            string output = await remote.ReadReceiptAsync(token);
             await remote.FinishAsync(token);
-            RequireReceipt(output, "upload");
+            RequireReceipt(output, "upload", context.Timeline);
         }
         catch { await remote.AbortAsync(); throw; }
     }
@@ -177,8 +187,9 @@ public static partial class NativeHostIO
             ? NativeTransferProtocol.NativeDownloadProgram(paths.Length, receipt)
             : NativeTransferProtocol.NativeRecordedDownloadProgram(kind, receipt),
             paths.Select(path => path.Raw).ToArray(), receipt, context);
-        using RemoteOperation destination = StartRemote(Remote(target)!.Value,
-            recordedMode is null ? NativeTransferProtocol.NativeRelayProgram : NativeTransferProtocol.NativeRecordedRelayProgram,
+        string program = recordedMode is null ? NativeTransferProtocol.NativeRelayProgram
+            : NativeTransferProtocol.NativeRecordedRelayProgram;
+        using RemoteOperation destination = StartRemote(Remote(target)!.Value, ObserveInstall(program, context),
             [target.Raw, recordedMode ?? Mode(container, replace), Basename(paths[0]), cohort ? "cohort" : "single", "filesystem"], true, context);
         using CancellationTokenRegistration cancel = token.Register(() => { Stop(source.Process); Stop(destination.Process); });
         try
@@ -186,10 +197,10 @@ public static partial class NativeHostIO
             await NativeTransferProtocol.NativePumpArchiveAsync(source.Process, destination.Process.StandardInput.BaseStream,
                 receipt, context.BufferSize, token);
             destination.Process.StandardInput.Close();
-            string output = await destination.Process.StandardOutput.ReadToEndAsync(token);
+            string output = await destination.ReadReceiptAsync(token);
             await source.FinishAsync(token);
             await destination.FinishAsync(token);
-            RequireReceipt(output, "relay");
+            RequireReceipt(output, "relay", context.Timeline);
         }
         catch { await Task.WhenAll(source.AbortAsync(), destination.AbortAsync()); throw; }
     }
@@ -202,7 +213,8 @@ public static partial class NativeHostIO
         bool same = connection == targetConnection;
         bool replace = IsReplacement(target);
         bool receipt = !same && RequiresReceipt(connection);
-        using RemoteOperation source = StartRemote(connection, NativeTransferProtocol.NativeSelectionProgram(same, receipt),
+        string program = NativeTransferProtocol.NativeSelectionProgram(same, receipt);
+        using RemoteOperation source = StartRemote(connection, same ? ObserveInstall(program, context) : program,
             [selection.Directory.Raw, target.Raw, Mode(true, replace), selection.Recursive ? "recursive" : "flat"], true, context);
         using CancellationTokenRegistration cancel = token.Register(() => Stop(source.Process));
         try
@@ -236,9 +248,9 @@ public static partial class NativeHostIO
             }
             if (same)
             {
-                string output = await source.Process.StandardOutput.ReadToEndAsync(token);
+                string output = await source.ReadReceiptAsync(token);
                 await source.FinishAsync(token);
-                RequireReceipt(output, "selector copy");
+                RequireReceipt(output, "selector copy", context.Timeline);
                 return true;
             }
             if (targetConnection is null)
@@ -255,7 +267,8 @@ public static partial class NativeHostIO
                 await source.FinishAsync(token);
                 return true;
             }
-            using RemoteOperation destination = StartRemote(targetConnection.Value, NativeTransferProtocol.NativeRelayProgram,
+            using RemoteOperation destination = StartRemote(targetConnection.Value,
+                ObserveInstall(NativeTransferProtocol.NativeRelayProgram, context),
                 [target.Raw, Mode(true, replace), "", "cohort", "filesystem"], true, context);
             using CancellationTokenRegistration cancelTarget = token.Register(() => Stop(destination.Process));
             try
@@ -263,10 +276,10 @@ public static partial class NativeHostIO
                 await NativeTransferProtocol.NativePumpArchiveAsync(source.Process, destination.Process.StandardInput.BaseStream,
                     receipt, context.BufferSize, token);
                 destination.Process.StandardInput.Close();
-                string output = await destination.Process.StandardOutput.ReadToEndAsync(token);
+                string output = await destination.ReadReceiptAsync(token);
                 await source.FinishAsync(token);
                 await destination.FinishAsync(token);
-                RequireReceipt(output, "selector relay");
+                RequireReceipt(output, "selector relay", context.Timeline);
                 return true;
             }
             catch { await destination.AbortAsync(); throw; }
@@ -275,9 +288,37 @@ public static partial class NativeHostIO
     }
 
     private static bool RequiresReceipt(NativeConnection connection) => OperatingSystem.IsWindows() && connection.Kind == ConnectionKind.Wsl;
-    private static void RequireReceipt(string output, string operation)
+
+    private static string ObserveInstall(string program, NativeRuntimeContext context) =>
+        ("msync_observe_install=" + (context.Timeline is null ? "no\n" : "yes\n")) + program;
+
+    private static void RequireReceipt(string output, string operation, RuntimeTimeline? timeline)
     {
-        if (output != "MSYNC-DONE\n") throw new IOException($"Remote {operation} returned no completion: {output}");
+        const string prefix = "MSYNC-INSTALL ";
+        const string suffix = "\nMSYNC-DONE\n";
+        using var span = timeline?.Begin("transport.install.result");
+        span?.SetAttribute("transport.operation", operation);
+        if (timeline is null ? output == "MSYNC-DONE\n" :
+            output.StartsWith(prefix, StringComparison.Ordinal) && output.EndsWith(suffix, StringComparison.Ordinal))
+        {
+            if (timeline is null) return;
+            string[] fields = output[prefix.Length..^suffix.Length].Split(' ');
+            if (fields.Length == 4
+                && long.TryParse(fields[0], NumberStyles.None, CultureInfo.InvariantCulture, out long leaves)
+                && long.TryParse(fields[1], NumberStyles.None, CultureInfo.InvariantCulture, out long directories)
+                && long.TryParse(fields[2], NumberStyles.None, CultureInfo.InvariantCulture, out long subtrees)
+                && long.TryParse(fields[3], NumberStyles.None, CultureInfo.InvariantCulture, out long fallbacks))
+            {
+                span?.SetMetric("install.leaves_moved", leaves);
+                span?.SetMetric("install.directories_merged", directories);
+                span?.SetMetric("install.subtrees_renamed", subtrees);
+                span?.SetMetric("install.subtree_fallbacks", fallbacks);
+                return;
+            }
+        }
+        IOException error = new($"Remote {operation} returned no completion: {output}");
+        span?.Fail(error);
+        throw error;
     }
 
     private sealed class SelectedQuery(NativeConnection connection, Process process) : IDisposable

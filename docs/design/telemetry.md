@@ -1108,6 +1108,28 @@ Synchronous native writes emit native_io.admit with concrete read/write keys
 and dependency counts. A stream can release its ordering lease while its value
 Future remains pending; these are deliberately different lifetimes.
 
+Queued Linux tree copies and archive writes keep the owning `file.copy` or
+`file.write` span open through completion or retirement. The worker's
+`file.sync` and the ordered consumer's `file.publication.wait` and
+`file.publish` are children of that file. The wait records queue depth and
+whether sync was pending on entry. An abandoned stage has
+`file.stage.cleanup` with its actual outcome; later staged files are not
+reported as published. Multiple files' sync and copy or write spans can overlap.
+
+Windows local publication records `file.native_copy` around `CopyFileExW`
+and `file.sync` around the explicit `FlushFileBuffers` on its retained
+handle. Both are children of `file.copy`; the stage is still published only
+after native copy and flush have completed successfully.
+
+Observed remote installation receipts report `install.leaves_moved`,
+`install.directories_merged`, `install.subtrees_renamed`, and
+`install.subtree_fallbacks` on `transport.install.result`. These are actual
+remote decisions, not derived file counts: moving a whole tree counts as one
+rename. `transport.receipt_wait` measures client stdout drain after upload or
+relay input closes (or after a same-endpoint selector submission); it is not
+a remote CPU or publication timer. The ordinary unobserved completion receipt
+is unchanged.
+
 ### Frame descriptors and background callback ownership
 
 Each guest call records one activation_descriptor_allocations or

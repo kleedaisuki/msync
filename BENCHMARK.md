@@ -11,6 +11,10 @@ covers all six default groups and both opt-in SSH loopback directions with a
 frozen release package. It includes [portable raw samples](docs/benchmarks/0.9.2-linux-x64.json)
 for same-scenario comparisons. It is a single-version snapshot, not a
 speedup over the older suite.
+The [0.9.2 I/O attribution](docs/benchmarks/0.9.2-io-attribution.md) separates
+local flush, SSH upload publication, and download installation costs.
+The [native Windows tree comparison](docs/benchmarks/windows-tree-io.md)
+keeps NTFS-local and Windows-initiated SSH deployments separate.
 
 ## I/O scenarios and distributions
 

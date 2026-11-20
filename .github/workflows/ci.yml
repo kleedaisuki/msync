@@ -390,6 +390,12 @@ jobs:
       - name: Verify Linux overlapping sources and positive-progress cancellation
         if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && runner.os == 'Linux' && steps.package.outcome == 'success' }}
         run: python tests/IO/overlap_cancel.py artifacts/publish/linux-x64/msync --output .temp/platform-results/overlap-cancellation.json
+      - name: Verify Linux staged publication and SSH merge decisions
+        if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && runner.os == 'Linux' && steps.package.outcome == 'success' }}
+        run: |
+          python tests/IO/ordered_publication.py artifacts/publish/linux-x64/msync
+          python tests/IO/remote_publication.py artifacts/publish/linux-x64/msync
+          python tests/IO/archive_short_body.py artifacts/publish/linux-x64/msync
       - name: Exercise per-user installer ownership and upgrade lifecycle
         if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         shell: pwsh
