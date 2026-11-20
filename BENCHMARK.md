@@ -4,6 +4,14 @@ Measure useful work, not how often an optimization fires. The suite is a
 starting set of distinct workloads, not a claim about their production frequency
 or a permanent scorecard. Choose the affected journeys before running a matrix.
 
+## Current baseline
+
+The [0.9.2 Linux x64 distribution-suite baseline](docs/benchmarks/0.9.2-linux-x64.md)
+covers all six default groups and both opt-in SSH loopback directions with a
+frozen release package. It includes [portable raw samples](docs/benchmarks/0.9.2-linux-x64.json)
+for same-scenario comparisons. It is a single-version snapshot, not a
+speedup over the older suite.
+
 ## I/O scenarios and distributions
 
 The default `io` group measures first deployment to an absent target and
