@@ -2,7 +2,7 @@ using System.Globalization;
 
 namespace Msync.Cli;
 
-internal enum CompileEmission { Bytecode, Hir }
+internal enum CompileEmission { Bytecode, Prepared, Hir }
 
 internal sealed record CommandOptions(string Command, string? File, string? Output, bool DryRun, int Optimization,
     string? SourceFile, int Jobs, bool FormattingCheck, bool Stdout, string? Syntax,
@@ -30,7 +30,7 @@ internal sealed record CommandOptions(string Command, string? File, string? Outp
         bool dryRun = false, formattingCheck = false, stdout = false, noConfig = false, noTelemetry = false, json = false;
         bool editorJson = false;
         CompileEmission emission = CompileEmission.Bytecode;
-        bool explicitEmission = false;
+        bool explicitEmission = false, prepare = false;
         int index = 0;
         bool commandSeen = false;
         if (args.Length != 0 && Commands.Contains(args[0], StringComparer.Ordinal)) { command = args[0]; index++; commandSeen = true; }
@@ -54,6 +54,7 @@ internal sealed record CommandOptions(string Command, string? File, string? Outp
                 case "--json": json = true; break;
                 case "--editor-json": editorJson = true; break;
                 case "--emit": emission = ParseEmission(Next()); explicitEmission = true; break;
+                case "--prepare": prepare = true; break;
                 case "-O0": optimization = 0; break;
                 case "-O1": optimization = 1; break;
                 case "-O2": optimization = 2; break;
@@ -81,7 +82,13 @@ internal sealed record CommandOptions(string Command, string? File, string? Outp
             throw new ArgumentException("--json and --editor-json are supported by 'msync disassemble'.");
         if (explicitEmission && command is not ("compile" or "emit-ir"))
             throw new ArgumentException("--emit is supported by 'msync compile'. Use '--emit hir' for typed HIR or '--emit bytecode' for relocatable bytecode.");
-        if (!explicitEmission && command is ("compile" or "emit-ir")
+        if (prepare)
+        {
+            if (command != "compile") throw new ArgumentException("--prepare is supported by 'msync compile'.");
+            if (explicitEmission) throw new ArgumentException("Choose --prepare or --emit, not both.");
+            emission = CompileEmission.Prepared;
+        }
+        if (!explicitEmission && command == "emit-ir"
             && output?.EndsWith(".mhir", StringComparison.OrdinalIgnoreCase) == true)
             emission = CompileEmission.Hir;
         return new(command, file, output, dryRun, optimization, source, jobs, formattingCheck, stdout, syntax, configPath, noConfig, overrides, tracePath, telemetryDatabase, noTelemetry)

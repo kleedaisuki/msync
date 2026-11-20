@@ -370,15 +370,19 @@ and [research status](RESEARCH.md) for the contracts and remaining work.
 
 ```sh
 msync check sync.msync
-msync compile sync.msync --emit hir -o sync.mhir
-msync disassemble sync.mhir --json
-msync compile sync.mhir -O1 -o sync.mso
-msync compile sync.msync -O1 -o sync.mso
-msync bind-ir sync.mso -o sync.mexe
-msync plan-ir sync.mexe
+msync run sync.msync
+msync compile sync.msync             # saves sync.mso
 msync run sync.mso
-msync run-ir sync.mexe
+msync compile sync.msync --prepare   # saves sync.mexe directly
+msync run sync.mexe
 ```
+
+Plain `compile` pays the compilation cost up front without capturing the
+execution environment. `--prepare` also does contextual preparation, which
+may freeze resolved file selections. By default the artifact is saved beside
+the input; use `-o FILE` to choose its path or `-o -` for binary stdout.
+For compiler tooling, `compile FILE --emit hir` saves `.mhir`; use
+`disassemble FILE` to inspect an artifact.
 
 Semantic analysis resolves declarations, types, storage constraints, captures,
 call targets and evaluation policy before native IR generation. `Compiler.Analyze`

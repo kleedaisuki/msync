@@ -96,6 +96,24 @@ internal static class NativeCommandPipeline
     private static BindingContext CaptureContext(ExecutionOptions options, string? sourceFile) =>
         new(Path.GetFullPath(options.WorkingDirectory ?? Environment.CurrentDirectory), HostContext.HomeDirectory, sourceFile);
 
+    internal static void Export(NativeProgram program, CompileOutput output, CommandOptions options, string file, bool binary,
+        TelemetrySession? telemetry, string color, SourceSnapshot? snapshot)
+    {
+        telemetry?.SetAttribute("optimization.level", program.OptimizationLevel.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        if (program.Stage == ArtifactStage.Executable)
+            throw new ArgumentException("Cannot compile an already prepared program. Run it directly, or compile the original source or portable artifact.");
+        if (output.Emission == CompileEmission.Prepared)
+        {
+            using var cancellation = new ConsoleCancellation();
+            string? sourceFile = BindingSource(options, file, binary);
+            program = Bind(program, sourceFile, telemetry,
+                RuntimeOptions(options, sourceFile, null, color, snapshot), cancellation.Token, inlineExecutable: true);
+            cancellation.Token.ThrowIfCancellationRequested();
+        }
+        Write(program, output.Path, telemetry);
+        output.Report();
+    }
+
     internal static async Task<int> Run(NativeProgram program, CommandOptions options, string file, bool binary,
         TelemetrySession? telemetry, string color, SourceSnapshot? snapshot, TextReader? input)
     {
@@ -105,31 +123,47 @@ internal static class NativeCommandPipeline
             Console.WriteLine($"{file}: valid");
             return 0;
         }
-        if (options.Command is "compile" or "emit-ir")
+        if (options.Command == "emit-ir")
         {
             if (options.Output is { } output) Write(program, output, telemetry);
             else Print(program, color);
             return 0;
         }
-        using CancellationTokenSource cancellation = new();
-        ConsoleCancelEventHandler cancel = (_, e) => { e.Cancel = true; cancellation.Cancel(); };
-        Console.CancelKeyPress += cancel;
-        try
+        using var cancellation = new ConsoleCancellation();
+        string? sourceFile = BindingSource(options, file, binary);
+        program = Bind(program, sourceFile, telemetry,
+            RuntimeOptions(options, sourceFile, null, color, snapshot, input), cancellation.Token,
+            inlineExecutable: options.Command == "bind-ir");
+        if (options.Command == "bind-ir")
         {
-            string? sourceFile = options.SourceFile is { } requested ? Path.GetFullPath(requested)
-                : binary || file == "-" ? null : Path.GetFullPath(file);
-            program = Bind(program, sourceFile, telemetry,
-                RuntimeOptions(options, sourceFile, null, color, snapshot, input), cancellation.Token,
-                inlineExecutable: options.Command == "bind-ir");
-            if (options.Command == "bind-ir")
-            {
-                Write(program, options.Output ?? Path.ChangeExtension(file, ".mexe"), telemetry);
-                return 0;
-            }
-            if (options.Command is "plan" or "plan-ir") { Print(program, color); return 0; }
-            return await Execute(program, options, sourceFile, telemetry, color, snapshot, input, cancellation.Token);
+            Write(program, options.Output ?? Path.ChangeExtension(file, ".mexe"), telemetry);
+            return 0;
         }
-        finally { Console.CancelKeyPress -= cancel; }
+        if (options.Command is "plan" or "plan-ir") { Print(program, color); return 0; }
+        return await Execute(program, options, sourceFile, telemetry, color, snapshot, input, cancellation.Token);
+    }
+
+    private static string? BindingSource(CommandOptions options, string file, bool binary) =>
+        options.SourceFile is { } requested ? Path.GetFullPath(requested)
+            : binary || file == "-" ? null : Path.GetFullPath(file);
+
+    private sealed class ConsoleCancellation : IDisposable
+    {
+        private readonly CancellationTokenSource source = new();
+        internal ConsoleCancellation() => Console.CancelKeyPress += Cancel;
+        internal CancellationToken Token => source.Token;
+
+        private void Cancel(object? sender, ConsoleCancelEventArgs args)
+        {
+            args.Cancel = true;
+            source.Cancel();
+        }
+
+        public void Dispose()
+        {
+            Console.CancelKeyPress -= Cancel;
+            source.Dispose();
+        }
     }
 
     private static async Task<int> Execute(NativeProgram program, CommandOptions options, string? sourceFile,

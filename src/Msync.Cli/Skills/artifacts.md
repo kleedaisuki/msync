@@ -1,4 +1,4 @@
-# Relocatable and executable artifacts
+# Save and run compiled programs
 
 `.msync` is source, `.mso` is typed relocatable native IR, and `.mexe` is
 contextual executable IR. Both binary stages can be submitted without the
@@ -6,15 +6,15 @@ original source. Binding prepares concrete I/O graphs from the selected context;
 it never serializes live credentials.
 
 ```sh
-msync compile job.msync -o job.mso
-msync run-ir job.mso
-msync bind-ir job.mso -o job.mexe
-msync run-ir job.mexe
+msync compile job.msync
+msync run job.mso
+msync compile job.msync --prepare
+msync run job.mexe
 msync disassemble job.mexe
 ```
 
 A relocatable `.mso` selects runtime context when loaded. A `.mexe` captures
-working-directory, home and optional source-file context during `bind-ir`;
+working-directory, home and optional source-file context during preparation;
 its paths do not silently rebase when the launch directory later changes.
 Use `--source-file PATH` when an explicit source-relative context is needed.
 
@@ -24,8 +24,8 @@ concrete operations and dependencies. Its observations may cease to match the
 environment immediately; the artifact makes no validity or repeatability
 promise. The VM attempts the operations it receives and reports their actual
 failures. It does not compare environment snapshots, check plan freshness or
-automatically rebuild an expired plan. Repeating `run-ir` retries the same
-prepared operations; use `bind-ir` again to prepare a different selection.
+automatically rebuild an expired plan. Repeating `run` on a `.mexe` retries the same
+prepared operations; compile with `--prepare` again to refresh selections.
 
 Select optimization according to compilation latency and expected reuse:
 

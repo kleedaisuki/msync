@@ -84,6 +84,12 @@ internal static class Program
             if (options.Command == "doctor") return Complete(Doctor(), telemetry);
             string file = options.File ?? throw new ArgumentException("A source or artifact filename is required; use --help for commands.");
             if (options.Command == "fmt") return Complete(Format(file, options), telemetry);
+            CompileOutput? export = options.Command == "compile" ? CompileOutput.Resolve(file, options) : null;
+            if (export is { } selected)
+            {
+                telemetry?.SetAttribute("artifact.export_kind", selected.Kind);
+                telemetry?.SetAttribute("artifact.output_mode", selected.Path == "-" ? "stdout" : selected.Announce ? "default" : "explicit");
+            }
             bool hirInput = HirCommands.IsArtifact(file);
             bool binary = hirInput || IsArtifact(file);
             telemetry?.SetAttribute("input.kind", binary ? InputKind(file) : "source");
@@ -101,13 +107,23 @@ internal static class Program
                 if (binary && !hirInput)
                     throw new ArgumentException("Typed HIR cannot be reconstructed from lowered bytecode. Compile the original .msync source with '--emit hir'.");
                 HirModule semantic = semanticInput ?? Analyze(source!, file, telemetry);
-                if (options.Output is { } output) WriteHir(semantic, output, telemetry);
+                if (export is { } hir)
+                {
+                    WriteHir(semantic, hir.Path, telemetry);
+                    hir.Report();
+                }
+                else if (options.Output is { } output) WriteHir(semantic, output, telemetry);
                 else HirCommands.Print(semantic, color);
                 return Complete(0, telemetry);
             }
             NativeProgram program = !binary || semanticInput is not null
                 ? NativeCommandPipeline.Compile(source, file, semanticInput, options.Optimization, telemetry)
                 : NativeCommandPipeline.Read(file, telemetry);
+            if (export is { } nativeExport)
+            {
+                NativeCommandPipeline.Export(program, nativeExport, options, file, binary, telemetry, color, snapshot);
+                return Complete(0, telemetry);
+            }
             return Complete(await NativeCommandPipeline.Run(program, options, file, binary,
                 telemetry, color, snapshot, input), telemetry);
         }

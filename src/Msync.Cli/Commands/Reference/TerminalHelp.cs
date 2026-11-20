@@ -35,11 +35,8 @@ internal static class TerminalHelp
         Heading("COMMANDS", color);
         Row("run FILE", "Execute .msync, .mhir, .mso, or .mexe", color);
         Row("check FILE", "Check syntax and types without effects", color);
-        Row("compile FILE -o FILE.mso", "Compile relocatable binary bytecode", color);
-        Row("compile FILE --emit hir", "Export typed semantic HIR before bytecode lowering", color);
-        Row("bind-ir FILE -o FILE.mexe", "Prepare contextual I/O execution plans", color);
-        Row("run-ir FILE", "Execute bytecode without source", color);
-        Row("plan FILE", "Inspect typed bytecode and basic blocks", color);
+        Row("compile FILE [--prepare]", "Save a program for later; --prepare also saves contextual work", color);
+        Row("plan FILE", "Prepare or inspect an execution plan without transfer writes", color);
         Row("disassemble FILE [--json]", "Read binary IR without executing it", color);
         Row("fmt FILE", "Format in place, targeting 80 columns", color);
         Row("repl", "Edit and evaluate interactively", color);
@@ -49,8 +46,7 @@ internal static class TerminalHelp
         Row("help [COMMAND|syntax]", "Read command details or the language guide", color);
         Console.WriteLine();
         Heading("OPTIONS", color);
-        Row("-o, --output FILE", "Write compiled output; '-' is binary stdout", color);
-        Row("--emit hir|bytecode", "With compile: select the exported stage", color);
+        Row("-o, --output FILE", "Override the compiled filename; '-' is binary stdout", color);
         Row("-n, --dry-run", "Inspect work without changing files", color);
         Row("-O0, -O1, -O2, -O3", "Select optimization level (default: O2)", color);
         Row("--source-file FILE", "Set source identity when binding", color);
@@ -221,7 +217,7 @@ internal static class TerminalHelp
         ["skill"] = new("browse the built-in reference", "skill [TOPIC ...]", ["Start with 'msync skill' for a compact topic index, then follow a topic path\nfor focused language and tooling details. Output is Markdown when redirected.", "Reading the reference does not execute code or initialize telemetry."], ["msync skill", "msync skill language functions"]),
         ["run"] = new("execute source or compiled IR", "[run] FILE [-n] [--jobs N]", ["Accepts .msync source, typed .mhir, relocatable .mso, or bound .mexe.\nUse '-' to read source from standard input. Ctrl+C cancels active work.", "A self-contained .mhir is lowered without parsing its original source.\nA failed transfer leaves completed files in place; fix the cause and retry.\n--dry-run previews selected work without modifying transfer targets."], ["msync --dry-run sync.msync", "msync sync.mhir"]),
         ["check"] = new("check syntax and inferred types", "check FILE [-O0|-O1|-O2|-O3]", ["Checks the program without running user effects or connecting to endpoints.\nGeneric functions are checked for their selected argument specializations."], ["msync check sync.msync", "msync --color always check sync.msync"]),
-        ["compile"] = new("export typed HIR or relocatable bytecode", "compile FILE [--emit hir|bytecode] [-o OUTPUT] [-O0|-O1|-O2|-O3]", ["Compilation binds names, infers types and checks semantic constraints before\nbytecode lowering. '--emit hir' exports that semantic program as .mhir; an\noutput ending in .mhir selects HIR unless --emit explicitly says otherwise.", "The default .mso output is optimized relocatable bytecode. A .mhir input\nlowers without the original source or another semantic binding pass. HIR\nexport does not execute effects, bind paths or authenticate endpoints.", "Without -o, print the selected representation. '-o -' writes only binary\noutput to stdout, with diagnostics on stderr."], ["msync compile sync.msync --emit hir -o sync.mhir", "msync compile sync.mhir -o sync.mso", "msync run-ir sync.mso"]),
+        ["compile"] = new("save a program for later execution", "compile FILE [--prepare | --emit hir|bytecode] [-o OUTPUT] [-O0|-O1|-O2|-O3]", ["By default, save a portable .mso beside the input. 'msync run' executes it\nwithout the original source and prepares against the runtime environment.", "--prepare saves a .mexe directly, without an intermediate .mso. Preparation\nmay observe the environment and freeze resolved selections, but does not\nperform transfer writes. It does not guarantee those observations stay valid.", "--emit hir saves typed semantic HIR as .mhir. Use disassemble to inspect an\nartifact. An output filename does not select the compilation mode.", "Use -o FILE to override the filename; stdin input requires -o. Use -o -\nfor binary stdout with no status text."], ["msync compile sync.msync", "msync run sync.mso", "msync compile sync.msync --prepare", "msync run sync.mexe"]),
         ["bind-ir"] = new("prepare contextual execution plans", "bind-ir FILE.mso [-o FILE.mexe] [--source-file FILE]", ["Captures cwd, home and optional source identity; discovers filesystem kinds\nand expands known selections into concrete I/O graphs without transfer writes.", "A .mexe can be inspected and resubmitted, but is not guaranteed valid in a\nchanged environment. The VM attempts its operations and reports actual errors;\nit does not check freshness or automatically rebuild the plan.", "No live credentials are stored. Without -o, writes beside the input using\nthe .mexe extension."], ["msync bind-ir sync.mso -o sync.mexe", "msync run-ir sync.mexe"]),
         ["run-ir"] = new("execute compiled IR", "run-ir FILE.mso|FILE.mexe [-n]", ["Executes typed binary IR, not embedded source. A relocatable .mso uses the\ncurrent context; a .mexe retries its prepared operations without rebinding\nor checking whether its observations still match the environment."], ["msync run-ir sync.mso", "msync --dry-run run-ir sync.mexe"]),
         ["plan"] = new("prepare or inspect execution graphs", "plan FILE", ["For source or .mso, prepares contextual I/O graphs and prints operations,\nresource dependencies, batches and eliminated writes. Planning may read the\nselected filesystem but does not execute transfer writes.", "For .mexe, prints the stored plan without refreshing it. Use disassemble\nfor passive inspection of any artifact."], ["msync plan sync.msync", "msync plan sync.mexe"]),

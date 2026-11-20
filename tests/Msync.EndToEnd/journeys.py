@@ -4,16 +4,19 @@
 from __future__ import annotations
 
 import argparse
+import json
+import sqlite3
 import subprocess
 import tempfile
 from collections.abc import Sequence
+from contextlib import closing
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def invoke(
-    binary: Path, arguments: Sequence[str], cwd: Path
+    binary: Path, arguments: Sequence[str], cwd: Path, *, code: int = 0
 ) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         [str(binary), "--no-config", *arguments],
@@ -24,8 +27,90 @@ def invoke(
         encoding="utf-8",
         timeout=30,
     )
-    assert result.returncode == 0, (arguments, result.stdout, result.stderr)
+    assert result.returncode == code, (arguments, result.stdout, result.stderr)
     return result
+
+
+def compile_exports(binary: Path, cwd: Path) -> None:
+    cwd.mkdir()
+    help_text = invoke(binary, ["--color", "never", "--help"], cwd).stdout
+    assert "compile FILE [--prepare]" in help_text
+    assert "bind-ir" not in help_text and "run-ir" not in help_text
+    inputs = cwd / "inputs"
+    inputs.mkdir()
+    (inputs / "first.pick").write_text("first", encoding="utf-8")
+    source = cwd / "sync.msync"
+    source.write_text(r"./inputs/<.+\.pick> -> ./output/;" + "\n", encoding="utf-8")
+    result = invoke(
+        binary,
+        ["--telemetry-db", "prepare.sqlite", "compile", source.name, "--prepare"],
+        cwd,
+    )
+    assert result.stdout == "Wrote sync.mexe (prepared program).\n"
+    assert not (cwd / "sync.mso").exists()
+    assert not (cwd / "output").exists(), "Preparing an artifact ran a transfer"
+    with closing(sqlite3.connect(str(cwd / "prepare.sqlite"))) as db:
+        phases = {name for (name,) in db.execute("SELECT name FROM spans")}
+        assert {"prepare", "artifact.write"} <= phases
+        assert not {"runtime", "execute"} & phases
+        values = set(db.execute("SELECT key, value FROM attributes"))
+        assert ("artifact.export_kind", "executable") in values
+        assert ("artifact.output_mode", "default") in values
+
+    result = invoke(binary, ["compile", source.name], cwd)
+    assert result.stdout == "Wrote sync.mso (portable program).\n"
+    result = invoke(binary, ["compile", source.name, "--emit", "hir"], cwd)
+    assert result.stdout == "Wrote sync.mhir (typed HIR).\n"
+    assert (cwd / "sync.mhir").is_file()
+    assert not (cwd / "output").exists()
+    (cwd / "wrong-stage.mso").write_bytes((cwd / "sync.mexe").read_bytes())
+    for args, guidance in (
+        (["compile", source.name, "-o", "unexpected.mexe"], "--prepare"),
+        (["compile", source.name, "-o", "unexpected.mhir"], "--emit hir"),
+        (["compile", source.name, "--prepare", "--emit", "hir"], "not both"),
+        (["compile", "sync.mexe", "-o", "unexpected.mso"], "already prepared"),
+        (
+            ["compile", "wrong-stage.mso", "--prepare", "-o", "unexpected.mexe"],
+            "already prepared",
+        ),
+        (["compile", "sync.mso"], "overwrite its input"),
+        (["compile", "-"], "requires '-o"),
+    ):
+        assert guidance in invoke(binary, args, cwd, code=1).stderr
+    assert not list(cwd.glob("unexpected.*"))
+
+    for flags, stage in (([], "Relocatable"), (["--prepare"], "Executable")):
+        compiled = subprocess.run(
+            [str(binary), "--no-config", "compile", source.name, *flags, "-o", "-"],
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        assert compiled.stdout.startswith(b"MSYNCIR\0")
+        viewed = subprocess.run(
+            [str(binary), "--no-config", "disassemble", "-", "--json"],
+            cwd=cwd,
+            input=compiled.stdout,
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        assert json.loads(viewed.stdout)["stage"] == stage
+
+    source.unlink()
+    (inputs / "later.pick").write_text("later", encoding="utf-8")
+    invoke(binary, ["run", "sync.mexe"], cwd)
+    output = cwd / "output"
+    assert {f.name: f.read_text(encoding="utf-8") for f in output.iterdir()} == {
+        "first.pick": "first"
+    }
+    invoke(binary, ["run", "sync.mso"], cwd)
+    assert {f.name: f.read_text(encoding="utf-8") for f in output.iterdir()} == {
+        "first.pick": "first",
+        "later.pick": "later",
+    }
+    print("PASS: default export, direct prepare, source-free run, and binary stdout")
 
 
 def repl(binary: Path, cwd: Path) -> None:
@@ -81,32 +166,26 @@ def run(binary: Path, cwd: Path) -> None:
     assert literal.read_bytes() == first
     invoke(binary, ["run", str(literal)], cwd)
     assert (cwd / "formatted.txt").read_text() == "  first  \n second \\n "
-    artifact = subprocess.run(
-        [str(binary), "--no-config", "compile", str(source), "-o", "-"],
-        cwd=cwd,
-        check=True,
-        capture_output=True,
-        timeout=30,
-    )
-    # Binary stdout framing applies to both native IR and historical bytecode images.
-    assert artifact.stdout.startswith((b"MSYNCIR\0", b"MSYNCBC\0")), (
-        "Binary stdout contains text or a banner"
-    )
+    compile_exports(binary, cwd / "exports")
     repl(binary, cwd)
     print(
-        "PASS: global options, scope functions, lossless formatting, binary stdout, persistent non-replaying REPL"
+        "PASS: global options, scope functions, lossless formatting, persistent non-replaying REPL"
     )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
+    parser.add_argument("--export-only", action="store_true")
     args = parser.parse_args()
     temporary = ROOT / ".temp"
     temporary.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="cli-journeys-", dir=temporary) as name:
         directory = Path(name)
-        run(args.binary.resolve(), directory)
+        if args.export_only:
+            compile_exports(args.binary.resolve(), directory / "exports")
+        else:
+            run(args.binary.resolve(), directory)
 
 
 if __name__ == "__main__":

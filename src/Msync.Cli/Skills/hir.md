@@ -8,12 +8,12 @@ It has no VM stack slots or branch offsets.
 ## Export before lowering
 
 ```text
-msync compile sync.msync --emit hir -o sync.mhir
+msync compile sync.msync --emit hir
 ```
 
-The output extension `.mhir` selects HIR when `--emit` is absent. Explicit
-`--emit bytecode` selects the existing relocatable bytecode stage. Without `-o`,
-the command prints the selected representation; `-o -` emits binary stdout.
+The command saves `sync.mhir` beside the input. Select HIR with `--emit hir`,
+not with the output filename. Use `-o FILE` to choose a path or `-o -` for
+binary stdout. Use `disassemble` to print a human-readable representation.
 Compilation does not execute source effects or authenticate remote endpoints.
 
 ## Inspect without execution
@@ -31,8 +31,8 @@ read-only navigation and refresh behavior as the other compiled artifact stages.
 ## Continue from the semantic file
 
 ```text
-msync compile sync.mhir -O2 -o sync.mso
-msync bind-ir sync.mhir -o sync.mexe
+msync compile sync.mhir -O2
+msync compile sync.mhir --prepare
 msync run sync.mhir
 ```
 
