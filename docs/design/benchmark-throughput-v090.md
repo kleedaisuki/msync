@@ -44,12 +44,11 @@ not shipped in the source commit.
 
 ## Measurement contract
 
-The default suite includes the `throughput` group, measuring a population of
+The opt-in `--group throughput` diagnostic measures a population of
 independent native CLI processes, not parallel execution inside one VM and not
-an open-loop server. Its default concurrency sweep is 1/4/12/24 workers.
-The six existing latency groups retain their serial measurement boundaries.
-Explicit `--group` selection overrides the default suite: `--group throughput`
-runs only throughput; `--group cli` runs only CLI latency.
+an open-loop server. It was formerly in the default suite; it is not a product
+score. Its default concurrency sweep is 1/4/12/24 workers. The six default
+groups remain serial.
 Default throughput workloads are numeric records, the bounded sensor pipeline,
 and manifest-driven local copies; select other existing corpus cases explicitly.
 

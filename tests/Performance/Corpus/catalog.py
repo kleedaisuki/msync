@@ -3,22 +3,22 @@
 from __future__ import annotations
 
 CORE_CASES: tuple[str, ...] = (
-    "polygon-queries",
+    "set-dedup",
     "signal-hysteresis",
     "numeric-record-stream",
-    "set-dedup",
-    "bplus-inventory",
-    "heap-scheduler",
     "bounded-sensor-pipeline",
     "live-policy-dispatch",
     "unicode-path-manifest",
-    "local-manifest-copy",
-    "local-range-copy",
 )
 
 DIAGNOSTIC_CASES: tuple[str, ...] = (
+    "bplus-inventory",
+    "heap-scheduler",
+    "polygon-queries",
     "band-classification",
     "segment-screening",
     "literal-segment-parity",
     "ordered-calibration",
+    "local-manifest-copy",
+    "local-range-copy",
 )

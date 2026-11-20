@@ -485,6 +485,7 @@ def run(
             "shared_artifact": args.same_artifact,
             "scales": scales,
             "seeds": seeds,
+            "distribution": getattr(args, "distribution", "reference"),
             "msync_jit": os.environ.get("MSYNC_JIT", "auto"),
         },
     }
@@ -496,15 +497,32 @@ def run(
         variant.name: payload(variant.binary.parent) for variant in variants
     }
     try:
-        for case in selected:
+        distribution: str = getattr(args, "distribution", "reference")
+        scenarios = [
+            (case, "reference", "", case.generate)
+            for case in selected
+            if distribution != "contrast"
+        ]
+        if distribution != "reference":
+            scenarios.extend(
+                (case, label, label + "/", generate)
+                for case in selected
+                if case.contrast is not None
+                for label, generate in (case.contrast,)
+            )
+        if not scenarios:
+            raise ValueError(
+                "The selected workloads do not have a contrast distribution"
+            )
+        for case, label, prefix, generate in scenarios:
             for scale in scales:
                 numerator, denominator = SCALES[scale]
                 size: int = max(1, case.default_size * numerator // denominator)
                 for phase, seed in enumerate(seeds):
-                    current = f"{case.name}/{scale}/{seed}"
+                    current = f"{case.name}/{prefix}{scale}/{seed}"
                     work: Path = directory / current
                     work.mkdir(parents=True)
-                    fixture: Fixture = case.generate(work, size, seed)
+                    fixture: Fixture = generate(work, size, seed)
                     stdin: bytes = fixture.stdin.encode("utf-8")
                     (work / "stdin.utf8").write_bytes(stdin)
                     (work / "expected.utf8").write_bytes(fixture.stdout.encode("utf-8"))
@@ -520,6 +538,8 @@ def run(
                         "scale": scale,
                         "size": size,
                         "seed": seed,
+                        "distribution": label,
+                        "input_characteristics": fixture.distribution,
                         "manifest": manifest(work, fixture, stdin),
                         "routes": {},
                     }
@@ -592,6 +612,9 @@ def main() -> None:
     )
     parser.add_argument("--scale", action="append", choices=SCALES)
     parser.add_argument("--seed", action="append", type=int)
+    parser.add_argument(
+        "--distribution", choices=("reference", "contrast", "both"), default="reference"
+    )
     parser.add_argument("--pairs", type=int, default=5)
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument(
@@ -609,7 +632,7 @@ def main() -> None:
     parser.add_argument(
         "--include-diagnostics",
         action="store_true",
-        help="Include optimizer-shaped controls as well as the core application corpus",
+        help="Include explicitly retained engineering diagnostics as well as the core corpus",
     )
     args: argparse.Namespace = parser.parse_args()
     selected: tuple[Case, ...] = tuple(
@@ -627,9 +650,10 @@ def main() -> None:
     )
     if args.list:
         for case in selected:
+            contrast = f" [contrast: {case.contrast[0]}]" if case.contrast else ""
             print(
                 f"{case.name:28} {'diagnostic' if case.name in DIAGNOSTIC_CASES else 'core':10} "
-                f"{case.family:16} {case.default_size:6}  {case.description}"
+                f"{case.family:16} {case.default_size:6}  {case.description}{contrast}"
             )
         return
     if (

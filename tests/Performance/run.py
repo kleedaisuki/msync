@@ -20,19 +20,22 @@ from typing import Any
 
 from Corpus.catalog import CORE_CASES, DIAGNOSTIC_CASES
 from journeys import Image, freeze
+from sync_journey import PROFILES as IO_PROFILES
+from sync_journey import TRANSPORTS as IO_TRANSPORTS
 
 ROOT: Path = Path(__file__).resolve().parents[2]
 HERE: Path = Path(__file__).resolve().parent
 LOGGER: logging.Logger = logging.getLogger(__name__)
 GROUPS: dict[str, str] = {
     "cli": "Fresh CLI startup, check, ordinary file and many-small-file copy",
-    "io": "64 MiB ordinary-file replacement from source and portable object",
+    "io": "First deploy and redeploy of three tree distributions; local or SSH",
     "applications": "Mixed application corpus with independent result/file oracles",
     "interactive": "Persistent REPL and real stdio LSP requests, including edits",
     "editor": "Fresh-process typed editor journey and moderate-document edit bursts",
     "session": "Actual colored PTY: fixed-state and growing-export session age",
-    "throughput": "Concurrent application processes, bounded 12 CPU / 24 GiB, detailed SQLite",
+    "throughput": "Opt-in independent-process saturation diagnostic, not a product metric",
 }
+DEFAULT_GROUPS: tuple[str, ...] = tuple(name for name in GROUPS if name != "throughput")
 CLI_CASES: tuple[str, ...] = (
     "startup",
     "check-small",
@@ -72,6 +75,9 @@ class Configuration:
     jit: str
     concurrency: tuple[int, ...] = ()
     requests: int = 48
+    distribution: str = "both"
+    io_profiles: tuple[str, ...] = IO_PROFILES
+    io_transports: tuple[str, ...] = ("local",)
 
 
 @dataclass(frozen=True)
@@ -117,6 +123,13 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--workload", choices=(*CORE_CASES, *DIAGNOSTIC_CASES), action="append"
     )
+    result.add_argument(
+        "--distribution",
+        choices=("reference", "contrast", "both"),
+        help="Application input shape (default: both; explicit workloads: reference)",
+    )
+    result.add_argument("--io-profile", choices=IO_PROFILES, action="append")
+    result.add_argument("--io-transport", choices=IO_TRANSPORTS, action="append")
     result.add_argument(
         "--concurrency",
         type=positive,
@@ -182,7 +195,7 @@ def configuration(arguments: argparse.Namespace) -> Configuration:
         if arguments.baseline is not None
         else None,
         work,
-        tuple(dict.fromkeys(arguments.group or GROUPS)),
+        tuple(dict.fromkeys(arguments.group or DEFAULT_GROUPS)),
         arguments.samples,
         arguments.warmups,
         tuple(dict.fromkeys(arguments.seed or (17,))),
@@ -196,6 +209,9 @@ def configuration(arguments: argparse.Namespace) -> Configuration:
         arguments.jit,
         tuple(dict.fromkeys(arguments.concurrency or ())),
         arguments.requests,
+        arguments.distribution or ("reference" if arguments.workload else "both"),
+        tuple(dict.fromkeys(arguments.io_profile or IO_PROFILES)),
+        tuple(dict.fromkeys(arguments.io_transport or ("local",))),
     )
 
 
@@ -227,13 +243,7 @@ def commands(
         "--warmups",
         str(config.warmups),
     )
-    if group in {"cli", "io"}:
-        cases: tuple[str, ...] = (
-            CLI_CASES if group == "cli" else ("copy-file-source", "copy-file-object")
-        )
-        sizes: tuple[str, ...] = (
-            () if group == "cli" else ("--file-bytes", str(64 * 1024 * 1024))
-        )
+    if group == "cli":
         return (
             command(
                 group,
@@ -241,10 +251,34 @@ def commands(
                 (
                     *native_arguments(images),
                     *measurements,
-                    *selected_cases(cases),
-                    *sizes,
+                    *selected_cases(CLI_CASES),
                     "--output",
                     str(receipt),
+                ),
+                receipt,
+            ),
+        )
+    if group == "io":
+        return (
+            command(
+                group,
+                "sync_journey.py",
+                (
+                    *native_arguments(images),
+                    *measurements,
+                    *(
+                        part
+                        for profile in config.io_profiles
+                        for part in ("--profile", profile)
+                    ),
+                    *(
+                        part
+                        for transport in config.io_transports
+                        for part in ("--transport", transport)
+                    ),
+                    *(part for seed in config.seeds for part in ("--seed", str(seed))),
+                    "--work",
+                    str(directory),
                 ),
                 receipt,
             ),
@@ -329,6 +363,8 @@ def commands(
                     str(config.samples),
                     "--warmups",
                     str(config.warmups),
+                    "--distribution",
+                    config.distribution,
                     "--scale",
                     config.scale,
                     "--route",
@@ -388,6 +424,7 @@ def harness_manifest() -> dict[str, str]:
         ROOT / "tests/Msync.EndToEnd" / name
         for name in ("lsp_latency.py", "lsp_response_journey.py", "terminal_journey.py")
     )
+    sources.add(ROOT / "tests/support/ssh_fixture.py")
     return {
         path.relative_to(ROOT).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in sorted(sources)
@@ -575,6 +612,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
     if values.list:
         for name, description in GROUPS.items():
             print(f"{name:14s} {description}")
+        print(
+            "\nDefault I/O profiles (local; select SSH with --io-transport):\n  "
+            + "\n  ".join(IO_PROFILES)
+        )
         print("\nDefault application workloads:\n  " + "\n  ".join(CORE_CASES))
         print(
             "\nOptional diagnostic workloads (not a general performance score):\n  "

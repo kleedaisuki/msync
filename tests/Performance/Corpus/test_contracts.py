@@ -26,6 +26,10 @@ class CorpusContracts(unittest.TestCase):
         self.assertEqual(len(names), len(set(names)))
         self.assertFalse(set(CORE_CASES) & set(DIAGNOSTIC_CASES))
         self.assertEqual(set(names), set(CORE_CASES) | set(DIAGNOSTIC_CASES))
+        self.assertEqual(
+            {case.name for case in corpus.CASES if case.contrast is not None},
+            set(CORE_CASES),
+        )
 
     def test_current_sources_do_not_use_retired_allocator_builtins(self) -> None:
         temporary: Path = ROOT / ".temp"

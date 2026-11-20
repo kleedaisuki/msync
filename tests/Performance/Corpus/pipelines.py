@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from itertools import pairwise
 from pathlib import Path
 from random import Random
@@ -37,17 +38,26 @@ if header? {
 """
 
 
-def stream(directory: Path, size: int, seed: int) -> Fixture:
+def stream(directory: Path, size: int, seed: int, *, reject: int = 2) -> Fixture:
     rng: Random = Random(seed)
     value: int = rng.randrange(250)
     readings: list[int] = []
-    for i in range(size * 2):
+    for i in range(size * (2 if reject == 2 else 4)):
         if i % 61 == 0:
             value = rng.randrange(250)
         else:
             value = max(0, min(249, value + rng.randrange(-6, 7)))
-        readings.append(-1 if rng.randrange(10) < 2 else value)
+        readings.append(-1 if rng.randrange(10) < reject else value)
+    if reject != 2 and sum(reading >= 0 for reading in readings) < size:
+        readings.extend([value] * (size - sum(reading >= 0 for reading in readings)))
     accepted: list[int] = [reading for reading in readings if reading >= 0][:size]
+    demanded: int = 0
+    valid: int = 0
+    for reading in readings:
+        demanded += 1
+        valid += reading >= 0
+        if valid == size:
+            break
     deltas: list[int] = [current - previous for previous, current in pairwise(accepted)]
     changes: int = sum(abs(delta) > 4 for delta in deltas)
     checksum: int = sum((i % 29 + 1) * delta for i, delta in enumerate(deltas, 1))
@@ -55,6 +65,12 @@ def stream(directory: Path, size: int, seed: int) -> Fixture:
         SOURCE,
         "\n".join(map(str, (size, *readings))) + "\n",
         f"{len(accepted)}\n{changes}\n{checksum}\n",
+        distribution={
+            "supplied_rows": len(readings),
+            "demanded_rows": demanded,
+            "accepted_rows": len(accepted),
+            "rejected_during_demand": demanded - valid,
+        },
     )
 
 
@@ -92,31 +108,44 @@ io::println(checksum as String);
 """
 
 
-def rules(_directory: Path, size: int, seed: int) -> Fixture:
+def rules(_directory: Path, size: int, seed: int, *, skewed: bool = False) -> Fixture:
     rng: Random = Random(seed)
     records: list[int] = []
     bias: int = 7
-    checksum = processed = corrections = 0
+    checksum = processed = corrections = dominant = scaled = updates = 0
     for i in range(size):
         value: int = rng.randrange(1_000)
-        kind: int = 9 if i % 113 == 0 else rng.randrange(9)
+        kind: int = (
+            9
+            if i % 113 == 0
+            else (0 if skewed and rng.randrange(10) < 9 else rng.randrange(9))
+        )
         records.append(10 * value + kind)
         if kind == 9:
             bias = value % 41
+            updates += 1
             continue
         if kind < 5:
             result: int = value + bias
+            dominant += 1
         elif kind < 8:
             result = min(120, value)
             corrections += 1
         else:
             result = value * 3 + 1
+            scaled += 1
         checksum = (checksum * 131 + result) % 1_000_003
         processed += 1
     return Fixture(
         source=RULE_SOURCE,
         stdin="\n".join(map(str, records)) + "\n",
         stdout=f"{processed}\n{corrections}\n{checksum}\n",
+        distribution={
+            "normalize_calls": dominant,
+            "correct_calls": corrections,
+            "scale_calls": scaled,
+            "policy_updates": updates,
+        },
     )
 
 
@@ -128,6 +157,7 @@ def cases() -> tuple[Case, ...]:
             "Parse, filter and take a bounded prefix of a streamed sensor series",
             12_000,
             stream,
+            ("high-rejection", partial(stream, reject=7)),
         ),
         Case(
             "live-policy-dispatch",
@@ -135,5 +165,6 @@ def cases() -> tuple[Case, ...]:
             "Dispatch a mixed rule stream through three live closures and update captured configuration",
             28_000,
             rules,
+            ("dominant-policy", partial(rules, skewed=True)),
         ),
     )

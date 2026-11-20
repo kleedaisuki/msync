@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import posixpath
 import random
+from functools import partial
 from pathlib import Path
 
 from model import Case, Fixture, OutputFile
@@ -111,7 +112,9 @@ def _lines(*values: int) -> str:
     return "".join(f"{value}\n" for value in values)
 
 
-def _unicode_manifest(_directory: Path, size: int, seed: int) -> Fixture:
+def _unicode_manifest(
+    _directory: Path, size: int, seed: int, *, unicode_mix: int = 1
+) -> Fixture:
     rng: random.Random = random.Random(seed)
     rows: list[str] = []
     documents = images = drafts = unicode_names = byte_count = digest = 0
@@ -124,7 +127,7 @@ def _unicode_manifest(_directory: Path, size: int, seed: int) -> Fixture:
             entry = f"./{folder}/batch-{batch:02d}/.gitignore"
         else:
             label: str = rng.choice(
-                _UNICODE_STEMS if rng.randrange(5) == 0 else _ASCII_STEMS
+                _UNICODE_STEMS if rng.randrange(5) < unicode_mix else _ASCII_STEMS
             )
             prefix: str = "draft-" if rng.randrange(6) == 0 else ""
             suffix: str = rng.choice(_EXTENSIONS)
@@ -151,6 +154,11 @@ def _unicode_manifest(_directory: Path, size: int, seed: int) -> Fixture:
         source=_TEXT_PATH_SOURCE,
         stdin="\n".join(rows) + "\n",
         stdout=_lines(documents, images, drafts, unicode_names, byte_count, digest),
+        distribution={
+            "paths": size,
+            "non_ascii_names": unicode_names,
+            "basename_utf8_bytes": byte_count,
+        },
     )
 
 
@@ -246,6 +254,7 @@ def cases() -> tuple[Case, ...]:
             description="Analyze streamed Unicode path names with lexical decomposition, text predicates and scalar/UTF-8 accounting.",
             default_size=65_000,
             generate=_unicode_manifest,
+            contrast=("unicode-heavy", partial(_unicode_manifest, unicode_mix=4)),
         ),
         Case(
             name="local-manifest-copy",

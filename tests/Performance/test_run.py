@@ -113,9 +113,9 @@ class EntrypointTests(unittest.TestCase):
         self.assertNotIn("flat4000", editor.arguments)
         self.assertNotIn("--warmups", editor.arguments)
 
-    def test_throughput_is_enabled_by_default_with_explicit_group_override(self) -> None:
-        self.assertEqual(self.config().groups, tuple(run.GROUPS))
-        self.assertIn("throughput", self.config().groups)
+    def test_throughput_is_explicit_only(self) -> None:
+        self.assertEqual(self.config().groups, run.DEFAULT_GROUPS)
+        self.assertNotIn("throughput", self.config().groups)
         self.assertEqual(self.config("--group", "cli").groups, ("cli",))
         config: run.Configuration = self.config(
             "--group",
@@ -138,6 +138,24 @@ class EntrypointTests(unittest.TestCase):
         self.assertIn("--jit", selected.arguments)
         self.assertNotIn("--candidate", selected.arguments)
         self.assertTrue(selected.arguments[1].endswith("Corpus/throughput.py"))
+
+    def test_io_scenarios_follow_explicit_transport_and_seed(self) -> None:
+        config = self.config(
+            "--group",
+            "io",
+            "--io-profile",
+            "artifact-batch",
+            "--io-transport",
+            "ssh-download",
+            "--seed",
+            "503",
+        )
+        selected = run.commands("io", config, [self.image()])[0]
+        self.assertTrue(selected.arguments[1].endswith("sync_journey.py"))
+        self.assertIn("artifact-batch", selected.arguments)
+        self.assertIn("ssh-download", selected.arguments)
+        self.assertIn("503", selected.arguments)
+        self.assertNotIn("release-v1", selected.arguments)
 
     def test_manifest_covers_generators_and_protocol_helpers(self) -> None:
         manifest: dict[str, str] = run.harness_manifest()

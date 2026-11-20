@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from fractions import Fraction
+from functools import partial
 from itertools import islice
 from math import floor
 from pathlib import Path
@@ -124,10 +125,10 @@ _POLICIES: tuple[tuple[int, int, int], ...] = (
 )
 
 
-def _signal(seed: int, size: int) -> list[int]:
+def _signal(seed: int, size: int, period: int, start: int, end: int) -> list[int]:
     return [
         draw % 101
-        + (96 if 64 <= ordinal % 128 < 96 else 0)
+        + (96 if start <= ordinal % period < end else 0)
         + (54 if draw % 37 == 0 else 0)
         for ordinal, draw in enumerate(islice(_states(seed), size))
     ]
@@ -151,9 +152,17 @@ def _detector(samples: list[int], divisor: int, high: int, low: int) -> tuple[in
     return transitions, exposure
 
 
-def _hysteresis(directory: Path, size: int, seed: int) -> Fixture:
+def _hysteresis(
+    directory: Path,
+    size: int,
+    seed: int,
+    *,
+    period: int = 128,
+    start: int = 64,
+    end: int = 96,
+) -> Fixture:
     del directory
-    samples: list[int] = _signal(seed, size)
+    samples: list[int] = _signal(seed, size, period, start, end)
     expected: str = "".join(
         f"{changes}\n{exposure}\n"
         for changes, exposure in (_detector(samples, *policy) for policy in _POLICIES)
@@ -214,7 +223,19 @@ for ordinal in $std::ranges::iota(0, count) {
         + summaries
         + "\n"
     )
-    return Fixture(source=source, stdin=_stdin(size, seed), stdout=expected)
+    source = source.replace("ordinal % 128", f"ordinal % {period}").replace(
+        "phase >= 64 and phase < 96", f"phase >= {start} and phase < {end}"
+    )
+    return Fixture(
+        source=source,
+        stdin=_stdin(size, seed),
+        stdout=expected,
+        distribution={
+            "burst_period": period,
+            "burst_length": end - start,
+            "detector_transitions": sum(int(n) for n in expected.splitlines()[::2]),
+        },
+    )
 
 
 _NUMERIC_RECORDS = """\
@@ -245,14 +266,16 @@ $std::io::println(checksum as String);
 """
 
 
-def _numeric_records(directory: Path, size: int, seed: int) -> Fixture:
+def _numeric_records(
+    directory: Path, size: int, seed: int, *, sparse: bool = False
+) -> Fixture:
     del directory
     initial: int = seed % (2_147_483_647 - 1) or 1
     state: int = initial
     accepted: list[tuple[int, int]] = []
     for tick in range(size):
         state = state * 48_271 % 2_147_483_647
-        if tick % 7:
+        if (tick % 7 == 0) == sparse:
             lower = state % 4096
             accepted.append((lower, lower + state % 31))
     checksum: int = 0
@@ -260,7 +283,10 @@ def _numeric_records(directory: Path, size: int, seed: int) -> Fixture:
         checksum = (checksum * 65_599 + lower + upper) % 1_000_003
     width: int = sum(upper - lower for lower, upper in accepted)
     return Fixture(
-        source=_NUMERIC_RECORDS,
+        source=_NUMERIC_RECORDS.replace("tick % 7 != 0", "tick % 7 == 0")
+        if sparse
+        else _NUMERIC_RECORDS,
+        distribution={"materialized_rows": size, "selected_rows": len(accepted)},
         stdin=f"{initial}\n{size}\n",
         stdout=f"{len(accepted)}\n{width}\n{checksum}\n",
     )
@@ -553,6 +579,7 @@ def cases() -> tuple[Case, ...]:
             "Three fixed-point EWMA detectors with independent mutable captures",
             65536,
             _hysteresis,
+            ("long-bursts", partial(_hysteresis, period=1024, start=256, end=768)),
         ),
         Case(
             "numeric-record-stream",
@@ -560,6 +587,7 @@ def cases() -> tuple[Case, ...]:
             "Build and consume numeric interval rows with a nonnumeric filter flag",
             32768,
             _numeric_records,
+            ("sparse-selection", partial(_numeric_records, sparse=True)),
         ),
         Case(
             "band-classification",

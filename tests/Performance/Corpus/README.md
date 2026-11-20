@@ -17,27 +17,31 @@ than producing a single weighted score without a real workload distribution.
 
 ## Core applications and explicit diagnostics
 
-The default is eleven applications, not every optimizer experiment. Four
-overlapping geometry/layout motifs (`band-classification`, `segment-screening`,
-`literal-segment-parity`, `ordered-calibration`) remain available through an
-explicit `--case`, `--family compute`, or `--include-diagnostics`; their semantic
-coverage is retained, but they no longer overweight the default scorecard.
-`--list` shows every case with its role. The shared role catalog is
-[`catalog.py`](catalog.py); selection is a starting point, not a workload census.
+The default is six application families. Set is the only collection case.
+The two numeric representatives exercise different mechanisms: stateful
+scalar recurrence and numeric records that are materialized, filtered and
+then reduced. B+, Heap, polygon and the old scan/fold cases stay available as
+engineering diagnostics, not extra votes for a general speedup. The legacy
+copy cases remain explicit controls; the default I/O group owns deployment.
+`--list` shows every case and its role; see [catalog](catalog.py).
 
-| Workload | Standard work | Distinct behaviors | Independent oracle |
-| --- | ---: | --- | --- |
-| `polygon-queries` | 16,384 points × 12 edges | Concave containment, nested iteration, Scope field reads, data-dependent branches | Python rational ray intersection and boundary test |
-| `signal-hysteresis` | 65,536 samples × 3 detectors | Burst/noise stream, fixed-point recurrence, mutable captured state, hysteresis | Independent integer weighted-numerator recurrence |
-| `numeric-record-stream` | 32,768 interval records | Input-dependent Scope construction, materialized Range membership, scalar field reads, ordered checksum | Python exact integer intervals and selected widths |
-| `set-dedup` | 8,192 events + 4,096 queries/expirations | Runtime-fed duplicate-heavy event IDs, mixed hits/misses/removal, snapshot retained across expiration | Python set plus ordered membership checksums and exact operation counts |
-| `bplus-inventory` | 3,072 transactions | Hot/cold reads, updates, deletion, ordered snapshot and live payloads | Python dictionary and ordered traversal |
-| `heap-scheduler` | 4,096 arrivals | Bursts, stable equal-priority ordering, nested Scope payloads, backlog/drain | Python heap and exact lane totals |
-| `bounded-sensor-pipeline` | Up to 12,000 accepted readings | Stdin parse, lazy transform/filter/take, order-sensitive reduction and discarded tail | Python eager selection and adjacent-difference reduction |
-| `live-policy-dispatch` | 28,000 mixed records | Three actual targets at one call site, closure capture updates, skewed dispatch | Python stateful rule evaluation and ordered checksum |
-| `unicode-path-manifest` | 65,000 path records | ASCII/BMP/astral/combining text, extension/stem/filename, mixed lexical predicates and lengths | Python POSIX lexical splitting, Unicode/UTF-8 counters and ordered checksum |
-| `local-manifest-copy` | 144 manifest records | Local metadata, directories and missing sources, overwrite, many small and some medium files | Exact stdout, output path set, negative paths, and SHA-256 of every copied payload |
-| `local-range-copy` | The same 144-record manifest | Materialized finite Path selection, one cohort transfer, flat destination, overwrite | Exact stdout, flattened unique path set, negative paths and SHA-256 of every payload |
+| Default case | Reference shape | Contrast at the same scale | Observed input characteristics |
+| --- | --- | --- | --- |
+| `set-dedup` | Hot duplicate-heavy IDs, 1/4 expiration actions in the generator | `broad-expiring-window`: wider uniform ID space and 1/2 expiration actions | Distinct and duplicate IDs; lookup and expiration hits/misses |
+| `signal-hysteresis` | 32-sample bursts every 128 samples | `long-bursts`: 512-sample bursts every 1,024 samples | Burst width/period and detector transitions |
+| `numeric-record-stream` | Retain six of every seven materialized rows | `sparse-selection`: retain one of every seven | Materialized and selected rows |
+| `bounded-sensor-pipeline` | About 20% rejected readings | `high-rejection`: about 70% rejected, longer input for the same demand | Supplied, demanded, accepted and rejected rows |
+| `live-policy-dispatch` | Mixed call targets (5:3:1 apart from updates) | `dominant-policy`: about 95% normalize calls | Calls per target, configuration updates |
+| `unicode-path-manifest` | 1/5 of ordinary basenames drawn from the Unicode pool | `unicode-heavy`: 4/5 drawn from the Unicode pool | Actual non-ASCII name count and UTF-8 basename bytes |
+
+A shape specifies a generator, not a production probability. Standard size
+and seed are independent axes. The
+[YCSB configuration](https://github.com/brianfrankcooper/YCSB/blob/master/workloads/workload_template)
+is an example of separating population size, key distribution and operation
+mix. Each contrast here keeps the operation and its
+independent oracle; do not pool across shapes to make a generic speedup.
+The legacy reference fixtures are unchanged. The report indexes shape and
+its observed characteristics, in addition to fixture identity and timings.
 
 The copy cases share source distributions, not destination semantics: the
 explicit loop preserves manifest directories, while the cohort targets a flat
@@ -72,7 +76,7 @@ a new comparison rather than treating different source shapes as a speed ratio.
 python3 tests/Performance/Corpus/run.py --list
 python3 tests/Performance/Corpus/run.py \
   --baseline .temp/old/msync --candidate .temp/new/msync \
-  --scale small --scale standard --seed 17 --seed 503 \
+  --distribution both --scale small --scale standard --seed 17 --seed 503 \
   --pairs 5 --warmups 1 --work .temp/workload-corpus
 ```
 
@@ -81,7 +85,9 @@ python3 tests/Performance/Corpus/run.py \
   full matrix. `--scale smoke`, `small`, `standard`, and `stress` are 1/64,
   1/4, 1, and 4 times the case's standard input, rounded down with minimum 1.
   Seeds 17 and 503 are the default development examples; include a different
-  seed and scale when checking a proposed general optimization.
+  seed and scale when checking a proposed general optimization. The direct
+  corpus entry defaults to `--distribution reference` for reproducibility;
+  the suite's unfiltered applications group defaults to `both`.
 - Each product and its adjacent native/managed dependencies are frozen before
   execution, fingerprinted in the report and checked again at completion. A
   concurrent rebuild cannot silently replace a measured image. Object/bound

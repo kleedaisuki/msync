@@ -5,6 +5,7 @@ from __future__ import annotations
 import heapq
 import random
 from collections.abc import Iterator
+from functools import partial
 from pathlib import Path
 
 from model import Case, Fixture
@@ -366,12 +367,14 @@ $std::io::println(checksum(before) as String);
 """
 
 
-def _dedup(_directory: Path, size: int, seed: int) -> Fixture:
+def _dedup(_directory: Path, size: int, seed: int, *, broad: bool = False) -> Fixture:
     generator: random.Random = random.Random(seed)
-    universe: int = max(32, size // 2)
+    universe: int = max(32, size * 4 if broad else size // 2)
     hot: int = max(4, universe // 8)
     events: list[int] = [
-        generator.randrange(hot if generator.randrange(10) < 7 else universe)
+        generator.randrange(
+            hot if generator.randrange(10) < (0 if broad else 7) else universe
+        )
         for _ in range(size)
     ]
     initial: set[int] = set(events)
@@ -381,7 +384,7 @@ def _dedup(_directory: Path, size: int, seed: int) -> Fixture:
     hits = misses = expired = absent = 0
     for _ in range(max(1, size // 2)):
         key: int = generator.randrange(universe + universe // 4)
-        remove: bool = generator.randrange(4) == 0
+        remove: bool = generator.randrange(2 if broad else 4) == 0
         trace.append(key * 2 + int(remove))
         if remove:
             if key in seen:
@@ -405,6 +408,16 @@ def _dedup(_directory: Path, size: int, seed: int) -> Fixture:
             "QUERY_COUNT", str(len(trace))
         ),
         stdin=_lines(tuple(events + trace)),
+        distribution={
+            "event_key_space": universe,
+            "events": size,
+            "distinct_inserts": len(initial),
+            "duplicate_events": size - len(initial),
+            "lookup_hits": hits,
+            "lookup_misses": misses,
+            "expiration_hits": expired,
+            "expiration_misses": absent,
+        },
         stdout=_lines(
             (
                 len(initial),
@@ -430,6 +443,7 @@ def cases() -> tuple[Case, ...]:
             "Runtime-fed event deduplication, membership queries, expiration and retained membership snapshots",
             8_192,
             _dedup,
+            ("broad-expiring-window", partial(_dedup, broad=True)),
         ),
         Case(
             "bplus-inventory",

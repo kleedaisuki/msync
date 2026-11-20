@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -22,6 +22,7 @@ class Fixture:
     outputs: tuple[OutputFile, ...] = ()
     absent: tuple[str, ...] = ()
     output_roots: tuple[str, ...] = ()
+    distribution: dict[str, int | str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -31,3 +32,4 @@ class Case:
     description: str
     default_size: int
     generate: Callable[[Path, int, int], Fixture]
+    contrast: tuple[str, Callable[[Path, int, int], Fixture]] | None = None
