@@ -4,15 +4,12 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
-import io
 import json
 import os
 import platform
 import shlex
 import subprocess
 import sys
-import tarfile
 import tempfile
 import uuid
 from collections.abc import Iterator
@@ -24,7 +21,6 @@ from time import perf_counter_ns
 
 from journeys import Image, freeze
 from sync_journey import (
-    EMPTY,
     SENTINEL,
     STAMP,
     File,
@@ -93,7 +89,16 @@ def owned_peer(work: Path, binary: Path, ssh: Path) -> Iterator[Peer]:
     )
     try:
         subprocess.run(
-            [*command, "apk", "add", "--no-cache", "coreutils", "tar", "openssh"],
+            [
+                *command,
+                "apk",
+                "add",
+                "--no-cache",
+                "coreutils",
+                "findutils",
+                "tar",
+                "openssh",
+            ],
             check=True,
             timeout=180,
         )
@@ -123,31 +128,33 @@ def owned_peer(work: Path, binary: Path, ssh: Path) -> Iterator[Peer]:
 def verify_peer(
     peer: Peer, base: PurePosixPath, files: dict[Path, File], marker: File | None
 ) -> None:
-    payload = peer.shell(
-        "tar", "--format=pax", "-cf", "-", "-C", str(base), "release-tree"
-    )
-    expected = files if marker is None else files | {SENTINEL: marker}
-    observed: dict[Path, tuple[str, int, int]] = {}
-    empty = False
-    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:") as tree:
-        for item in tree:
-            relative = Path(*PurePosixPath(item.name).relative_to("release-tree").parts)
-            if item.isdir():
-                empty |= relative == EMPTY
-                continue
-            if not item.isfile() or relative in observed:
-                raise RuntimeError(f"Unexpected archive member {item.name}")
-            stream = tree.extractfile(item)
-            assert stream is not None
-            with stream:
-                digest = hashlib.file_digest(stream, "sha256").hexdigest()
-            stamp = int(Decimal(item.pax_headers.get("mtime", str(item.mtime))) * 10**9)
-            observed[relative] = (digest, item.size, stamp)
-    assert empty
-    assert observed == {
-        path: (file.sha256, file.bytes, file.mtime_ns)
-        for path, file in expected.items()
+    program = r"""set -eu
+cd "$1/release-tree"
+test -d empty
+find . -type f -printf '%P\0%s\0%T@\0'
+printf '\0'
+find . -type f -exec sha256sum -bz -- {} +
+test -z "$(find . ! -type d ! -type f -print -quit)"
+"""
+    raw = peer.shell("sh", "-c", program, "sh", str(base))
+    entries, hashes = raw.split(b"\0\0", 1)
+    fields = entries.decode("utf-8").split("\0")
+    stat = {
+        Path(name): (int(size), int(Decimal(stamp) * 10**9))
+        for name, size, stamp in zip(
+            fields[::3], fields[1::3], fields[2::3], strict=True
+        )
     }
+    digest = {
+        Path(line[66:].decode("utf-8")): line[:64].decode("ascii")
+        for line in hashes.split(b"\0")
+        if line
+    }
+    expected = files if marker is None else files | {SENTINEL: marker}
+    assert stat == {
+        name: (file.bytes, file.mtime_ns) for name, file in expected.items()
+    }
+    assert digest == {name: file.sha256 for name, file in expected.items()}
 
 
 def round_trip(

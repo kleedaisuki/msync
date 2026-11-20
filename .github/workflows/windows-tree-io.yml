@@ -39,6 +39,37 @@ jobs:
       - name: Measure native Windows OpenSSH against an owned WSL1 receiver
         if: ${{ success() }}
         run: python tests/Performance/windows_tree.py --binary .temp/windows-tree-inputs/current/msync.exe --baseline "$env:MSYNC_BENCH_BASELINE" --work .temp/windows-tree-ssh --wsl --remote-only
+      - name: Measure native Windows OpenSSH against the configured two-host scratch peer
+        if: ${{ !cancelled() }}
+        env:
+          MSYNC_TREE_PEER: ${{ secrets.MSYNC_TREE_BENCH_EPHEMERAL }}
+        run: |
+          if (!$env:MSYNC_TREE_PEER) { Write-Output 'No external scratch peer configured.'; exit 0 }
+          $peer = $env:MSYNC_TREE_PEER | ConvertFrom-Json
+          $path = (New-Item -ItemType Directory -Path .temp/windows-tree-credentials -Force).FullName
+          $utf8 = [Text.UTF8Encoding]::new($false)
+          $key = "$path/id"
+          $known = "$path/known"
+          $config = "$path/config"
+          [IO.File]::WriteAllText($key, $peer.key, $utf8)
+          [IO.File]::WriteAllText($known, $peer.known_hosts, $utf8)
+          icacls.exe $key /inheritance:r /grant:r "$(whoami):(F)"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $keyUnix = $key.Replace('\', '/')
+          $knownUnix = $known.Replace('\', '/')
+          [IO.File]::WriteAllLines($config, @(
+            'Host Perf_Fixture', " HostName $($peer.address)", " Port $($peer.port)",
+            ' User bench', " IdentityFile `"$keyUnix`"", " UserKnownHostsFile `"$knownUnix`"",
+            ' IdentityAgent none', ' IdentitiesOnly yes', ' StrictHostKeyChecking yes',
+            ' BatchMode yes', ' ConnectTimeout 10', ' ConnectionAttempts 1', ' ControlMaster no',
+            ' ControlPath none', ' GlobalKnownHostsFile none', ' LogLevel ERROR'
+          ), $utf8)
+          try {
+            python tests/Performance/windows_tree.py --binary .temp/windows-tree-inputs/current/msync.exe --baseline "$env:MSYNC_BENCH_BASELINE" --work .temp/windows-tree-external --ssh-config $config --remote-root /home/bench --remote-only
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          } finally {
+            Remove-Item -LiteralPath $path -Recurse -Force
+          }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
