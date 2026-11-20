@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.3
+
+- Save a portable program with `compile`, or prepare it directly with `compile --prepare`.
+- Use `run` for source and both artifact formats.
+- Shorten remote SSH publication and overlap staged Linux small-file flushes.
+
+See the [release notes](docs/releases/0.9.3.md).
+
 ## 0.9.2
 
 - Execute eligible repeated fixed guest calls without a per-call host transition.
