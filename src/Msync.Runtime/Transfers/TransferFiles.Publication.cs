@@ -23,6 +23,21 @@ internal static partial class TransferFiles
             pending.Enqueue(file);
         }
 
+        internal void SubmitNativeCopy(string source, string target, long length)
+        {
+            StagedFile file = new("file.copy", source, target, async: false, timeline, nativeCopy: true);
+            try
+            {
+                file.StartNativeCopy(source, length, token);
+                pending.Enqueue(file);
+            }
+            catch (Exception error)
+            {
+                file.Abandon(error);
+                throw;
+            }
+        }
+
         internal void Finish()
         {
             while (pending.Count != 0) PublishNext();
@@ -51,9 +66,10 @@ internal static partial class TransferFiles
         private readonly string target;
         private readonly RuntimeTimeline? timeline;
         private readonly RuntimeTimelineScope? activity;
+        private readonly FileStream? output;
         private Task? sync;
 
-        internal StagedFile(string kind, string? source, string target, bool async, RuntimeTimeline? timeline)
+        internal StagedFile(string kind, string? source, string target, bool async, RuntimeTimeline? timeline, bool nativeCopy = false)
         {
             this.target = target;
             this.timeline = timeline;
@@ -63,9 +79,10 @@ internal static partial class TransferFiles
             using IDisposable? restore = timeline?.Attach(timeline.CurrentSpanId);
             activity = BeginFile(timeline, kind, source, target);
             activity?.SetAttribute("file.publication", "queued");
+            if (nativeCopy) return;
             try
             {
-                Output = new(stage, FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete,
+                output = new(stage, FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete,
                     1, FileOptions.SequentialScan | (async ? FileOptions.Asynchronous : FileOptions.None));
             }
             catch (Exception error)
@@ -76,7 +93,7 @@ internal static partial class TransferFiles
             }
         }
 
-        internal FileStream Output { get; }
+        internal FileStream Output => output!;
         internal string PathOnDisk => stage;
         internal void SetSourceSize(long size)
         {
@@ -88,6 +105,17 @@ internal static partial class TransferFiles
         {
             activity?.SetMetric("bytes.written", Output.Position);
             sync = Task.Run(Sync);
+        }
+
+        internal void StartNativeCopy(string source, long length, CancellationToken token)
+        {
+            activity?.SetMetric("source.size_bytes", length);
+            activity?.SetAttribute("file.backend", "windows_native_copy");
+            sync = Task.Run(() =>
+            {
+                using IDisposable? owner = activity is null ? null : timeline!.Attach(activity.Id);
+                WindowsFileCopy.Copy(source, stage, token, timeline: timeline);
+            });
         }
 
         private void Sync()
@@ -122,11 +150,16 @@ internal static partial class TransferFiles
             {
                 try
                 {
-                    if (sync is null) Output.Dispose();
+                    if (sync is null) output?.Dispose();
                     else sync.GetAwaiter().GetResult();
                 }
                 catch (Exception error) { cause ??= error; }
-                try { File.Delete(stage); }
+                try
+                {
+                    if (OperatingSystem.IsWindows() && output is null && File.Exists(stage))
+                        File.SetAttributes(stage, File.GetAttributes(stage) & ~FileAttributes.ReadOnly);
+                    File.Delete(stage);
+                }
                 catch (Exception error) { cleanup?.Fail(error); cause ??= error; }
             }
             if (cause is not null) activity?.Fail(cause);

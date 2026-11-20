@@ -3,7 +3,7 @@ name: Windows tree I/O benchmark
 on:
   workflow_dispatch:
   push:
-    branches: [codex/windows-tree-io-bench]
+    branches: [codex/windows-tree-io-bench, codex/windows-tree-io-ntfs]
 
 permissions:
   contents: read
@@ -36,11 +36,14 @@ jobs:
         run: |
           Get-Volume -DriveLetter (Get-Location).Drive.Name | Format-List FileSystem,DriveLetter
           python tests/Performance/windows_tree.py --binary .temp/windows-tree-inputs/current/msync.exe --baseline "$env:MSYNC_BENCH_BASELINE" --work .temp/windows-tree-local
+      - name: Check native Windows queued publication metadata and failure ownership
+        if: ${{ github.ref_name == 'codex/windows-tree-io-ntfs' }}
+        run: python tests/IO/windows_tree_publication.py .temp/windows-tree-inputs/current/msync.exe
       - name: Measure native Windows OpenSSH against an owned WSL1 receiver
-        if: ${{ success() }}
+        if: ${{ success() && github.ref_name != 'codex/windows-tree-io-ntfs' }}
         run: python tests/Performance/windows_tree.py --binary .temp/windows-tree-inputs/current/msync.exe --baseline "$env:MSYNC_BENCH_BASELINE" --work .temp/windows-tree-ssh --wsl --remote-only
       - name: Measure native Windows OpenSSH against the configured two-host scratch peer
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && github.ref_name != 'codex/windows-tree-io-ntfs' }}
         env:
           MSYNC_TREE_PEER: ${{ secrets.MSYNC_TREE_BENCH_EPHEMERAL }}
         run: |

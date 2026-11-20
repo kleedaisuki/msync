@@ -60,7 +60,7 @@ internal static partial class NativeFileMetadata
         FileAttributes attributes = info.Attributes;
         bool link = IsLink(path, attributes);
         bool ordinary = (attributes & FileAttributes.Directory) == 0 && !link;
-        return new(attributes, ordinary ? info.Length : 0, OperatingSystem.IsWindows() ? default : info.UnixFileMode, NativeTimestamp.FromDateTime(info.LastWriteTimeUtc), link);
+        return new(attributes, ordinary ? info.Length : 0, OperatingSystem.IsWindows() ? default : info.UnixFileMode, NativeTimestamp.FromDateTime(info.LastWriteTimeUtc), link, ordinary);
     }
 
     internal static bool IsLink(string path, FileAttributes attributes)

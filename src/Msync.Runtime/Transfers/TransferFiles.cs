@@ -109,7 +109,8 @@ internal static partial class TransferFiles
     private static void CopyDirectory(string source, string target, FileMetadata info, Span<byte> buffer,
         CancellationToken token, RuntimeTimeline? timeline)
     {
-        using PublicationQueue? queue = OperatingSystem.IsLinux() ? new(token, timeline) : null;
+        using PublicationQueue? queue = OperatingSystem.IsLinux() || OperatingSystem.IsWindows()
+            ? new(token, timeline) : null;
         CopyDirectoryNodes(source, target, info, buffer, token, timeline, queue);
     }
 
@@ -130,6 +131,11 @@ internal static partial class TransferFiles
         StagedFile? stage = null;
         try
         {
+            if (OperatingSystem.IsWindows())
+            {
+                queue.SubmitNativeCopy(source, target, metadata.Length);
+                return;
+            }
             stage = queue.Open("file.copy", source, target, async: false);
             stage.SetSourceSize(metadata.Length);
             using (FileStream input = new(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete,
