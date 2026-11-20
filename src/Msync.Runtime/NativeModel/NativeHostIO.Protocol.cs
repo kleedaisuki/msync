@@ -117,23 +117,50 @@ internal static class NativeTransferProtocol
                 *) printf '%s/%s' "$PWD" "$1" ;;
             esac
         }
-        install() (
-            source=$1
-            target=$2
-            if [ -d "$source" ] && [ ! -L "$source" ]; then
-                modified=$(stat -c '%y' -- "$source")
-                mkdir -p -- "$target"
-                for child in "$source"/* "$source"/.[!.]* "$source"/..?*; do
-                    [ -e "$child" ] || [ -L "$child" ] || continue
-                    install "$child" "$target/${child##*/}"
-                done
-                chmod --reference="$source" -- "$target"
-                touch -d "$modified" -- "$target"
-            else
-                mkdir -p -- "${target%/*}"
-                mv -fT -- "$source" "$target"
+        install() {
+            [ -d "${2%/*}/" ] || mkdir -p -- "${2%/*}/"
+            install_node "$@"
+        }
+        install_node() {
+            if [ ! -d "$1" ] || [ -L "$1" ]; then
+                mv -fT -- "$1" "$2"
+                install_leaves=$((${install_leaves:-0} + 1))
+                return
             fi
-        )
+            if [ "${3:-}" = rename ] && [ ! -e "$2" ] && [ ! -L "$2" ]; then
+                if [ -z "${install_rename_supported:-}" ]; then
+                    case $(LC_ALL=C mv --help) in
+                        *--no-copy*) install_rename_supported=yes ;;
+                        *) install_rename_supported=no ;;
+                    esac
+                fi
+                # A skipped no-clobber move can report success. The stage still
+                # owns the source in that case; merge instead of dropping it.
+                if [ "$install_rename_supported" = yes ] &&
+                    mv --no-copy -nT -- "$1" "$2" 2>/dev/null && [ ! -d "$1" ]; then
+                    install_subtrees=$((${install_subtrees:-0} + 1))
+                    return
+                fi
+                install_rename_fallbacks=$((${install_rename_fallbacks:-0} + 1))
+            fi
+            install_mtime=$(stat -c '%y' -- "$1")
+            set -- "$1" "$2" "$install_mtime"
+            install_directories=$((${install_directories:-0} + 1))
+            [ -d "$2" ] || mkdir -p -- "$2"
+            for install_child in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+                [ -e "$install_child" ] || [ -L "$install_child" ] || continue
+                install_node "$install_child" "$2/${install_child##*/}"
+            done
+            chmod --reference="$1" -- "$2"
+            touch -d "$3" -- "$2"
+        }
+        install_receipt() {
+            if [ "${msync_observe_install:-}" = yes ]; then
+                printf 'MSYNC-INSTALL %s %s %s %s\n' "${install_leaves:-0}" "${install_directories:-0}" \
+                    "${install_subtrees:-0}" "${install_rename_fallbacks:-0}"
+            fi
+            printf 'MSYNC-DONE\n'
+        }
         """;
 
     private static string UploadScript => field ??= ShellProgram.Source(ShellLibrary + "\n" + """
@@ -163,8 +190,10 @@ internal static class NativeTransferProtocol
             exit 1
         fi
         if [ "$source_kind" = literal ] && [ -e "$target" ]; then chmod --reference="$target" -- "$payload"; fi
-        install "$payload" "$target"
-        printf 'MSYNC-DONE\n'
+        # Unlike peer copies, an upload archive has no foreign directory
+        # owners to preserve. Only its fresh root shares the stage's parent.
+        install "$payload" "$target" rename
+        install_receipt
         """);
 
     private static string DownloadScript(int count)
@@ -221,7 +250,7 @@ internal static class NativeTransferProtocol
             rm -rf -- "$stage"
             trap - EXIT HUP INT TERM
         done
-        printf 'MSYNC-DONE\n'
+        install_receipt
         """);
 
     private static string RelayScript => field ??= ShellProgram.Source(ShellLibrary + "\n" + """
@@ -251,7 +280,7 @@ internal static class NativeTransferProtocol
             exit 1
         fi
         install "$payload" "$target"
-        printf 'MSYNC-DONE\n'
+        install_receipt
         """).Replace("__MSYNC_ARCHIVE_NAME_DECODING__", Quote(ArchiveNameDecoding), StringComparison.Ordinal);
 
     private static void RestoreArchiveNames(TarEntry entry)
@@ -393,7 +422,7 @@ internal static class NativeTransferProtocol
         destination=$(expand "$1"; printf .); destination=${destination%.}
         mode=$2
         shift 2
-        if [ "$#" -eq 0 ]; then printf 'MSYNC-DONE\n'; exit 0; fi
+        if [ "$#" -eq 0 ]; then install_receipt; exit 0; fi
         target=$destination
         if [ "$mode" = replace ]; then target=${destination%/.}; [ -n "$target" ] || target=/; fi
         parent=${target%/*}
@@ -418,7 +447,7 @@ internal static class NativeTransferProtocol
         done
         if [ "$mode" = replace ]; then rm -rf -- "$target"; fi
         install "$stage/payload" "$target"
-        printf 'MSYNC-DONE\n'
+        install_receipt
         """);
 
     private static async Task<string> ReadHeaderAsync(Stream stream, CancellationToken cancellationToken)

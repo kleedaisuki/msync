@@ -40,7 +40,8 @@ internal readonly record struct NativeTimestamp(long Seconds, long Nanoseconds)
     }
 }
 
-internal readonly record struct FileMetadata(FileAttributes Attributes, long Length, UnixFileMode Mode, NativeTimestamp Modified, bool IsLink)
+internal readonly record struct FileMetadata(FileAttributes Attributes, long Length, UnixFileMode Mode, NativeTimestamp Modified,
+    bool IsLink, bool IsRegular = false)
 {
     internal bool IsDirectory => (Attributes & FileAttributes.Directory) != 0;
     internal void Apply(string target)
@@ -108,7 +109,8 @@ internal static partial class NativeFileMetadata
             0xa000 => FileAttributes.ReparsePoint,
             _ => FileAttributes.Normal
         };
-        return new(attributes, length, (UnixFileMode)(mode & 0xfff), new(seconds, nanoseconds), (mode & 0xf000) == 0xa000);
+        return new(attributes, length, (UnixFileMode)(mode & 0xfff), new(seconds, nanoseconds),
+            (mode & 0xf000) == 0xa000, (mode & 0xf000) == 0x8000);
     }
     private static unsafe FileMetadata CaptureLegacyLinux(string path)
     {

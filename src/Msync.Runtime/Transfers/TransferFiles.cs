@@ -4,7 +4,7 @@ using Msync.Core;
 
 namespace Msync.Runtime;
 
-internal static class TransferFiles
+internal static partial class TransferFiles
 {
     internal static Task CopyNodeAsync(string source, string target, CancellationToken cancellationToken, int bufferSize = 65536,
         RuntimeTimeline? timeline = null)
@@ -29,10 +29,7 @@ internal static class TransferFiles
                 CopyLink(source, target, metadata.IsDirectory, metadata.Modified, timeline);
                 break;
             case PlannedTransferKind.CopyDirectory:
-                Directory.CreateDirectory(target);
-                foreach (string child in Directory.EnumerateFileSystemEntries(source).Order(StringComparer.Ordinal))
-                    CopyNode(child, Path.Combine(target, Path.GetFileName(child)), buffer, cancellationToken, timeline);
-                metadata.Apply(target);
+                CopyDirectory(source, target, metadata, buffer, cancellationToken, timeline);
                 break;
             default:
                 CopyNode(source, target, buffer, cancellationToken, timeline);
@@ -83,25 +80,70 @@ internal static class TransferFiles
         finally { if (buffer is not null) ArrayPool<byte>.Shared.Return(buffer); }
     }
 
-    private static void CopyNode(string source, string target, Span<byte> buffer, CancellationToken cancellationToken, RuntimeTimeline? timeline)
+    private static void CopyNode(string source, string target, Span<byte> buffer, CancellationToken token,
+        RuntimeTimeline? timeline, PublicationQueue? queue = null)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        FileMetadata info = NativeFileMetadata.Capture(source);
-        FileAttributes attributes = info.Attributes;
+        token.ThrowIfCancellationRequested();
+        FileMetadata info;
+        try { info = NativeFileMetadata.Capture(source); }
+        catch
+        {
+            queue?.Finish();
+            throw;
+        }
+        if (queue is not null && info.IsRegular && info.Length <= PublicationQueue.MaximumFileBytes)
+        {
+            QueueCopy(queue, source, target, info, buffer, token);
+            return;
+        }
+        queue?.Finish();
         if (info.IsLink)
+            CopyLink(source, target, info.IsDirectory, info.Modified, timeline);
+        else if (info.IsDirectory && queue is not null)
+            CopyDirectoryNodes(source, target, info, buffer, token, timeline, queue);
+        else if (info.IsDirectory)
+            CopyDirectory(source, target, info, buffer, token, timeline);
+        else CopyFile(source, target, info, buffer, token, timeline);
+    }
+
+    private static void CopyDirectory(string source, string target, FileMetadata info, Span<byte> buffer,
+        CancellationToken token, RuntimeTimeline? timeline)
+    {
+        using PublicationQueue? queue = OperatingSystem.IsLinux() ? new(token, timeline) : null;
+        CopyDirectoryNodes(source, target, info, buffer, token, timeline, queue);
+    }
+
+    private static void CopyDirectoryNodes(string source, string target, FileMetadata info, Span<byte> buffer,
+        CancellationToken token, RuntimeTimeline? timeline, PublicationQueue? queue)
+    {
+        Directory.CreateDirectory(target);
+        foreach (string child in Directory.EnumerateFileSystemEntries(source).Order(StringComparer.Ordinal))
+            CopyNode(child, Path.Combine(target, Path.GetFileName(child)), buffer, token, timeline, queue);
+        queue?.Finish();
+        info.Apply(target);
+    }
+
+    private static void QueueCopy(PublicationQueue queue, string source, string target, FileMetadata metadata,
+        Span<byte> buffer, CancellationToken token)
+    {
+        queue.Reserve();
+        StagedFile? stage = null;
+        try
         {
-            CopyLink(source, target, (attributes & FileAttributes.Directory) != 0, info.Modified, timeline);
-            return;
+            stage = queue.Open("file.copy", source, target, async: false);
+            stage.SetSourceSize(metadata.Length);
+            using (FileStream input = new(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete,
+                1, FileOptions.SequentialScan))
+                CopyBuffered(input, stage.Output, buffer, token);
+            metadata.Apply(stage.PathOnDisk);
+            queue.Submit(stage);
         }
-        if ((attributes & FileAttributes.Directory) != 0)
+        catch (Exception error)
         {
-            Directory.CreateDirectory(target);
-            foreach (string child in Directory.EnumerateFileSystemEntries(source).Order(StringComparer.Ordinal))
-                CopyNode(child, Path.Combine(target, Path.GetFileName(child)), buffer, cancellationToken, timeline);
-            info.Apply(target);
-            return;
+            stage?.Abandon(error);
+            queue.Finish();
+            throw;
         }
-        CopyFile(source, target, info, buffer, cancellationToken, timeline);
     }
 
     private static void CopyFile(string source, string target, FileMetadata metadata, Span<byte> buffer, CancellationToken cancellationToken,
@@ -132,7 +174,7 @@ internal static class TransferFiles
         if (OperatingSystem.IsWindows())
         {
             activity?.SetAttribute("file.backend", "windows_native_copy");
-            WindowsFileCopy.Copy(source, stage, cancellationToken);
+            WindowsFileCopy.Copy(source, stage, cancellationToken, timeline: timeline);
             return;
         }
         activity?.SetAttribute("file.backend", "buffered");
@@ -199,6 +241,29 @@ internal static class TransferFiles
         finally
         {
             File.Delete(stage);
+        }
+    }
+
+    internal static async Task QueueArchiveFileAsync(PublicationQueue queue, Stream input, string target,
+        Action<string> applyMetadata, int bufferSize, long expectedLength, CancellationToken token)
+    {
+        queue.Reserve();
+        StagedFile? stage = null;
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(target) ?? ".");
+            stage = queue.Open("file.write", null, target, async: true);
+            await input.CopyToAsync(stage.Output, bufferSize, token);
+            if (stage.Output.Position != expectedLength)
+                throw new EndOfStreamException($"Archive member '{target}' declared {expectedLength} bytes, received {stage.Output.Position}");
+            applyMetadata(stage.PathOnDisk);
+            queue.Submit(stage);
+        }
+        catch (Exception error)
+        {
+            stage?.Abandon(error);
+            queue.Finish();
+            throw;
         }
     }
 

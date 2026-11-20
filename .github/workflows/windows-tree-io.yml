@@ -1,0 +1,50 @@
+name: Windows tree I/O benchmark
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/windows-tree-io-bench]
+
+permissions:
+  contents: read
+
+jobs:
+  windows-tree:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Freeze the Windows release image and publish the candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Path .temp/windows-tree-inputs -Force
+          gh release download v0.9.2 --pattern msync-0.9.2-windows-x86_64.zip --dir .temp/windows-tree-inputs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Expand-Archive .temp/windows-tree-inputs/msync-0.9.2-windows-x86_64.zip .temp/windows-tree-inputs/baseline
+          $baseline = Get-ChildItem .temp/windows-tree-inputs/baseline -Filter msync.exe -Recurse | Select-Object -First 1
+          if (!$baseline) { throw 'Missing baseline binary' }
+          "MSYNC_BENCH_BASELINE=$($baseline.FullName)" >> $env:GITHUB_ENV
+          dotnet publish src/Msync.Cli/Msync.Cli.csproj -c Release -r win-x64 -o .temp/windows-tree-inputs/current -p:RestoreLockedMode=true
+      - name: Measure NTFS source deployments
+        run: |
+          Get-Volume -DriveLetter (Get-Location).Drive.Name | Format-List FileSystem,DriveLetter
+          python tests/Performance/windows_tree.py --binary .temp/windows-tree-inputs/current/msync.exe --baseline "$env:MSYNC_BENCH_BASELINE" --work .temp/windows-tree-local
+      - name: Measure native Windows OpenSSH against an owned WSL1 receiver
+        if: ${{ success() }}
+        run: python tests/Performance/windows_tree.py --binary .temp/windows-tree-inputs/current/msync.exe --baseline "$env:MSYNC_BENCH_BASELINE" --work .temp/windows-tree-ssh --wsl --remote-only
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: windows-tree-receipts
+          include-hidden-files: true
+          path: |
+            .temp/windows-tree-*/*.sqlite
+            .temp/windows-tree-*/*.jsonl
+            .temp/windows-tree-*/environment.json
