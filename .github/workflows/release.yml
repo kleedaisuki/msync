@@ -102,9 +102,30 @@ jobs:
           python -m pip install --require-hashes --only-binary=:all: -r tests/Msync.EndToEnd/windows-terminal-requirements.txt
       - name: Install native Linux prerequisites
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev openssh-server
       - name: Build and exercise Native AOT portable payload
         run: python packaging/build.py --rid ${{ matrix.rid }} --smoke
+      - name: Verify CLI export and transfer publication in the packaged program
+        shell: python
+        env:
+          PACKAGE_VERSION: ${{ needs.version.outputs.version }}
+          PACKAGE_NAME: ${{ matrix.name }}
+        run: |
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          windows: bool = os.name == 'nt'
+          binary: Path = (Path('artifacts/package') / f"msync-{os.environ['PACKAGE_VERSION']}-{os.environ['PACKAGE_NAME']}" /
+                          'bin' / ('msync.exe' if windows else 'msync')).resolve()
+          subprocess.run([sys.executable, 'tests/Msync.EndToEnd/journeys.py',
+                          '--binary', str(binary), '--export-only'], check=True)
+          tests: tuple[str, ...] = ('windows_file_metadata',) if windows else (
+              'ordered_publication', 'remote_publication', 'archive_short_body',
+          )
+          for test in tests:
+              subprocess.run([sys.executable, f'tests/IO/{test}.py', str(binary)], check=True)
       - name: Exercise compiler, layout, contextual I/O and product boundaries
         shell: python
         env:
