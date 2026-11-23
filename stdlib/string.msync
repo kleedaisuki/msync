@@ -12,6 +12,10 @@ native fn replace(text: String, from: String, to: String) -> String;
 native fn split(text: String, separator: String) -> Range < String >;
 native fn length(text: String) -> Number;
 native fn utf8_size(text: String) -> Number;
+# Counts LF scalars; a final unterminated line adds zero.
+native fn line_feed_count(text: String) -> Number;
+# Counts nonempty runs separated by Unicode whitespace, like split_whitespace.
+native fn word_count(text: String) -> Number;
 native fn is_ascii(text: String) -> Bool;
 native fn chars(text: String) -> Range < String >;
 native fn lines(text: String) -> Range < String >;

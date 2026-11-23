@@ -1,4 +1,4 @@
-"""Build and measure a disposable Native AOT compiler pass-cost overlay."""
+"""Replay the pre-HPIR O2 pass-cost experiment on its frozen source."""
 from __future__ import annotations
 
 import argparse
@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT: Path = Path(__file__).resolve().parents[2]
+BASELINE: str = "90857bf3e40f28b4d99014aa06bf2609fbfdd6d6"
 
 PROBE: str = r'''// Development-only overlay; never included in the product checkout.
 using System.Diagnostics;
@@ -66,7 +67,7 @@ def prepare(work: Path) -> None:
         raise RuntimeError(f"Use a new work directory: {checkout}")
     checkout.mkdir(parents=True)
     archive: bytes = subprocess.check_output(
-        ["git", "archive", "HEAD", "src", "vendor", "stdlib", "Directory.Build.props", "global.json"], cwd=ROOT
+        ["git", "archive", BASELINE, "src", "vendor", "stdlib", "Directory.Build.props", "global.json"], cwd=ROOT
     )
     with tarfile.open(fileobj=io.BytesIO(archive)) as stream:
         stream.extractall(checkout, filter="data")

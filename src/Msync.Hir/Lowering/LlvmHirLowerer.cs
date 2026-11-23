@@ -19,6 +19,29 @@ public sealed record LlvmHirLoweringResult(LlvmModule Module,
     IReadOnlyDictionary<LlvmFunction, LlvmCallableRuntimeBinding> CallableCalls)
 {
     public IReadOnlyList<LlvmStaticScopeInfo> StaticScopes { get; init; } = [];
+    internal IReadOnlySet<LlvmFunction>? EmptyRangeConsumers { get; init; }
+    internal IReadOnlyDictionary<LlvmFunction, int>? ObservedTextArguments { get; init; }
+    internal IReadOnlySet<LlvmFunction>? CompletedProcessText { get; init; }
+    internal IReadOnlySet<LlvmFieldCarrier>? TextCompletionFields { get; init; }
+    internal IReadOnlyDictionary<LlvmFunction, LlvmSnapshotOperands>? SnapshotRangeConsumers { get; init; }
+    internal IReadOnlySet<LlvmFunction>? CompletionVectors { get; init; }
+    internal IReadOnlyDictionary<TypeKind, int> EnumeratedLayouts { get; init; } = new Dictionary<TypeKind, int>();
+    internal IReadOnlyDictionary<(TypeKind First, TypeKind Second), int> ZippedLayouts { get; init; } =
+        new Dictionary<(TypeKind, TypeKind), int>();
+    internal int FileLineSources { get; init; }
+    internal int FileTextSources { get; init; }
+    internal int FileTransferSources { get; init; }
+    internal (int Match, int Group)? RegexFindLayouts { get; init; }
+    internal IReadOnlyDictionary<LlvmFunction, LlvmFunction>? PathBatchCarriers { get; init; }
+    internal IReadOnlyDictionary<LlvmFunction, LlvmRangeCallbackWork> RangeCallbackWork { get; init; } =
+        new Dictionary<LlvmFunction, LlvmRangeCallbackWork>();
+    internal IReadOnlyDictionary<LlvmStructType, TypeKind> UnionTypes { get; init; } =
+        new Dictionary<LlvmStructType, TypeKind>();
+    internal IReadOnlyDictionary<int, LlvmStructType> PhysicalStructs { get; init; } =
+        new Dictionary<int, LlvmStructType>();
+    internal IReadOnlyDictionary<int, LlvmStructType>? SessionScopeLayouts { get; init; }
+    internal bool SessionStreamsRange { get; init; }
+    internal IReadOnlyDictionary<LlvmFunction, LlvmSessionRangeRead>? SessionSnapshotReads { get; init; }
     public IReadOnlyList<LlvmSessionCellInfo> SessionCells { get; init; } = [];
     public IReadOnlyList<LlvmSessionDispatchInfo> SessionDispatches { get; init; } = [];
     internal LlvmHirLoweringSession.Generation? SessionGeneration { get; init; }
@@ -26,7 +49,16 @@ public sealed record LlvmHirLoweringResult(LlvmModule Module,
         new Dictionary<LlvmFunction, LlvmRuntimeValueBinding>();
     public IReadOnlyDictionary<LlvmFunction, LlvmRuntimeConversionBinding> RuntimeConversions { get; init; } =
         new Dictionary<LlvmFunction, LlvmRuntimeConversionBinding>();
+    public IReadOnlyDictionary<LlvmFunction, NativeUnary> LiftedUnaryCalls { get; init; } =
+        new Dictionary<LlvmFunction, NativeUnary>();
+    public IReadOnlySet<LlvmArgument> FutureParameters { get; init; } = new HashSet<LlvmArgument>();
+    public IReadOnlySet<LlvmFunction> FutureResults { get; init; } = new HashSet<LlvmFunction>();
+    public IReadOnlySet<LlvmFieldCarrier> FutureFields { get; init; } = new HashSet<LlvmFieldCarrier>();
+    public IReadOnlyDictionary<LlvmArgument, LlvmFieldCarrier[]> FutureCaptures { get; init; } =
+        new Dictionary<LlvmArgument, LlvmFieldCarrier[]>();
 }
+
+public readonly record struct LlvmFieldCarrier(int Layout, int Ordinal);
 
 public sealed record LlvmStaticScopeInfo(LlvmGlobalVariable Object, LlvmGlobalVariable Initialized,
     int Layout, int Declaration);
@@ -69,6 +101,8 @@ public static partial class LlvmHirLowerer
         internal readonly LlvmNativeMetadata metadata = generation?.Metadata ?? new(hir);
         internal readonly LlvmHirLoweringSession.Generation? session = generation;
         internal readonly Dictionary<LlvmStructType, int> structLayouts = [];
+        private readonly Dictionary<int, LlvmStructType> physicalStructs = [];
+        private int reusedPhysicalStructs;
         internal readonly CompilationTrace? trace = trace;
         internal readonly LlvmContext context = new();
         internal readonly Dictionary<LlvmGlobalVariable, NativeConstant> constants = [];
@@ -79,6 +113,7 @@ public static partial class LlvmHirLowerer
         internal readonly Dictionary<LlvmFunction, LlvmSourceFunctionInfo> sourceFunctions = [];
         internal readonly Dictionary<LlvmFunction, LlvmTemplateFunctionInfo> templateFunctions = [];
         private readonly List<int> pendingFunctions = [];
+        internal int fileLineSources, fileTextSources, fileTransferSources;
         internal readonly HashSet<HirLocationId> captured = Captured(hir);
         internal readonly HashSet<HirLocationId> fields = hir.Scopes.SelectMany(scope => scope.Fields).ToHashSet();
         internal LlvmModule module = null!;
@@ -103,15 +138,50 @@ public static partial class LlvmHirLowerer
             var entry = Reserve(hir.Entry);
             var sessionDispatches = PrepareSession();
             for (int index = 0; index < pendingFunctions.Count; index++) LowerFunction(pendingFunctions[index]);
+            if (sessionSnapshotReads is not null)
+                foreach (var read in sessionSnapshotReads.Values)
+                    if (read.Callback is { } callback) _ = RangeWork(callback);
+            if (session is { }) trace?.Detail?.Metric("session.import_aliases", session.AliasedImports.Count);
+            PruneRepresentations();
+            RangeFields? rangeFields = SelectEmptyRangeConsumers();
+            SelectCompletedProcessText();
+            if (trace?.Detail is { } detail)
+                detail.Run("compiler.llvm.lower.readiness", this, static state => state.SelectScalarCarriers());
+            else SelectScalarCarriers();
+            if (rangeFields is not null)
+            {
+                if (rangeConsumers is not null) SelectSnapshotRangeConsumers(rangeFields, rangeConsumers);
+                SelectPathBatchCaptures(rangeFields);
+            }
+            SelectTextCompletionFields();
+            trace?.Detail?.Metric("file.line_range_sources", fileLineSources);
+            trace?.Detail?.Metric("file.text_sources", fileTextSources);
+            trace?.Detail?.Metric("layout.physical_structs", physicalStructs.Count);
+            trace?.Detail?.Metric("layout.reused_structs", reusedPhysicalStructs);
+            trace?.Detail?.Metric("range.enumerate.producer_layouts", enumeratedLayouts.Count);
+            trace?.Detail?.Metric("range.zip.producer_layouts", zippedLayouts.Count);
             return new(module, constants, runtimeCalls, entry, metadata.Types, metadata.Layouts, structLayouts, iteratorCalls, sourceFunctions, templateFunctions, nativeCalls, constructors, callableCalls) { RuntimeConversions = runtimeConversions, ValueOperations = valueOperations, StaticScopes = staticScopes.Values.ToArray(), SessionGeneration = session,
-                SessionCells = sessionCells.Values.Select(cell => cell.Binding).ToArray(), SessionDispatches = sessionDispatches };
+                SessionCells = sessionCells.Values.Select(cell => cell.Binding).ToArray(), SessionDispatches = sessionDispatches,
+                LiftedUnaryCalls = liftedUnaryCalls, FutureParameters = futureParameters, FutureResults = futureResults,
+                FutureFields = futureFields, FutureCaptures = futureCaptures, FileLineSources = fileLineSources,
+                FileTextSources = fileTextSources, FileTransferSources = fileTransferSources, UnionTypes = unionTypes,
+                RegexFindLayouts = RegexFindLayouts, PhysicalStructs = physicalStructs,
+                EnumeratedLayouts = enumeratedLayouts, ZippedLayouts = zippedLayouts, EmptyRangeConsumers = emptyRangeConsumers,
+                SnapshotRangeConsumers = snapshotRangeConsumers, PathBatchCarriers = pathBatchCarriers, CompletionVectors = completionVectors,
+                RangeCallbackWork = rangeCallbackWork,
+                ObservedTextArguments = observedTextArguments.Count == 0 ? null : observedTextArguments,
+                CompletedProcessText = completedProcessText,
+                TextCompletionFields = textCompletionFields,
+                SessionScopeLayouts = session is { } ? scopeLayoutsByPhysicalId : null,
+                SessionStreamsRange = StreamsRange(hir.Entry), SessionSnapshotReads = sessionSnapshotReads };
         }
 
         internal LlvmFunction Reserve(HirFunctionId id)
         {
             if (functions.TryGetValue(id.Value, out var existing)) return existing;
             var function = hir.Functions[id.Value];
-            var signature = LlvmFunctionType.Get(Type(function.Result),
+            bool stream = StreamsRange(id);
+            var signature = LlvmFunctionType.Get(stream ? Null.Type : Type(function.Result),
                 function.Captures.Select(_ => (LlvmType)DataPointer)
                     .Concat(function.Parameters.Select((location, index) => Type(function.ParameterEntryTypes.IsDefaultOrEmpty
                         ? hir.Locations[location.Value].StorageType : function.ParameterEntryTypes[index],
@@ -122,7 +192,8 @@ public static partial class LlvmHirLowerer
             var result = LlvmFunction.Create(signature, LlvmLinkage.InternalLinkage, symbol, module);
             functions.Add(id.Value, result);
             pendingFunctions.Add(id.Value);
-            sourceFunctions.Add(result, new(function.Captures.Length, metadata.Type(function.Result)) { SourceFunction = id, SourceName = function.Name });
+            sourceFunctions.Add(result, new(function.Captures.Length, stream ? metadata.RuntimeType(TypeRef.Null)
+                : metadata.Type(function.Result)) { SourceFunction = id, SourceName = function.Name });
             return result;
         }
 
@@ -136,13 +207,22 @@ public static partial class LlvmHirLowerer
         internal LlvmStructType Layout(int index)
         {
             if (layouts.TryGetValue(index, out var result)) return result;
-            result = LlvmStructType.Create(context, "msync.scope." + index);
-            layouts.Add(index, result);
-            result.SetBody(hir.ScopeLayouts[index].Fields.Select(field => Type(field.StorageType, field.AdmitsNull)).ToArray());
             int physical = metadata.Layout(index);
-            structLayouts.Add(result, physical);
+            bool reuse = physicalStructs.TryGetValue(physical, out result);
+            result ??= NewPhysicalStruct(physical);
+            layouts.Add(index, result);
             scopeLayoutsByPhysicalId.TryAdd(physical, result);
+            if (reuse) ++reusedPhysicalStructs;
+            else result.SetBody(hir.ScopeLayouts[index].Fields.Select(field => Type(field.StorageType, field.AdmitsNull)).ToArray());
             return result;
+        }
+
+        private LlvmStructType NewPhysicalStruct(int layout)
+        {
+            var type = LlvmStructType.Create(context, "msync.layout." + layout);
+            physicalStructs.Add(layout, type);
+            structLayouts.Add(type, layout);
+            return type;
         }
 
         private void LowerFunction(int index)
@@ -187,7 +267,7 @@ public static partial class LlvmHirLowerer
                     Hir.Locations[location.Value].AdmitsNull), address));
             }
             var value = Emit(source.Body);
-            if (!block.HasTerminator) Add(new LlvmReturnInstruction(owner.context, Represent(value, source.Result)));
+            if (!block.HasTerminator) Add(new LlvmReturnInstruction(owner.context, EntryResult(value)));
             owner.trace?.Metric("instructions", function.BasicBlocks.Sum(item => item.Instructions.Count));
             owner.trace?.Metric("blocks", function.BasicBlocks.Count);
             owner.trace?.Metric("locations", locations.Count);
@@ -208,6 +288,11 @@ public static partial class LlvmHirLowerer
             owner.trace?.Metric("calls.dynamic", dynamicCallCount);
             owner.trace?.Metric("calls.adapt", adaptationCount);
             owner.trace?.Metric("calls.callee_bundles", sourceCallCount);
+            if (owner.session is { })
+            {
+                owner.trace?.Detail?.Metric("session.native_dispatch_sites", sessionNativeSites);
+                owner.trace?.Detail?.Metric("session.native_dispatch_arms", sessionNativeArms);
+            }
             owner.trace?.Metric("control.max_loop_depth", loopDepth);
             owner.trace?.Detail?.Metric("type_predicate.relocated_constants", constantTypePredicates);
             if (conversionCounts is not null)
@@ -225,6 +310,7 @@ public static partial class LlvmHirLowerer
             if (instruction is LlvmReturnInstruction { ReturnValue: not null })
                 instruction.GetOperandUse(0).LogicalType = owner.metadata.Type(source.Result);
             block.Append(instruction);
+            owner.RecordRangeSite(instruction);
             Record(instruction);
             return instruction;
         }
@@ -277,7 +363,7 @@ public static partial class LlvmHirLowerer
                 HirKind.PatternRegion => PatternRegion(node),
                 HirKind.PatternDemand => PatternDemand(node),
                 HirKind.PatternRead => ReadPatternItem(node),
-                HirKind.ReadLocation or HirKind.ReadStorage => ReadLocation(node),
+                HirKind.ReadLocation or HirKind.ReadStorage => ReadLocation(id, node),
                 HirKind.Declare or HirKind.Assign => Store(node),
                 HirKind.Discard => Discard(node),
                 HirKind.Block => Block(node),
@@ -328,6 +414,7 @@ public static partial class LlvmHirLowerer
             current = node;
             var storage = Hir.Locations[location.Value];
             Add(new LlvmStoreInstruction(Represent(value, storage.StorageType, storage.AdmitsNull), Address(location)));
+            if (node.Kind == HirKind.Declare) PublishSessionDeclaration(location);
             return owner.Null;
         }
         private LlvmValue Discard(HirNode node) { Child(node, 0); return owner.Null; }
@@ -348,7 +435,7 @@ public static partial class LlvmHirLowerer
             if (block.HasTerminator) return value;
             CloseIterators(0);
             CloseAcquire(0);
-            value = Represent(value, source.Result);
+            value = EntryResult(value);
             Add(new LlvmReturnInstruction(owner.context, value));
             return value;
         }

@@ -53,7 +53,8 @@ internal sealed partial class SemanticAnalyzer
                 : payload?.StorageConstraint,
             RuntimeDependentMetadata: first.RuntimeDependentMetadata || second.RuntimeDependentMetadata,
             CheckedType: first.CheckedType is { } checkedFirst && second.CheckedType is { } checkedSecond
-                ? new HirFlowTypeAlgebra(hir).Union(checkedFirst, checkedSecond) : payload?.CheckedType);
+                ? new HirFlowTypeAlgebra(hir).Union(checkedFirst, checkedSecond) : payload?.CheckedType,
+            RangeRecipe: first.RangeRecipe == second.RangeRecipe ? first.RangeRecipe : null);
     }
 
     private int JoinScopeLayouts(int left, int right)

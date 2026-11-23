@@ -6,17 +6,6 @@ namespace Msync.Runtime.Native;
 
 public static partial class NativeBuiltins
 {
-    private static NativeValue PathOperation(string operation, IReadOnlyList<NativeValue> args, NativeRuntimeContext context) => operation switch
-    {
-        "identity" => NativeValue.FromPath(context.AsPath(args[0])),
-        "join" => NativeValue.FromPath(JoinPath(context.AsPath(args[0]), args[1])),
-        "qualify" => NativeValue.FromPath(QualifyPath(context.AsPath(args[1]), args[0].AsConnection(), context)),
-        _ => throw new MsyncException($"Unknown path native '{operation}'")
-    };
-
-    public static NativePathValue JoinPath(NativePathValue left, NativeValue right) => right.Kind == NativeKind.Path
-        ? PathSemantics.JoinValue(left, right.AsPath()) : PathSemantics.JoinValue(left, Text(right));
-
     public static NativePathValue QualifyPath(NativePathValue path, NativeConnection connection, NativeRuntimeContext context) =>
         context.Connections.Get(connection).Qualify(path, context);
 

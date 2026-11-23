@@ -4,14 +4,9 @@ public readonly record struct NativeBuiltinField(string Name, TypeRef Type);
 
 public sealed class NativeBuiltinRecordSchema
 {
-    internal NativeBuiltinRecordSchema(params NativeBuiltinField[] fields)
-    {
-        Fields = Array.AsReadOnly(fields);
-        Layout = new(fields.Select(field => new NativeField(field.Name, NativeType.FromTypeRef(field.Type))));
-    }
+    internal NativeBuiltinRecordSchema(params NativeBuiltinField[] fields) => Fields = Array.AsReadOnly(fields);
 
     public IReadOnlyList<NativeBuiltinField> Fields { get; }
-    public NativeLayout Layout { get; }
 }
 
 public static class NativeBuiltinLayouts
@@ -33,14 +28,7 @@ public static class NativeBuiltinLayouts
         new("name", TypeRef.String), new("type", TypeRef.Type), new("storage_type", TypeRef.Type), new("admits_null", TypeRef.Bool));
 
     public static NativeBuiltinRecordSchema Zip(TypeRef first, TypeRef second) =>
-        new(ZipFields(first, second).Select(field => new NativeBuiltinField(field.Name, field.Type)).ToArray());
-    public static NativeLayout Zip(NativeType first, NativeType second) =>
-        new(ZipFields(first, second).Select(field => new NativeField(field.Name, field.Type)));
+        new(new("first", first), new("second", second));
     public static NativeBuiltinRecordSchema Enumerate(TypeRef item) =>
-        new(EnumerateFields(TypeRef.Number, item).Select(field => new NativeBuiltinField(field.Name, field.Type)).ToArray());
-    public static NativeLayout Enumerate(NativeType item) =>
-        new(EnumerateFields(NativeType.Of(NativeKind.Number), item).Select(field => new NativeField(field.Name, field.Type)));
-
-    private static (string Name, T Type)[] ZipFields<T>(T first, T second) => [("first", first), ("second", second)];
-    private static (string Name, T Type)[] EnumerateFields<T>(T index, T value) => [("index", index), ("value", value)];
+        new(new("index", TypeRef.Number), new("value", item));
 }

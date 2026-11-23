@@ -35,7 +35,13 @@ public sealed record HirCall(HirCallKind Kind, HirFunctionId Function,
     public int SessionSlot { get; init; } = -1;
 }
 public sealed record HirSessionDispatch(int Slot, ImmutableArray<HirTypeId> Parameters,
-    HirTypeId Result, ImmutableArray<HirDispatchTarget> Targets);
+    HirTypeId Result, ImmutableArray<HirDispatchTarget> Targets)
+{
+    // Native alternatives in the live session's semantic generation.
+    public ImmutableArray<HirSessionNativeTarget> NativeTargets { get; init; } = [];
+}
+public readonly record struct HirSessionNativeArgument(HirTypeId Type, bool Coerce);
+public sealed record HirSessionNativeTarget(string Name, ImmutableArray<HirSessionNativeArgument> Arguments, HirTypeId Result);
 public sealed record HirScopeConstruction(int Layout, ImmutableArray<HirLocationId> Fields,
     int Singleton = -1, HirLocationId? Self = null, HirAllocationSiteId? Site = null);
 public sealed record HirFor(HirLoopId Loop, HirLocationId Item);
@@ -99,6 +105,7 @@ public sealed record HirModule(
 {
     public ImmutableArray<HirLocationId> UnresolvedImports { get; init; } = [];
     public ImmutableArray<HirSessionDispatch> SessionDispatches { get; init; } = [];
+    internal IReadOnlyDictionary<HirNodeId, Msync.Core.Hpir.HpirSessionSnapshot>? SessionSnapshots { get; init; }
     public ReadOnlySpan<HirNodeId> Children(HirNode node) => Edges.AsSpan(node.Children.Start, node.Children.Count);
     public HirNode Node(HirNodeId id) => Nodes[id.Value];
     public TypeRef RuntimeType(HirTypeId id) => Types[id.Value].RuntimeType;

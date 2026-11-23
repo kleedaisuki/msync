@@ -357,13 +357,13 @@ and [research status](RESEARCH.md) for the contracts and remaining work.
                                                 |            |
                                            .mhir export   pure lowering
                                                              |
-                                      layout/address IR -> O0/O1/O2/O3 optimization
+                                      typed LLVM-derived IR -> O0/O1/O2/O3 optimization
                                                              |
-                                                     relocatable .mso
+                                                   relocatable HPIR .mso
                                                              |
-                                   contextual computation / I/O graph optimization
+                                     selected contextual observations and effects
                                                              |
-                                                      executable .mexe
+                                                    executable HPIR .mexe
                                                              |
                                        VM execution / parallel scheduling / resources
 ```
@@ -385,9 +385,9 @@ For compiler tooling, `compile FILE --emit hir` saves `.mhir`; use
 `disassemble FILE` to inspect an artifact.
 
 Semantic analysis resolves declarations, types, storage constraints, captures,
-call targets and evaluation policy before native IR generation. `Compiler.Analyze`
-returns the immutable semantic program; `Compiler.Compile` lowers that program
-and then optimizes its `NativeProgram`. The lowerer consumes no syntax tree and does
+call targets and evaluation policy before executable representation selection.
+The compiler optimizes the typed graph and selects one physical HPIR stream;
+binding does not recover type, frame or call facts from its operands. The lowerer consumes no syntax tree and does
 not call back into type inference. Editor queries use semantic observations,
 not speculative IR compilation.
 
@@ -397,7 +397,7 @@ runtime object. String, Path, Connection and the other builtins have complete
 native representations; captures distinguish values from locations. Compiler
 and VM may eliminate or coallocate physical storage while preserving identity,
 aliases, effects and resource lifetimes. There is no source allocator or
-`Storage` type. See the [native model](docs/design/native-model-v090.md).
+`Storage` type. See [HPIR](docs/design/hpir.md).
 
 A self-contained `.mhir` can be inspected, rewritten and lowered after deleting
 its source. Its source text is optional diagnostic data, not executable input;
@@ -405,17 +405,17 @@ live session values and credentials are not stored in it. HIR cannot be
 reconstructed from `.mso` or `.mexe`: export it before native IR lowering.
 
 Both binary stages execute without the original source. A `.mso` is prepared
-for the selected execution context. The contextual backend computes known values
-and control flow, expands selections, removes unobserved overwritten transfers,
-and forms a dependency graph and batches. A `.mexe` carries the resulting plan
-and any continuations whose inputs are not known yet. It can be inspected and
+for the selected execution context. Binding captures selected observations,
+records closed member lists and links prepared transfer dependencies; genuine
+runtime observations and work stay live. A `.mexe` carries one bound HPIR
+program. It can be inspected and
 submitted repeatedly, but its filesystem observations are not validity promises.
 Prepared selections are frozen: adding a matching file later does not add it to
 that recorded transfer. VM executes the received operations, schedules parallel
 work and reports actual errors; it does not detect stale plans or automatically
 replan them. Live handles and credentials are never stored. The runtime executes
-typed IR, never debug source or serialized AST. See the
-[contextual backend contract](docs/design/contextual-io-backend.md).
+typed IR on its own native stack and heap, never debug source or serialized AST.
+Earlier Native objects and executables must be rebuilt from source.
 
 The six C# projects separate model, analysis and execution responsibilities:
 `Core` owns native representations, layouts and portable IR; `Hir` owns semantic programs, persistence and pure

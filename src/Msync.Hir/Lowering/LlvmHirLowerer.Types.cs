@@ -9,6 +9,9 @@ public static partial class LlvmHirLowerer
     private sealed partial class Lowering
     {
         private readonly Dictionary<(int Type, bool Nullable), LlvmType> types = [];
+        private readonly Dictionary<LlvmStructType, TypeKind> unionTypes = [];
+        internal TypeKind? UnionDomain(LlvmType type) =>
+            type is LlvmStructType structure && unionTypes.TryGetValue(structure, out var kinds) ? kinds : null;
         internal LlvmType Type(HirTypeId id, bool admitsNull = false)
         {
             var key = (id.Value, admitsNull);
@@ -53,16 +56,17 @@ public static partial class LlvmHirLowerer
         {
             string name = "msync.union." + ((ushort)kinds).ToString("x", System.Globalization.CultureInfo.InvariantCulture);
             if (LlvmStructType.GetTypeByName(context, name) is { } existing) return existing;
-            // Payload capacity follows the actual LLVM builtin carriers. Native2
-            // has a different compact representation, adapted at target lowering.
+            // Payload capacity follows the primitive and pointer lanes of each LLVM carrier.
             int rawBits = (kinds & TypeKind.Number) != 0 ? 64 : (kinds & TypeKind.Path) != 0 ? 16
                 : (kinds & TypeKind.Bool) != 0 ? 8 : 0;
             uint roots = (kinds & TypeKind.Path) != 0 ? 5U : (kinds & TypeKind.Function) != 0 ? 3U
                 : (kinds & ~(TypeKind.Null | TypeKind.Bool | TypeKind.Number)) != 0 ? 1U : 0U;
             LlvmType raw = rawBits == 0 ? LlvmArrayType.Get(LlvmIntegerType.Get(context, 8), 0)
                 : LlvmIntegerType.Get(context, (uint)rawBits);
-            return LlvmStructType.CreateNativeRecord(context,
+            var type = LlvmStructType.CreateNativeRecord(context,
                 [LlvmIntegerType.Get(context, 8), raw, LlvmArrayType.Get(DataPointer, roots)], name);
+            unionTypes.Add(type, kinds);
+            return type;
         }
     }
 }

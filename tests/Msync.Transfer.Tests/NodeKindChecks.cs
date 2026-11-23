@@ -4,6 +4,7 @@ using Msync.Core;
 using Msync.Runtime;
 using Msync.Core.Native;
 using Msync.Runtime.Native;
+using NativePathValue = Msync.Core.Native.NativePath;
 
 internal static class NodeKindChecks
 {
@@ -71,10 +72,10 @@ internal static class NodeKindChecks
         string junction = Path.Combine(root, "source", "junction");
         await Run("cmd.exe", ["/d", "/c", "mklink", "/J", junction, Path.Combine(root, "source", "nested")]);
         await CheckStatus("source/junction", "symlink", context);
-        NativeValue range = await Call("fs.recursive_directory_iterator", "source", context);
-        await foreach (NativeValue entry in range.AsRange().Items)
-            Check(!entry.AsPath().Raw.Replace('\\', '/').Contains("junction/", StringComparison.Ordinal), "recursive enumeration does not follow junctions");
-        Check(await Call("fs.remove_all", "source/junction", context) == NativeValue.True, "junction removal");
+        await foreach (var entry in NativeBuiltins.OpenDirectory(new("source", context.WorkingDirectory), true, context, default))
+            Check(!entry.Raw.Replace('\\', '/').Contains("junction/", StringComparison.Ordinal), "recursive enumeration does not follow junctions");
+        TransferFiles.RemoveNode(junction);
+        Check(!Path.Exists(junction), "junction removal");
         Check(File.Exists(Path.Combine(root, "source", "nested", "file")), "junction removal preserves referent");
     }
 
@@ -91,16 +92,13 @@ internal static class NodeKindChecks
 
     private static async Task CheckStatus(string path, string expected, NativeRuntimeContext context)
     {
-        Check(await Call("fs.symlink_status", path, context) == NativeValue.FromString(expected), $"status: {path}");
+        Check(await NativeBuiltins.ReadFileStatus(new(path, context.WorkingDirectory), true, context, default) == expected,
+            $"status: {path}");
     }
 
-    private static ValueTask<NativeValue> Call(string operation, string path, NativeRuntimeContext context) =>
-        NativeBuiltins.InvokeAsync(operation, [NativeValue.FromPath(new(path, context.WorkingDirectory))], context,
-            (_, _, _) => throw new InvalidOperationException("No callback in filesystem classification."));
-
     private static async Task Copy(string source, string target, NativeRuntimeContext context) =>
-        Check(await NativeHostIO.TransferAsync(NativeValue.FromPath(new(source, context.WorkingDirectory)),
-            new(target, context.WorkingDirectory), context), $"copy: {source}");
+        Check(await NativeHostIO.TransferPathAsync(new(source, context.WorkingDirectory),
+            new(target, context.WorkingDirectory), context, default), $"copy: {source}");
 
     private static void Check(bool condition, string message)
     {

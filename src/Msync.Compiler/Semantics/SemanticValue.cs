@@ -71,8 +71,9 @@ internal sealed record SemanticValue(HirTypeId Type, HirNodeId Node,
     SemanticCallableDomain? FutureCallableDomain = null,
     HirTypeId? StorageConstraint = null, bool RuntimeDependentMetadata = false, HirTypeId? CheckedType = null,
     FlowDenotationDomain? TypeCandidates = null, SemanticBranchValue? BranchValue = null,
-    SemanticTypeRead? TypeRead = null)
+    SemanticTypeRead? TypeRead = null, RangeRecipe? RangeRecipe = null)
 {
+    internal Msync.Core.Hpir.HpirSessionSnapshot? SessionSnapshot { get; init; }
     public bool? KnownBool => Literal is { Kind: HirLiteralKind.Bool } literal ? literal.Boolean : null;
     public FlowDenotationDomain? DenotationDomain =>
         DenotedType is { } known ? new([known]) : TypeCandidates;

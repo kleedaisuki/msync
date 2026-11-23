@@ -11,34 +11,18 @@ public static partial class NativeBuiltins
 {
     private static readonly Encoding IOTextEncoding = new UTF8Encoding(false, true);
 
-    private static async ValueTask<NativeValue> IOOperationAsync(string name, IReadOnlyList<NativeValue> args,
+    internal static async ValueTask WriteFileText(NativePathValue path, string contents, bool append,
         NativeRuntimeContext context, CancellationToken token)
     {
-        if (StandardIO(name, args, context, token) is { } standard) return await standard;
-        NativePathValue path = context.AsPath(args[0]);
-        if (name == "read_lines") return NativeValue.FromRange(new NativeRange(ReadLines(path, context.CaptureDirectory(), token), TypeRef.String));
-        if (name == "read_bytes") return NativeValue.FromRange(new NativeRange(ReadBytes(path, context.CaptureDirectory(), token), TypeRef.Number));
-        if (name == "read_text")
-        {
-            await using IOInput input = OpenInput(path, context, token);
-            using StreamReader reader = new(input.Stream, IOTextEncoding, true, context.BufferSize, leaveOpen: true);
-            string text = await reader.ReadToEndAsync(token);
-            await input.CompleteAsync(token);
-            return NativeValue.FromString(text);
-        }
-        if (name == "file_size")
-        {
-            if (path.Connection is { Kind: ConnectionKind.Ssh or ConnectionKind.Wsl } connection)
-            {
-                string size = await NativeHostIO.RunCommandAsync(connection, IOPrelude + "\nstat -L -c %s -- \"$p\"", [path.Raw], context, token);
-                return NativeValue.FromNumber(double.Parse(size, System.Globalization.CultureInfo.InvariantCulture));
-            }
-            return NativeValue.FromNumber(new FileInfo(context.LocalPath(path)).Length);
-        }
-        bool append = name.StartsWith("append_", StringComparison.Ordinal);
-        await using Stream inputBytes = name.EndsWith("_bytes", StringComparison.Ordinal)
-            ? new RangeInputStream(args[1].Kind == NativeKind.Range ? args[1].AsRange() : throw new MsyncException($"io.{name} expects Range<Number>"), token)
-            : new MemoryStream(IOTextEncoding.GetBytes(Text(args[1])), writable: false);
+        token.ThrowIfCancellationRequested();
+        if (context.DryRun) return;
+        await using Stream bytes = new MemoryStream(IOTextEncoding.GetBytes(contents), writable: false);
+        await WriteFile(path, bytes, append, context, token).ConfigureAwait(false);
+    }
+
+    internal static async ValueTask WriteFile(NativePathValue path, Stream inputBytes, bool append,
+        NativeRuntimeContext context, CancellationToken token)
+    {
         if (path.Connection?.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl)
             await WriteRemoteAsync(path, inputBytes, append, context, token);
         else if (append)
@@ -56,7 +40,7 @@ public static partial class NativeBuiltins
             string local = WritableFile(context.LocalPath(path));
             string kind = Status(local, false);
             if (kind is "regular" or "not_found")
-                await TransferFiles.WriteFileAsync(inputBytes, local, null, token, bufferSize: context.BufferSize);
+                await TransferFiles.WriteFileAsync(inputBytes, local, null, token, bufferSize: context.BufferSize, timeline: context.Timeline);
             else
             {
                 await using FileStream output = new(local, FileMode.Open, FileAccess.Write,
@@ -65,7 +49,6 @@ public static partial class NativeBuiltins
                 await output.FlushAsync(token);
             }
         }
-        return NativeValue.Null;
     }
 
     private static string WritableFile(string local)
@@ -78,24 +61,58 @@ public static partial class NativeBuiltins
             ? File.ResolveLinkTarget(local, returnFinalTarget: true)?.FullName ?? local : local;
     }
 
-    private static async IAsyncEnumerable<NativeValue> ReadLines(NativePathValue path, NativeRuntimeContext context,
-        [EnumeratorCancellation] CancellationToken token)
+    internal sealed class TextLineInput(NativePathValue path, NativeRuntimeContext context) : IAsyncDisposable
     {
-        await using IOInput input = OpenInput(path, context, token);
-        using StreamReader reader = new(input.Stream, IOTextEncoding, true, context.BufferSize, leaveOpen: true);
-        while (await reader.ReadLineAsync(token) is { } line) yield return NativeValue.FromString(line);
-        await input.CompleteAsync(token);
+        private IOInput? input;
+        private StreamReader? reader;
+
+        internal async ValueTask<string?> Read(CancellationToken token)
+        {
+            if (reader is null)
+            {
+                input = OpenInput(path, context, token);
+                reader = new(input.Stream, IOTextEncoding, true, context.BufferSize, leaveOpen: true);
+            }
+            string? line = await reader.ReadLineAsync(token).ConfigureAwait(false);
+            if (line is null) await input!.CompleteAsync(token).ConfigureAwait(false);
+            return line;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            try { reader?.Dispose(); }
+            finally
+            {
+                if (input is not null) await input.DisposeAsync().ConfigureAwait(false);
+            }
+        }
     }
 
-    private static async IAsyncEnumerable<NativeValue> ReadBytes(NativePathValue path, NativeRuntimeContext context,
-        [EnumeratorCancellation] CancellationToken token)
+    internal static async ValueTask<string> ReadFileText(NativePathValue path, NativeRuntimeContext context,
+        CancellationToken token, Action<string>? refine = null)
     {
-        await using IOInput input = OpenInput(path, context, token);
-        byte[] buffer = new byte[context.BufferSize];
-        int count;
-        while ((count = await input.Stream.ReadAsync(buffer, token)) != 0)
-            for (int index = 0; index < count; index++) yield return NativeValue.FromNumber(buffer[index]);
-        await input.CompleteAsync(token);
+        token.ThrowIfCancellationRequested();
+        IOInput input;
+        if (path.Connection is { Kind: ConnectionKind.Ssh or ConnectionKind.Wsl } remote)
+        {
+            if (refine is not null)
+                refine(await NativeHostIO.RunCommandAsync(remote, RemotePrelude + "\n" + RemoteStatus(false), [path.Raw], context, token).ConfigureAwait(false));
+            input = OpenRemoteInput(path, context);
+        }
+        else
+        {
+            string local = context.LocalPath(path);
+            string kind = InputKind(local);
+            refine?.Invoke(kind);
+            input = OpenLocalInput(local, kind, context.BufferSize);
+        }
+        await using (input)
+        {
+            using StreamReader reader = new(input.Stream, IOTextEncoding, true, context.BufferSize, leaveOpen: true);
+            string text = await reader.ReadToEndAsync(token).ConfigureAwait(false);
+            await input.CompleteAsync(token).ConfigureAwait(false);
+            return text;
+        }
     }
 
     private static IOInput OpenInput(NativePathValue path, NativeRuntimeContext context, CancellationToken token)
@@ -104,11 +121,20 @@ public static partial class NativeBuiltins
         if (path.Connection is not { Kind: ConnectionKind.Ssh or ConnectionKind.Wsl })
         {
             string local = context.LocalPath(path);
-            if (!OperatingSystem.IsWindows() && NativeFileIdentity.Kind(local, false) is "fifo" or "character")
-                return new(new NativePosixInputStream(local));
-            return new(new FileStream(local, FileMode.Open, FileAccess.Read,
-                FileShare.ReadWrite | FileShare.Delete, context.BufferSize, FileOptions.Asynchronous | FileOptions.SequentialScan));
+            return OpenLocalInput(local, InputKind(local), context.BufferSize);
         }
+        return OpenRemoteInput(path, context);
+    }
+
+    private static string InputKind(string path) => OperatingSystem.IsWindows() ? "regular" : NativeFileIdentity.Kind(path, false);
+
+    private static IOInput OpenLocalInput(string path, string kind, int bufferSize) => kind is "fifo" or "character"
+        ? new(new NativePosixInputStream(path))
+        : new(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete,
+            bufferSize, FileOptions.Asynchronous | FileOptions.SequentialScan));
+
+    private static IOInput OpenRemoteInput(NativePathValue path, NativeRuntimeContext context)
+    {
         ProcessStartInfo info = IOStart(path, "exec cat -- \"$p\"", false, context);
         return new(Process.Start(info) ?? throw new IOException($"Cannot start reader for '{path}'."), path);
     }
@@ -202,42 +228,5 @@ public static partial class NativeBuiltins
             await error!;
             process.Dispose();
         }
-    }
-
-    private sealed class RangeInputStream(NativeRange values, CancellationToken token) : Stream
-    {
-        private readonly IAsyncEnumerator<NativeValue> iterator = values.Items.GetAsyncEnumerator(token);
-        private bool ended;
-        public override bool CanRead => true;
-        public override bool CanSeek => false;
-        public override bool CanWrite => false;
-        public override long Length => throw new NotSupportedException();
-        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
-        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-        {
-            int count = 0;
-            while (!ended && count < buffer.Length)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (!await iterator.MoveNextAsync()) { ended = true; break; }
-                if (iterator.Current.Kind != NativeKind.Number || !double.IsInteger(iterator.Current.AsNumber()) || iterator.Current.AsNumber() is < 0 or > 255)
-                    throw new MsyncException("Byte ranges require Number values in the integral interval 0..255.");
-                buffer.Span[count++] = (byte)iterator.Current.AsNumber();
-            }
-            return count;
-        }
-        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
-            ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
-        public override ValueTask DisposeAsync() => iterator.DisposeAsync();
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing) iterator.DisposeAsync().AsTask().GetAwaiter().GetResult();
-            base.Dispose(disposing);
-        }
-        public override int Read(byte[] buffer, int offset, int count) => ReadAsync(buffer, offset, count, token).GetAwaiter().GetResult();
-        public override void Flush() { }
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-        public override void SetLength(long value) => throw new NotSupportedException();
-        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }

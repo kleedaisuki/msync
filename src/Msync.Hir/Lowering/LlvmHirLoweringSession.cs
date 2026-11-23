@@ -1,6 +1,6 @@
 using Msync.Core;
+using Msync.Core.Hpir;
 using Msync.Core.Llvm;
-using Msync.Core.Native;
 
 namespace Msync.Hir;
 
@@ -8,10 +8,7 @@ public sealed class LlvmHirLoweringSession
 {
     private Generation? acceptedCode;
 
-    public LlvmHirLoweringResult Lower(HirModule module, CompilationTrace? trace = null) =>
-        Lower(module, [], trace);
-
-    public LlvmHirLoweringResult Lower(HirModule module, IReadOnlyList<HirExport> shadows, CompilationTrace? trace)
+    public LlvmHirLoweringResult LowerPhysical(HirModule module, IReadOnlyList<HirExport> shadows, CompilationTrace? trace)
     {
         var generation = trace?.Detail is not { } detail ? new Generation(module, shadows, acceptedCode)
             : detail.MeasureDetailed("compiler.llvm.session.registry", (module, shadows, previous: acceptedCode),
@@ -22,37 +19,24 @@ public sealed class LlvmHirLoweringSession
                     ["roots"] = (ulong)state.Roots.Count,
                     ["shadow.paths"] = (ulong)(state.ShadowPaths?.Count ?? 0),
                     ["import.roots"] = (ulong)state.ImportSlots.Count,
+                    ["import.aliases.inherited"] = (ulong)state.AliasedImports.Count,
                     ["types"] = (ulong)state.Metadata.Types.Count,
                     ["layouts"] = (ulong)state.Metadata.Layouts.Count,
-                    ["retained.functions"] = (ulong)(state.Program?.Functions.Count ?? 0)
+                    ["retained.functions"] = (ulong)state.Map.Functions.Count
                 });
         return LlvmHirLowerer.LowerSession(module, generation, trace);
     }
 
-    public NativeHirLoweringResult Emit(LlvmHirLoweringResult input, CompilationTrace? trace = null)
+    public (HpirSessionSubmission Submission, HirLoweringLayout Layout) EmitPhysical(
+        LlvmHirLoweringResult input, CompilationTrace? trace)
     {
-        var generation = input.SessionGeneration
-            ?? throw new ArgumentException("The graph was not produced by a persistent lowering session.", nameof(input));
-        NativeProgram program = LlvmNativeLowerer.Lower(input, trace);
-        if (trace?.Detail is not { } detail) Commit(generation, program, null);
-        else detail.Run("compiler.llvm.session.commit", (owner: this, generation, program, detail),
-            static state => state.owner.Commit(state.generation, state.program, state.detail));
-        return new(program, generation.Map.Layout);
-    }
-
-    private void Commit(Generation generation, NativeProgram program, CompilationTrace? trace)
-    {
-        int types = generation.Metadata.Types.Count, layouts = generation.Metadata.Layouts.Count;
-        generation.Metadata.ImportTarget(program);
-        generation.Program = program;
+        if (input.SessionGeneration is not { } generation)
+            throw new ArgumentException("Expected a physical session graph.", nameof(input));
+        HpirSessionSubmission submission = LlvmHpirLowerer.LowerSession(input, trace);
+        // Keep code identities for statements that published storage even when
+        // a subsequent statement in the same submission fails at execution.
         acceptedCode = generation;
-        trace?.Metric("generation", generation.Number);
-        trace?.Metric("imported.types", generation.Metadata.Types.Count - types);
-        trace?.Metric("imported.layouts", generation.Metadata.Layouts.Count - layouts);
-        trace?.Metric("callables", generation.Map.NextCallable);
-        trace?.Metric("roots", generation.Roots.Count);
-        trace?.Metric("allocation.sites", generation.Map.AllocationSites.Count);
-        trace?.Metric("statics", program.Statics.Count);
+        return (submission, generation.Map.Layout);
     }
 
     internal sealed record Root(HirLocationId Location, int Slot, int Type, string Name);
@@ -62,24 +46,31 @@ public sealed class LlvmHirLoweringSession
         internal readonly LlvmNativeMetadata Metadata;
         internal readonly HirLoweringMap Map = new();
         internal readonly Dictionary<HirLocationId, Root> Roots = [];
-        internal readonly Dictionary<int, int> StaticIndices = [];
+        internal readonly HashSet<HirLocationId> AliasedImports = [];
+        internal readonly HashSet<HirLocationId> CapturedRoots = [];
+        private readonly Dictionary<string, long> nativeIdentities = new(StringComparer.Ordinal);
         internal readonly HashSet<int> ScopeShapes = [];
-        internal NativeProgram? Program;
+        internal readonly object Owner;
+        internal HpirSessionLayouts? HpirLayouts;
+        internal HpirSessionTypes? HpirTypes;
         internal readonly HirFunctionId Entry;
         internal readonly int Number;
+        internal readonly int SourceCount, InheritedSources;
         internal readonly HirLocationId[] Exports;
         internal readonly IReadOnlyList<int[]>? ShadowPaths;
-        internal readonly List<NativeStatic> Statics;
         internal readonly List<int> ImportSlots = [];
 
         internal Generation(HirModule module, IReadOnlyList<HirExport> shadows, Generation? previous)
         {
+            Owner = previous?.Owner ?? new object();
             Entry = module.Entry;
             Number = (previous?.Number ?? 0) + 1;
+            SourceCount = module.Sources.Length;
+            InheritedSources = previous?.SourceCount ?? 0;
             Exports = module.Exports.Concat(shadows).Select(export => export.Location).Distinct().ToArray();
             Metadata = previous is null ? new(module) : previous.Metadata.Fork(module);
-            Program = previous?.Program;
-            Statics = Program?.Statics.ToList() ?? [];
+            HpirLayouts = previous?.HpirLayouts;
+            HpirTypes = previous?.HpirTypes;
             if (previous is not null) Copy(previous);
             // A module activation writes an import in this generation; later
             // submissions and existing closures still address the same cell.
@@ -113,7 +104,9 @@ public sealed class LlvmHirLoweringSession
             foreach (var pair in previous.Map.Locations) Map.Locations.Add(pair.Key, pair.Value);
             foreach (var pair in previous.Map.AllocationSites) Map.AllocationSites.Add(pair.Key, pair.Value);
             foreach (var pair in previous.Roots) Roots.Add(pair.Key, pair.Value);
-            foreach (var pair in previous.StaticIndices) StaticIndices.Add(pair.Key, pair.Value);
+            AliasedImports.UnionWith(previous.AliasedImports);
+            CapturedRoots.UnionWith(previous.CapturedRoots);
+            foreach (var pair in previous.nativeIdentities) nativeIdentities.Add(pair.Key, pair.Value);
             ScopeShapes.UnionWith(previous.ScopeShapes);
             Map.NextCallable = previous.Map.NextCallable;
             Map.NextAllocation = previous.Map.NextAllocation;
@@ -125,6 +118,16 @@ public sealed class LlvmHirLoweringSession
             Map.Functions.Add(function, index);
             Map.Callables.Add(index, new(function.Value, false));
             return index;
+        }
+
+        internal long NativeIdentity(string native)
+        {
+            if (nativeIdentities.TryGetValue(native, out long code)) return code;
+            // Physical guest identities use positive entries. Native tokens
+            // also stay separate from nearby negative LLVM extern identities.
+            code = long.MinValue + nativeIdentities.Count;
+            nativeIdentities.Add(native, code);
+            return code;
         }
         internal int Template(HirTemplateId template)
         {
@@ -142,17 +145,22 @@ public sealed class LlvmHirLoweringSession
             Map.AllocationSites.Add(identity, site);
             return site;
         }
-        internal int SyntheticSite() => Map.NextAllocation++;
-        internal int Static(int source, int layout)
-        {
-            if (StaticIndices.TryGetValue(source, out int index)) return index;
-            index = Statics.Count;
-            StaticIndices.Add(source, index);
-            Statics.Add(new(layout, Site(source)));
-            return index;
-        }
     }
 }
 
-public sealed record LlvmSessionCellInfo(LlvmGlobalVariable Global, HirLocationId Location, int Slot, int Type, int Layout);
-public sealed record LlvmSessionDispatchInfo(int Slot, IReadOnlyDictionary<LlvmFunction, LlvmFunction> Targets);
+internal sealed record HpirSessionLayouts(IReadOnlyList<HpirLayout> Layouts, Dictionary<int, int> LogicalIds,
+    int TextLayout, int AliasLayout, int PathLayout, Dictionary<int, HpirSessionField[]> ScopeLayouts,
+    IReadOnlySet<int> TextSlots, IReadOnlyDictionary<int, HpirSessionSnapshot> SnapshotLayouts);
+internal sealed record HpirSessionTypes(IReadOnlyList<HpirTypeLiteral> Literals,
+    Dictionary<TypeRef, int> Ids, IReadOnlyList<TypeRef> Witnesses);
+
+public sealed record LlvmSessionCellInfo(LlvmGlobalVariable Global, HirLocationId Location, int Slot, int Type, int Layout)
+{
+    internal LlvmGlobalVariable? Initialized { get; init; }
+    internal bool Aliased { get; init; }
+    internal bool Captured { get; init; }
+}
+public sealed record LlvmSessionDispatchInfo(int Slot, IReadOnlyDictionary<LlvmFunction, LlvmFunction> Targets)
+{
+    internal IReadOnlyList<HirSessionNativeTarget> NativeTargets { get; init; } = [];
+}

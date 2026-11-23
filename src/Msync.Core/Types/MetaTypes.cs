@@ -1,5 +1,4 @@
 using System.Numerics;
-using Msync.Core.Native;
 
 namespace Msync.Core;
 
@@ -18,51 +17,51 @@ public static class MetaTypes
             (target.Element is null || source.Element is null || target.Element.Accepts(source.Element));
     }
 
-    public static NativeValue Evaluate(string operation, IReadOnlyList<TypeRef> types) =>
-        Evaluate(operation, types[0], types.Count > 1 ? types[1] : null);
-
-    public static NativeValue Evaluate(string operation, TypeRef first, TypeRef? second = null)
+    public static bool Predicate(string operation, TypeRef first, TypeRef? second = null) => operation switch
     {
-        return operation switch
-        {
-            "is_null" => Boolean(first.Kind == TypeKind.Null),
-            "is_bool" => Boolean(first.Kind == TypeKind.Bool),
-            "is_number" => Boolean(first.Kind == TypeKind.Number),
-            "is_string" => Boolean(first.Kind == TypeKind.String),
-            "is_path" => Boolean(first.Kind == TypeKind.Path),
-            "is_range" => Boolean(first.Kind == TypeKind.Range),
-            "is_function" => Boolean(first.Kind == TypeKind.Function),
-            "is_scope" => Boolean(first.Kind == TypeKind.Scope),
-            "is_process" => Boolean(first.Kind == TypeKind.Process),
-            "is_connection" => Boolean(first.Kind == TypeKind.Connection),
-            "is_type" => Boolean(first.Kind == TypeKind.Type),
-            "is_never" => Boolean(first.Kind == TypeKind.Never),
-            "is_union" => Boolean(BitOperations.PopCount((uint)first.Kind) > 1),
-            "is_scalar" => Boolean(first.Kind != TypeKind.Never && (first.Kind & ~Scalars) == 0),
-            "is_nullable" => Boolean(first.Nullable),
-            "is_same" => Boolean(first == Required(second)),
-            "accepts" => Boolean(first.Accepts(Required(second))),
-            "is_assignable" => Boolean(IsConvertible(Required(second), first)),
-            "is_convertible" => Boolean(IsConvertible(first, Required(second))),
-            "is_castable" => Boolean(ExplicitConversions.Possible(first, Required(second))),
-            "add_null" => NativeValue.FromType(first.WithNull),
-            "remove_null" => NativeValue.FromType(first.WithoutNull),
-            "common_type" => NativeValue.FromType(TypeRef.Union(first, Required(second))),
-            "range_of" => NativeValue.FromType(new(TypeKind.Range, first)),
-            "element_type" => first.WithoutNull.Kind == TypeKind.Range
-                ? NativeValue.FromType(first.Element ?? TypeRef.Any) : NativeValue.Null,
-            "range_rank" => NativeValue.FromNumber(RangeRank(first)),
-            "type_name" => NativeValue.FromString(first.ToString()),
-            "alternatives" => NativeValue.FromRange(NativeRange.Snapshot(Alternatives(first), TypeRef.Type)),
-            _ => throw new MsyncException($"Unknown meta native '{operation}'")
-        };
-    }
+        "is_null" => first.Kind == TypeKind.Null,
+        "is_bool" => first.Kind == TypeKind.Bool,
+        "is_number" => first.Kind == TypeKind.Number,
+        "is_string" => first.Kind == TypeKind.String,
+        "is_path" => first.Kind == TypeKind.Path,
+        "is_range" => first.Kind == TypeKind.Range,
+        "is_function" => first.Kind == TypeKind.Function,
+        "is_scope" => first.Kind == TypeKind.Scope,
+        "is_process" => first.Kind == TypeKind.Process,
+        "is_connection" => first.Kind == TypeKind.Connection,
+        "is_type" => first.Kind == TypeKind.Type,
+        "is_never" => first.Kind == TypeKind.Never,
+        "is_union" => BitOperations.PopCount((uint)first.Kind) > 1,
+        "is_scalar" => first.Kind != TypeKind.Never && (first.Kind & ~Scalars) == 0,
+        "is_nullable" => first.Nullable,
+        "is_same" => first == Required(second),
+        "accepts" => first.Accepts(Required(second)),
+        "is_assignable" => IsConvertible(Required(second), first),
+        "is_convertible" => IsConvertible(first, Required(second)),
+        "is_castable" => ExplicitConversions.Possible(first, Required(second)),
+        _ => throw new MsyncException($"Unknown meta predicate '{operation}'")
+    };
+
+    public static TypeRef? Derived(string operation, TypeRef first, TypeRef? second = null) => operation switch
+    {
+        "add_null" => first.WithNull,
+        "remove_null" => first.WithoutNull,
+        "common_type" => TypeRef.Union(first, Required(second)),
+        "range_of" => new(TypeKind.Range, first),
+        "element_type" => first.WithoutNull.Kind == TypeKind.Range ? first.Element ?? TypeRef.Any : null,
+        _ => throw new MsyncException($"Unknown meta type constructor '{operation}'")
+    };
 
     private static TypeRef Required(TypeRef? type) => type ?? throw new ArgumentException("This metadata operation requires two Type descriptors.");
 
-    private static NativeValue Boolean(bool value) => NativeValue.FromBool(value);
+    public static IEnumerable<TypeRef> Alternatives(TypeRef type)
+    {
+        for (TypeKind kind = TypeKind.Null; kind <= TypeKind.Number; kind = (TypeKind)((ushort)kind << 1))
+            if ((type.Kind & kind) != 0)
+                yield return new(kind, kind == TypeKind.Range ? type.Element : null);
+    }
 
-    private static int RangeRank(TypeRef type)
+    public static int RangeRank(TypeRef type)
     {
         int rank = 0;
         while (type.WithoutNull.Kind == TypeKind.Range)
@@ -72,11 +71,5 @@ public static class MetaTypes
             type = element;
         }
         return rank;
-    }
-
-    private static IEnumerable<NativeValue> Alternatives(TypeRef type)
-    {
-        for (TypeKind bit = TypeKind.Null; bit <= TypeKind.Number; bit = (TypeKind)((ushort)bit << 1))
-            if ((type.Kind & bit) != 0) yield return NativeValue.FromType(new(bit, bit == TypeKind.Range ? type.Element : null));
     }
 }

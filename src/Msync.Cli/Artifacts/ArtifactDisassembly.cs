@@ -1,9 +1,6 @@
-using System.Buffers.Binary;
-using System.Globalization;
-using System.Text;
 using System.Text.Json.Nodes;
 using Msync.Core;
-using Msync.Core.Native;
+using Msync.Core.Hpir;
 using Msync.Hir;
 
 namespace Msync.Cli;
@@ -32,36 +29,11 @@ internal static class ArtifactDisassembly
         using MemoryStream stream = new(bytes, writable: false);
         try
         {
-            NativeProgram program = NativeArtifact.Read(stream);
-            cancellationToken.ThrowIfCancellationRequested();
-            int version = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(8, 2));
-            return new NativeArtifactRenderer(program, version, sourceUri, cancellationToken).Render();
+            if (HpirArtifact.HasMagic(bytes))
+                return HpirArtifactRenderer.Render(HpirArtifact.ReadTrusted(stream), cancellationToken);
+            throw ArtifactCommands.UnsupportedPhysicalArtifact(bytes);
         }
         catch (Exception error) when (error is MsyncException or IOException or ArgumentException or OverflowException or InvalidOperationException)
         { throw new MsyncException($"Cannot disassemble {sourceUri}: {error.Message}", inner: error); }
-    }
-
-    internal static string Quote(string value)
-    {
-        StringBuilder text = new("\"");
-        for (int index = 0; index < value.Length; index++)
-            switch (value[index])
-            {
-                case '"': text.Append("\\\""); break;
-                case '\\': text.Append("\\\\"); break;
-                case '\n': text.Append("\\n"); break;
-                case '\r': text.Append("\\r"); break;
-                case '\t': text.Append("\\t"); break;
-                default:
-                    char character = value[index];
-                    bool invalidSurrogate = char.IsHighSurrogate(character)
-                        ? index + 1 == value.Length || !char.IsLowSurrogate(value[index + 1])
-                        : char.IsLowSurrogate(character) && (index == 0 || !char.IsHighSurrogate(value[index - 1]));
-                    if (char.IsControl(character) || invalidSurrogate)
-                        text.Append("\\u").Append(((int)character).ToString("x4", CultureInfo.InvariantCulture));
-                    else text.Append(character);
-                    break;
-            }
-        return text.Append('"').ToString();
     }
 }

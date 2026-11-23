@@ -9,79 +9,78 @@ namespace Msync.Runtime.Native;
 
 public static partial class NativeHostIO
 {
-    public static async ValueTask<bool> ExecutePlannedAsync(NativePlannedTransfer transfer, NativeValue source,
-        NativeRuntimeContext context, CancellationToken token = default)
+    internal readonly record struct RecordedTransfer(NativePathValue Destination, PlannedTransferKind Kind,
+        TransferDestinationMode Mode, SourceSpan? Span = null);
+
+    internal static async ValueTask<bool> ExecuteRecordedAsync(RecordedTransfer transfer,
+        NativePathValue? path, string? text, NativeRuntimeContext context, CancellationToken token = default)
     {
         token.ThrowIfCancellationRequested();
         if (context.DryRun)
         {
-            await context.Output.WriteLineAsync($"{source} -> {transfer.Destination}");
+            await context.Output.WriteLineAsync($"{path?.ToString() ?? text ?? "null"} -> {transfer.Destination}");
             return true;
         }
         if (transfer.Kind is PlannedTransferKind.EnsureDirectory or PlannedTransferKind.ApplyDirectoryMetadata)
         {
-            await ExecuteDirectoryActionAsync(transfer, source, context, token);
+            await ExecuteDirectoryActionAsync(transfer, path, text, context, token);
             return true;
         }
         if (transfer.Kind == PlannedTransferKind.GenericCopy && transfer.Mode == TransferDestinationMode.Exact)
-            return await TransferAsync(source, transfer.Destination, context, token);
-        if (source.Kind == NativeKind.Range && transfer.Kind == PlannedTransferKind.GenericCopy)
-        {
-            NativePathValue target = transfer.Mode == TransferDestinationMode.Replace
-                ? transfer.Destination.WithRaw(transfer.Destination.Raw.TrimEnd('/') + "/.") : transfer.Destination;
-            return await TransferAsync(source, target, context, token);
-        }
-        if (source.Kind is not (NativeKind.Path or NativeKind.String))
-            throw new MsyncException($"Recorded {transfer.Kind} requires Path or String, received {source.Type}.", transfer.Span);
-        if (transfer.Kind == PlannedTransferKind.WriteText && source.Kind != NativeKind.String)
+            return path is { } ordinary ? await TransferPathAsync(ordinary, transfer.Destination, context, token)
+                : await TransferTextAsync(text ?? throw new MsyncException("Recorded transfer requires Path or String.", transfer.Span),
+                    transfer.Destination, context, token);
+        if (transfer.Kind == PlannedTransferKind.WriteText && text is null)
             throw new MsyncException("Recorded WriteText requires a String source.", transfer.Span);
         if (transfer.Kind is PlannedTransferKind.CopyFile or PlannedTransferKind.CopyDirectory or PlannedTransferKind.CopyLink
-            && source.Kind != NativeKind.Path)
+            && path is null)
             throw new MsyncException($"Recorded {transfer.Kind} requires a Path source.", transfer.Span);
+        if (path is null && text is null)
+            throw new MsyncException($"Recorded {transfer.Kind} requires Path or String.", transfer.Span);
 
         bool shorthand = transfer.Mode == TransferDestinationMode.Exact;
         bool container = shorthand && EndsInSeparator(transfer.Destination);
         bool replace = transfer.Mode == TransferDestinationMode.Replace || shorthand && IsReplacement(transfer.Destination);
-        NativeConnection? sourceConnection = source.Kind == NativeKind.Path ? Remote(source.AsPath()) : null;
+        NativeConnection? sourceConnection = path is { } input ? Remote(input) : null;
         NativeConnection? targetConnection = Remote(transfer.Destination);
         if (sourceConnection is null && targetConnection is null)
         {
-            await Task.Run(() => ExecuteLocalPlanned(transfer, source, context, container, replace, token), token);
+            await Task.Run(() => ExecuteLocalPlanned(transfer, path, text, context, container, replace, token), token);
             return true;
         }
         NativePathValue destination = targetConnection is null
-            ? new(shorthand ? TargetPath(transfer.Destination, source, context, container) : context.LocalPath(transfer.Destination))
-            : RemoteFinalTarget(transfer.Destination, source, shorthand, container, replace);
+            ? new(shorthand ? PhysicalTargetPath(transfer.Destination, path, context, container) : context.LocalPath(transfer.Destination))
+            : RemoteFinalTarget(transfer.Destination, path, shorthand, container, replace);
         string mode = replace && transfer.Kind != PlannedTransferKind.WriteText ? "replace-final"
             : transfer.Mode == TransferDestinationMode.Merge ? "merge" : "exact";
         if (targetConnection is null)
-            await DownloadAsync([source.AsPath()], destination, context, false, replace, token, transfer.Kind,
+            await DownloadAsync([path!.Value], destination, context, false, replace, token, transfer.Kind,
                 replace ? TransferDestinationMode.Replace : transfer.Mode);
         else if (sourceConnection == targetConnection)
-            await CopyRemoteAsync([source.AsPath()], destination, context, false, replace, false, token, transfer.Kind, mode);
+            await CopyRemoteAsync([path!.Value], destination, context, false, replace, false, token, transfer.Kind, mode);
         else if (sourceConnection is null)
-            await UploadAsync([source], destination, context, false, replace, false, token, transfer.Kind, mode);
+            await UploadPayloadAsync(path is { } local ? [local] : null, text, destination, context, false, replace, false, token, transfer.Kind, mode);
         else
-            await RelayAsync([source], destination, context, false, replace, false, token, transfer.Kind, mode);
+            await RelayPathsAsync([path!.Value], destination, context, false, replace, false, token, transfer.Kind, mode);
         return true;
     }
 
-    private static void ExecuteLocalPlanned(NativePlannedTransfer transfer, NativeValue source,
+    private static void ExecuteLocalPlanned(RecordedTransfer transfer, NativePathValue? path, string? text,
         NativeRuntimeContext context, bool container, bool replace, CancellationToken token)
     {
         string destination = transfer.Mode == TransferDestinationMode.Exact
-            ? TargetPath(transfer.Destination, source, context, container) : context.LocalPath(transfer.Destination);
-        byte[]? rented = source.Kind == NativeKind.String || !OperatingSystem.IsWindows()
+            ? PhysicalTargetPath(transfer.Destination, path, context, container) : context.LocalPath(transfer.Destination);
+        byte[]? rented = text is not null || !OperatingSystem.IsWindows()
             ? ArrayPool<byte>.Shared.Rent(context.BufferSize) : null;
         try
         {
             Span<byte> buffer = rented is null ? [] : rented.AsSpan(0, context.BufferSize);
-            if (source.Kind == NativeKind.String)
+            if (text is not null)
             {
-                TransferFiles.WriteLiteral(source.AsString(), destination, buffer, token, context.Timeline);
+                TransferFiles.WriteLiteral(text, destination, buffer, token, context.Timeline);
                 return;
             }
-            string input = context.LocalPath(source.AsPath());
+            string input = context.LocalPath(path!.Value);
             if (TransferOverlap.SameNode(input, destination)) return;
             bool directory = transfer.Kind == PlannedTransferKind.CopyDirectory
                 || transfer.Kind == PlannedTransferKind.GenericCopy && Directory.Exists(input);
@@ -100,7 +99,7 @@ public static partial class NativeHostIO
         finally { if (rented is not null) ArrayPool<byte>.Shared.Return(rented); }
     }
 
-    private static NativePathValue RemoteFinalTarget(NativePathValue target, NativeValue source, bool shorthand, bool container, bool replace)
+    private static NativePathValue RemoteFinalTarget(NativePathValue target, NativePathValue? source, bool shorthand, bool container, bool replace)
     {
         if (!shorthand) return target;
         if (replace)
@@ -108,15 +107,14 @@ public static partial class NativeHostIO
             string raw = target.Raw[..^2];
             return target.WithRaw(raw.Length == 0 ? "/" : raw);
         }
-        return container && source.Kind == NativeKind.Path
-            ? target.WithRaw(target.Raw.TrimEnd('/') + "/" + Basename(source.AsPath())) : target;
+        return container && source is { } path
+            ? target.WithRaw(target.Raw.TrimEnd('/') + "/" + Basename(path)) : target;
     }
 
-    private static async Task ExecuteDirectoryActionAsync(NativePlannedTransfer transfer, NativeValue source,
+    private static async Task ExecuteDirectoryActionAsync(RecordedTransfer transfer, NativePathValue? path, string? text,
         NativeRuntimeContext context, CancellationToken token)
     {
-        NativePathValue? path = source.Kind == NativeKind.Path ? source.AsPath() : null;
-        if (path is null && (source.Kind != NativeKind.Null || transfer.Kind != PlannedTransferKind.EnsureDirectory))
+        if (path is null && (text is not null || transfer.Kind != PlannedTransferKind.EnsureDirectory))
             throw new IOException("Directory metadata requires a Path source.");
         NativeConnection? sourceConnection = path is { } input ? Remote(input) : null;
         NativeConnection? targetConnection = Remote(transfer.Destination);

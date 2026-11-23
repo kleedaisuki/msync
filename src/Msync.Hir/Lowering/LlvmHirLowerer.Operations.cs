@@ -4,7 +4,7 @@ using Msync.Core.Native;
 
 namespace Msync.Hir;
 
-public enum LlvmRuntimeValueOperation : byte { SelectPath, Barrier, Acquire, ProcessCall, HasLayout, DemandBool, ProjectAddress, BindSessionCell, FailMember }
+public enum LlvmRuntimeValueOperation : byte { SelectPath, Barrier, Acquire, ProcessCall, HasLayout, DemandBool, ProjectAddress, BindSessionCell, FailMember, SessionRangeItem, SessionSnapshot }
 public sealed record LlvmRuntimeValueBinding(LlvmRuntimeValueOperation Operation, int Mode = 0, string? Symbol = null)
 {
     public NativeProjection? Projection { get; init; }
@@ -26,7 +26,8 @@ public static partial class LlvmHirLowerer
             if (binding.Operation == LlvmRuntimeValueOperation.DemandBool)
                 // Waiting touches runtime state, not source-addressable objects.
                 target.MemoryEffectsAttribute = new(12);
-            else if (binding.Operation is LlvmRuntimeValueOperation.HasLayout or LlvmRuntimeValueOperation.ProjectAddress)
+            else if (binding.Operation is LlvmRuntimeValueOperation.HasLayout or LlvmRuntimeValueOperation.ProjectAddress
+                or LlvmRuntimeValueOperation.SessionSnapshot)
                 // The object shape and storage location do not change on field writes.
                 target.MemoryEffectsAttribute = new(0);
             else if (binding.Operation == LlvmRuntimeValueOperation.FailMember)
@@ -80,10 +81,7 @@ public static partial class LlvmHirLowerer
             var signature = LlvmFunctionType.Get(resultType, [left.Type, right.Type]);
             if (!owner.binaryBindings.TryGetValue((runtimeOperation, signature), out var target))
             {
-                target = LlvmFunction.Create(signature, LlvmLinkage.ExternalLinkage,
-                    "msync.value." + runtimeOperation, owner.module);
-                owner.runtimeCalls.Add(target, runtimeOperation);
-                owner.binaryBindings.Add((runtimeOperation, signature), target);
+                target = owner.DefineBinaryBinding(runtimeOperation, signature);
                 owner.trace?.Detail?.Metric("operations.binary.binding_created", 1);
             }
             else owner.trace?.Detail?.Metric("operations.binary.binding_reused", 1);
@@ -110,7 +108,43 @@ public static partial class LlvmHirLowerer
             if (block.HasTerminator) return owner.Null;
             current = node;
             var pattern = OperationLiteral(new(HirLiteralKind.String, Text: node.Text));
-            return RuntimeBinary(node, NativeBinary.RegexMatch, subject, pattern);
+            return RegexSubject(subject, pattern);
+        }
+
+        private LlvmValue RegexSubject(LlvmValue subject, LlvmValue pattern)
+        {
+            var boolean = LlvmIntegerType.Get(owner.context, 1);
+            int logical = owner.metadata.RuntimeType(TypeRef.Bool);
+            if (owner.UnionDomain(subject.Type) is not { } domain)
+                return RuntimeBinary(NativeBinary.RegexMatch, boolean, logical, subject, pattern);
+
+            var text = domain & (TypeKind.String | TypeKind.Path);
+            var rejected = LlvmConstantInt.GetFalse(owner.context);
+            if (text == TypeKind.Never) return rejected;
+            var done = new LlvmBasicBlock(owner.context, "regex.end", function);
+            var incoming = new List<(LlvmValue Value, LlvmBasicBlock Block)>(3);
+            foreach (var type in new[] { TypeRef.String, TypeRef.Path })
+            {
+                if ((text & type.Kind) == 0) continue;
+                var test = ConversionCall(LlvmRuntimeConversionOperation.IsType, boolean, logical, [subject, RuntimeTypeValue(type)]);
+                var invoke = new LlvmBasicBlock(owner.context, "regex.subject", function);
+                var next = new LlvmBasicBlock(owner.context, "regex.other", function);
+                BranchOn(test, invoke, next);
+                block = invoke;
+                var payload = ConversionCall(LlvmRuntimeConversionOperation.Represent,
+                    owner.RepresentationType(type.Kind), owner.metadata.RuntimeType(type), [subject]);
+                var matched = RuntimeBinary(NativeBinary.RegexMatch, boolean, logical, payload, pattern);
+                incoming.Add((matched, block));
+                Add(new LlvmUncondBrInstruction(done));
+                block = next;
+            }
+            incoming.Add((rejected, block));
+            Add(new LlvmUncondBrInstruction(done));
+            block = done;
+            var result = Add(new LlvmPhiInstruction(boolean, incoming.Count) { LogicalType = logical });
+            foreach (var entry in incoming) result.AddIncoming(entry.Value, entry.Block);
+            owner.trace?.Detail?.Metric("operations.regex.union_arms", incoming.Count - 1);
+            return result;
         }
         private LlvmValue SelectPath(HirNode node)
         {
@@ -123,8 +157,10 @@ public static partial class LlvmHirLowerer
         private LlvmValue ProcessCall(HirNode node, LlvmValue callee, IReadOnlyList<LlvmValue> arguments)
         {
             current = node;
-            return OperationCall(new(LlvmRuntimeValueOperation.ProcessCall, Hir.Calls[node.Data].Scheduling), owner.Type(node.Type),
+            int scheduling = Hir.Calls[node.Data].Scheduling;
+            var value = OperationCall(new(LlvmRuntimeValueOperation.ProcessCall, scheduling), owner.Type(node.Type),
                 owner.metadata.Type(node.Type), new[] { callee }.Concat(arguments).ToArray());
+            return (scheduling & 1) == 0 ? value : owner.DeferredSource(value, "released_process");
         }
         private LlvmCallInstruction OperationCall(LlvmRuntimeValueBinding binding, LlvmType result,
             int logicalType, IReadOnlyList<LlvmValue> arguments)
@@ -247,7 +283,7 @@ public static partial class LlvmHirLowerer
             {
                 HirPatternKind.Null => ConversionCall(LlvmRuntimeConversionOperation.IsNull, boolean, logical, [subject]),
                 HirPatternKind.Type => ConversionCall(LlvmRuntimeConversionOperation.IsType, boolean, logical, [subject, TypeValue(new(pattern.Data))]),
-                HirPatternKind.Regex => RuntimeBinary(NativeBinary.RegexMatch, boolean, logical, subject,
+                HirPatternKind.Regex => RegexSubject(subject,
                     OperationLiteral(new(HirLiteralKind.String, Text: pattern.Text))),
                 HirPatternKind.Literal => RuntimeBinary(NativeBinary.Equal, boolean, logical, subject,
                     OperationLiteral(Hir.Literals[pattern.Data])),

@@ -178,9 +178,8 @@ fn wc(input: Path or String) {
         $std::string::utf8_size(text)
     };
     scope {
-        lines: $std::ranges::count($std::string::chars(text), "
-"),
-        words: $std::ranges::size($std::string::split_whitespace(text)),
+        lines: $std::string::line_feed_count(text),
+        words: $std::string::word_count(text),
         characters: $std::string::length(text),
         bytes: bytes,
     }

@@ -4,7 +4,10 @@ using Msync.Core.Native;
 
 namespace Msync.Hir;
 
-public enum LlvmRuntimeConversionOperation : byte { Represent, Coerce, Convert, IsNull, IsType, TypeOf, Narrow }
+public enum LlvmRuntimeConversionOperation : byte
+{
+    Represent, Coerce, Convert, IsNull, IsType, TypeOf, Narrow, ObservedTextNumber, ObservedTextBool
+}
 public sealed record LlvmRuntimeConversionBinding(LlvmRuntimeConversionOperation Operation, int TargetType = -1);
 
 public static partial class LlvmHirLowerer
@@ -13,11 +16,33 @@ public static partial class LlvmHirLowerer
     {
         internal readonly Dictionary<LlvmFunction, LlvmRuntimeConversionBinding> runtimeConversions = [];
         private readonly Dictionary<(LlvmFunctionType Signature, LlvmRuntimeConversionBinding Binding), LlvmFunction> conversionBindings = [];
+        internal HashSet<LlvmCallInstruction>? projectedRepresentations;
+
+        private void PruneRepresentations()
+        {
+            if (projectedRepresentations is null) return;
+            int dead = 0;
+            foreach (var packed in projectedRepresentations)
+            {
+                if (!packed.UseEmpty) continue;
+                packed.EraseFromParent();
+                ++dead;
+            }
+            trace?.Detail?.Metric("represent.roundtrip_packs_removed", dead);
+        }
+
         internal LlvmFunction ConversionBinding(LlvmFunctionType signature, LlvmRuntimeConversionBinding binding)
         {
             if (conversionBindings.TryGetValue((signature, binding), out var existing)) return existing;
             var target = LlvmFunction.Create(signature, LlvmLinkage.ExternalLinkage,
                 "msync.value." + binding.Operation.ToString().ToLowerInvariant() + "." + conversionBindings.Count, module);
+            if (binding.Operation == LlvmRuntimeConversionOperation.Represent)
+            {
+                // Moving a payload preserves its identity and never demands it.
+                target.MemoryEffectsAttribute = new(0);
+                target.NoUnwind = true;
+                target.WillReturnAttribute = true;
+            }
             conversionBindings.Add((signature, binding), target);
             runtimeConversions.Add(target, binding);
             return target;
@@ -40,17 +65,27 @@ public static partial class LlvmHirLowerer
             int logical = owner.metadata.Type(target, admitsNull);
             var type = owner.Type(target, admitsNull);
             if (ReferenceEquals(value.Type, type)) return value;
+            if (value is LlvmCallInstruction { CalledFunction: { } callee } packed
+                && owner.runtimeConversions.TryGetValue(callee, out var binding)
+                && binding.Operation == LlvmRuntimeConversionOperation.Represent
+                && packed.GetArgument(0) is { } original && ReferenceEquals(original.Type, type)
+                && original.LogicalType == logical)
+            {
+                (owner.projectedRepresentations ??= []).Add(packed);
+                return original;
+            }
             // A flow refinement selects an already-known representation. This
             // binding copies/tag-packs/extracts payload; it never admits a value.
             return ConversionCall(LlvmRuntimeConversionOperation.Represent, type, logical, [value]);
         }
-        private LlvmValue ReadLocation(HirNode node)
+        private LlvmValue ReadLocation(HirNodeId id, HirNode node)
         {
             var location = new HirLocationId(node.Data);
             var storage = Hir.Locations[location.Value];
             var loaded = Add(new LlvmLoadInstruction(owner.Type(storage.StorageType, storage.AdmitsNull), Address(location))
                 { LogicalType = owner.metadata.Type(storage.StorageType, storage.AdmitsNull) });
-            return Represent(loaded, node.Type);
+            var value = Represent(loaded, node.Type);
+            return Hir.SessionSnapshots?.TryGetValue(id, out var snapshot) == true ? SnapshotRead(node, snapshot, value) : value;
         }
         private LlvmValue Coerce(HirNode node)
         {
@@ -104,9 +139,10 @@ public static partial class LlvmHirLowerer
             var source = Hir.Types[type.Value];
             var runtime = source.RuntimeType;
             if (source.Nullable) runtime = runtime with { Kind = runtime.Kind | TypeKind.Null };
-            return RelocatedValue(owner.metadata.RuntimeType(TypeRef.Type), owner.DataPointer,
-                new(NativeKind.Type, Type: runtime));
+            return RuntimeTypeValue(runtime);
         }
+        private LlvmValue RuntimeTypeValue(TypeRef type) => RelocatedValue(owner.metadata.RuntimeType(TypeRef.Type),
+            owner.DataPointer, new(NativeKind.Type, Type: type));
         private LlvmValue RelocatedValue(int logical, LlvmType type, NativeConstant value)
         {
             var global = new LlvmGlobalVariable(owner.module, type, true, LlvmLinkage.ExternalLinkage,

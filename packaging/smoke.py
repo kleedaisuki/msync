@@ -59,7 +59,16 @@ def journey(binary: Path, workspace: Path, runner: Path | None = None) -> None:
     execute(["run-ir", "sync.mexe"])
     assert (workspace / "output.txt").read_bytes() == payload
     database = workspace / "telemetry.sqlite"
-    execute(["run", "sync.mso", "--telemetry-db", str(database)])
+    execute(
+        [
+            "run",
+            "sync.mso",
+            "--telemetry-db",
+            str(database),
+            "--telemetry-level",
+            "diagnostics",
+        ]
+    )
     with closing(sqlite3.connect(database)) as connection:
         assert connection.execute("PRAGMA application_id").fetchone() == (0x4D53594E,)
         assert connection.execute("PRAGMA user_version").fetchone() == (1,)
@@ -67,7 +76,7 @@ def journey(binary: Path, workspace: Path, runner: Path | None = None) -> None:
             ("complete",)
         ]
         names = {row[0] for row in connection.execute("SELECT name FROM records")}
-        assert "run" in names and names & {"copy", "transfer"}, names
+        assert {"run", "hpir.effect.transfer"} <= names, names
     print(
         "PASS: packaged source, dry-run, source-free .mso/.mexe, bound IR bytes and native SQLite telemetry"
     )

@@ -7,76 +7,49 @@ using NativePathValue = Msync.Core.Native.NativePath;
 
 namespace Msync.Runtime.Native;
 
-public static partial class NativeBuiltins
-{
-    private static async ValueTask<NativeValue> ProcessOperationAsync(string name, IReadOnlyList<NativeValue> args,
-        NativeRuntimeContext context, CancellationToken token)
-    {
-        if (name == "spawn")
-        {
-            List<NativeValue> arguments = [];
-            await foreach (NativeValue item in Range(args[1], "process.spawn").Items.WithCancellation(token))
-            {
-                if (item.Kind is not (NativeKind.Path or NativeKind.String or NativeKind.Number or NativeKind.Bool))
-                    throw new MsyncException($"Process arguments require Path, String, Number or Bool, received {item.Type}.");
-                arguments.Add(item);
-            }
-            return NativeValue.FromProcess(await NativeHostIO.StartProcessAsync(context.AsPath(args[0]), arguments, context, true, token));
-        }
-        NativeProcess process = args[0].Kind == NativeKind.Process ? args[0].AsProcess()
-            : throw new MsyncException("Expected Process");
-        if (name == "wait") return NativeValue.FromProcess(await process.WaitAsync(token));
-        if (name == "pid") return NativeValue.FromNumber(process.ProcessId ?? process.Control?.ProcessId
-            ?? throw new MsyncException("This Process value has no operating-system identity; use process.spawn for controlled execution."));
-        if (name == "running") return Bool(process.Control?.IsRunning ?? process.Completion is { IsCompleted: false });
-        if (name is "kill" or "terminate")
-        {
-            if (process.Control is { } control) return Bool(name == "kill" ? control.Kill() : control.Terminate());
-            if (process.Completion is { IsCompleted: false })
-                throw new MsyncException("This Process has no control channel; use process.spawn for managed remote execution.");
-            return NativeValue.False;
-        }
-        if (name == "write_stdin")
-        {
-            IProcessControl control = process.Control ?? throw new MsyncException("This Process has no writable input pipe; use process.spawn.");
-            await control.WriteInputAsync(Text(args[1]), token);
-            return NativeValue.Null;
-        }
-        if (name == "close_stdin")
-        {
-            if (process.Control is { } control) await control.CloseInputAsync(token);
-            return NativeValue.Null;
-        }
-        NativeProcess completed = await process.WaitAsync(token);
-        return name switch
-        {
-            "stdout" => NativeValue.FromString(completed.StandardOutput),
-            "stderr" => NativeValue.FromString(completed.StandardError),
-            "success" => Bool(completed.ExitCode == 0),
-            "exit_code" => NativeValue.FromNumber(completed.ExitCode),
-            _ => throw new MsyncException($"Unknown process native '{name}'")
-        };
-    }
-}
-
 public static partial class NativeHostIO
 {
-    public static async ValueTask<NativeValue> ProcessCallAsync(NativePathValue executable,
-        IReadOnlyList<NativeValue> arguments, NativeRuntimeContext context, CancellationToken token) =>
-        NativeValue.FromProcess(await StartProcessAsync(executable, arguments, context, false, token));
-
-    public static async ValueTask<NativeProcess> StartProcessAsync(NativePathValue executable,
-        IReadOnlyList<NativeValue> arguments, NativeRuntimeContext context, bool pipeInput, CancellationToken token)
+    internal static ValueTask<NativeProcess> StartTextProcessAsync(NativePathValue executable, string[] arguments,
+        NativeRuntimeContext context, bool pipeInput, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        if (context.DryRun)
-        {
-            await context.Output.WriteLineAsync($"process {executable}({string.Join(", ", arguments)})");
-            return new(0, "", "") { ProcessId = 0 };
-        }
-        bool remote = executable.Connection?.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl;
-        NativeConnection connection = executable.Connection ?? default;
-        string[] argv = arguments.Select(value => ProcessArgument(value, context, remote)).ToArray();
+        return context.DryRun
+            ? DryRunProcessAsync(executable, string.Join(", ", arguments), context)
+            : StartProcessCoreAsync(executable, arguments, context, executable.Connection ?? default,
+                RemoteProcess(executable), pipeInput, token);
+    }
+
+    internal static int ProcessId(NativeProcess process) => process.ProcessId ?? process.Control?.ProcessId
+        ?? throw new MsyncException("This Process value has no operating-system identity; use process.spawn for controlled execution.");
+
+    internal static bool ProcessRunning(NativeProcess process) => process.Control?.IsRunning ?? process.Completion is { IsCompleted: false };
+
+    internal static bool StopProcess(NativeProcess process, bool force)
+    {
+        if (process.Control is { } control) return force ? control.Kill() : control.Terminate();
+        if (process.Completion is { IsCompleted: false })
+            throw new MsyncException("This Process has no control channel; use process.spawn for managed remote execution.");
+        return false;
+    }
+
+    internal static ValueTask WriteProcessInput(NativeProcess process, string text, CancellationToken token) =>
+        (process.Control ?? throw new MsyncException("This Process has no writable input pipe; use process.spawn.")).WriteInputAsync(text, token);
+
+    internal static ValueTask CloseProcessInput(NativeProcess process, CancellationToken token) =>
+        process.Control is { } control ? control.CloseInputAsync(token) : ValueTask.CompletedTask;
+
+    private static bool RemoteProcess(NativePathValue executable) =>
+        executable.Connection?.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl;
+
+    private static async ValueTask<NativeProcess> DryRunProcessAsync(NativePathValue executable, string arguments, NativeRuntimeContext context)
+    {
+        await context.Output.WriteLineAsync($"process {executable}({arguments})");
+        return new(0, "", "") { ProcessId = 0 };
+    }
+
+    private static async ValueTask<NativeProcess> StartProcessCoreAsync(NativePathValue executable, string[] argv,
+        NativeRuntimeContext context, NativeConnection connection, bool remote, bool pipeInput, CancellationToken token)
+    {
         ProcessStartInfo info = remote
             ? pipeInput ? RemoteProcessControl.StartInfo(connection.Kind, connection.Address, executable.Raw, argv, context)
                 : NativeTransferProtocol.CreateRemoteProcessStartInfo(connection.Kind, connection.Address, executable.Raw, argv, context)
@@ -111,18 +84,8 @@ public static partial class NativeHostIO
             Completion = CollectProcessAsync(process, control, executable, initialDiagnostic, context, token),
             AbortOwnedTransport = control is null ? () => Stop(process) : null
         };
-        context.ProcessCreated?.Invoke(value);
         return value;
     }
-
-    private static string ProcessArgument(NativeValue value, NativeRuntimeContext context, bool remote) => value.Kind switch
-    {
-        NativeKind.Path => remote ? value.AsPath().Raw : context.LocalPath(value.AsPath()),
-        NativeKind.String => value.AsString(),
-        NativeKind.Number => value.AsNumber().ToString(CultureInfo.InvariantCulture),
-        NativeKind.Bool => value.AsBool() ? "true" : "false",
-        _ => throw new MsyncException($"Process arguments require Path, String, Number or Bool, received {value.Type}.")
-    };
 
     private static async Task<NativeProcess> CollectProcessAsync(Process process, IProcessControl? control,
         NativePathValue executable, string initialDiagnostic, NativeRuntimeContext context, CancellationToken token)

@@ -158,7 +158,7 @@ def failed_copy(binary: Path, fixture: Path) -> Result:
     assert any(
         row["name"] == "execute"
         and row["status"] == "error"
-        and row["metrics"].get("scheduler.admitted_operations") == 1
+        and any("missing-file" in cause["message"] for cause in row["error_chain"])
         for row in found
     ), found
     return Result("failed-copy-cause-and-outcome", len(found))
@@ -428,25 +428,6 @@ def scheduler_profile(binary: Path, fixture: Path) -> Result:
             ).fetchone()[0]
             > 0
         )
-        assert (
-            connection.execute(
-                """SELECT value_int FROM spans JOIN metrics ON id=record_id
-               WHERE name='execute' AND key='scheduler.admitted_operations'"""
-            ).fetchone()[0]
-            > 0
-        )
-        totals: dict[str, int] = dict(
-            connection.execute(
-                """SELECT key,value_int FROM spans JOIN metrics ON id=record_id
-               WHERE name='execute' AND key GLOB 'scheduler.*'"""
-            )
-        )
-        assert totals["scheduler.admitted_operations"] == 1, totals
-        assert totals["scheduler.admitted_transfers"] == 1, totals
-        assert totals["scheduler.resource_nodes_visited"] > 0, totals
-        assert totals["scheduler.submitted_plans"] == 1, totals
-        assert totals["scheduler.submitted_batches"] == 1, totals
-        assert totals["scheduler.admission_ns"] > 0, totals
         count: int = connection.execute("SELECT count(*) FROM records").fetchone()[0]
     count += scheduler_hazard(binary, fixture / "hazard")
     return Result("sqlite-profile-scheduler-causality-and-payload", count)
@@ -510,30 +491,12 @@ acquire path_child;
     assert (fixture / "held.txt").read_text(encoding="utf-8") == payload
     assert (fixture / "from-path.txt").read_bytes() == b"typed Path source bytes"
     with sqlite3.connect(database) as connection:
-        totals: dict[str, int] = dict(
-            connection.execute(
-                """SELECT key,value_int FROM spans JOIN metrics ON id=record_id
-            WHERE name='execute' AND key GLOB 'scheduler.*'"""
-            )
-        )
-        for metric in (
-            "admitted_operations",
-            "admitted_transfers",
-            "resource_nodes_visited",
-            "dependency_edges",
-            "native_hazard_waits",
-            "admission_ns",
-            "wait_ns",
-        ):
-            assert totals[f"scheduler.{metric}"] > 0, totals
-        assert totals["scheduler.submitted_plans"] == 0, totals
-        assert totals["scheduler.submitted_batches"] == 0, totals
         footprints: dict[str, int] = dict(
             connection.execute(
                 """SELECT destination.value,reads.value_int FROM spans AS admission
             JOIN attributes AS destination ON destination.record_id=admission.id AND destination.key='transfer.destination'
             JOIN metrics AS reads ON reads.record_id=admission.id AND reads.key='resources.reads'
-            WHERE admission.name='scheduler.admission'"""
+            WHERE admission.name='hpir.effect.admit'"""
             )
         )
         assert (
@@ -550,40 +513,32 @@ acquire path_child;
             )
             == 1
         ), footprints
-        assert (
-            connection.execute(
-                """SELECT count(*) FROM spans AS waiting
-            JOIN attributes AS reason ON reason.record_id=waiting.id AND reason.key='wait.reason'
-            JOIN metrics AS pending ON pending.record_id=waiting.id AND pending.key='dependencies.pending'
-            JOIN metrics AS suspended ON suspended.record_id=waiting.id AND suspended.key='await.suspended'
-            JOIN events AS edge ON edge.trace_id=waiting.trace_id AND edge.span_id=waiting.span_id
-            JOIN attributes AS producer ON producer.record_id=edge.id AND producer.key='dependency.span_id'
-            JOIN spans AS admission ON admission.trace_id=edge.trace_id AND admission.span_id=producer.value
-            JOIN attributes AS destination ON destination.record_id=admission.id AND destination.key='transfer.destination'
-            WHERE waiting.name='scheduler.wait' AND reason.value='native.resources'
-            AND pending.value_int>0 AND suspended.value_int=1 AND waiting.duration_ns>0
-            AND edge.name='runtime.dependency' AND admission.name='scheduler.admission'
-            AND destination.value LIKE '%held.txt'"""
-            ).fetchone()[0]
-            > 0
-        )
+        assert file_read_dependency_count(connection) > 0
         return int(connection.execute("SELECT count(*) FROM records").fetchone()[0])
+
+
+def file_read_dependency_count(connection: sqlite3.Connection) -> int:
+    return int(
+        connection.execute(
+            """SELECT count(*) FROM events AS edge
+            JOIN spans AS reader ON reader.trace_id=edge.trace_id AND reader.span_id=edge.span_id
+            JOIN attributes AS kind ON kind.record_id=edge.id AND kind.key='dependency.kind'
+            JOIN attributes AS producer ON producer.record_id=edge.id AND producer.key='dependency.span_id'
+            JOIN spans AS writer ON writer.trace_id=edge.trace_id AND writer.span_id=producer.value
+            JOIN attributes AS destination ON destination.record_id=writer.id AND destination.key='transfer.destination'
+            WHERE edge.name='runtime.dependency' AND kind.value='file_read.predecessor'
+              AND reader.name='hpir.file_read.admit' AND writer.name='hpir.effect.admit'
+              AND destination.value LIKE '%held.txt'"""
+        ).fetchone()[0]
+    )
 
 
 def wait_for_scheduler_dependency(database: Path) -> bool:
     deadline: float = time.monotonic() + 10
     while time.monotonic() < deadline:
         with sqlite3.connect(database) as connection:
-            found: int = connection.execute(
-                """SELECT count(*) FROM events AS edge
-                JOIN attributes AS producer ON producer.record_id=edge.id AND producer.key='dependency.span_id'
-                JOIN spans AS admission ON admission.trace_id=edge.trace_id AND admission.span_id=producer.value
-                JOIN attributes AS destination ON destination.record_id=admission.id AND destination.key='transfer.destination'
-                WHERE edge.name='runtime.dependency' AND admission.name='scheduler.admission'
-                AND destination.value LIKE '%held.txt'"""
-            ).fetchone()[0]
-        if found > 0:
-            return True
+            if file_read_dependency_count(connection) > 0:
+                return True
         time.sleep(0.005)
     return False
 
@@ -734,61 +689,25 @@ acquire child;
             ).fetchall()
             assert (
                 connection.execute(
-                    "SELECT count(*) FROM spans WHERE name='vm.await' AND duration_ns>0"
+                    "SELECT count(*) FROM spans WHERE name='hpir.future.demand' AND duration_ns>0"
                 ).fetchone()[0]
                 > 0
             )
-            assert (
-                connection.execute(
-                    """SELECT count(*) FROM spans WHERE name='vm.frame'"""
-                ).fetchone()
-                == connection.execute(
-                    """SELECT sum(m.value_int) FROM events AS e JOIN metrics AS m ON m.record_id=e.id
-                   WHERE e.name='vm.function' AND m.key='calls'"""
-                ).fetchone()
-            )
-            assert (
-                connection.execute(
-                    """SELECT count(*) FROM events AS edge
-                   JOIN attributes AS related ON related.record_id=edge.id
-                     AND related.key='dependency.span_id'
-                   JOIN spans AS dependency ON dependency.trace_id=edge.trace_id
-                     AND dependency.span_id=related.value
-                   JOIN spans AS owner ON owner.trace_id=edge.trace_id
-                     AND owner.span_id=edge.span_id
-                   JOIN attributes AS scope ON scope.record_id=owner.id
-                     AND scope.key='dependency.scope' AND scope.value='relevant'
-                   JOIN attributes AS destination ON destination.record_id=dependency.id
-                     AND destination.key='transfer.destination' AND destination.value LIKE '%held.txt'
-                   JOIN metrics AS suspended ON suspended.record_id=owner.id
-                     AND suspended.key='await.suspended' AND suspended.value_int=1
-                   WHERE edge.name='runtime.dependency' AND owner.name='scheduler.wait'
-                     AND dependency.name='scheduler.admission'"""
-                ).fetchone()[0]
-                > 0
-            )
+            assert file_read_dependency_count(connection) > 0
             assert connection.execute(
                 """SELECT m.value_int FROM spans AS s JOIN metrics AS m ON m.record_id=s.id
                    WHERE s.name='process.stdout' AND m.key='bytes.read' AND s.status='ok'"""
             ).fetchone() == (len(output_token),)
             assert connection.execute(
-                """SELECT a.value FROM spans AS s JOIN attributes AS a ON a.record_id=s.id
-                   WHERE s.name='process.exit_wait' AND a.key='wait.pending_on_entry'"""
-            ).fetchone() == ("true",)
-            assert connection.execute(
                 """SELECT m.value_int FROM spans AS s JOIN metrics AS m ON m.record_id=s.id
                    WHERE s.name='file.copy' AND m.key=? AND s.status='ok'""",
                 ("source.size_bytes" if os.name == "nt" else "bytes.written",),
             ).fetchone() == (len(b"selected input"),)
-            assert connection.execute(
-                """SELECT a.value FROM spans AS s JOIN attributes AS a ON a.record_id=s.id
-                   WHERE s.name='vm.native' AND a.key='native.name' AND a.value='ranges.front'
-                     AND s.status='ok' AND s.duration_ns>=0"""
-            ).fetchone() == ("ranges.front",)
             assert (
                 connection.execute(
                     """SELECT count(*) FROM spans AS s JOIN attributes AS a ON a.record_id=s.id
-                   WHERE s.name GLOB 'transfer.*' AND a.value LIKE '%independent.txt'"""
+                   WHERE s.name='hpir.effect.transfer' AND a.key='transfer.destination'
+                     AND a.value LIKE '%independent.txt'"""
                 ).fetchone()[0]
                 > 0
             )

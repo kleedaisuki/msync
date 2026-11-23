@@ -1,9 +1,6 @@
 using System.Collections.Immutable;
-using Msync.Core.Native;
 
 namespace Msync.Hir;
-
-public sealed record NativeHirLoweringResult(NativeProgram Program, HirLoweringLayout Layout);
 
 public readonly record struct HirLocationSlot(HirFunctionId Function, HirLocationId Location);
 public readonly record struct HirPhysicalSlot(HirFunctionId Function, int Slot);

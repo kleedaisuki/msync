@@ -1,11 +1,11 @@
 using System.Text.Json.Nodes;
-using Msync.Core.Native;
+using Msync.Core;
 
 namespace Msync.Cli;
 
 internal sealed record ArtifactDisassemblyResult(string Text, int FormatVersion, string Stage,
     int? OptimizationLevel, JsonArray Symbols, JsonArray References, JsonArray Hovers,
-    string ArtifactKind = "bytecode", JsonArray? ExecutionPlans = null)
+    string ArtifactKind)
 {
     internal JsonObject ToJson()
     {
@@ -13,16 +13,15 @@ internal sealed record ArtifactDisassemblyResult(string Text, int FormatVersion,
         {
             ["schemaVersion"] = 1,
             ["formatVersion"] = FormatVersion,
-            ["languageVersion"] = NativeArtifact.LanguageVersion,
+            ["languageVersion"] = LanguageContract.Version,
             ["stage"] = Stage,
             ["optimizationLevel"] = OptimizationLevel,
             ["text"] = Text,
             ["symbols"] = Symbols,
             ["references"] = References,
-            ["hovers"] = Hovers
+            ["hovers"] = Hovers,
+            ["artifactKind"] = ArtifactKind
         };
-        if (ExecutionPlans is not null) result["executionPlans"] = ExecutionPlans;
-        if (ArtifactKind != "bytecode") result["artifactKind"] = ArtifactKind;
         return result;
     }
 }

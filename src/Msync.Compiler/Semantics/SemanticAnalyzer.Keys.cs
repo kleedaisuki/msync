@@ -25,7 +25,19 @@ internal sealed partial class SemanticAnalyzer
         SemanticValue value, SemanticContext caller, bool capture)
     {
         AppendStaticValue(key, value, caller, capture);
-        if (Usage(template).FieldReads.TryGetValue(program.Original(input), out var fields))
+        var usage = Usage(template);
+        var definition = program.Original(input);
+        if (!capture && value.RangeRecipe is { RequiresPhysicalSpecialization: true } recipe && usage.WholeReads.Contains(definition))
+        {
+            recipe.AppendKey(key);
+            Trace?.Metric(recipe.Kind switch
+            {
+                RangeRecipeKind.Concat => "key.concat_range_recipes",
+                RangeRecipeKind.Filter => "key.filter_range_recipes",
+                _ => "key.sorted_range_recipes"
+            }, 1);
+        }
+        if (usage.FieldReads.TryGetValue(definition, out var fields))
             foreach (var field in fields.Order(StringComparer.Ordinal))
                 AppendStaticMember(value, field, caller, key);
         key.Append(';');

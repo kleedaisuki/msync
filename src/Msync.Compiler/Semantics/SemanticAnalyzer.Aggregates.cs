@@ -171,6 +171,7 @@ internal sealed partial class SemanticAnalyzer
         HirNodeId expression = context.Publish
             ? context.Output!.Add(HirKind.Range, type, node.Source, values, node.Data, effects: node.Effects)
             : HirNodeId.None;
-        return new(type, expression, Element: element, EagerRange: true);
+        return new(type, expression, Element: element, EagerRange: true,
+            RangeRecipe: sessionDispatch is null ? children.IsEmpty ? EmptyRange : InlineRange : null);
     }
 }

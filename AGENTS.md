@@ -3,7 +3,7 @@
 - Available resources: 12C24G. Make full use of this budget for high-concurrency, high-throughput execution and parallel builds.
 - Product: .NET 10 Native AOT in `src/Msync.*`. Python is fully typed development
   infrastructure, never a product dependency.
-- Start with the relevant [design](docs/design/native-model-v090.md),
+- Start with the relevant [HPIR design](docs/design/hpir.md),
   [language contract](docs/design/language-v080.md), and
   [development contracts](docs/development-contracts.md).
 - **Detailed telemetry is required for every new or changed compiler and runtime
@@ -13,7 +13,7 @@
   Extend the existing sink-neutral telemetry; keep recording-disabled paths lean.
   See [observability](docs/design/observability-architecture-v086.md) and
   [compiler telemetry](docs/design/telemetry.md#compiler-telemetry).
-- Preserve language behavior, alias identity, resource lifetimes. v0.9 uses Native artifact format 2 and HIR format 4;
+- Preserve language behavior, alias identity, resource lifetimes. v0.9.5 uses HPIR format 8 and HIR format 4;
   old artifacts must be recompiled. Do not add legacy execution/analysis fallbacks.
 - Validate changed behavior through focused real user journeys and properties;
   do not substitute unit-test counts or blanket regressions for delivery.

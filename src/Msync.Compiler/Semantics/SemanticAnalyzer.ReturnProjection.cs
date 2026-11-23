@@ -524,10 +524,11 @@ internal sealed partial class SemanticAnalyzer
             && arguments.Count != 0 && arguments.All(argument => argument.Fact.Denotations is { Types.Length: 1 }
                 || argument.Value?.DenotedType is not null))
         {
-            TypeRef[] types = arguments.Select(argument => hir.Types[(argument.Fact.Denotations is { Types.Length: 1 } denotations
-                ? denotations.Types[0] : argument.Value!.DenotedType!.Value).Value].RuntimeType).ToArray();
-            var result = MetaTypes.Evaluate(signature.Name[5..], types);
-            return new(new(TypeRef.Bool, Boolean: result.AsBool(), SemanticType: hir.Type(TypeRef.Bool)), false);
+            TypeRef Denoted(ReturnShape argument) => hir.Types[(argument.Fact.Denotations is { Types.Length: 1 } denotations
+                ? denotations.Types[0] : argument.Value!.DenotedType!.Value).Value].RuntimeType;
+            bool result = MetaTypes.Predicate(signature.Name[5..], Denoted(arguments[0]),
+                arguments.Count > 1 ? Denoted(arguments[1]) : null);
+            return new(new(TypeRef.Bool, Boolean: result, SemanticType: hir.Type(TypeRef.Bool)), false);
         }
         HirTypeId? structural = null;
         if (arguments.Count != 0 && HirNativeResultTypes.IsStructuralRange(signature.ResultRule))

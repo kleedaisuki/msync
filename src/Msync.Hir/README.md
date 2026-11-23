@@ -26,15 +26,15 @@ Finalized callable bodies are closed. An unused generic value has an explicit
 
 ## Lowering boundary
 
-The native path lowers typed HIR with `LlvmHirLowerer`, then emits native IR
-with `LlvmNativeLowerer`. The compiler owns LLVM optimization between them.
+The native path lowers typed HIR with `LlvmHirLowerer`, then emits
+physical HPIR with `LlvmHpirLowerer`. The compiler owns LLVM optimization between them.
 `HirLoweringMap` owns only stable callable, lexical-slot and allocation-site
 identities; `HirLoweringLayout` is its immutable public snapshot. Neither shared
 contract depends on old runtime values or a legacy lowerer.
 Native physical type/layout tables, persistent storage ABIs and capture
 provenance belong to `LlvmHirLoweringSession`.
 
-`LlvmHirLoweringSession.Emit` returns the native program and explicit
+`LlvmHirLoweringSession.EmitPhysical` returns a physical submission and explicit
 logical-to-physical `HirLoweringLayout` for session submissions.
 Lowering does not bind names, infer types, execute
 expressions or call back into the compiler. It selects local/capture slots,
@@ -74,9 +74,8 @@ Whole-value and escaping uses retain allocation identity. Lazy Range producers
 distinguish already read values from explicit thunk closures. Return and break
 close exited iterators and acquire regions while preserving their result value.
 
-The current HIR artifact schema is format 3, including the separate parameter
+The current HIR artifact schema is format 4, including the separate parameter
 entry types. Serialization and text printing operate on these public tables. Reading an
 export and lowering it does not parse `HirSource.Text`; the source text is
-optional diagnostic material. Native execution acceptance is in `tests/NativePipeline`,
-`tests/NativeHirLowering`, `tests/NativeSessions` and the real source-free CLI
-journeys; historical old-opcode probes do not define the new representation.
+optional diagnostic material. The HPIR pipeline and source-free CLI journeys
+exercise that boundary independently of the retired target.

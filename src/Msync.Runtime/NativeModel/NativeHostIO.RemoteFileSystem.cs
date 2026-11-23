@@ -27,29 +27,6 @@ public static partial class NativeBuiltins
         }
         """);
 
-    private static async ValueTask<NativeValue> RemoteFileSystemAsync(string name, IReadOnlyList<NativeValue> args, NativePathValue path,
-        NativeRuntimeContext context, CancellationToken token)
-    {
-        NativeConnection connection = path.Connection!.Value;
-        if (name is "directory_iterator" or "recursive_directory_iterator")
-            return NativeValue.FromRange(new NativeRange(RemoteDirectory(path, name == "recursive_directory_iterator", context.CaptureDirectory(), token), TypeRef.Path,
-                selection: new NativePathSelection(path, ".*", Recursive: name == "recursive_directory_iterator")));
-        List<string> rawArgs = args.Select(value => value.Kind == NativeKind.Bool ? value.AsBool() ? "true" : "false" : value.Kind == NativeKind.Path ? value.AsPath().Raw : Text(value)).ToList();
-        if (name == "set_permissions") rawArgs[1] = Convert.ToString(PermissionMode(rawArgs[1]), 8);
-        if (args.Count > 1 && args[1].Kind == NativeKind.Path && args[1].AsPath().Connection is { } other && other != connection)
-            throw new MsyncException($"fs.{name} requires paths on the same connection, received '{connection}' and '{other}'");
-        string script = RemotePrelude + "\n" + RemoteScript(name);
-        string output = await NativeHostIO.RunCommandAsync(connection, script, rawArgs, context, token);
-        bool lineTerminated = name is "canonical" or "weakly_canonical" or "read_symlink" or "relative" or "proximate" or "permissions";
-        string result = lineTerminated && output.EndsWith('\n') ? output[..^1] : output;
-        if (name is "status" or "symlink_status") return NativeValue.FromString(result);
-        if (name == "permissions") return NativeValue.FromRange(NativeRange.Snapshot(RemotePermissions(result).Select(NativeValue.FromString), TypeRef.String));
-        if (name is "absolute" or "canonical" or "weakly_canonical" or "read_symlink" or "relative" or "proximate") return NativeValue.FromPath(path.WithRaw(result));
-        if (name is "exists" or "is_regular_file" or "is_directory" or "is_symlink" or "is_block_file" or "is_character_file" or "is_fifo" or "is_socket" or "is_other" or "is_empty" or "is_readonly" or "equivalent" or "create_directory" or "create_directories" or "remove" or "remove_all" or "remove_directory")
-            return Bool(result == "true");
-        return NativeValue.Null;
-    }
-
     private static string RemoteScript(string name) => name switch
     {
         "exists" => "value=$(kind -L); if [ \"$value\" = not_found ]; then printf false; else printf true; fi",
@@ -91,13 +68,7 @@ public static partial class NativeBuiltins
     private static string Predicate(string type) => $"value=$(kind {(type == "symlink" ? "" : "-L")}); if [ \"$value\" = {type} ]; then printf true; else printf false; fi";
     private static string RemoteStatus(bool noFollow) => noFollow ? "kind" : "kind -L";
 
-    private static IEnumerable<string> RemotePermissions(string octal)
-    {
-        int mode = Convert.ToInt32(octal, 8);
-        return PermissionBits.Where(pair => (mode & (int)pair.Value) != 0).Select(pair => pair.Key);
-    }
-
-    private static async IAsyncEnumerable<NativeValue> RemoteDirectory(NativePathValue path, bool recursive, NativeRuntimeContext context,
+    private static async IAsyncEnumerable<NativePathValue> RemoteDirectory(NativePathValue path, bool recursive, NativeRuntimeContext context,
         [EnumeratorCancellation] CancellationToken token)
     {
         string find = recursive ? "find -H \"$p\"" : "find -H \"$p\" -maxdepth 1";
@@ -111,7 +82,7 @@ public static partial class NativeBuiltins
         foreach (string name in names.Skip(1).Where(name => name.Length != 0 && name != names[0]).Order(TextSemantics.Ordinal))
         {
             token.ThrowIfCancellationRequested();
-            yield return NativeValue.FromPath(path.WithRaw(name));
+            yield return path.WithRaw(name);
         }
     }
 }

@@ -47,8 +47,10 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
         });
     }
 
+    private Dictionary<HirNodeId, Msync.Core.Hpir.HpirSessionSnapshot>? sessionSnapshots;
+
     private HirModule Freeze() => program.Hir.Freeze(program.Entry, program.IsSession) with
-    { SessionDispatches = sessionDispatch?.Tables ?? [] };
+    { SessionDispatches = sessionDispatch?.Tables ?? [], SessionSnapshots = sessionSnapshots };
 
     private void AnalyzeCore(SemanticContext? seed)
     {
@@ -138,7 +140,11 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
         if (value.Callables.IsDefaultOrEmpty && Runtime(value).WithoutNull == TypeRef.Function)
             value = FutureCallables(value, location, context);
         HirTypeId type = value.Type;
-        return value with { Type = type, Node = Add(node with { Data = location.Value }, type, [], context),
+        var read = Add(node with { Data = location.Value }, type, [], context);
+        if (!read.IsNone && value.SessionSnapshot is { } snapshot && context.Function == program.Entry
+            && !program.WrittenLocations.Contains(location))
+            (sessionSnapshots ??= []).Add(read, snapshot);
+        return value with { Type = type, Node = read,
             Location = location, StorageConstraint = StorageType(location, context) };
     }
 

@@ -16,6 +16,11 @@ if (args.Contains("--pointer-storage", StringComparer.Ordinal))
 
 string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../.temp/native-execution"));
 Directory.CreateDirectory(root);
+if (args.Contains("--future-identity", StringComparer.Ordinal))
+{
+    await FutureIdentityChecks.RunAsync(root);
+    return;
+}
 int checks = 0;
 
 async Task<NativeValue> Run(string name, string source, string? expectedOutput = null, string input = "")

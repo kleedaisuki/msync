@@ -29,6 +29,19 @@ public sealed record NativeSignature(string Name, IReadOnlyList<TypeRef> Paramet
     public NativeElementCallback? ElementCallback { get; init; }
     public NumericIntrinsic Numeric { get; init; }
 
+    internal bool IsStreamReduction => Name is
+        "ranges.front" or "ranges.first" or "ranges.back" or "ranges.last" or "ranges.at"
+        or "ranges.size" or "ranges.empty" or "ranges.contains" or "ranges.find" or "ranges.find_if"
+        or "ranges.any" or "ranges.any_of" or "ranges.all_of" or "ranges.none" or "ranges.none_of";
+
+    internal bool MaySubmitScalar => ReturnsFileValue
+        || (Behavior.GetValueOrDefault() & NativeBehavior.DeferredScalar) != 0;
+
+    internal bool LiftsScalarArguments =>
+        (Effect == NativeEffect.Pure || (Behavior.GetValueOrDefault() & NativeBehavior.DeferredScalar) != 0)
+        && (Behavior.GetValueOrDefault() & (NativeBehavior.Invokes | NativeBehavior.Enumerates | NativeBehavior.LocalMemory)) == 0
+        && Parameters.All(static parameter => (parameter.Kind & (TypeKind.Range | TypeKind.Function | TypeKind.Scope)) == 0);
+
     // Deferred callbacks belong to consumption, not construction of the range.
     internal bool RequiresWorkScope => ReturnsFileValue
         || Effect != NativeEffect.Pure && !Behavior.GetValueOrDefault().HasFlag(NativeBehavior.LocalMemory)

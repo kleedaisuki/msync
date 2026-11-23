@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -85,6 +86,46 @@ def invoke(
     )
 
 
+def after_regions_in_plan(plan: str) -> tuple[list[str], list[str]]:
+    if not plan.startswith("HPIR "):
+        markers: list[dict[str, str]] = [
+            dict(token.split("=", 1) for token in line.split()[2:] if "=" in token)
+            for line in plan.splitlines()
+            if "Barrier" in line
+        ]
+
+        def references(edge: str) -> list[str]:
+            return [
+                marker["symbol"]
+                for marker in markers
+                if marker.get("a") == "2"
+                and marker.get("b") == edge
+                and "symbol" in marker
+            ]
+
+        return references("1"), references("0")
+
+    imports: dict[str, str] = {}
+    opens: list[str] = []
+    closes: list[str] = []
+    owner: str = ""
+    for line in plan.splitlines():
+        service = re.match(r"^import %(\d+) Work:([01]) ", line)
+        if service is not None:
+            imports[service[1]] = service[2]
+        if line.startswith("function @"):
+            owner = line.split(maxsplit=2)[1]
+        call = re.match(r"^\s+\d+ Call %(\d+)\(([^)]*)\)(?: -> (\[fp\+\d+\]))?", line)
+        if call is None:
+            continue
+        operation: str | None = imports.get(call[1])
+        if operation == "0" and call[3] is not None:
+            opens.append(f"{owner}:{call[3]}")
+        elif operation == "1":
+            closes.append(f"{owner}:{call[2]}")
+    return opens, closes
+
+
 def run_case(
     binary: Path,
     directory: Path,
@@ -112,24 +153,17 @@ def run_case(
     if after_regions:
         planned = invoke(binary, directory, ["plan", str(source)])
         assert planned.returncode == 0, (name, planned.stderr)
-        markers: list[dict[str, str]] = [
-            dict(token.split("=", 1) for token in line.split()[2:] if "=" in token)
-            for line in planned.stdout.splitlines()
-            if "Barrier" in line
-        ]
-        starts: list[str] = [marker["symbol"] for marker in markers
-            if marker.get("a") == "2" and marker.get("b") == "1" and "symbol" in marker]
-        ends: list[str] = [marker["symbol"] for marker in markers
-            if marker.get("a") == "2" and marker.get("b") == "0" and "symbol" in marker]
+        starts, ends = after_regions_in_plan(planned.stdout)
         assert len(starts) == after_regions and len(set(starts)) == after_regions, (
             name,
             "missing or duplicated After region identity",
-            markers,
+            starts,
         )
         assert set(starts) == set(ends), (
             name,
             "unmatched After region identity",
-            markers,
+            starts,
+            ends,
         )
     arguments = ["run", str(source)]
     if executable:
@@ -192,7 +226,7 @@ def journeys(
 
     case(
         "callback-acquire",
-        'let items = $std::ranges::transform([./input], fn(path) { acquire; path }); items -> ./out;',
+        "let items = $std::ranges::transform([./input], fn(path) { acquire; path }); items -> ./out;",
         {"out/input": "payload"},
         inputs={"input": "payload", "out/.keep": ""},
     )
@@ -200,7 +234,7 @@ def journeys(
     case(
         "callback-inherited-acquire",
         f'let prior = release python("-c", {literal(inherited_child)});\n'
-        'let items = $std::ranges::transform([./input], fn(path) { acquire; ./prior.finished }); items -> ./out;',
+        "let items = $std::ranges::transform([./input], fn(path) { acquire; ./prior.finished }); items -> ./out;",
         {"out/prior.finished": "prior"},
         inputs={"input": "payload", "out/.keep": ""},
     )
@@ -208,10 +242,10 @@ def journeys(
     case(
         "returned-callback-owner",
         'let state = scope { child: python("-c", "pass") };\n'
-        'let items = $std::ranges::transform([./input], fn(path) { '
+        "let items = $std::ranges::transform([./input], fn(path) { "
         f'state::child = release python("-c", {literal(callback_child)}); path }});\n'
-        'fn submit() { items -> ./out }; let result = submit(); acquire;\n'
-        './child.finished -> ./observed;',
+        "fn submit() { items -> ./out }; let result = submit(); acquire;\n"
+        "./child.finished -> ./observed;",
         {"out/input": "payload", "observed": "finished"},
         inputs={"input": "payload", "out/.keep": ""},
     )

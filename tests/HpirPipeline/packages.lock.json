@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "msync.compiler": {
+        "type": "Project",
+        "dependencies": {
+          "Msync.Core": "[0.9.3, )",
+          "Msync.Hir": "[0.9.3, )",
+          "Msync.Optimization": "[0.9.3, )"
+        }
+      },
+      "msync.core": {
+        "type": "Project"
+      },
+      "msync.hir": {
+        "type": "Project",
+        "dependencies": {
+          "Msync.Core": "[0.9.3, )"
+        }
+      },
+      "msync.optimization": {
+        "type": "Project",
+        "dependencies": {
+          "Msync.Core": "[0.9.3, )"
+        }
+      },
+      "msync.runtime": {
+        "type": "Project",
+        "dependencies": {
+          "Msync.Core": "[0.9.3, )"
+        }
+      }
+    }
+  }
+}

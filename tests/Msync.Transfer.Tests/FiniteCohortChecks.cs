@@ -2,6 +2,7 @@ using Msync.Core;
 using Msync.Core.Native;
 using Msync.Runtime;
 using Msync.Runtime.Native;
+using NativePathValue = Msync.Core.Native.NativePath;
 
 internal static class FiniteCohortChecks
 {
@@ -28,12 +29,10 @@ internal static class FiniteCohortChecks
             "relay" => second,
             _ => throw new ArgumentException($"Unknown finite-cohort mode '{mode}'.")
         };
-        NativeValue[] inputs = names.Append("tree").Append("link").Select(name =>
-            NativeValue.FromPath(new(Path.Combine(source, name), Connection: producer))).ToArray();
-        NativeValue cohort = NativeValue.FromRange(NativeRange.Snapshot(inputs, TypeRef.Path));
+        NativePathValue[] inputs = names.Append("tree").Append("link").Select(name =>
+            new NativePathValue(Path.Combine(source, name), Connection: producer)).ToArray();
         NativeRuntimeContext context = new(new ExecutionOptions(WorkingDirectory: root));
-        if (!await NativeHostIO.TransferAsync(cohort, new(destination + "/", Connection: consumer), context))
-            throw new InvalidOperationException("The actual finite-cohort transfer failed.");
+        await NativeHostIO.TransferPathBatchAsync(inputs, new(destination + "/", Connection: consumer), context, default);
         for (int index = 0; index < names.Length; index++)
             if (!(await File.ReadAllBytesAsync(Path.Combine(destination, names[index]))).SequenceEqual(new byte[] { (byte)index, 0, 255, 128 }))
                 throw new InvalidOperationException($"Finite {mode} member bytes/spelling changed: {names[index]}");

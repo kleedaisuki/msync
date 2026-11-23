@@ -16,7 +16,10 @@ internal sealed record SessionCallRequirement(int Slot, SessionCallableSource So
     ImmutableDictionary<HirLocationId, SemanticValue> Cells,
     ImmutableDictionary<HirLocationId, HirTypeId> Storage,
     ImmutableDictionary<HirLocationId, HirLocationId> Definitions,
-    ImmutableArray<HirDispatchTarget> Targets);
+    ImmutableArray<HirDispatchTarget> Targets)
+{
+    internal ImmutableArray<HirSessionNativeTarget> NativeTargets { get; init; } = [];
+}
 
 // A generation owns its additions and target updates. These are typed binding
 // obligations, not a saved caller context or a runtime compiler callback.
@@ -71,5 +74,6 @@ internal sealed class SemanticSessionDispatch
     }
 
     internal ImmutableArray<HirSessionDispatch> Tables => [.. Calls.Select(call =>
-        new HirSessionDispatch(call.Slot, [.. call.Arguments.Select(argument => argument.Type)], call.Result, call.Targets))];
+        new HirSessionDispatch(call.Slot, [.. call.Arguments.Select(argument => argument.Type)], call.Result, call.Targets)
+        { NativeTargets = call.NativeTargets })];
 }

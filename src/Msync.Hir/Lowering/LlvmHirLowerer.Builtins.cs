@@ -74,12 +74,19 @@ public static partial class LlvmHirLowerer
         private LlvmValue Range(HirNode node)
         {
             var arguments = new List<LlvmValue>(node.Children.Count);
+            var carrier = LiteralRangeElement(node);
             foreach (var child in Hir.Children(node))
             {
-                arguments.Add(Emit(child));
+                var item = Emit(child);
                 if (block.HasTerminator) return owner.Null;
+                arguments.Add(PackRangeItem(item, carrier));
             }
             current = node;
+            return ConstructRange(node, arguments);
+        }
+
+        private LlvmValue ConstructRange(HirNode node, IReadOnlyList<LlvmValue> arguments)
+        {
             var type = LlvmFunctionType.Get(owner.Type(node.Type), arguments.Select(value => value.Type).ToArray());
             var target = owner.BuiltinBinding("constructor.range", type, node.Source, NativeKind.Range);
             owner.trace?.Metric("builtin.range.elements", arguments.Count);
@@ -90,12 +97,21 @@ public static partial class LlvmHirLowerer
         private LlvmValue NativeBuiltin(HirNode node, string name, IReadOnlyList<LlvmValue> arguments)
         {
             // The semantic HIR has already specialized result and element types.
-            _ = NativeSignatures.Get(name);
+            var signature = NativeSignatures.Get(name);
+            if (signature.ResultRule == NativeResultRule.RangeEnumerate) owner.RegisterEnumeration(node);
+            if (name == "regex.find") owner.RegisterRegexFind();
+            if (signature.ResultRule == NativeResultRule.RangeZip) owner.RegisterZip(node);
+            if (name == "ranges.concat") arguments = SelectConcatLiterals(node, arguments);
             var type = LlvmFunctionType.Get(owner.Type(node.Type), arguments.Select(value => value.Type).ToArray());
             var target = owner.BuiltinBinding(name, type, node.Source);
             current = node;
-            return Add(new LlvmCallInstruction(type, target, arguments)
-            { LogicalType = owner.metadata.Type(node.Type) });
+            var result = Add(new LlvmCallInstruction(type, target, arguments)
+                { LogicalType = owner.metadata.Type(node.Type) });
+            if (signature.MaySubmitScalar) return owner.DeferredSource(result, "native_submission");
+            if ((signature.Behavior.GetValueOrDefault() & NativeBehavior.Invokes) != 0
+                && (signature.IsStreamReduction || (signature.Result.Kind & TypeKind.Range) != 0))
+                return owner.DeferredSource(result, "range_callback");
+            return result;
         }
     }
 }

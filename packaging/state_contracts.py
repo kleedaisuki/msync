@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run maintained native state contracts, preserving named platform selections."""
+"""Run the maintained HPIR state contracts on the host OS."""
 
 from __future__ import annotations
 
@@ -23,106 +23,41 @@ class Contract:
 
 CONTRACTS: tuple[Contract, ...] = (
     Contract(
-        "native-model",
-        "NativeModel",
-        "All builtin storage, typed roots, physical layout and GC invariants",
+        "hpir-runtime",
+        "HpirRuntime",
+        "Physical calls, frame/heap ownership, cancellation and artifact ABI",
     ),
     Contract(
-        "native-artifact",
-        "NativeArtifact",
-        "Portable encoding, ABI, typed CFG and malformed input rejection",
-    ),
-    Contract(
-        "native-optimizer",
-        "NativeOptimization",
-        "Constant identity, native memory facts, escape and exact scalar semantics",
-    ),
-    Contract(
-        "native-middle-end",
-        "NativeMiddleEnd",
-        "General control relocation, dataflow, typed calls and captured-location inlining",
-    ),
-    Contract(
-        "tail-call-optimization",
-        "TailCallOptimization",
-        "100000-step source recursion, parallel arguments and fresh captured locations",
-    ),
-    Contract(
-        "native-allocation",
-        "NativeAllocationV090",
-        "Real logical allocation, alias freshness, frame placement and region bounds",
-    ),
-    Contract(
-        "native-execution",
-        "NativeExecution",
-        "Real source/artifact execution, resources, suspension, scheduling and diagnostics",
-    ),
-    Contract(
-        "native-preparation",
-        "NativePreparation",
-        "Context binding, selected transfer planning and no executable replan",
-    ),
-    Contract(
-        "context-binding",
-        "ContextBinding",
-        "Frozen origins, residual branches, loop effects and post-publication canonical paths",
-    ),
-    Contract(
-        "native-sessions",
-        "NativeSessions",
-        "Persistent roots, captures, failure reconciliation and editor isolation",
-    ),
-    Contract(
-        "current-captures",
-        "Msync.Runtime.Tests",
-        "Shared source locations and actual persistent session execution",
-        ("--mutable-state",),
-    ),
-    Contract(
-        "current-paths",
-        "PathProjection",
-        "Symbolic/native spelling, endpoint identity and source-free path projection",
-    ),
-    Contract(
-        "stdlib-publication",
-        "StdlibLoading",
-        "Selective source modules, mutable aliases and captured module/session identity",
-    ),
-    Contract(
-        "stdlib-demand",
-        "StdlibLoading",
-        "Demand publication, shared family aliases and source-order dependencies",
-        ("--demand-loading",),
-    ),
-    Contract(
-        "stdlib-captures",
-        "StdlibLoading",
-        "Captured module replacement, retained aliases and persistent session identity",
-        ("--captured-modules",),
+        "hpir-source",
+        "HpirPipeline",
+        "Source through detached binding, actual effects, layouts and interactive state",
     ),
 )
 BY_NAME: dict[str, Contract] = {contract.name: contract for contract in CONTRACTS}
 
-# These selection names remain usable by platform jobs; retired implementation
-# mechanisms are not revived merely to execute their old white-box assertions.
+# Compatibility names select the maintained behavior, never the old backend.
 ALIASES: dict[str, tuple[str, ...]] = {
-    "constant-interner": ("native-optimizer",),
-    "optimization-graph": ("native-middle-end",),
-    "predicate-optimization": ("native-middle-end", "native-execution"),
-    "scope-scalarization": ("native-optimizer", "native-allocation"),
-    "loop-optimization": ("native-middle-end", "native-execution"),
-    "local-slots": ("native-middle-end", "native-sessions"),
-    "global-redundancy": ("native-middle-end",),
-    "format-one-paths": ("native-artifact", "current-paths"),
-    "cross-block-memory": ("native-middle-end", "native-optimizer"),
-    "memory-effects": ("native-execution", "native-preparation"),
-    "scope-layout": ("native-model", "native-allocation"),
-    "aggregate-arguments": ("native-middle-end", "native-sessions"),
-    "scheduler-retirement": ("native-execution",),
-    "path-namespace": ("native-execution", "native-preparation", "context-binding"),
-    "stdlib-loading": ("stdlib-publication", "stdlib-demand", "stdlib-captures"),
+    **dict.fromkeys(
+        (
+            "native-artifact", "native-model", "scope-layout",
+            "cross-block-memory", "aggregate-arguments", "format-one-paths",
+        ),
+        ("hpir-runtime", "hpir-source"),
+    ),
+    **dict.fromkeys(
+        (
+            "native-optimizer", "native-middle-end", "tail-call-optimization",
+            "native-allocation", "native-execution", "native-preparation",
+            "context-binding", "native-sessions", "current-captures", "current-paths",
+            "stdlib-publication", "stdlib-demand", "stdlib-captures",
+            "constant-interner", "optimization-graph", "predicate-optimization",
+            "scope-scalarization", "loop-optimization", "local-slots",
+            "global-redundancy", "memory-effects", "scheduler-retirement",
+            "path-namespace", "stdlib-loading",
+        ),
+        ("hpir-source",),
+    ),
 }
-
 
 def select(names: list[str] | None) -> tuple[Contract, ...]:
     if not names:
@@ -167,14 +102,14 @@ def main() -> int:
         if not (ROOT / "tests" / contract.project).exists()
     ]
     if missing:
-        parser.error(f"Required native contract projects are unavailable: {missing}")
+        parser.error(f"Required HPIR contract projects are unavailable: {missing}")
     phases: list[Phase] = []
     report: dict[str, object] = {
         "platform": platform.platform(),
         "source_revision": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
         ).strip(),
-        "execution": "Native model/IR managed contracts on this actual OS; native CLI and platform journeys remain independent acceptance.",
+        "execution": "HPIR managed contracts on this OS; installed Native AOT behavior has its own acceptance.",
         "requested": arguments.contract or [contract.name for contract in contracts],
         "contracts": [asdict(contract) for contract in contracts],
         "compatibility_selections": {

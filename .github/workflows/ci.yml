@@ -157,36 +157,6 @@ jobs:
           if os.name != 'nt':
               arguments.append('--ssh-fixture')
           subprocess.run(arguments, check=True)
-      - name: Publish focused native Number and object-allocation probes
-        id: allocation-components
-        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.upgrade == 'true' && (inputs.upgrade_phases == '' || contains(format(',{0},', inputs.upgrade_phases), ',number-allocation,')) && inputs.reuse_run == '' && steps.package.outcome == 'success' }}
-        shell: python
-        env:
-          PACKAGE_RID: ${{ matrix.rid }}
-        run: |
-          import os
-          import subprocess
-          projects: tuple[tuple[str, str], ...] = (
-              ('tests/Performance/NumberExecution/Msync.NumberExecution.csproj', 'number'),
-              ('tests/Performance/ObjectAllocations/ObjectAllocations.csproj', 'objects'),
-          )
-          for project, name in projects:
-              subprocess.run(['dotnet', 'publish', project, '-c', 'Release', '-r', os.environ['PACKAGE_RID'], f"-p:RuntimeIdentifier={os.environ['PACKAGE_RID']}", '--artifacts-path', 'artifacts/allocation-components', '-o', f'artifacts/allocation-probes/{name}', '-p:RestoreLockedMode=true', '-p:BuildInParallel=false'], check=True)
-      - name: Observe actual native Number and object-allocation costs
-        if: ${{ !cancelled() && steps.allocation-components.outcome == 'success' }}
-        shell: python
-        run: |
-          import os
-          import subprocess
-          from pathlib import Path
-          suffix: str = '.exe' if os.name == 'nt' else ''
-          output: Path = Path('.temp/platform-results/number-allocation')
-          output.mkdir(parents=True, exist_ok=True)
-          number: Path = Path('artifacts/allocation-probes/number') / f'msync-number-probe{suffix}'
-          objects: Path = Path('artifacts/allocation-probes/objects') / f'ObjectAllocations{suffix}'
-          subprocess.run([str(number), '--cases', 'arithmetic,powers,captured,literal', '--size', '1024', '--samples', '9', '--iterations', '8', '--root', str(output / 'number-work'), '--output', str(output / 'number.json')], check=True)
-          for case in ('objects', 'captures', 'paths', 'literal'):
-              subprocess.run([str(objects), '--case', case, '--size', '256', '--samples', '9', '--iterations', '8', '--root', str(output / f'object-{case}-work'), '--output', str(output / f'objects-{case}.json')], check=True)
       - name: Observe matched language-upgrade native latency
         if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.upgrade == 'true' && inputs.benchmark && inputs.baseline_run != '' && steps.package.outcome == 'success' }}
         shell: python
@@ -284,32 +254,10 @@ jobs:
           if os.environ['REUSED_NATIVE_RUN']:
               arguments.extend(['--native-origin', 'artifacts/reused-native/baseline.json'])
           subprocess.run(arguments, check=True)
-      - name: Exercise Core equivalence, legacy artifacts and real namespace publication
-        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.state == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+      - name: Exercise the fixed HPIR state and source contracts
+        if: ${{ !cancelled() && inputs.polish_only && (steps.polish.outputs.state == 'true' || steps.polish.outputs.closing == 'true' || steps.polish.outputs.linear == 'true' || steps.polish.outputs.memory == 'true' || steps.polish.outputs.scheduler == 'true' || steps.polish.outputs.stdlib == 'true') && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         run: python packaging/state_contracts.py --output .temp/platform-results/state-contracts
-      - name: Verify only repaired legacy-format and Windows namespace contracts
-        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.closing == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
-        shell: python
-        run: |
-          import os
-          import subprocess
-          arguments: list[str] = ['python', 'packaging/state_contracts.py', '--output', '.temp/platform-results/state-contracts', '--contract', 'format-one-paths']
-          if os.name == 'nt':
-              arguments.extend(['--contract', 'path-namespace'])
-          subprocess.run(arguments, check=True)
-      - name: Verify only changed linear normalization and constant interning
-        if: ${{ !cancelled() && inputs.polish_only && inputs.reuse_run == '' && steps.polish.outputs.linear == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
-        run: python packaging/state_contracts.py --output .temp/platform-results/state-contracts --contract constant-interner
-      - name: Exercise selected cross-block memory and compact layout contracts
-        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.memory == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
-        run: python packaging/state_contracts.py --output .temp/platform-results/memory-contracts --contract cross-block-memory --contract memory-effects --contract scope-layout --contract aggregate-arguments
-      - name: Exercise only scheduler retirement and namespace lifetimes
-        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.scheduler == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
-        run: python packaging/state_contracts.py --output .temp/platform-results/scheduler-contracts --contract scheduler-retirement --contract path-namespace
-      - name: Exercise standard library loading and shared module cells
-        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.stdlib == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
-        run: python packaging/state_contracts.py --output .temp/platform-results/stdlib-contracts --contract stdlib-loading
-      - name: Exercise standard library IO and controlled child processes through Native AOT
+      - name: Exercise the standard streams and controlled child processes through the installed CLI
         if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.stdlib == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         shell: python
         env:
@@ -318,32 +266,9 @@ jobs:
           import os
           import subprocess
           from pathlib import Path
-          subprocess.run(['dotnet', 'build', 'tests/StdlibIOProcess/Msync.StdlibIOProcess.Tests.csproj', '-c', 'Release', '-p:RestoreLockedMode=true', '-m:1', '-nr:false'], check=True)
           binary: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
-          child: Path = Path('tests/StdlibIOProcess/bin/Release/net10.0') / ('Msync.StdlibIOProcess.Tests.exe' if os.name == 'nt' else 'Msync.StdlibIOProcess.Tests')
-          subprocess.run(['python', 'tests/StdlibIOProcess/native_journey.py', '--binary', str(binary), '--child', str(child)], check=True)
-          if os.name != 'nt':
-              subprocess.run(['python', 'tests/StdlibIOProcess/remote_native_journey.py', '--binary', str(binary), '--child', str(child)], check=True)
-      - name: Publish native memory optimizer component observation image
-        id: memory-components
-        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.memory == 'true' && runner.os == 'Windows' && steps.package.outcome == 'success' }}
-        run: dotnet publish tests/Performance/Components/Msync.Components.csproj -c Release -r win-x64 -p:RestoreLockedMode=true -p:SourceRevisionId=${{ github.sha }} --artifacts-path artifacts/memory-component-build -o artifacts/memory-components -m:1 -nr:false
-      - name: Record native Windows cross-block memory and layout costs
-        if: ${{ !cancelled() && steps.memory-components.outcome == 'success' }}
-        run: artifacts/memory-components/msync-components.exe --optimizer-pipeline --cases memory_branches,memory_loop,layout_factory --sizes 1,32 --levels 2 --samples 7 --warmups 3 --output .temp/platform-results/memory-components.json
-      - name: Publish the native Windows optimizer component observation image
-        id: state-components
-        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.state == 'true' && runner.os == 'Windows' && steps.package.outcome == 'success' }}
-        run: dotnet publish tests/Performance/Components/Msync.Components.csproj -c Release -r win-x64 -p:RestoreLockedMode=true -p:SourceRevisionId=${{ github.sha }} --artifacts-path artifacts/state-component-build -o artifacts/state-components -m:1 -nr:false
-      - name: Record native Windows O1 optimizer cost and executable shape
-        if: ${{ !cancelled() && steps.state-components.outcome == 'success' }}
-        run: artifacts/state-components/msync-components.exe --optimizer-pipeline --cases calls,scope_calls --sizes 1,32,128 --levels 1 --samples 7 --warmups 3 --output .temp/platform-results/optimizer-components.json
-      - name: Record native Windows ordinary-transfer compilation cost
-        if: ${{ !cancelled() && steps.state-components.outcome == 'success' }}
-        run: artifacts/state-components/msync-components.exe --optimizer-pipeline --cases transfers --sizes 128,1024 --levels 1 --samples 7 --warmups 3 --output .temp/platform-results/optimizer-transfer-components.json
-      - name: Verify captured Windows root and incomplete UNC path semantics
-        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.editing == 'true' && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
-        run: dotnet run --project tests/PathProjection/Msync.PathProjection.Tests.csproj -c Release --artifacts-path artifacts/editing-roots -p:RestoreLockedMode=true -- --windows-rooted
+          for journey in ('stdlib_stdio_journey.py', 'scheduling_journey.py'):
+              subprocess.run(['python', f'tests/Msync.EndToEnd/{journey}', '--binary', str(binary)], check=True)
       - name: Exercise the actual native authentication helper and cancellation
         if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.authentication == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         shell: python
@@ -381,6 +306,8 @@ jobs:
           from pathlib import Path
           binary: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
           subprocess.run(['python', 'packaging/platform_journeys.py', '--binary', str(binary), '--output', '.temp/platform-results'], check=True)
+          if os.name == 'nt':
+              subprocess.run(['python', 'tests/IO/hpir_windows_detached.py', '--binary', str(binary), '--work', '.temp/platform-results/hpir-ntfs'], check=True)
       - name: Verify actual Windows file attributes, alternate streams and link ownership
         if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         run: python tests/IO/windows_file_metadata.py artifacts/publish/win-x64/msync.exe --output .temp/platform-results/windows-file-metadata.json
@@ -477,28 +404,6 @@ jobs:
       - name: Compare Windows copy mechanisms and cancellation outside product timings
         if: ${{ !cancelled() && steps.copy-probe.outcome == 'success' }}
         run: artifacts/windows-copy-probe/WindowsCopyProbe.exe --output .temp/platform-results/windows-copy-probe.json
-      - name: Publish native compiler, VM and source-reader component probes once
-        id: components
-        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && !inputs.polish_only && inputs.benchmark && steps.package.outcome == 'success' }}
-        run: dotnet publish tests/Performance/Components/Msync.Components.csproj -c Release -r ${{ matrix.rid }} --artifacts-path artifacts/component-build -o artifacts/components -p:RestoreLockedMode=true
-      - name: Measure typed compilation, artifact loading, binding and interpreter components
-        if: ${{ !cancelled() && steps.components.outcome == 'success' }}
-        shell: python
-        run: |
-          import os
-          import subprocess
-          from pathlib import Path
-          probe: Path = Path('artifacts/components') / ('msync-components.exe' if os.name == 'nt' else 'msync-components')
-          subprocess.run([str(probe), '--root', str(Path.cwd()), '--output', '.temp/platform-results/components.json', '--sizes', '128,1024', '--samples', '9', '--warmups', '2', '--stages', 'parse,analyze,lower_native,compile_o1,artifact_validate,artifact_decode,prepare_native,runtime_initialize_dispose,vm_no_io'], check=True)
-      - name: Isolate cold synchronous versus asynchronous source reads
-        if: ${{ !cancelled() && steps.components.outcome == 'success' }}
-        shell: python
-        run: |
-          import os
-          import subprocess
-          from pathlib import Path
-          probe: Path = Path('artifacts/components') / ('msync-components.exe' if os.name == 'nt' else 'msync-components')
-          subprocess.run(['python', 'tests/Performance/source_read.py', '--binary', str(probe), '--samples', '31', '--warmups', '3', '--output', '.temp/platform-results/source-read.json'], check=True)
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

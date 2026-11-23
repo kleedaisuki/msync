@@ -3,7 +3,7 @@ using System.Globalization;
 using Msync.Compiler;
 using Msync.Compiler.Syntax;
 using Msync.Core;
-using Msync.Core.Native;
+using Msync.Core.Hpir;
 using Msync.Hir;
 using Msync.Runtime;
 using static Msync.Cli.ArtifactCommands;
@@ -43,12 +43,10 @@ internal static class Program
                 string artifact = options.File ?? throw new ArgumentException("An artifact filename is required; use 'msync disassemble --help'.");
                 byte[] bytes = artifact == "-" ? await ReadArtifactInput() : await File.ReadAllBytesAsync(artifact);
                 string identity = artifact == "-" ? "<stdin>" : new Uri(Path.GetFullPath(artifact)).AbsoluteUri;
-                if (!options.EditorJson && NativeArtifact.HasMagic(bytes))
+                if (options.Json && !options.EditorJson && HpirArtifact.HasMagic(bytes))
                 {
                     using MemoryStream stream = new(bytes, writable: false);
-                    NativeProgram native = NativeCommandPipeline.Read(stream);
-                    if (options.Json) Console.WriteLine(NativeArtifact.ToJson(native));
-                    else NativeCommandPipeline.Print(native, color);
+                    Console.WriteLine(HpirArtifactRenderer.Structured(HpirArtifact.ReadTrusted(stream)).ToJsonString());
                     return 0;
                 }
                 ArtifactDisassemblyResult document = ArtifactDisassembly.Read(bytes, identity);
@@ -116,16 +114,10 @@ internal static class Program
                 else HirCommands.Print(semantic, color);
                 return Complete(0, telemetry);
             }
-            NativeProgram program = !binary || semanticInput is not null
-                ? NativeCommandPipeline.Compile(source, file, semanticInput, options.Optimization, telemetry)
-                : NativeCommandPipeline.Read(file, telemetry);
-            if (export is { } nativeExport)
-            {
-                NativeCommandPipeline.Export(program, nativeExport, options, file, binary, telemetry, color, snapshot);
-                return Complete(0, telemetry);
-            }
-            return Complete(await NativeCommandPipeline.Run(program, options, file, binary,
-                telemetry, color, snapshot, input), telemetry);
+            HpirProgram program = !binary || semanticInput is not null
+                ? HpirCommandPipeline.Compile(source, file, semanticInput, options.Optimization, telemetry)
+                : ReadHpirArtifact(file, telemetry);
+            return Complete(HpirCommandPipeline.Run(program, export, options, file, telemetry, color, input, binary, snapshot), telemetry);
         }
         catch (OperationCanceledException error) { telemetry?.Finish("cancelled", error); TerminalPresentation.Cancelled(color); return 130; }
         catch (Exception error) when (error is CompileException or SyntaxException or MsyncException or IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or FormatException or OverflowException)
@@ -146,7 +138,7 @@ internal static class Program
     private static Task<int> Repl(CommandOptions options, TelemetrySession? telemetry, Configuration configuration, TextReader? input) =>
         new ReplSession(RuntimeOptions(options, null, telemetry is null ? null : telemetry.Observe, configuration.Color, input: input)
         with
-        { Profile = telemetry?.CreateProfile(), Timeline = telemetry?.Timeline, ScopedGuestValues = true }, options.Optimization, configuration.Color, telemetry).RunAsync();
+        { Profile = telemetry?.CreateProfile(), Timeline = telemetry?.Timeline }, options.Optimization, configuration.Color, telemetry).RunAsync();
 
     private static int Doctor()
     {

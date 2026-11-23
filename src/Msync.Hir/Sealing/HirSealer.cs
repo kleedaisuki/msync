@@ -157,6 +157,8 @@ public static class HirSealer
             return module with
             {
                 Nodes = rewrittenNodes,
+                SessionSnapshots = module.SessionSnapshots?.Where(pair => !Node(pair.Key).IsNone)
+                    .ToDictionary(pair => Node(pair.Key), pair => pair.Value),
                 Edges = edges.MoveToImmutable(),
                 Functions = [.. module.Functions.Select(function => function with { Body = Node(function.Body), Captures = RewriteCaptures(function.Captures) })],
                 Templates = [.. module.Templates.Select(template => template with { Body = Node(template.Body), Captures = RewriteCaptures(template.Captures) })],

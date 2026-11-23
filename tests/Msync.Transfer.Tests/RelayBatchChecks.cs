@@ -2,6 +2,7 @@ using Msync.Core;
 using Msync.Runtime;
 using Msync.Core.Native;
 using Msync.Runtime.Native;
+using NativePathValue = Msync.Core.Native.NativePath;
 
 internal static class RelayBatchChecks
 {
@@ -12,8 +13,8 @@ internal static class RelayBatchChecks
         NativeConnection target = new(ConnectionKind.Ssh, Environment.GetEnvironmentVariable("MSYNC_TRANSFER_SECOND_REMOTE")!);
         Directory.CreateDirectory(Path.Combine(root, "source"));
         Directory.CreateDirectory(Path.Combine(root, "target"));
-        NativeValue A(string name) => NativeValue.FromPath(new(Path.Combine(root, "source", name), Connection: source));
-        NativeValue B(string name) => NativeValue.FromPath(new(Path.Combine(root, "target", name), Connection: target));
+        NativePathValue A(string name) => new(Path.Combine(root, "source", name), Connection: source);
+        NativePathValue B(string name) => new(Path.Combine(root, "target", name), Connection: target);
         int checks = 0;
         void Check(bool condition, string description)
         {

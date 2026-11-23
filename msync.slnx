@@ -8,9 +8,8 @@
     <Project Path="src/Msync.Runtime/Msync.Runtime.csproj" />
   </Folder>
   <Folder Name="/tests/">
-    <Project Path="tests/Msync.Compiler.Tests/Msync.Compiler.Tests.csproj" />
-    <Project Path="tests/Msync.Native.Tests/Msync.Native.Tests.csproj" />
-    <Project Path="tests/Msync.Runtime.Tests/Msync.Runtime.Tests.csproj" />
+    <Project Path="tests/HpirPipeline/Msync.HpirPipeline.Tests.csproj" />
+    <Project Path="tests/HpirRuntime/Msync.HpirRuntime.Tests.csproj" />
     <Project Path="tests/Msync.Transfer.Tests/Msync.Transfer.Tests.csproj" />
   </Folder>
   <Folder Name="/vendor/">

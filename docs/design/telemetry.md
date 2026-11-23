@@ -205,6 +205,316 @@ source call-site. `vm.native.calls` includes `fast_calls` as a subset.
 and image before joining function IDs or instruction positions. Use exact
 artifact bytes or source revisions as separate benchmark inputs.
 
+The HPIR candidate uses the same VM census with `ir.kind=hpir`.
+`stack_frames` and `stack_frame_bytes` count native frame entries and their
+payloads; `call_physical_argument_bytes` counts the actual parameter bytes
+copied across those frames. `stack_segment_native_bytes` counts real native
+segment reservations, including their headers and unused capacity, not
+live frame payload. `hpir.stack.segment` records allocation, replacement,
+or reentry at the transition, with the attributed caller and target.
+`hpir.execute` records a failed or cancelled execution with its instruction
+context and the number of native frames discarded. Detailed census adds
+source-attributed executed instruction and taken edge counts; ordinary
+copies and calls do not allocate observer objects in the recording-off path.
+`hpir.heap.collect` describes the collection triggered by an allocation,
+including the initiating function, instruction and layout. Root counts
+separate exact base locations from borrowed stack/interior pointers; borrow
+matches and indexed objects describe the actual collector work performed
+for those pointers. Live, reclaimed, reusable and released bytes count
+native extents, including their object headers. `vm.native` identifies the
+allocation layout and issuing site; its allocation counts are independent
+of the number of new native slabs reserved by the allocator.
+Typed scalar services are counted at their physical call sites by binding
+ID and service name. Float and Bool math calls use one fixed-width result
+with no scheduler events. `hpir.host.write` records source attribution,
+output character count, and whether the actual writer was incomplete on
+admission. Failure keeps the writer's concrete error at the source call.
+Ready String operations use \`vm.native\` with the selected String member
+or ordinal comparison. \`text_ascii_case\` and \`text_unicode_case\` count
+entered casing implementations, while \`text_inputs_reused\` counts
+immutable input results returned without a guest allocation. Only
+String-producing operations are potential guest collection points.
+`hpir.regex` reports the actual typed operator or standard call, literal
+versus dynamic pattern, input/output UTF-16 sizes and match or reuse.
+Malformed patterns retain their engine exception and issuing source.
+`hpir.regex.find` adds first-match presence and actual capture-group count;
+`regex.group_layout_checks_elided` counts exact snapshot element layouts
+reused instead of re-reading the runtime object header.
+Selection separately counts `paths.live_selection_plans` and
+`paths.live_selection_transfers`; `file.selection.transfer` describes the
+deferred host cohort call, and `hpir.effect.admit` records the actual
+directory read/write predecessors rather than enumerating at capture.
+`range.path_selection_opens` counts selected regex Path cursor sites.
+The VM records `fs.path_selection.open` independently of plain
+directory Open. Cursor spans retain `selection.pattern` and the same
+source, first-pull, yielded and close reasons as typed directories. An
+overlapping writer remains a real dependency of the first pull.
+One `hpir.link.text_literals` interval accounts for linking the image's
+UTF-16 literal table into native memory, including its exact word count
+and reserved bytes. A later static-address operation does not allocate.
+
+`connections.literal_relocations` counts physical endpoint-key
+relocations; `paths.typed_qualifications` counts selected Path construction
+sites. `hpir.path.qualify` records the actual endpoint kind/address at
+the source site, without acquiring a transport-registration span.
+The disabled path needs neither source lookup nor address Text decoding
+for ordinary SSH/WSL qualification.
+Typed input uses the same reader-admission spans and a distinct
+`hpir.work.submit` and future demand. A Text projection (`is_null` or
+numeric parsing) can exist while the reader remains pending; only an
+observed demand publishes UTF-16 in the guest heap. A direct materializing
+text demand has its own `hpir.future.text_demand` span. When a scalar
+projection reaches it, that span is nested under the scalar demand.
+`compiler.llvm.lower.readiness` reports `flow.observed_text_conversions`
+when a dominating control demand already published the same input
+completion; the emitted parse is then a ready `ParseF64` or `ParseBool`
+service, not a new scalar projection or host demand.
+`flow.observed_text_nonentry` counts such conversions after an observation
+outside the function entry, for example immediately following a loop.
+Subsequent call and capture metrics reflect the ready producer result.
+`flow.snapshot_item_edges` counts materialization and pattern-prefix
+edges carrying item readiness after traversal has already completed.
+Typed Process stdout/stderr materialize under the same text demand, with
+`text.completion`, `text.characters` and the causal link to the one
+Process job. Frame exit distinguishes promoted from joined work.
+`gc.process_results_released` counts completed host results whose exact
+guest Process graph is no longer reachable.
+`process.argv.sites` and `process.argv.operands` count source Process
+launches and their producer-selected argument carriers. The `ProcessStart`
+import records the Text/Path/Number/Bool ABI independently of physical
+word width. `hpir.process.argv` attributes host argument materialization to
+the original Process launch and its executable; it never records argument
+contents. The bound Path supplies its own anchors and only host strings
+cross into process work. There is no guest String formatting round trip for
+Number or Bool arguments.
+`process.spawn.ready_vector` counts typed snapshot admissions;
+`process.control.sites` identifies fixed Process controls at selection.
+`hpir.process.start_wait` records waiting for startup only. The separate
+`hpir.process.control` spans link the selected startup or completion task,
+with the operation and `process.wait_for` recorded on the original call.
+`process.stdout.ready` and `process.stderr.ready` in `vm.native` record
+materialization after a known completion edge. `future.ready_demands_elided`
+counts selected Bool producer results copied or aliased without a wait.
+Direct Bool-to-file formatting is selected as `paths.transfer_bool_text`.
+The corresponding execution site is `transfer.live_bool_text`; the file
+admission span links the original typed result task as
+`transfer.text_input` and records whether it was pending.
+A projected ready `Path | String` transfer counts once in
+`paths.transfer_union_sites`. Its selected Path or String arm reaches
+the existing `hpir.effect.admit` span with `transfer.kind = path` or
+`text`; the other arm submits no job. The metric counts source sites,
+not the two physical import branches.
+`future.folded_field_lanes` counts loads and stores that use a preserved
+layout on the memory operand after LLVM folded its zero-offset GEP.
+`future.union_cells` counts surviving SSA union values with an actual
+scalar completion lane; fully ready unions are not counted. The producer's
+`flow.future_parameters`, `flow.future_results` and `flow.future_fields`
+include those selected boundaries. A pending null predicate uses
+`hpir.future.lift` with `operation = ScalarIsNull`; existing root maps and
+demand telemetry report its selected dependency. O0's
+`compiler.hpir.canonicalize.values` records promoted-local and pruned
+function counts and includes the existing local-promotion and DCE events.
+`flow.snapshot_completion_sites` counts literal producers whose actual
+Number or Bool elements can retain completions. `vectors.completion_elements`
+counts the selected physical item lanes; `future.snapshot_items` counts
+iterator outputs with an extra exact-root lane in their generated frame.
+`future.shared_completions_reused` counts nodes already completed by
+another consumer during a real host wait; `roots.active_completion_paths`
+counts exact roots kept alive while that wait pumps cooperative work.
+`paths.transfer_number_text` counts a Number cast observed directly by
+FileOut. `hpir.effect.number_arguments` distinguishes inline, published,
+and genuinely pending Number. Only the latter publishes a precise
+guest root and a typed host handoff. Admission and execution link the
+`transfer.number_input` dependency; the guest advance span distinguishes
+parking and publication, and `roots.effect_number_marked` counts roots
+kept alive by the handoff rather than the active guest frames.
+`strings.chunk_appends` counts selected typed chunk append sites.
+`hpir.text.append_chunk` records the actual storage decision
+(`initial`, `extended`, `grown`, or `forked`) and
+`chunks.length`, `chunks.capacity` and `chunks.copied` in String
+references. The existing `range.fields.snapshot_consumers` metric
+reports the selected policy operations and Process argument snapshot
+alongside other producer-owned snapshot consumers.
+Explicit file writes report `paths.file_text_writes`,
+`paths.file_text_appends` and `paths.file_text_deferred_inputs` at
+selection. `hpir.file_write.arguments` links a pending typed operand
+before reservation. `hpir.file_write.admit` links the live and prepared
+predecessors of the destination lease, and `hpir.file_write.write`
+records the concrete operation, input character count, dry-run action
+and failure. The guest observes the physical completion at that site.
+`paths.rename_sites` counts selected `fs.rename` calls. At execution,
+`hpir.file_rename.admit` attributes both write locations and their effective
+endpoint, counts atomic source/destination registrations including their
+physical aliases, and links overlapping residual or prepared predecessors.
+`hpir.file_rename.rename` reports the synchronous host operation, dry-run
+simulation or failure at the original guest source.
+The selector reports `vectors.at`, `vectors.front`, `vectors.first`, `vectors.size` and
+`vectors.bounds_known` for materialized vector consumers. `vectors.type_quantifiers`
+and `vectors.scalar_quantifiers` count typed predicate loops, while
+`vectors.empty_quantifiers` counts shapes that need only their Boolean identity.
+Actual calls at the sole
+predicate site remain visible in `vm.call` and the function census.
+`range.transform.scope_text_vector_plans` counts mapped member-pointer
+plans, not element copies. `range.transform.completion_calls` counts call
+sites that forward a Number completion lane rather than forcing its
+payload. `range.numeric_snapshot_sites` counts Number plan materializations
+into the usual snapshot ABI; `vectors.reverse_snapshots` counts ready
+word-buffer reversal sites. `meta.static_alternative_sets` and
+`meta.static_alternatives` count Type alternative sets emitted directly by
+the HIR producer and the actual number of witnesses, respectively.
+`meta.same_type_witnesses` and
+`meta.type_name_lookups` count selected sites; the image phase records
+`meta.type_display_literals` for the producer-built Text suffix, and
+`vm.native` attributes actual `meta.type_name` lookups to the guest call site. The execution
+census records reachable ordinal conversion and pointer operations; only
+the cold failure path invokes a host service at the original source.
+LLVM production records `builtin.range.nullable_number_items_packed` per
+function for literal operands selected into a shared finite carrier.
+For direct snapshot field consumers, `range.fields.snapshot_consumers`
+counts selected source operations and `range.fields.snapshot_operands`
+counts their individually selected operands. The producer records actual worklist
+nodes and edges, unseeded components' affected nodes, propagated conflicts
+and joins of incompatible payload carriers. `range.fields.snapshot_transform_sources`
+counts exact Number transform sources whose return ABI flows through
+materialization. `arguments.scope_layouts_retained` counts the physical
+domains forwarded at by-value function entry. HPIR accesses the selected
+carrier without a second field analysis. `range.slide.borrowed_plans`,
+`range.slide.frame_cursors`, `range.slide.pulls` and `range.slide.local_reads`
+count selected two-item window sites; the VM census sees the actual
+comparison hits and zero window allocations in the standard sorted check.
+Ready scalar casts report `casts.primitive`, `casts.bool_text_literal`,
+`casts.string_parse` and `casts.path_parse` at compiler selection.
+`hpir.scalar.parse` attributes Bool/Path parsing to its physical carrier,
+result kind, UTF-16 input length and original cast site; a failure retains
+the concrete diagnostic. A Path-to-Number span records its parser path;
+the function census counts actual String-to-Number short-integer, general
+and invalid results, without a span for every line. Primitive Bool/Number
+casts appear as ordinary
+executed guest instructions rather than managed work.
+`compiler.hpir.image.decode` records whether input is extent-bounded
+and how many file-length queries the decoder made. The separate
+`input.read_line` metrics expose whether the reader turn or the actual
+buffer refill suspended.
+Live Text Range records typed `hpir.text_range.open`, `.next`, and
+`.close` intervals with the cursor and source site. Open registers a host
+cursor without reading; Next records the actual suspended or completed
+read, UTF-16 units and EOF. Close distinguishes explicit control flow,
+exhaustion and unwind. A file cursor only checks the live resource
+frontier on its first pull, and `hpir.effect.read_dependencies` links its
+actual overlapping transfer predecessors. The execution census counts
+yielded lines, EOF pulls and UTF-16 units without storing line contents.
+
+Typed directory Path cursors report `range.directory_sources` and the
+selected open/pull/close sites. `hpir.directory.open`, `.next` and `.close`
+record actual cursor identity, resource, recursive mode, first pull,
+yield and cleanup reason. `hpir.effect.read_dependencies` links actual
+overlapping file operations at first pull; creating the directory plan
+does not enumerate or consult the namespace.
+An iterator with a guaranteed static prefix reports
+`range.iterator_selection.recipes`. Binding attributes
+`backend.hpir.bind.iterator_selection` to the lexical directory, regex,
+and source, with the observed member count or reason the plan remains
+residual. The cursor reports `selection.membership=frozen|live`; frozen
+pulls count actual yielded paths without reporting a host first pull.
+The Path-snapshot filter reports `range.filter.path_plans`,
+`range.filter.path_opens`, `range.filter.path_pull_sites`, and the number
+of selected `range.filter.predicate_demands` sites. The VM census counts
+actual selected predicate calls and actual Future-demand calls separately;
+the ready arm of a mixed Bool predicate executes no demand import.
+`strings.join.live_cursors` reports selection of the live terminal;
+`hpir.text_range.join` reports actual consumed lines and final UTF-16 size.
+It retains the underlying open/pull/close intervals instead of attributing
+input waits or close failures to a generic String operation.
+
+`hpir.file_read.admit` reports the exact metadata operation, resource,
+endpoint, ready completion and number of relevant live predecessors.
+`hpir.file_read.read` records the concrete host query and any underlying
+filesystem error. `vm.native` uses the original qualified operation name;
+a ready metadata read does not allocate a guest completion or managed job.
+`io.read_text` adds the physical resource kind, stream co-start decision,
+and resulting UTF-16 count. A transfer consuming the same pending result
+records a `transfer.text_input` causal link, readiness at admission and
+at actual payload demand, and the transferred Text size. Scope exit
+records which jobs were promoted as effect dependencies; collection
+counts old completed read results released after their guest cells die.
+`effects.transfer.shared_frontier` counts selected void `SharedTransfer`
+sites. `hpir.effect.admit` and related read/transfer intervals record
+`dependencies.cross` and causal links for actual overlapping work from the
+other admission partition; `dependencies.prepared` continues to count
+precomputed plan edges. Pure prepared calls do no live resource lookup.
+
+Selection counts `effects.work.lexical_frontiers`,
+`effects.work.lexical_exits`, `effects.work.owner_joins`, and
+`effects.work.process_joins`. The lexical Mark and Publish imports
+record `hpir.work.lexical_mark` and `hpir.work.lexical_publish` at the
+original control edge. Publication reports the saved job ordinal, work
+examined, pending finite transfers and selected process-dependent flows;
+`work.predecessor` links actual completion jobs. A subsequent host effect
+links its published predecessor as `work.lexical_predecessor`, separate
+from resource hazard links. Bare and selected Process joins report their
+actual joined and still-waiting job counts and retain attributed failures.
+
+The x64 HPIR executor retains the same IR instruction and edge
+census. `dispatch.engine` distinguishes the execution mechanism.
+`machine_entries` counts native block invocations; `machine_instructions`
+counts actual HPIR operations performed by native code. `machine_calls`
+and `machine_returns` count completed in-segment guest transitions, not
+host or segment transitions. Their instruction, call-site and frame totals
+are included in the ordinary HPIR counters. `hpir.machine.emit.function`
+attributes emitted instructions, direct call sites and code bytes to the
+function and source. `guest.direct_cached_sites` distinguishes baked-in
+addresses from `guest.direct_late_sites` that read the mutable entry table;
+remaining direct sites are local relocations. `scalar.forwarded_operands`
+and `scalar.elided_stores` record the actual scalar-run choices.
+`hpir.machine.publish` records executable-page publication separately.
+`guest.inline_service_sites` counts typed physical
+layout and CPU-supported ready math sites emitted as instructions; `vm.native.machine_inline_calls`
+counts their dynamic executions without losing the original operation/site
+census or adding a guest frame. Unobserved machine code has no counters.
+For adaptive runs, `hpir.execute` records the promotion outcome, count of
+cached bodies and published code bytes; a promoted run reports both
+engines. A `hpir.machine.promote` span attributes a function cache miss to
+the actual backedge or direct call and records the source, resume PC,
+function-local interpreted work and budget, and native calls waiting for
+the target. Each promotion owns the emission and page-publication spans.
+Unsupported hosts stay physical. If publication fails, ready entries
+remain usable and the rest stay physical without retrying.
+The native RET boundary selects the next stack-segment or work-owned exit
+at managed reentry, using the same return branch for both.
+
+`hpir.link.globals` records linked singleton roots, payload and reserve
+bytes. Collection reports `roots.globals` separately from frame root
+locations. Compiler HPIR selection reports actual global relocations per
+function, plus finite-union packs, projections, repacks and observed tags;
+producer lowering separately counts removed representation round trips.
+
+`tail.self.loop_sites` counts selected closed self continuations;
+`tail.self.argument_moves` and `tail.self.move_cycles` expose the
+parallel physical rebinding. Rejected candidates distinguish ABI,
+local storage, an observing continuation, and calls that may own work.
+The executed same-frame loop is recorded by ordinary `vm.edge` rows
+at the original call source; it does not increment physical CALL or
+frame counts.
+
+`hpir.guest.launch`, `hpir.guest.slice`, `hpir.guest.resume`,
+`hpir.guest.demand` and `hpir.guest.settle` attribute actual cooperative
+Number delivery. A parked slice links the host completion that prevented
+progress and records its resume PC; an empty range has no callback slice.
+Collection's `roots.cooperative_frames` counts parked stacks and the
+paused caller scanned alongside the active stack. Selection reports the
+actual typed continuation sites, not syntactically declared callbacks.
+A work-owned return reports the number of actual guest completion roots
+that can survive the frame. Record lists belong to their exact frame, so
+settling one frame does not enumerate unrelated jobs. A frame that owns
+only non-returnable effects settles them without scanning the guest heap.
+Prepared effect selection reports the sliced operands and the number
+retained for unrelated users; printing a shared literal does not disqualify
+its independent prepared transfer.
+An admitted metadata predicate reports `effects.context_checks` at
+selection and a source-attributed `backend.hpir.bind.context_check` with
+its frozen/residual decision. Only a residual predicate opens
+`hpir.effect.context_check` during execution.
+
 The profile records aggregated counters, not one SQL write, timestamp or
 object per opcode. It drains at execution/submission boundaries after guest
 work settles, and queues the bounded-workload counter table as one envelope,

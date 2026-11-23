@@ -34,8 +34,11 @@ public static partial class LlvmHirLowerer
                 LlvmValue address = locations[field] = FieldAddress(layout, pointer, index);
                 if (node.Kind == HirKind.AllocateScope && owner.session is { } session
                     && session.Roots.TryGetValue(field, out var root))
+                {
+                    _ = owner.SessionCell(field);
                     OperationCall(new(LlvmRuntimeValueOperation.BindSessionCell, root.Slot),
                         LlvmType.GetVoidTy(owner.context), owner.metadata.RuntimeType(TypeRef.Null), [address]);
+                }
             }
             if (construction.Self is { } self)
                 Add(new LlvmStoreInstruction(Represent(pointer, Hir.Locations[self.Value].StorageType,
@@ -63,7 +66,7 @@ public static partial class LlvmHirLowerer
                 { LogicalType = owner.metadata.RuntimeType(TypeRef.String) });
             var seed = LlvmPoisonValue.Get(layout);
             var identity = Add(new LlvmInsertValueInstruction(seed,
-                LlvmConstantPointerNull.Get(owner.CodePointer), [0])
+                owner.NativeCode(node.Text!), [0])
                 { LogicalType = owner.metadata.RuntimeType(TypeRef.Function) });
             var environment = Add(new LlvmInsertValueInstruction(identity,
                 LlvmConstantPointerNull.Get(owner.DataPointer), [1])
@@ -104,20 +107,37 @@ public static partial class LlvmHirLowerer
                 if (block.HasTerminator) return owner.Null;
             }
             current = node;
+            return EmitNativeInvocation(node, name, arguments);
+        }
+
+        private LlvmValue EmitNativeInvocation(HirNode node, string name, IReadOnlyList<LlvmValue> arguments)
+        {
             var resultType = owner.Type(node.Type);
             if (name is not ("io.read_text" or "io.read_lines" or "io.read_bytes" or "io.write_text" or
                 "io.append_text" or "io.write_bytes" or "io.append_bytes"))
                 return NativeBuiltin(node, name, arguments);
             return name switch
             {
-                "io.read_text" => Add(new LlvmFileInInst(resultType, arguments[0], LlvmFileInFormat.Text)),
-                "io.read_lines" => Add(new LlvmFileInInst(resultType, arguments[0], LlvmFileInFormat.Lines)),
+                "io.read_text" => FileText(),
+                "io.read_lines" => FileLines(),
                 "io.read_bytes" => Add(new LlvmFileInInst(resultType, arguments[0], LlvmFileInFormat.Bytes)),
                 "io.write_text" => Write(LlvmFileOutMode.WriteText),
                 "io.append_text" => Write(LlvmFileOutMode.AppendText),
                 "io.write_bytes" => Write(LlvmFileOutMode.WriteBytes),
                 _ => Write(LlvmFileOutMode.AppendBytes)
             };
+            LlvmValue FileText()
+            {
+                ++owner.fileTextSources;
+                return owner.DeferredSource(Add(new LlvmFileInInst(resultType, arguments[0], LlvmFileInFormat.Text)
+                { LogicalType = owner.metadata.Type(node.Type) }), "file_read");
+            }
+            LlvmValue FileLines()
+            {
+                owner.fileLineSources++;
+                return Add(new LlvmFileInInst(resultType, arguments[0], LlvmFileInFormat.Lines)
+                { LogicalType = owner.metadata.Type(node.Type) });
+            }
             LlvmValue Write(LlvmFileOutMode mode) => Add(new LlvmFileOutInst(resultType, arguments[1], arguments[0], mode));
         }
 
@@ -128,7 +148,8 @@ public static partial class LlvmHirLowerer
             var destination = Child(node, 1);
             if (block.HasTerminator) return owner.Null;
             current = node;
-            return Add(new LlvmFileOutInst(owner.Type(node.Type), value, destination, LlvmFileOutMode.Transfer));
+            owner.fileTransferSources++;
+            return owner.DeferredSource(Add(new LlvmFileOutInst(owner.Type(node.Type), value, destination, LlvmFileOutMode.Transfer)), "transfer");
         }
     }
 }

@@ -135,7 +135,10 @@ ownership must be transferred.
 For redirected CLI input, line reads start the asynchronous stream reader
 directly under the same reader turn. An already-buffered line completes
 inline; when the buffer needs more bytes, the stream read supplies the pending
-operation. No per-line thread-pool submission is required. The reader owns its
+operation. The redirected reader uses an 8 KiB byte buffer to amortize
+refills of piped or redirected input, without acquiring a second reader
+or starting input before the program demands it. No per-line thread-pool
+submission is required. The reader owns its
 turn until the actual read finishes, even if a caller stops awaiting it.
 An arbitrary injected reader (or the terminal reader) still starts on the
 pool because its async method may block before returning.

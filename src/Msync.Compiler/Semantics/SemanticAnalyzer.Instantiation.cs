@@ -55,6 +55,7 @@ internal sealed partial class SemanticAnalyzer
         foreach (var capture in closure.Captures)
         {
             HirLocationId source = context.Location(capture.SourceLocation);
+            EnsureStandardCapture(source, node.Source, context);
             var value = context.Values.GetValueOrDefault(source)
                 ?? ValueForType(ResolveHirType(hir.Locations[source.Value].StorageType, context));
             captures.Add(new(source, value, capture.Mode));
@@ -222,12 +223,21 @@ internal sealed partial class SemanticAnalyzer
         var parameterEntryTypes = caller.Publish ? ImmutableArray.CreateBuilder<HirTypeId>(template.Parameters.Length) : null;
         ImmutableArray<SemanticValue>.Builder formalArguments = ImmutableArray.CreateBuilder<SemanticValue>();
         List<HirNodeId> parameterInitializers = [];
+        int retainedParameterLayouts = 0;
         for (int index = 0; index < template.Parameters.Length; index++)
         {
             var original = template.Parameters[index];
             var target = context.Location(original);
             var definition = hir.Locations[original.Value];
             var argument = input.Abstract(arguments[index] with { StorageConstraint = null });
+            var layoutDomain = hir.Types[arguments[index].Type.Value].ScopeDomain;
+            if (layoutDomain.Count != 0)
+            {
+                // This by-value entry is already keyed on the caller's layout
+                // domain. The mutable local below keeps its structural storage.
+                argument = argument with { Type = hir.Type(hir.Types[argument.Type.Value] with { ScopeDomain = layoutDomain }) };
+                retainedParameterLayouts += layoutDomain.Count;
+            }
             parameterEntryTypes?.Add(argument.Type);
             var parameterType = ResolveHirType(definition.StorageType, context);
             if (hir.Types[parameterType.Value].TypeParameter >= 0)
@@ -276,6 +286,7 @@ internal sealed partial class SemanticAnalyzer
             parameters.Add(incoming);
             formalArguments.Add(value);
         }
+        if (retainedParameterLayouts != 0) Trace?.Metric("arguments.scope_layouts_retained", retainedParameterLayouts);
         input.Complete();
         for (int index = 0; index < formalArguments.Count; index++)
         {

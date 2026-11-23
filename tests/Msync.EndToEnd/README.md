@@ -41,10 +41,9 @@ bitwise oracle does not depend on allocation order or address representation.
 B/B+ page churn still checks contents, occupancy and page counts; reuse of a
 retired slot allocator's integer handle is intentionally not a language oracle.
 
-`--require-fusion` on the affine journey remains an explicit optimization
-diagnostic. It checks real native `NextIterator` instructions and may fail when
-the current pipeline does not fuse the scans. The ordinary platform journey
-must preserve scan semantics, not assert that a retired fusion pass still runs.
+The affine journey reports physical HPIR backedges as context, not a fusion
+oracle. It checks scan effects and bytes rather than the retired Native2
+`NextIterator` operation.
 Likewise, static-field checks do not fabricate old `storage.vector_get` call
 counts or translate a missing mechanism into a measured zero-cost phase.
 

@@ -89,6 +89,18 @@ public static partial class LlvmHirLowerer
         {
             var condition = Child(node, 0);
             if (block.HasTerminator) return owner.Null;
+            if (node.Data is (int)HirIfSelection.True or (int)HirIfSelection.False)
+            {
+                current = node;
+                // The producer selected an arm, not permission to skip
+                // evaluating or observing a genuinely deferred condition.
+                _ = ObserveCondition(condition);
+                var value = Child(node, node.Data == (int)HirIfSelection.True ? 1 : 2);
+                if (block.HasTerminator) return value;
+                current = node;
+                owner.trace?.Detail?.Metric("control.known_arms", 1);
+                return Represent(value, node.Type);
+            }
             return Conditional(node, condition, () => Child(node, 1),
                 () => node.Children.Count > 2 ? Child(node, 2) : owner.Null);
         }
@@ -128,11 +140,15 @@ public static partial class LlvmHirLowerer
         }
 
         private void BranchOn(LlvmValue condition, LlvmBasicBlock whenTrue, LlvmBasicBlock whenFalse)
+            => Add(new LlvmCondBrInstruction(ObserveCondition(condition), whenTrue, whenFalse));
+
+        private LlvmValue ObserveCondition(LlvmValue condition)
         {
-            if (condition is not LlvmConstantInt)
-                OperationCall(new(LlvmRuntimeValueOperation.DemandBool), LlvmType.GetVoidTy(owner.context),
-                    owner.metadata.RuntimeType(Msync.Core.TypeRef.Null), [condition]);
-            Add(new LlvmCondBrInstruction(condition, whenTrue, whenFalse));
+            if (condition is LlvmConstantInt) return condition;
+            var demand = (LlvmCallInstruction)OperationCall(new(LlvmRuntimeValueOperation.DemandBool),
+                condition.Type, owner.metadata.RuntimeType(Msync.Core.TypeRef.Bool), [condition]);
+            owner.controlDemands.Add(demand);
+            return demand;
         }
     }
 }

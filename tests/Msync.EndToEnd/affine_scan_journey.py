@@ -162,7 +162,7 @@ loop {
 
 
 def run_case(
-    binary: Path, work: Path, name: str, route: str, level: int, require_fusion: bool
+    binary: Path, work: Path, name: str, route: str, level: int
 ) -> dict[str, object]:
     work.mkdir(parents=True)
     (work / "seed.txt").write_text("7", encoding="utf-8")
@@ -174,25 +174,16 @@ def run_case(
     disassembly: dict[str, Any] = json.loads(
         execute(binary, work, ["disassemble", str(portable), "--json"]).stdout
     )
-    assert disassembly["representation"] == "native-v1", disassembly
+    assert disassembly["representation"] == "hpir", disassembly
     functions: list[dict[str, Any]] = cast(
         list[dict[str, Any]], disassembly["functions"]
     )
-    iterators: int = sum(
-        instruction["op"] == "NextIterator"
+    backedges: int = sum(
+        instruction["op"] == "Jump" and instruction["a"] < pc
+        or instruction["op"] == "Branch" and min(instruction["b"], instruction["d"]) < pc
         for function in functions
-        for instruction in function["instructions"]
+        for pc, instruction in enumerate(function["instructions"])
     )
-    if require_fusion and name in {
-        "independent",
-        "scope-fields",
-        "scope-carried-snapshot",
-    }:
-        assert iterators == 1, (
-            "Expected a genuinely fused portable scan",
-            iterators,
-            disassembly,
-        )
     if route == "source":
         execute(binary, work, ["run", str(source), f"-O{level}"])
     else:
@@ -213,7 +204,7 @@ def run_case(
         "case": name,
         "route": route,
         "optimization": level,
-        "iterators": iterators,
+        "physical_backedges": backedges,
         "source_sha256": hashlib.sha256(program.encode()).hexdigest(),
     }
 
@@ -226,7 +217,6 @@ def main() -> None:
         "--route", action="append", choices=["source", "mso", "mexe"], default=[]
     )
     parser.add_argument("--level", type=int, default=2)
-    parser.add_argument("--require-fusion", action="store_true")
     parser.add_argument("--output", type=Path)
     arguments: argparse.Namespace = parser.parse_args()
     binary: Path = arguments.binary.resolve()
@@ -239,7 +229,6 @@ def main() -> None:
             name,
             route,
             arguments.level,
-            arguments.require_fusion,
         )
         for name in (arguments.case or list(PROGRAMS))
         for route in (arguments.route or ["source", "mso", "mexe"])

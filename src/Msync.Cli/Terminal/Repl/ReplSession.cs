@@ -2,8 +2,8 @@ using Msync.Compiler;
 using Msync.Compiler.Syntax;
 using Msync.Core;
 using Msync.Runtime;
-using Msync.Core.Native;
-using Msync.Runtime.Native;
+using Msync.Core.Hpir;
+using Msync.Runtime.Hpir;
 
 namespace Msync.Cli;
 
@@ -11,7 +11,7 @@ internal sealed class ReplSession
 {
     private static readonly string ShellPrelude = CreateShellPrelude();
     private readonly CompilerSession compiler;
-    private readonly NativeExecutionSession execution;
+    private readonly HpirExecutionSession execution;
     private readonly TextReader? inputReader;
     private readonly string color;
     private readonly TelemetrySession? telemetry;
@@ -76,16 +76,16 @@ internal sealed class ReplSession
         finally
         {
             if (!editing) Console.CancelKeyPress -= Cancel;
-            await execution.DisposeAsync();
+            execution.Dispose();
         }
     }
 
     private EditorAnalysis AnalyzePrompt(string source)
     {
         using TelemetrySpan? span = telemetry?.Begin("repl.analysis", TelemetryLevel.Phases);
-        return span is null ? compiler.AnalyzeEditor(source, execution.GetLocalValue)
+        return span is null ? compiler.AnalyzeEditor(source)
             : span.Measure((source, trace: span.CompilerTrace),
-                state => compiler.AnalyzeEditor(state.source, execution.GetLocalValue, state.trace));
+                state => compiler.AnalyzeEditor(state.source, state.trace));
     }
 
     private IReadOnlyList<SemanticMember> DescribePromptBindings() => compiler.DescribeBindings()
@@ -138,30 +138,29 @@ internal sealed class ReplSession
         lock (cancellationGate) active = cancellation;
         try
         {
-            NativeProgram module;
+            HpirSessionSubmission module;
             using (TelemetrySpan? compile = submission?.Begin("compile"))
             {
                 try
                 {
-                    module = compiler.Compile(source, syntax.Take(source), compile?.CompilerTrace);
+                    module = compiler.CompilePhysical(source, syntax.Take(source), compile?.CompilerTrace);
                     compile?.Complete();
                 }
                 catch (Exception error)
                 {
                     compile?.Fail(error);
-                    compiler.ReconcileSubmission(_ => false);
+                    compiler.ReconcilePhysicalSubmission(_ => false, execution.ObserveBinding);
                     throw;
                 }
             }
             using TelemetrySpan? execute = submission?.Begin("execute");
             using IDisposable? owner = execute is null ? null : telemetry?.Timeline?.Attach(execute.Id);
-            execute?.SetAttribute("vm.driver", "inline");
+            execute?.SetAttribute("vm.driver", "hpir");
             ProcessCounters? before = execute?.MeasureProcess();
-            NativeTierStatistics tiersBefore = execution.TierStatistics;
             try
             {
-                NativeValue result = execution.ExecuteEntry(module, cancellation.Token);
-                if (result.Kind != NativeKind.Null)
+                HpirSessionValue result = execution.Execute(module, cancellation.Token);
+                if (result.Kind != TypeKind.Null)
                 {
                     using TelemetrySpan? display = execute?.Begin("repl.display");
                     try
@@ -171,21 +170,19 @@ internal sealed class ReplSession
                     }
                     catch (Exception error) { display?.Fail(error); throw; }
                 }
-                compiler.AcceptSubmission(execution.GetLocalValue);
-                execution.CollectGuestHeap();
+                compiler.AcceptPhysicalSubmission(execution.ObserveBinding, execute?.CompilerTrace);
                 execute?.Complete();
                 submission?.Complete();
             }
             catch (Exception error)
             {
                 execute?.Fail(error);
-                compiler.ReconcileSubmission(execution.IsLocalInitialized, execution.GetLocalValue);
+                compiler.ReconcilePhysicalSubmission(execution.IsInitialized, execution.ObserveFailedBinding, execute?.CompilerTrace);
                 throw;
             }
             finally
             {
                 execute?.RecordProcess(before);
-                execute?.RecordTiering(execution.TierStatistics, tiersBefore);
                 if (execute is not null) telemetry!.PublishProfile(profile, execute.Id);
             }
         }
@@ -193,58 +190,14 @@ internal sealed class ReplSession
         finally { lock (cancellationGate) active = null; }
     }
 
-    private async ValueTask DisplayAsync(NativeValue value, TelemetrySpan? display, CancellationToken cancellationToken)
+    private static ValueTask DisplayAsync(HpirSessionValue value, TelemetrySpan? display, CancellationToken token)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        if (value.Kind == NativeKind.Range)
-        {
-            await foreach (NativeValue item in value.AsRange().Items.WithCancellation(cancellationToken))
-                await DisplayAsync(item, display, cancellationToken);
-            return;
-        }
-        string text = value.Kind == NativeKind.Address
-            ? await FormatScopeAsync(value.AsAddress(), [], display, cancellationToken) : FormatValue(value);
-        if (text.EndsWith('\n')) Console.Write(text);
-        else Console.WriteLine(text);
+        token.ThrowIfCancellationRequested();
+        display?.SetAttribute("result.kind", value.Kind.ToString());
+        HpirSessionPresentation.Write(Console.Out, value);
+        return ValueTask.CompletedTask;
     }
 
-    private static string FormatValue(NativeValue value) =>
-        value.Kind == NativeKind.Process ? FormatProcess(value.AsProcess()) : value.ToString();
-
-    private static string FormatProcess(NativeProcess process)
-    {
-        if (process.Completion is not { } completion)
-            return $"Process(exit={process.ExitCode})";
-        if (completion.IsCompletedSuccessfully) return $"Process(exit={completion.Result.ExitCode})";
-        string state = completion.IsCanceled ? "cancelled" : completion.IsFaulted ? "failed" : "pending";
-        return process.ProcessId is { } id ? $"Process({state}, pid={id})" : $"Process({state})";
-    }
-
-    private async ValueTask<string> FormatScopeAsync(NativeAddress address, HashSet<NativeAddress> path,
-        TelemetrySpan? display, CancellationToken token)
-    {
-        if (!path.Add(address)) return "scope { ...cycle... }";
-        using TelemetrySpan? span = display?.Begin("repl.display.scope");
-        var layout = execution.ScopeLayout(address);
-        span?.SetMetric("fields", layout.Fields.Count);
-        List<string> members = [];
-        foreach (var field in layout.Fields)
-        {
-            var place = address.OffsetBy(field.Offset, field.Type);
-            if (await execution.ObserveMemberAsync(place, token) is not { } member) continue;
-            string text = member.Kind switch
-            {
-                NativeKind.String => "\"" + member.AsString().Replace("\"", "\"\"", StringComparison.Ordinal) + "\"",
-                NativeKind.Address => await FormatScopeAsync(member.AsAddress(), path, span, token),
-                _ => FormatValue(member)
-            };
-            members.Add(field.Name + ": " + text);
-        }
-        path.Remove(address);
-        span?.SetMetric("fields.displayed", members.Count);
-        span?.Complete();
-        return "scope { " + string.Join(", ", members) + " }";
-    }
 
     private void Cancel(object? sender, ConsoleCancelEventArgs error)
     {

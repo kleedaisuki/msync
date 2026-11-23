@@ -120,8 +120,8 @@ internal sealed partial class SemanticAnalyzer
         foreach (int slot in established)
         {
             var requirement = sessionDispatch.Calls[slot];
-            var (targets, _) = CheckSessionTarget(requirement, value, source, context, publish: context.Publish);
-            if (context.Publish) MergeSessionTargets(slot, targets);
+            var (targets, natives, _) = CheckSessionTarget(requirement, value, source, context, publish: context.Publish);
+            if (context.Publish) MergeSessionTargets(slot, targets, natives);
         }
         foreach (int slot in sessionDispatch.ForRoot(owner))
         {
@@ -130,8 +130,8 @@ internal sealed partial class SemanticAnalyzer
             var target = NestedSessionValue(value, requirement.Source.Fields, context);
             if (target is not null)
             {
-                var (targets, _) = CheckSessionTarget(requirement, target, source, context, publish: context.Publish);
-                if (context.Publish) MergeSessionTargets(slot, targets);
+                var (targets, natives, _) = CheckSessionTarget(requirement, target, source, context, publish: context.Publish);
+                if (context.Publish) MergeSessionTargets(slot, targets, natives);
             }
         }
     }
@@ -159,8 +159,8 @@ internal sealed partial class SemanticAnalyzer
             var path = requirement.Source.Fields;
             var parent = NestedSessionValue(StorageValue(requirement.Source.Root, context), path.RemoveAt(path.Length - 1), context);
             if (parent?.Scope is not { } receiver || !ScopeAliases(receiver).Intersect(ScopeAliases(scope)).Any()) continue;
-            var (targets, _) = CheckSessionTarget(requirement, value, source, context, publish: context.Publish);
-            if (context.Publish) MergeSessionTargets(requirement.Slot, targets);
+            var (targets, natives, _) = CheckSessionTarget(requirement, value, source, context, publish: context.Publish);
+            if (context.Publish) MergeSessionTargets(requirement.Slot, targets, natives);
         }
     }
 
@@ -178,13 +178,14 @@ internal sealed partial class SemanticAnalyzer
         {
             var requirement = sessionDispatch.Calls[binding.Slot];
             if (SessionCallable(binding.Callee, context) is not { } callee) continue;
-            var (_, effects) = CheckSessionTarget(requirement, callee, requirement.Origin, context,
+            var (_, _, effects) = CheckSessionTarget(requirement, callee, requirement.Origin, context,
                 publish: context.Publish, argumentBindings: binding.Arguments);
             ApplyDeferredEffects(effects, context);
         }
     }
 
-    private (ImmutableArray<HirDispatchTarget> Targets, ImmutableArray<SemanticDeferredWrite> Effects) CheckSessionTarget(SessionCallRequirement requirement,
+    private (ImmutableArray<HirDispatchTarget> Targets, ImmutableArray<HirSessionNativeTarget> Natives,
+        ImmutableArray<SemanticDeferredWrite> Effects) CheckSessionTarget(SessionCallRequirement requirement,
         SemanticValue callee, HirSourceRange source, SemanticContext context, bool publish,
         ImmutableArray<SessionCallableSource?> argumentBindings = default, bool allowImplicitReturn = false)
     {
@@ -208,6 +209,7 @@ internal sealed partial class SemanticAnalyzer
                 arguments[index] = FutureRead(current, current.Type, target, current.Location);
         }
         ImmutableArray<HirDispatchTarget>.Builder dispatch = ImmutableArray.CreateBuilder<HirDispatchTarget>();
+        ImmutableArray<HirSessionNativeTarget>.Builder? nativeTargets = null;
         ImmutableArray<SemanticDeferredWrite>.Builder effects = ImmutableArray.CreateBuilder<SemanticDeferredWrite>();
         foreach (SemanticCallable choice in Choices(callee))
         {
@@ -218,6 +220,13 @@ internal sealed partial class SemanticAnalyzer
                 result = invocation.Result;
                 effects.AddRange(invocation.Effects);
                 if (publish) dispatch.Add(new(choice.RuntimeIdentity ?? HirCallableId.From(template), invocation.Id));
+            }
+            else if (publish && sessionDispatch is not null && choice.NativeName is { } native)
+            {
+                IReadOnlyList<SemanticValue>? selected = null;
+                result = InvokeNative(native, arguments, source, QueryContext(target), callee: null, selectArguments: values => selected = values);
+                var abi = selected!.Select((value, index) => new HirSessionNativeArgument(value.Type, value.Type != arguments[index].Type));
+                (nativeTargets ??= ImmutableArray.CreateBuilder<HirSessionNativeTarget>()).Add(new(native, [.. abi], result.Type));
             }
             else result = InvokeType(new(hir.Type(TypeRef.Function), HirNodeId.None, Callables: [choice]), arguments, source, target);
             try { Require(result, requirement.Result, source, allowImplicit: allowImplicitReturn, context: target); }
@@ -235,7 +244,7 @@ internal sealed partial class SemanticAnalyzer
                 throw mismatch;
             }
         }
-        return (dispatch.ToImmutable(), effects.ToImmutable());
+        return (dispatch.ToImmutable(), nativeTargets?.ToImmutable() ?? [], effects.ToImmutable());
     }
 
     private void RefreshSessionCall(int slot, SemanticContext context, SemanticValue? initial = null)
@@ -243,8 +252,8 @@ internal sealed partial class SemanticAnalyzer
         var requirement = sessionDispatch!.Calls[slot];
         SemanticValue? callee = initial ?? SessionCallable(requirement.Source, context);
         if (callee is null) { sessionDispatch.RequireRefresh(slot); return; }
-        var (targets, _) = CheckSessionTarget(requirement, callee, requirement.Origin, context, publish: true);
-        MergeSessionTargets(slot, targets);
+        var (targets, natives, _) = CheckSessionTarget(requirement, callee, requirement.Origin, context, publish: true);
+        MergeSessionTargets(slot, targets, natives);
         if (IsClosedLiteralRoot(requirement, callee, context)) sessionDispatch.CertifyDirectRoot(slot);
         else sessionDispatch.RequireRefresh(slot);
     }
@@ -271,16 +280,31 @@ internal sealed partial class SemanticAnalyzer
         }
     }
 
-    private void MergeSessionTargets(int slot, ImmutableArray<HirDispatchTarget> targets)
+    private void MergeSessionTargets(int slot, ImmutableArray<HirDispatchTarget> targets, ImmutableArray<HirSessionNativeTarget> natives)
     {
         var requirement = sessionDispatch!.Calls[slot];
+        var nativeTargets = requirement.NativeTargets;
+        foreach (var native in natives)
+        {
+            int existing = -1;
+            for (int index = 0; index < nativeTargets.Length; ++index)
+                if (nativeTargets[index].Name == native.Name) { existing = index; break; }
+            if (existing < 0) nativeTargets = nativeTargets.Add(native);
+            else if (native.Result != nativeTargets[existing].Result || !native.Arguments.AsSpan().SequenceEqual(nativeTargets[existing].Arguments.AsSpan()))
+                nativeTargets = nativeTargets.SetItem(existing, native);
+        }
         bool changed = false;
         foreach (var target in targets)
             if (!requirement.Targets.Contains(target)) { changed = true; break; }
-        if (!changed) return;
+        if (!changed)
+        {
+            if (nativeTargets != requirement.NativeTargets)
+                sessionDispatch.Calls[slot] = requirement with { NativeTargets = nativeTargets };
+            return;
+        }
         var combined = requirement.Targets.ToDictionary(target => target.Identity, target => target.Target);
         foreach (var target in targets) combined[target.Identity] = target.Target;
         sessionDispatch.Calls[slot] = requirement with
-        { Targets = [.. combined.Select(pair => new HirDispatchTarget(pair.Key, pair.Value))] };
+        { Targets = [.. combined.Select(pair => new HirDispatchTarget(pair.Key, pair.Value))], NativeTargets = nativeTargets };
     }
 }

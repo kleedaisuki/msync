@@ -123,10 +123,9 @@ async def pipe_pending_scope(binary: Path, directory: Path) -> None:
         with sqlite3.connect(database) as db:
             counts: dict[str, int] = dict(db.execute("""
                 SELECT m.key,sum(m.value_int) FROM records r JOIN metrics m ON m.record_id=r.id
-                WHERE r.name='vm.storage.pending_index' GROUP BY m.key
+                WHERE r.name='hpir.work.frame_exit' AND m.key='work.promoted' GROUP BY m.key
             """))
-        assert counts["owners_opened"] > 0 and counts["slots_added"] > 0, counts
-        assert counts["lookup_hits"] > 0 and counts["slots_retired"] > 0, counts
+        assert counts.get("work.promoted", 0) > 0, counts
 
 
 async def pipe_reply(

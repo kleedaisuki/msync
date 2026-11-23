@@ -55,6 +55,13 @@ internal static class CommandPipeline
         catch (Exception error) { span?.Fail(error); throw; }
     }
 
+    internal static BindingContext CaptureContext(ExecutionOptions options, string? sourceFile) =>
+        new(Path.GetFullPath(options.WorkingDirectory ?? Environment.CurrentDirectory), HostContext.HomeDirectory, sourceFile);
+
+    internal static string? BindingSource(CommandOptions options, string file, bool binary) =>
+        options.SourceFile is { } requested ? Path.GetFullPath(requested)
+            : binary || file == "-" ? null : Path.GetFullPath(file);
+
     internal static ExecutionOptions RuntimeOptions(CommandOptions options, string? sourceFile, Action<RuntimeObservation>? observe,
         string color, SourceSnapshot? snapshot = null, TextReader? input = null) =>
         new(SourceFile: sourceFile, DryRun: options.DryRun, Jobs: options.Jobs, BufferSize: options.BufferSize,

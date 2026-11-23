@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using Msync.Core;
 using Msync.Runtime;
-using Msync.Runtime.Native;
 
 namespace Msync.Cli;
 
@@ -58,55 +57,6 @@ internal sealed class TelemetrySpan(TelemetrySession session, string name, strin
         SetMetric("managed.gen0.collections", last.Gen0 - first.Gen0);
         SetMetric("managed.gen1.collections", last.Gen1 - first.Gen1);
         SetMetric("managed.gen2.collections", last.Gen2 - first.Gen2);
-    }
-
-    public void RecordScheduling(SchedulingStatistics stats)
-    {
-        if (session.Level < TelemetryLevel.Phases) return;
-        SetMetric("scheduler.admitted_transfers", stats.AdmittedTransfers);
-        SetMetric("scheduler.resource_nodes_visited", stats.ResourceNodesVisited);
-        SetMetric("scheduler.dependency_edges", stats.DependencyEdges);
-        SetMetric("scheduler.native_hazard_waits", stats.NativeHazardWaits);
-        SetMetric("scheduler.submitted_plans", stats.SubmittedPlans);
-        SetMetric("scheduler.submitted_batches", stats.SubmittedBatches);
-        SetMetric("scheduler.admitted_operations", stats.AdmittedOperations);
-        SetMetric("scheduler.eliminated_transfers", stats.EliminatedTransfers);
-        SetMetric("scheduler.admission_ns", stats.AdmissionNanoseconds);
-        SetMetric("scheduler.cohort_admission_ns", stats.CohortAdmissionNanoseconds);
-        SetMetric("scheduler.wait_ns", stats.WaitNanoseconds);
-    }
-
-    public void RecordTiering(NativeTierStatistics stats, NativeTierStatistics before = default)
-    {
-        if (session.Level < TelemetryLevel.Phases) return;
-        SetMetric("tier.compilations", stats.Compilations - before.Compilations);
-        SetMetric("tier.compilation_ns", stats.CompilationNanoseconds - before.CompilationNanoseconds);
-        SetMetric("tier.code_bytes", stats.CodeBytes - before.CodeBytes);
-        SetMetric("tier.entries", stats.Entries - before.Entries);
-        SetMetric("tier.linked_entries", stats.LinkedEntries - before.LinkedEntries);
-        SetMetric("tier.linked_operations", stats.LinkedOperations - before.LinkedOperations);
-        SetMetric("tier.operations", stats.Operations - before.Operations);
-        SetMetric("tier.direct_operations", stats.DirectOperations - before.DirectOperations);
-        SetMetric("tier.raw_operations", stats.RawOperations - before.RawOperations);
-        SetMetric("tier.bridge_invocations", stats.BridgeInvocations - before.BridgeInvocations);
-        SetMetric("tier.machine_guest_calls", stats.MachineGuestCalls - before.MachineGuestCalls);
-        SetMetric("tier.bridge_direct_operations", stats.BridgeDirectOperations - before.BridgeDirectOperations);
-        SetMetric("tier.bridge_fallback_operations", stats.BridgeFallbackOperations - before.BridgeFallbackOperations);
-        SetMetric("tier.readiness_exits", stats.ReadinessExits - before.ReadinessExits);
-        SetMetric("tier.guard_misses", stats.GuardMisses - before.GuardMisses);
-        SetMetric("tier.deoptimizations", stats.Deoptimizations - before.Deoptimizations);
-        SetMetric("tier.suspensions", stats.Suspensions - before.Suspensions);
-        SetMetric("tier.recompilations", stats.Recompilations - before.Recompilations);
-        SetMetric("tier.cancellation_polls", stats.CancellationPolls - before.CancellationPolls);
-        SetMetric("tier.unavailable_compilations", stats.UnavailableCompilations - before.UnavailableCompilations);
-        SetMetric("tier.register_regions", stats.RegisterRegions - before.RegisterRegions);
-        SetMetric("tier.register_values", stats.RegisterValues - before.RegisterValues);
-        SetMetric("tier.register_spills", stats.RegisterSpills - before.RegisterSpills);
-        SetMetric("tier.eliminated_frame_stores", stats.EliminatedFrameStores - before.EliminatedFrameStores);
-        SetMetric("tier.selection_ns", stats.SelectionNanoseconds - before.SelectionNanoseconds);
-        SetMetric("tier.register_allocation_ns", stats.RegisterAllocationNanoseconds - before.RegisterAllocationNanoseconds);
-        SetMetric("tier.emission_ns", stats.EmissionNanoseconds - before.EmissionNanoseconds);
-        SetMetric("tier.publication_ns", stats.PublicationNanoseconds - before.PublicationNanoseconds);
     }
 
     public void Dispose() => session.EndSpan(name, id, parent, startedUnix, TelemetrySession.Elapsed(started),

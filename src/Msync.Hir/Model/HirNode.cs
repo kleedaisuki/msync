@@ -20,13 +20,14 @@ public enum HirKind : byte
 }
 
 public enum HirUnaryOperator : byte { Not, Negate }
+public enum HirIfSelection : byte { Dynamic, True, False }
 public enum HirBinaryOperator : byte
 {
     Add, Subtract, Multiply, Divide, Remainder, Power,
     Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual, And, Or
 }
 
-// Data refers to the semantic table selected by Kind, never a bytecode offset.
+// Data is the semantic operand selected by Kind, never a bytecode offset.
 public readonly record struct HirNode(HirKind Kind, HirTypeId Type,
     HirSourceRange Source, HirEdgeRange Children, int Data = 0,
     string? Text = null, HirEffects Effects = HirEffects.None);

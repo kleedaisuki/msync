@@ -13,7 +13,41 @@ public static partial class LlvmHirLowerer
         private readonly Dictionary<int, LlvmFunction> templates = [];
         private readonly Dictionary<string, StorageRecord> environments = [];
         private readonly Dictionary<int, StorageRecord> cells = [];
+        private readonly Dictionary<LlvmFunction, List<LlvmValue[]>> captureInstances = [];
         internal readonly record struct StorageRecord(LlvmStructType Type, int Layout, int LogicalType);
+
+        internal void RecordCaptureSources(LlvmFunction target, LlvmValue[] addresses)
+        {
+            if (addresses.Length == 0) return;
+            if (!captureInstances.TryGetValue(target, out var sites)) captureInstances.Add(target, sites = []);
+            sites.Add(addresses);
+        }
+
+        private Dictionary<LlvmArgument, List<LlvmValue>> CaptureSourceAddresses()
+        {
+            Dictionary<LlvmArgument, List<LlvmValue>> origins = [];
+            foreach (var (function, source) in sourceFunctions)
+            {
+                if (source.CaptureCount == 0) continue;
+                if (captureInstances.TryGetValue(function, out var direct)) Record(function, source.CaptureCount, direct);
+                if (source.SourceFunction is { } id && hir.Functions[id.Value].Template is { } recipe
+                    && templates.TryGetValue(recipe.Value, out var template)
+                    && captureInstances.TryGetValue(template, out var instances))
+                    Record(function, source.CaptureCount, instances);
+            }
+            return origins;
+
+            void Record(LlvmFunction function, int count, List<LlvmValue[]> sites)
+            {
+                if (sites.Any(addresses => addresses.Length != count)) return;
+                for (int index = 0; index < count; ++index)
+                {
+                    var argument = function.Arguments[index];
+                    if (!origins.TryGetValue(argument, out var values)) origins.Add(argument, values = []);
+                    foreach (var addresses in sites) values.Add(addresses[index]);
+                }
+            }
+        }
 
         private static HashSet<HirLocationId> Captured(HirModule module) => module.Closures
             .SelectMany(closure => closure.Captures).Concat(module.TemplateClosures.SelectMany(closure => closure.Captures))
@@ -59,8 +93,12 @@ public static partial class LlvmHirLowerer
         private StorageRecord Storage(IReadOnlyList<LlvmType> fields, IReadOnlyList<NativeCodeField> logicalFields)
         {
             int layout = metadata.AddLayout(logicalFields);
-            var type = LlvmStructType.Create(context, fields, "msync.storage." + layout);
-            structLayouts.Add(type, layout);
+            if (physicalStructs.TryGetValue(layout, out var type)) ++reusedPhysicalStructs;
+            else
+            {
+                type = NewPhysicalStruct(layout);
+                type.SetBody(fields);
+            }
             return new(type, layout, metadata.Scope(layout));
         }
     }
@@ -114,6 +152,7 @@ public static partial class LlvmHirLowerer
         private LlvmValue MakeClosure(LlvmFunction target, ImmutableArray<HirCapture> captures, HirNode node)
         {
             var addresses = captures.Select(CaptureAddress).ToArray();
+            owner.RecordCaptureSources(target, addresses);
             LlvmValue environment = LlvmConstantPointerNull.Get(owner.DataPointer);
             if (addresses.Length != 0)
             {
@@ -144,6 +183,9 @@ public static partial class LlvmHirLowerer
             }
             current = node;
             if (call.Kind == HirCallKind.Path) return ProcessCall(node, descriptor, arguments);
+            if (call.SessionSlot >= 0 && owner.physicalSessionTargets?.GetValueOrDefault(call.SessionSlot) is
+                { NativeTargets.Count: > 0 } selected)
+                return SessionNativeCall(node, descriptor, arguments, selected);
             if (call.Kind == HirCallKind.Dynamic || call.SessionSlot >= 0)
             {
                 dynamicCallCount++;
@@ -190,8 +232,14 @@ public static partial class LlvmHirLowerer
             string name = operation == LlvmCallableRuntimeOperation.Invoke ? "msync.callable.invoke." : "msync.callable.adapt.";
             var target = LlvmFunction.Create(signature, LlvmLinkage.ExternalLinkage,
                 name + owner.callableCalls.Count, owner.module);
-            owner.callableCalls.Add(target, new(operation, owner.Dispatch(dispatch)) { SessionSlot = sessionSlot });
-            return Add(new LlvmCallInstruction(signature, target, inputs));
+            var targets = owner.Dispatch(dispatch);
+            var selected = sessionSlot >= 0 ? owner.physicalSessionTargets?.GetValueOrDefault(sessionSlot) : null;
+            bool physical = selected is { Targets.Count: > 0 };
+            if (physical) targets = selected!.Targets;
+            owner.callableCalls.Add(target, new(operation, targets) { SessionSlot = sessionSlot });
+            var call = Add(new LlvmCallInstruction(signature, target, inputs));
+            return operation == LlvmCallableRuntimeOperation.Invoke && (sessionSlot >= 0 && !physical || targets.Count == 0)
+                ? owner.DeferredSource(call, "open_call") : call;
         }
     }
 }

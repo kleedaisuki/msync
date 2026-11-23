@@ -102,21 +102,6 @@ public sealed class LlvmNativeMetadata(HirModule hir)
         return next;
     }
 
-    internal void ImportTarget(NativeProgram program)
-    {
-        for (int i = types.Count; i < program.Types.Count; ++i)
-        {
-            var type = program.Types[i];
-            types.Add(type);
-            if (type.Pointee >= 0) pointers.TryAdd(type.Pointee, i);
-        }
-        for (int i = layouts.Count; i < program.Layouts.Count; ++i)
-        {
-            layouts.Add(program.Layouts[i]);
-            structuralLayouts.TryAdd(new LayoutKey(program.Layouts[i].Fields), i);
-        }
-    }
-
     private sealed class LayoutKey : IEquatable<LayoutKey>
     {
         internal readonly NativeCodeField[] Fields;

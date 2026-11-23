@@ -85,8 +85,9 @@ internal sealed class NativeConnections(RuntimeTimeline? timeline = null)
     private sealed class EnvironmentEndpoint(NativeConnection connection) : NativeEndpoint(connection)
     {
         internal override NativePathValue Qualify(NativePathValue path, NativeRuntimeContext context) =>
-            context.AsPath(NativeValue.FromString(Environment.GetEnvironmentVariable(path.Raw)
-                ?? throw new MsyncException($"Environment variable '{path.Raw}' is not set")));
+            new(Environment.GetEnvironmentVariable(path.Raw)
+                ?? throw new MsyncException($"Environment variable '{path.Raw}' is not set"),
+                context.WorkingDirectory, HomeDirectory: context.HomeDirectory);
     }
     private sealed class SearchEndpoint(NativeConnection connection) : NativeEndpoint(connection)
     {

@@ -1,0 +1,53 @@
+fn run(count: Number, seed: Number) {
+    let state = seed;
+    fn draw() -> Number {
+        state = (25173 * state + 13849) % 65536;
+        state
+    };
+    fn detector(divisor: Number, high: Number, low: Number) {
+        let average = 0;
+        let active = false;
+        let changes = 0;
+        let exposure = 0;
+        fn ingest(sample: Number, ordinal: Number) {
+            average = average + $std::math::floor((sample * 16 - average) / divisor);
+            if active {
+                if average < low {
+                    active = false;
+                    changes = changes + 1;
+                };
+            } else {
+                if average >= high {
+                    active = true;
+                    changes = changes + 1;
+                };
+            };
+            if active { exposure = (exposure + average + ordinal) % 1000003; };
+        };
+        fn report() {
+            $std::io::println(changes as String);
+            $std::io::println(exposure as String);
+        };
+        scope { ingest: ingest, report: report }
+    };
+    let detector_0 = detector(4, 1240, 1040);
+    let detector_1 = detector(8, 1540, 1170);
+    let detector_2 = detector(16, 1810, 1280);
+    let ordinal = 0;
+    loop {
+        if ordinal >= count { break; };
+        let draw_value = draw();
+        let phase = ordinal % 128;
+        let burst = if phase >= 64 and phase < 96 { 96 } else { 0 };
+        let spike = if draw_value % 37 == 0 { 54 } else { 0 };
+        let sample = draw_value % 101 + burst + spike;
+        detector_0::ingest(sample, ordinal + 1);
+        detector_1::ingest(sample, ordinal + 1);
+        detector_2::ingest(sample, ordinal + 1);
+        ordinal = ordinal + 1;
+    };
+    detector_0::report();
+    detector_1::report();
+    detector_2::report();
+};
+run(1024, 17);

@@ -1,5 +1,4 @@
 using Msync.Core;
-using Msync.Core.Native;
 using Msync.Hir;
 using Msync.Compiler.Semantics;
 using Msync.Compiler.Syntax;
@@ -8,25 +7,6 @@ namespace Msync.Compiler;
 
 public static partial class Compiler
 {
-    public static NativeProgram Compile(string source, string? sourceName = null,
-        int optimization = 2, CompilationTrace? trace = null) =>
-        LowerInstructions(Analyze(source, sourceName, trace), optimization, trace);
-
-    public static NativeProgram LowerInstructions(HirModule module, int optimization = 2,
-        CompilationTrace? trace = null)
-    {
-        LlvmHirLoweringResult graph = trace is null ? LlvmHirLowerer.Lower(module)
-            : trace.MeasureDetailed("compiler.lower", (module, trace),
-                static state => LlvmHirLowerer.Lower(state.module, state.trace),
-                size: static result => LlvmSize(result));
-        OptimizeLlvm(graph, optimization, trace);
-        NativeProgram program = trace is null ? LlvmNativeLowerer.Lower(graph)
-            : trace.MeasureDetailed("compiler.target", (graph, trace),
-                static state => LlvmNativeLowerer.Lower(state.graph, state.trace),
-                size: CompilationSize.Of, metrics: CompilationMetrics.Of);
-        return program with { OptimizationLevel = optimization };
-    }
-
     public static HirModule Analyze(string source, string? sourceName = null) =>
         new SemanticAnalyzer(new SourceBinder().Bind(source, sourceName ?? "<source>")).Analyze();
 
@@ -36,17 +16,6 @@ public static partial class Compiler
         BoundProgram bound = Bind(new SourceBinder(), source, sourceName ?? "<source>", null, trace);
         return Analyze(new SemanticAnalyzer(bound), null, trace);
     }
-
-    public static NativeProgram CompileInstructions(string source, string? sourceName = null,
-        int optimization = 2, CompilationTrace? trace = null) =>
-        Compile(source, sourceName, optimization, trace);
-
-    public static NativeProgram CompileNative(string source, string? sourceName = null,
-        int optimization = 2, CompilationTrace? trace = null) =>
-        Compile(source, sourceName, optimization, trace);
-
-    public static NativeProgram LowerNative(HirModule module, int optimization = 2,
-        CompilationTrace? trace = null) => LowerInstructions(module, optimization, trace);
 
     internal static BoundProgram Bind(SourceBinder binder, string source, string sourceName, Document? document,
         CompilationTrace? trace)

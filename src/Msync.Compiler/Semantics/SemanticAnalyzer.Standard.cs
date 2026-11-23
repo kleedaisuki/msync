@@ -30,6 +30,21 @@ internal sealed partial class SemanticAnalyzer
     private static IEnumerable<string> PublicStandardModules() =>
         StandardSourceCatalog.Read().Keys.Where(name => !name.StartsWith('_')).Order(StringComparer.Ordinal);
 
+    private void EnsureStandardCapture(HirLocationId location, HirSourceRange source, SemanticContext context)
+    {
+        if (sessionDispatch is null || !context.Publish
+            || !program.StandardLocations.TryGetValue("", out var root) || entryState!.Values.ContainsKey(root))
+            return;
+        var definition = context.Definitions.GetValueOrDefault(location, location);
+        var declaration = StandardDeclaration(definition);
+        if (declaration is null || declaration.Kind != DeclarationKind.StandardRoot && declaration.Name.StartsWith('_'))
+            return;
+        // A retained closure must capture the canonical member address even
+        // when no submission has needed the member's initializer yet.
+        _ = EnsureStandardRoot(source, context);
+        Trace?.Metric("session.std_capture_roots", 1);
+    }
+
     private SemanticValue EnsureStandardRoot(HirSourceRange source, SemanticContext context)
     {
         HirLocationId root = program.StandardLocations[""];

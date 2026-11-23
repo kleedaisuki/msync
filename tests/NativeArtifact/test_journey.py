@@ -91,7 +91,7 @@ def main() -> None:
     inspected: dict[str, Any] = json.loads(
         invoke(("disassemble", "compact.mso", "--json"))
     )
-    if inspected["formatVersion"] != 2:
+    if inspected["formatVersion"] != 8 or inspected["representation"] != "hpir":
         raise AssertionError(inspected)
     expected: bytes = b"18\n"
     stdin: bytes = b"17\n"

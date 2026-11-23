@@ -65,36 +65,6 @@ def catalog() -> dict[str, Task]:
             memory_mib=1024,
             receipt="{work}/fixture/result.json",
         ),
-        python(
-            "native-preparation",
-            "tests/NativePreparation/test_journey.py",
-            "--binary", "{binary}",
-        ),
-        python(
-            "bound-fusion",
-            "tests/NativePreparation/test_fusion_journey.py",
-            "--binary", "{binary}", "--output", "{work}/journey.json",
-            receipt="{work}/journey.json",
-        ),
-        python(
-            "guest-heap-repl",
-            "tests/NativePreparation/test_guest_heap_journey.py",
-            "--binary", "{binary}", "--output", "{work}/journey.json",
-            receipt="{work}/journey.json",
-        ),
-        python(
-            "machine-guest-call",
-            "tests/NativePreparation/test_machine_call_journey.py",
-            "--binary", "{binary}", "--output", "{work}/journey.json",
-            receipt="{work}/journey.json",
-        ),
-        python(
-            "native-number-range",
-            "tests/Msync.EndToEnd/native_number_range_journey.py",
-            "--binary", "{binary}", "--count", "4000", "--verify-machine",
-            "--output", "{work}/journey.json",
-            receipt="{work}/journey.json",
-        ),
         python("cli", "tests/Msync.EndToEnd/journeys.py", "--binary", "{binary}"),
         python(
             "lsp",

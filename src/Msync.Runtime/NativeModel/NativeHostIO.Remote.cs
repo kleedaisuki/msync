@@ -10,13 +10,9 @@ namespace Msync.Runtime.Native;
 
 public static partial class NativeHostIO
 {
-    private static readonly AsyncLocal<SelectedQuery?> Query = new();
-
     public static async Task<string> RunCommandAsync(NativeConnection connection, string script,
         IReadOnlyList<string> arguments, NativeRuntimeContext? context, CancellationToken token = default)
     {
-        if (Query.Value is { } query && query.Connection == connection)
-            return await query.InvokeAsync(script, arguments, token);
         using RemoteOperation remote = StartRemote(connection, script, arguments, false, context);
         using CancellationTokenRegistration cancel = token.Register(() => Stop(remote.Process));
         try
@@ -110,13 +106,13 @@ public static partial class NativeHostIO
         RequireReceipt(output, "copy", context.Timeline);
     }
 
-    private static async Task UploadAsync(IReadOnlyList<NativeValue> sources, NativePathValue target,
+    private static async Task UploadPayloadAsync(IReadOnlyList<NativePathValue>? paths, string? literal, NativePathValue target,
         NativeRuntimeContext context, bool container, bool replace, bool cohort, CancellationToken token,
         PlannedTransferKind kind = PlannedTransferKind.GenericCopy, string? recordedMode = null)
     {
-        string name = sources[0].Kind == NativeKind.Path ? Basename(sources[0].AsPath()) : "";
+        string name = paths is null ? "" : Basename(paths[0]);
         string[] args = [target.Raw, recordedMode ?? Mode(container, replace), name, cohort ? "cohort" : "single",
-            sources[0].Kind == NativeKind.String ? "literal" : "filesystem"];
+            paths is null ? "literal" : "filesystem"];
         string program = recordedMode is null ? NativeTransferProtocol.NativeUploadProgram
             : NativeTransferProtocol.NativeRecordedUploadProgram;
         using RemoteOperation remote = StartRemote(Remote(target)!.Value, ObserveInstall(program, context), args, true, context);
@@ -126,20 +122,16 @@ public static partial class NativeHostIO
             await using (TarWriter writer = new(remote.Process.StandardInput.BaseStream, TarEntryFormat.Pax, leaveOpen: true))
             {
                 if (cohort) await writer.WriteEntryAsync(new PaxTarEntry(TarEntryType.Directory, "payload"), token);
-                foreach (NativeValue source in sources)
+                if (paths is not null)
                 {
-                    if (source.Kind == NativeKind.Path)
-                    {
-                        NativePathValue path = source.AsPath();
+                    foreach (var path in paths)
                         await NativeTransferProtocol.NativeWriteArchiveNodeAsync(writer, context.LocalPath(path),
                             cohort ? "payload/" + Basename(path) : "payload", token, context.Timeline, kind);
-                    }
-                    else if (source.Kind == NativeKind.String && !cohort)
-                    {
-                        using MemoryStream bytes = new(Encoding.UTF8.GetBytes(source.AsString()), false);
-                        await writer.WriteEntryAsync(new PaxTarEntry(TarEntryType.RegularFile, "payload") { DataStream = bytes }, token);
-                    }
-                    else throw new MsyncException($"Cannot transfer {source.Type}.");
+                }
+                else
+                {
+                    using MemoryStream bytes = new(Encoding.UTF8.GetBytes(literal!), false);
+                    await writer.WriteEntryAsync(new PaxTarEntry(TarEntryType.RegularFile, "payload") { DataStream = bytes }, token);
                 }
             }
             remote.Process.StandardInput.Close();
@@ -171,20 +163,17 @@ public static partial class NativeHostIO
         catch { await remote.AbortAsync(); throw; }
     }
 
-    private static async Task RelayAsync(IReadOnlyList<NativeValue> sources, NativePathValue target,
+    private static async Task RelayPathsAsync(IReadOnlyList<NativePathValue> paths, NativePathValue target,
         NativeRuntimeContext context, bool container, bool replace, bool cohort, CancellationToken token,
         PlannedTransferKind kind = PlannedTransferKind.GenericCopy, string? recordedMode = null)
     {
-        if (sources.Any(value => value.Kind != NativeKind.Path))
-            throw new MsyncException("A cross-endpoint finite transfer requires Path sources on one endpoint.");
-        NativePathValue[] paths = sources.Select(value => value.AsPath()).ToArray();
         NativeConnection sourceConnection = Remote(paths[0])
             ?? throw new MsyncException("A cross-endpoint finite transfer requires sources on one remote endpoint.");
         if (paths.Any(path => Remote(path) != sourceConnection))
             throw new MsyncException("A cross-endpoint finite transfer requires sources on one endpoint.");
         bool receipt = RequiresReceipt(sourceConnection);
         using RemoteOperation source = StartRemote(sourceConnection, kind == PlannedTransferKind.GenericCopy
-            ? NativeTransferProtocol.NativeDownloadProgram(paths.Length, receipt)
+            ? NativeTransferProtocol.NativeDownloadProgram(paths.Count, receipt)
             : NativeTransferProtocol.NativeRecordedDownloadProgram(kind, receipt),
             paths.Select(path => path.Raw).ToArray(), receipt, context);
         string program = recordedMode is null ? NativeTransferProtocol.NativeRelayProgram
@@ -205,47 +194,27 @@ public static partial class NativeHostIO
         catch { await Task.WhenAll(source.AbortAsync(), destination.AbortAsync()); throw; }
     }
 
-    private static async ValueTask<bool> TransferSelectionAsync(NativePathSelection selection, NativePathValue target,
+    private static async ValueTask<bool> TransferSelectionAsync(NativePathValue directory, string pattern, NativePathValue target,
         NativeRuntimeContext context, CancellationToken token)
     {
-        NativeConnection connection = Remote(selection.Directory)!.Value;
+        NativeConnection connection = Remote(directory)!.Value;
         NativeConnection? targetConnection = Remote(target);
         bool same = connection == targetConnection;
         bool replace = IsReplacement(target);
         bool receipt = !same && RequiresReceipt(connection);
         string program = NativeTransferProtocol.NativeSelectionProgram(same, receipt);
         using RemoteOperation source = StartRemote(connection, same ? ObserveInstall(program, context) : program,
-            [selection.Directory.Raw, target.Raw, Mode(true, replace), selection.Recursive ? "recursive" : "flat"], true, context);
+            [directory.Raw, target.Raw, Mode(true, replace), "flat"], true, context);
         using CancellationTokenRegistration cancel = token.Register(() => Stop(source.Process));
         try
         {
-            IReadOnlyList<string> names = await NativeTransferProtocol.NativeReadSelectionNamesAsync(source.Process.StandardOutput.BaseStream, selection.Pattern, token);
-            List<NativeValue> selected = [];
-            SelectedQuery? previous = Query.Value;
-            using (SelectedQuery query = new(connection, source.Process))
-            {
-                Query.Value = query;
-                try
-                {
-                    NativeRange discovered = NativeRange.Snapshot(names.Select(name => NativeValue.FromPath(
-                        selection.Directory.WithRaw(selection.Directory.Raw.TrimEnd('/') + "/" + name))), TypeRef.Path);
-                    IAsyncEnumerable<NativeValue> items = selection.Apply?.Invoke(discovered.Items, token) ?? discovered.Items;
-                    await foreach (NativeValue value in items.WithCancellation(token)) selected.Add(value);
-                }
-                finally { Query.Value = previous; }
-            }
-            bool sameSources = selected.All(value => value.Kind == NativeKind.Path && Remote(value.AsPath()) == connection);
-            if (sameSources) ValidateNames(selected, true);
-            string[] paths = sameSources ? selected.Select(value => value.AsPath().Raw).ToArray() : [];
+            var names = await NativeTransferProtocol.NativeReadSelectionNamesAsync(source.Process.StandardOutput.BaseStream, pattern, token);
+            string prefix = directory.Raw.TrimEnd('/') + "/";
+            var selected = names.Select(name => directory.WithRaw(prefix + name)).ToArray();
+            ValidatePathNames(selected);
+            string[] paths = selected.Select(path => path.Raw).ToArray();
             await NativeTransferProtocol.NativeWriteSelectionNamesAsync(source.Process.StandardInput.BaseStream, paths, token);
             if (!receipt) source.Process.StandardInput.Close();
-            if (!sameSources)
-            {
-                await NativeTransferProtocol.NativePumpArchiveAsync(source.Process, Stream.Null, receipt, context.BufferSize, token);
-                await source.FinishAsync(token);
-                return await TransferAsync(NativeValue.FromRange(NativeRange.Snapshot(selected,
-                    selected.Aggregate(new TypeRef(TypeKind.Never), (type, value) => TypeRef.Union(type, value.Type)))), target, context, token);
-            }
             if (same)
             {
                 string output = await source.ReadReceiptAsync(token);
@@ -319,35 +288,5 @@ public static partial class NativeHostIO
         IOException error = new($"Remote {operation} returned no completion: {output}");
         span?.Fail(error);
         throw error;
-    }
-
-    private sealed class SelectedQuery(NativeConnection connection, Process process) : IDisposable
-    {
-        private readonly SemaphoreSlim gate = new(1);
-        internal NativeConnection Connection => connection;
-        internal async Task<string> InvokeAsync(string script, IReadOnlyList<string> arguments, CancellationToken token)
-        {
-            await gate.WaitAsync(token);
-            try
-            {
-                Stream input = process.StandardInput.BaseStream;
-                await input.WriteAsync("MSYNC-QUERY\n"u8.ToArray(), token);
-                await NativeTransferProtocol.NativeWriteEncodedLineAsync(input, script, token);
-                await input.WriteAsync(Encoding.ASCII.GetBytes(arguments.Count.ToString(CultureInfo.InvariantCulture) + "\n"), token);
-                foreach (string argument in arguments) await NativeTransferProtocol.NativeWriteEncodedLineAsync(input, argument, token);
-                await input.FlushAsync(token);
-                string header = await NativeTransferProtocol.NativeReadHeaderAsync(process.StandardOutput.BaseStream, token);
-                string[] fields = header.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                if (fields.Length != 3 || fields[0] != "MSYNC-QUERY")
-                    throw new IOException($"Invalid selected metadata response from {connection}: {header}");
-                int status = int.Parse(fields[1], CultureInfo.InvariantCulture);
-                byte[] output = new byte[int.Parse(fields[2], CultureInfo.InvariantCulture)];
-                await process.StandardOutput.BaseStream.ReadExactlyAsync(output, token);
-                if (status != 0) throw new IOException($"Selected native operation on {connection} failed with exit status {status}.");
-                return Encoding.UTF8.GetString(output);
-            }
-            finally { gate.Release(); }
-        }
-        public void Dispose() => gate.Dispose();
     }
 }

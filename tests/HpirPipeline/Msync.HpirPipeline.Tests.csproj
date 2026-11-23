@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>Msync.HpirPipeline.Tests</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Msync.Compiler/Msync.Compiler.csproj" />
+    <ProjectReference Include="../../src/Msync.Runtime/Msync.Runtime.csproj" />
+    <EmbeddedResource Include="../Performance/Hpir/ready_signal.msync" LogicalName="ready_signal.msync" />
+    <EmbeddedResource Include="../../stdlib/shell.msync" LogicalName="shell.msync" />
+  </ItemGroup>
+</Project>

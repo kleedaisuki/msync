@@ -2,6 +2,7 @@ using Msync.Core;
 using Msync.Runtime;
 using Msync.Core.Native;
 using Msync.Runtime.Native;
+using NativePathValue = Msync.Core.Native.NativePath;
 
 internal static class BatchChecks
 {
@@ -11,7 +12,7 @@ internal static class BatchChecks
             ?? Path.GetFullPath(Path.Combine(".temp", "transfer-batch", Guid.NewGuid().ToString("N")));
         Directory.CreateDirectory(root);
         NativeRuntimeContext context = new(new ExecutionOptions(WorkingDirectory: root));
-        NativeValue Local(string name) => NativeValue.FromPath(new(name, root));
+        NativePathValue Local(string name) => new(name, root);
         int checks = 0;
         void Check(bool condition, string description)
         {
@@ -31,7 +32,7 @@ internal static class BatchChecks
             Check(await File.ReadAllTextAsync(Path.Combine(root, "local", names[index])) == $"payload {index} 可莉\n", "Local batch bytes.");
         var failure = await NativeTransfers.CopyBatchAsync([
             new(Local("missing"), Local("local/missing"), PlannedTransferKind.CopyFile),
-            new(NativeValue.FromString("continues"), Local("local/after-failure"), PlannedTransferKind.WriteText)
+            new(null, Local("local/after-failure"), PlannedTransferKind.WriteText, Text: "continues")
         ], context);
         Check(!failure[0].Success && failure[0].Error is IOException or UnauthorizedAccessException, "Actual missing source remains an item failure.");
         Check(failure[1].Success && await File.ReadAllTextAsync(Path.Combine(root, "local/after-failure")) == "continues", "Independent later item survives failure.");
@@ -40,7 +41,7 @@ internal static class BatchChecks
             string literal = string.Concat(Enumerable.Repeat("可莉🌋", size == 1 ? 2 : 1000));
             NativeRuntimeContext narrow = new(new ExecutionOptions(WorkingDirectory: root, BufferSize: size));
             var encoded = await NativeTransfers.CopyBatchAsync([
-                new(NativeValue.FromString(literal), Local("local/utf8-" + size), PlannedTransferKind.WriteText)
+                new(null, Local("local/utf8-" + size), PlannedTransferKind.WriteText, Text: literal)
             ], narrow);
             Check(encoded[0].Success && await File.ReadAllTextAsync(Path.Combine(root, "local/utf8-" + size)) == literal,
                 "Shared batch encoding retains complete Unicode scalars across narrow buffers.");
@@ -94,7 +95,7 @@ internal static class BatchChecks
         Directory.CreateDirectory(Path.Combine(root, "cohort-root"));
         await File.WriteAllTextAsync(Path.Combine(root, "cohort-root", "obsolete"), "previous cohort");
         var cohortRoot = await NativeTransfers.CopyBatchAsync([
-            new(NativeValue.Null, Local("cohort-root"), PlannedTransferKind.EnsureDirectory, TransferDestinationMode.Replace)
+            new(null, Local("cohort-root"), PlannedTransferKind.EnsureDirectory, TransferDestinationMode.Replace)
         ], context);
         Check(cohortRoot[0].Success && Directory.Exists(Path.Combine(root, "cohort-root"))
             && !File.Exists(Path.Combine(root, "cohort-root", "obsolete")), "A nonempty replacement cohort can clear its root without a fictional source directory.");
@@ -106,7 +107,7 @@ internal static class BatchChecks
 
         NativeConnection connection = new(ConnectionKind.Ssh, alias);
         Directory.CreateDirectory(Path.Combine(root, "remote"));
-        NativeValue Remote(string name) => NativeValue.FromPath(new(Path.Combine(root, "remote", name), Connection: connection));
+        NativePathValue Remote(string name) => new(Path.Combine(root, "remote", name), Connection: connection);
         Check(await NativeHostIO.RunCommandAsync(connection, "printf 'metadata-ready'", [], context) == "metadata-ready", "Native metadata commands retain their output.");
         Check(await NativeHostIO.RunCommandAsync(connection, ":", [], context) == "", "An empty native response completes.");
         try { await NativeHostIO.RunCommandAsync(connection, "printf 'ordinary query failure' >&2; exit 7", [], context); throw new InvalidOperationException("Query failure must be reported."); }
@@ -134,31 +135,31 @@ internal static class BatchChecks
         Directory.CreateDirectory(Path.Combine(root, "remote", ".msync-batch-user"));
         await File.WriteAllTextAsync(Path.Combine(root, "remote", ".msync-batch-user", "visible"), "user-owned");
         var directoryMetadata = await NativeTransfers.DirectoryAsync(Remote(""), context);
-        Check(directoryMetadata.Count(item => names.Contains(PathSemantics.FileName(item.AsPath()), StringComparer.Ordinal)) == names.Count,
+        Check(directoryMetadata.Count(item => names.Contains(PathSemantics.FileName(item), StringComparer.Ordinal)) == names.Count,
             "Directory discovery retains every uploaded spelling.");
-        Check(await NativeTransfers.FileSystemAsync("symlink_status", Remote(names[0]), context) == NativeValue.FromString("regular")
-            && (await NativeTransfers.FileSystemAsync("canonical", Remote(names[0]), context)).AsPath().Raw == Path.Combine(root, "remote", names[0]),
+        Check(await NativeBuiltins.ReadFileStatus(Remote(names[0]), true, context, default) == "regular"
+            && (await NativeBuiltins.ReadCanonicalPath(Remote(names[0]), true, context, default)).Raw == Path.Combine(root, "remote", names[0]),
             "Remote metadata retains regular kind and physical entry path.");
         var recursiveMetadata = await NativeTransfers.DirectoryAsync(Remote(""), context, recursive: true);
-        Check(recursiveMetadata.Any(item => item.AsPath().Raw == Path.Combine(root, "remote", ".msync-batch-user", "visible")),
+        Check(recursiveMetadata.Any(item => item.Raw == Path.Combine(root, "remote", ".msync-batch-user", "visible")),
             "User directories with a runtime-like spelling remain visible.");
-        Check(await NativeTransfers.FileSystemAsync("symlink_status", Remote("not-yet-created"), context) == NativeValue.FromString("not_found"),
+        Check(await NativeBuiltins.ReadFileStatus(Remote("not-yet-created"), true, context, default) == "not_found",
             "Missing remote entries are ordinary metadata results.");
-        Check((await NativeTransfers.FileSystemAsync("weakly_canonical", Remote("not-yet-created"), context)).AsPath().Raw == Path.Combine(root, "remote", "not-yet-created"),
+        Check((await NativeBuiltins.ReadCanonicalPath(Remote("not-yet-created"), false, context, default)).Raw == Path.Combine(root, "remote", "not-yet-created"),
             "Namespace projection retains a missing final entry.");
         if (!OperatingSystem.IsWindows())
         {
             Directory.CreateSymbolicLink(Path.Combine(root, "remote", "directory-alias"), "trees/tree");
-            Check(await NativeTransfers.FileSystemAsync("symlink_status", Remote("directory-alias"), context) == NativeValue.FromString("symlink")
-                && (await NativeTransfers.FileSystemAsync("canonical", Remote("directory-alias/nested/file"), context)).AsPath().Raw == Path.Combine(root, "remote", "trees", "tree", "nested", "file"),
+            Check(await NativeBuiltins.ReadFileStatus(Remote("directory-alias"), true, context, default) == "symlink"
+                && (await NativeBuiltins.ReadCanonicalPath(Remote("directory-alias/nested/file"), true, context, default)).Raw == Path.Combine(root, "remote", "trees", "tree", "nested", "file"),
                 "Metadata distinguishes the final symlink from its physical parent traversal.");
             var followed = await NativeTransfers.DirectoryAsync(Remote("directory-alias"), context);
-            Check(followed.Any(item => item.AsPath().Raw == Path.Combine(root, "remote", "directory-alias", "nested")),
+            Check(followed.Any(item => item.Raw == Path.Combine(root, "remote", "directory-alias", "nested")),
                 "Directory acquisition follows its selected root link while retaining raw spelling.");
         }
         var remoteEnsure = await NativeTransfers.CopyBatchAsync([
             new(Local("tree"), Remote("expanded-actions"), PlannedTransferKind.EnsureDirectory, TransferDestinationMode.Merge),
-            new(NativeValue.Null, Remote("cohort-actions"), PlannedTransferKind.EnsureDirectory, TransferDestinationMode.Replace)
+            new(null, Remote("cohort-actions"), PlannedTransferKind.EnsureDirectory, TransferDestinationMode.Replace)
         ], context);
         Check(remoteEnsure.All(item => item.Success)
             && !Directory.EnumerateFileSystemEntries(Path.Combine(root, "remote", "expanded-actions")).Any(),

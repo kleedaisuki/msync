@@ -21,20 +21,20 @@ class SelectionTests(unittest.TestCase):
             ["cross-block-memory", "global-redundancy", "native-middle-end"]
         )
         self.assertEqual(
-            [item.name for item in selected], ["native-optimizer", "native-middle-end"]
+            [item.name for item in selected], ["hpir-runtime", "hpir-source"]
         )
 
-    def test_deep_tail_behavior_retains_its_own_project(self) -> None:
+    def test_deep_tail_behavior_uses_the_source_pipeline(self) -> None:
         selected: tuple[contracts.Contract, ...] = contracts.select(
             ["tail-call-optimization"]
         )
         self.assertEqual(len(selected), 1)
-        self.assertEqual(selected[0].project, "TailCallOptimization")
+        self.assertEqual(selected[0].project, "HpirPipeline")
 
     def test_stdlib_selection_retains_demand_and_capture_journeys(self) -> None:
         self.assertEqual(
             {item.name for item in contracts.select(["stdlib-loading"])},
-            {"stdlib-publication", "stdlib-demand", "stdlib-captures"},
+            {"hpir-source"},
         )
 
     def test_obsolete_binary_path_selection_retains_codec_and_path_oracles(
@@ -42,7 +42,7 @@ class SelectionTests(unittest.TestCase):
     ) -> None:
         self.assertEqual(
             {item.name for item in contracts.select(["format-one-paths"])},
-            {"native-artifact", "current-paths"},
+            {"hpir-runtime", "hpir-source"},
         )
 
 

@@ -8,6 +8,8 @@ public static partial class NativeSignatures
             result.Add("string." + name, new("string." + name, inputs, output, Behavior: behavior));
         Add("length", TypeRef.Number, NativeBehavior.None, TypeRef.String);
         Add("utf8_size", TypeRef.Number, NativeBehavior.None, TypeRef.String);
+        Add("line_feed_count", TypeRef.Number, NativeBehavior.None, TypeRef.String);
+        Add("word_count", TypeRef.Number, NativeBehavior.None, TypeRef.String);
         Add("is_ascii", TypeRef.Bool, NativeBehavior.None, TypeRef.String);
         Add("chars", new(TypeKind.Range, TypeRef.String), NativeBehavior.None, TypeRef.String);
         Add("lines", new(TypeKind.Range, TypeRef.String), NativeBehavior.None, TypeRef.String);

@@ -5,14 +5,13 @@
 - Product code is .NET 10 Native AOT in `src/Msync.*`; Python is typed development
   infrastructure, never a product dependency. Rust is historical, not a fallback.
 - Start with the relevant design note, not historical benchmark tables.
-  [Native model](design/native-model-v090.md),
+  [HPIR](design/hpir.md),
   [language](design/language-v080.md),
   [research status](../RESEARCH.md), [benchmarks](../BENCHMARK.md).
 - Preserve observable language behavior, source diagnostics, alias identity and
-  resource lifetimes. The v0.9 release reads native IR format 2 and HIR format 4 only; old artifacts
-  must be rebuilt from source. Native-2 uses compact revision 4; obsolete prototype
-  revisions require recompilation, not loader-side analysis or migration.
-  Compiled storage/call plans are authoritative;
+  resource lifetimes. v0.9.5 uses HPIR wire format 8 and HIR format 4.
+  Earlier executables and relocatables require recompilation, not loader-side
+  analysis or migration. Compiled physical layouts and call entries are authoritative;
   do not reconstruct them in the loader or runtime.
 - Keep compilation, contextual preparation and execution ownership separate.
   Artifacts do not replay source; the VM does not invoke the planner.

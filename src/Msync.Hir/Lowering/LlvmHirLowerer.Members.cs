@@ -12,18 +12,11 @@ public static partial class LlvmHirLowerer
         private Dictionary<string, List<PhysicalMember>>? physicalMemberLayouts;
         private readonly Dictionary<(string Name, TypeKind Kinds), PhysicalMember[]> memberCases = [];
         private readonly Dictionary<int, StorageRecord> builtinRecords = [];
-        private readonly Dictionary<int, NativeLayout> memberGeometry = [];
-
-        internal NativeOffset MemberOffset(PhysicalMember member)
-        {
-            if (!memberGeometry.TryGetValue(member.Layout, out NativeLayout? layout))
-            {
-                layout = new(metadata.Layouts[member.Layout].Fields
-                    .Select(field => new NativeField(field.Name, metadata.Types[field.Type].PhysicalType)));
-                memberGeometry.Add(member.Layout, layout);
-            }
-            return layout[member.Ordinal].Offset;
-        }
+        internal readonly Dictionary<TypeKind, int> enumeratedLayouts = [];
+        internal (int Match, int Group)? RegexFindLayouts { get; private set; }
+        internal readonly Dictionary<(TypeKind First, TypeKind Second), int> zippedLayouts = [];
+        internal ulong MemberOffset(PhysicalMember member) =>
+            module.DataLayout.GetStructLayout(member.Struct).GetElementOffset((uint)member.Ordinal).GetFixedValue();
         private HashSet<TypeKind>? declaredCarriers;
 
         internal PhysicalMember[] MemberLayouts(string name, TypeKind kinds)
@@ -116,19 +109,43 @@ public static partial class LlvmHirLowerer
             return fields.Length;
         }
 
-        private int AddBuiltinMembers(Dictionary<string, List<PhysicalMember>> result, NativeBuiltinRecordSchema schema, HashSet<int> declared)
+        internal void RegisterEnumeration(HirNode node)
+        {
+            var payload = ItemKinds(node, 1);
+            if (enumeratedLayouts.ContainsKey(payload)) return;
+            var storage = BuiltinStorage(NativeBuiltinLayouts.Enumerate(new TypeRef(payload)));
+            enumeratedLayouts.Add(payload, storage.Layout);
+        }
+
+        internal void RegisterRegexFind() => RegexFindLayouts ??=
+            (BuiltinStorage(NativeBuiltinLayouts.RegexMatch).Layout, BuiltinStorage(NativeBuiltinLayouts.RegexGroup).Layout);
+
+        internal void RegisterZip(HirNode node)
+        {
+            var kinds = (ItemKinds(node, 1), ItemKinds(node, 2));
+            if (zippedLayouts.ContainsKey(kinds)) return;
+            var storage = BuiltinStorage(NativeBuiltinLayouts.Zip(new TypeRef(kinds.Item1), new TypeRef(kinds.Item2)));
+            zippedLayouts.Add(kinds, storage.Layout);
+        }
+
+        private StorageRecord BuiltinStorage(NativeBuiltinRecordSchema schema)
         {
             var fields = schema.Fields.Select(field => new NativeCodeField(field.Name, metadata.RuntimeType(field.Type))).ToArray();
             int layout = metadata.AddLayout(fields);
-            if (!declared.Add(layout)) return 0;
-            if (!builtinRecords.TryGetValue(layout, out var storage))
-            {
-                storage = Storage(schema.Fields.Select(field => RepresentationType(field.Type.Kind)).ToArray(), fields);
-                builtinRecords.Add(layout, storage);
-            }
-            for (int index = 0; index < fields.Length; index++)
-                AddMember(result, fields[index].Name, new(storage.Type, layout, index, fields[index].Type));
-            return fields.Length;
+            if (builtinRecords.TryGetValue(layout, out var known)) return known;
+            var storage = Storage(schema.Fields.Select(field => RepresentationType(field.Type.Kind)).ToArray(), fields);
+            builtinRecords.Add(layout, storage);
+            return storage;
+        }
+
+        private int AddBuiltinMembers(Dictionary<string, List<PhysicalMember>> result, NativeBuiltinRecordSchema schema, HashSet<int> declared)
+        {
+            var storage = BuiltinStorage(schema);
+            if (!declared.Add(storage.Layout)) return 0;
+            var fields = metadata.Layouts[storage.Layout].Fields;
+            for (int index = 0; index < fields.Count; index++)
+                AddMember(result, fields[index].Name, new(storage.Type, storage.Layout, index, fields[index].Type));
+            return fields.Count;
         }
 
         private static void AddMember(Dictionary<string, List<PhysicalMember>> result, string name, PhysicalMember member)
@@ -279,7 +296,7 @@ public static partial class LlvmHirLowerer
         private bool UniformMember(Lowering.PhysicalMember[] cases)
         {
             var first = cases[0];
-            NativeOffset offset = owner.MemberOffset(first);
+            ulong offset = owner.MemberOffset(first);
             for (int index = 1; index < cases.Length; index++)
                 if (cases[index].FieldType != first.FieldType || owner.MemberOffset(cases[index]) != offset)
                     return false;

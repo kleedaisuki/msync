@@ -11,89 +11,7 @@ public static partial class NativeBuiltins
 {
     private static readonly CultureInfo Invariant = CultureInfo.InvariantCulture;
 
-    private static ValueTask<NativeValue> TextOperationAsync(string operation, IReadOnlyList<NativeValue> args, CancellationToken token) =>
-        operation is "format" or "format_fields" ? ValueTask.FromResult(FormatText(operation, args))
-            : operation == "append_chunk" ? AppendTextChunkAsync(Range(args[0], operation), Text(args[1]), token)
-            : throw new MsyncException($"Unknown text native '{operation}'");
-
-    private static NativeValue FormatText(string operation, IReadOnlyList<NativeValue> args)
-    {
-        bool named = operation == "format_fields";
-        string template = Text(args[0]);
-        if (template.AsSpan().IndexOfAny('{', '}') < 0) return args[0];
-        StringBuilder output = new(template.Length);
-        TextFormat.Reader reader = new(template, named);
-        while (reader.MoveNext(out TextFormat.Part part))
-        {
-            if (!part.IsField) { output.Append(template.AsSpan(part.Offset, part.Length)); continue; }
-            NativeValue value;
-            if (named)
-            {
-                string name = part.Name(template).ToString();
-                if (!TryReflectField(args[1], name, out value))
-                    throw TextFormat.Error(template, part.Offset, $"Scope has no member '{name}'");
-            }
-            else
-            {
-                if (part.Argument >= args.Count - 1)
-                    throw TextFormat.Error(template, part.Offset, $"argument {part.Argument} is missing; supplied {args.Count - 1}");
-                value = args[part.Argument + 1];
-            }
-            AppendValue(output, template, part, value);
-        }
-        return NativeValue.FromString(output.ToString());
-    }
-
-    private static void AppendValue(StringBuilder output, string template, TextFormat.Part part, NativeValue value)
-    {
-        TextFormat.CheckType(template, part, value.Type);
-        TextFormat.Spec spec = part.Format;
-        if (value.Kind == NativeKind.Number && spec.Presentation != '?')
-        { AppendNumber(output, template, part, value.AsNumber()); return; }
-        string text = Display(value);
-        if (spec.Presentation == '?' && value.Kind is NativeKind.String or NativeKind.Path) text = Quote(text);
-        AppendText(output, text, spec);
-    }
-
-    public static string Display(NativeValue value) => value.Kind switch
-    {
-        NativeKind.String => value.AsString(),
-        NativeKind.Address => "scope { " + string.Join(", ", value.AsAddress().Allocation.Layout.Fields.Select(field => field.Name)) + " }",
-        NativeKind.Function => value.AsFunction().NativeName is { } name ? $"native fn {name}" : $"fn #{value.AsFunction().Function}",
-        NativeKind.Process when value.AsProcess().Completion is not null => "Process(deferred)",
-        _ => value.ToString()
-    };
-
-    private static async ValueTask<NativeValue> AppendTextChunkAsync(NativeRange source, string text, CancellationToken token)
-    {
-        source = await DemandRangeAsync(source, token);
-        NativeTextChunks? chunks = source.Items as NativeTextChunks;
-        if (chunks is null)
-            await foreach (NativeValue value in source.Items.WithCancellation(token))
-            {
-                if (value.Kind != NativeKind.String)
-                    throw new MsyncException($"text.append_chunk expects String elements, received {value.Type}.");
-                chunks = new(chunks, value.AsString());
-            }
-        return NativeValue.FromRange(new(new NativeTextChunks(chunks, text), TypeRef.String));
-    }
-
-    private sealed class NativeTextChunks(NativeTextChunks? previous, string text) : IAsyncEnumerable<NativeValue>
-    {
-        private readonly NativeTextChunks? previous = previous;
-        private readonly string text = text;
-        private readonly int count = checked((previous?.count ?? 0) + 1);
-        public async IAsyncEnumerator<NativeValue> GetAsyncEnumerator(CancellationToken cancellationToken = default)
-        {
-            string[] items = new string[count];
-            NativeTextChunks? node = this;
-            for (int index = count - 1; index >= 0; index--) { items[index] = node!.text; node = node.previous; }
-            foreach (string item in items) { cancellationToken.ThrowIfCancellationRequested(); yield return NativeValue.FromString(item); }
-            await Task.CompletedTask;
-        }
-    }
-
-    private static void AppendText(StringBuilder output, string text, TextFormat.Spec spec)
+    internal static void AppendText(StringBuilder output, ReadOnlySpan<char> text, TextFormat.Spec spec)
     {
         if (spec.Width == 0 && spec.Precision < 0)
         {
@@ -109,10 +27,10 @@ public static partial class NativeBuiltins
             length += rune.Utf16SequenceLength;
             scalars++;
         }
-        AppendPadded(output, text.AsSpan(0, length), spec, Math.Max(0, spec.Width - scalars), '<');
+        AppendPadded(output, text[..length], spec, Math.Max(0, spec.Width - scalars), '<');
     }
 
-    private static void AppendNumber(StringBuilder output, string template, TextFormat.Part part, double value)
+    internal static void AppendNumber(StringBuilder output, string template, TextFormat.Part part, double value)
     {
         TextFormat.CheckNumber(template, part, value);
         var spec = part.Format;
@@ -231,7 +149,7 @@ public static partial class NativeBuiltins
         }
     }
 
-    private static string Quote(string value)
+    internal static string Quote(ReadOnlySpan<char> value)
     {
         StringBuilder output = new(value.Length + 2);
         output.Append('"');

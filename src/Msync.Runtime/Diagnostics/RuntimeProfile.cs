@@ -13,7 +13,7 @@ public sealed partial class RuntimeProfile(bool instructionSites = false)
     public IReadOnlyList<RuntimeProfileSample> Drain()
     {
         List<RuntimeProfileSample> samples = [];
-        CollectNative(samples);
+        CollectHpir(samples);
         return samples;
     }
 

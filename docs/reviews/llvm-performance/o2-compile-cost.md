@@ -40,7 +40,8 @@ The existing detailed trace instruments each InstCombine visit and copies its
 growing metrics dictionary before/after the visit. Its 75.37 ms InstCombine
 interval therefore cannot be presented as the telemetry-off cost.
 
-`scripts/compiler/profile_o2_cost.py` creates a disposable source snapshot. It
+`scripts/compiler/profile_o2_cost.py` creates a disposable snapshot of the
+recorded source revision, not the current HPIR implementation. It
 inserts per-function/pass clocks and allocation counters, using no ordinary
 compiler recorder. The pass calls and their order are the production ones.
 One Native AOT binary supports a diagnostic-only four-cell experiment:

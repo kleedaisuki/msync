@@ -79,7 +79,7 @@ def compile_exports(binary: Path, cwd: Path) -> None:
         assert guidance in invoke(binary, args, cwd, code=1).stderr
     assert not list(cwd.glob("unexpected.*"))
 
-    for flags, stage in (([], "Relocatable"), (["--prepare"], "Executable")):
+    for flags, stage in (([], "relocatable"), (["--prepare"], "executable")):
         compiled = subprocess.run(
             [str(binary), "--no-config", "compile", source.name, *flags, "-o", "-"],
             cwd=cwd,
@@ -87,7 +87,7 @@ def compile_exports(binary: Path, cwd: Path) -> None:
             capture_output=True,
             timeout=30,
         )
-        assert compiled.stdout.startswith(b"MSYNCIR\0")
+        assert compiled.stdout.startswith(b"MSHPIR\0")
         viewed = subprocess.run(
             [str(binary), "--no-config", "disassemble", "-", "--json"],
             cwd=cwd,

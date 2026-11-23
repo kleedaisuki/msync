@@ -1,7 +1,5 @@
 using System.Collections.Immutable;
 using Msync.Core;
-using NativeKind = Msync.Core.Native.NativeKind;
-using NativeValue = Msync.Core.Native.NativeValue;
 using Msync.Hir;
 
 namespace Msync.Compiler.Semantics;
@@ -9,15 +7,18 @@ namespace Msync.Compiler.Semantics;
 internal sealed partial class SemanticAnalyzer
 {
     private SemanticValue InvokeNative(string name, IReadOnlyList<SemanticValue> arguments,
-        HirSourceRange source, SemanticContext context, SemanticValue? callee)
+        HirSourceRange source, SemanticContext context, SemanticValue? callee,
+        Action<IReadOnlyList<SemanticValue>>? selectArguments = null)
     {
         if (!NativeSignatures.TryGet(name, out var signature))
             throw Error(source, $"Unknown native '{name}'.", "E0204");
         if (IsDependentMeta(name))
             throw Error(source, "Dependent metadata queries require a direct, statically known invocation.", "E0222");
         var inputs = CheckNativeArguments(signature, arguments, source, context).ToArray();
+        selectArguments?.Invoke(inputs);
         if (name is "text.format" or "text.format_fields") CheckFormatCall(name, inputs, source, context);
         SemanticValue? callback = null;
+        HirFunctionId? callbackTarget = null;
         ImmutableArray<SemanticDeferredWrite> callbackEffects = [];
         if (signature.Parameters.Count > 0 && inputs.Length >= signature.Parameters.Count
             && signature.Parameters[^1].WithoutNull == TypeRef.Function)
@@ -44,12 +45,14 @@ internal sealed partial class SemanticAnalyzer
                 }
                 callbackArguments = [domain, item];
             }
-            (callback, inputs[index], callbackEffects) = NativeCallback(inputs[index], callbackArguments, source, context);
+            (callback, inputs[index], callbackEffects, callbackTarget) = NativeCallback(inputs[index], callbackArguments, source, context);
             if (merge || name is "ranges.filter" or "ranges.take_while" or "ranges.drop_while" or "ranges.any" or "ranges.any_of"
                 or "ranges.all_of" or "ranges.none" or "ranges.none_of" or "ranges.find_if" or "ranges.sort_with")
                 Require(callback, hir.Type(TypeRef.Bool), source, context: context);
         }
         var value = NativeResult(signature, inputs, callback, source, context);
+        if (name.StartsWith("ranges.", StringComparison.Ordinal))
+            value = value with { RangeRecipe = NativeRangeRecipe(name, inputs, callbackTarget) };
         NativeBehavior behavior = signature.Behavior.GetValueOrDefault();
         ImmutableArray<SessionCallBinding> openCalls = [];
         foreach (var input in inputs) openCalls = CombineSessionCalls(openCalls, input.OpenSessionCalls);
@@ -79,6 +82,8 @@ internal sealed partial class SemanticAnalyzer
         }
         if (value.Literal is { } literal && signature.Name.StartsWith("meta.", StringComparison.Ordinal))
             return value with { Node = context.Publish ? context.Output!.Literal(literal, value.Type, source) : HirNodeId.None };
+        if (name == "meta.alternatives" && inputs[0].DenotedType is { } denoted)
+            return StaticAlternatives(denoted, callee, inputs[0], source, context);
         callee ??= new(hir.Type(TypeRef.Function), context.Publish
             ? context.Output!.Add(HirKind.NativeFunction, hir.Type(TypeRef.Function), source, text: name) : HirNodeId.None,
             Callables: [new(NativeName: name)]);
@@ -127,7 +132,7 @@ internal sealed partial class SemanticAnalyzer
         return effects;
     }
 
-    private (SemanticValue Result, SemanticValue Function, ImmutableArray<SemanticDeferredWrite> Effects) NativeCallback(SemanticValue callable,
+    private (SemanticValue Result, SemanticValue Function, ImmutableArray<SemanticDeferredWrite> Effects, HirFunctionId? Target) NativeCallback(SemanticValue callable,
         IReadOnlyList<SemanticValue> arguments, HirSourceRange source, SemanticContext context)
     {
         SemanticValue? output = null;
@@ -160,7 +165,7 @@ internal sealed partial class SemanticAnalyzer
                 OpenSessionCalls = slot >= 0 ? AddSessionCall(callable.OpenSessionCalls, SessionBinding(slot, callable, arguments, context)) : callable.OpenSessionCalls
             };
         }
-        return (output, callable, effects.ToImmutable());
+        return (output, callable, effects.ToImmutable(), targets.Count == 1 ? targets[0].Target : null);
     }
 
     private static ImmutableArray<SemanticDeferredWrite> CombineDeferredEffects(
@@ -239,7 +244,7 @@ internal sealed partial class SemanticAnalyzer
     {
         if (signature.Name.StartsWith("meta.", StringComparison.Ordinal)
             && arguments.Count > 0 && arguments.All(argument => argument.DenotedType is not null))
-            return StaticMetaResult(signature.Name[5..], arguments, source);
+            return StaticMetaResult(signature.Name[5..], arguments);
         var result = signature.ResultRule switch
         {
             NativeResultRule.Fixed => FixedNativeResult(signature),
@@ -375,35 +380,49 @@ internal sealed partial class SemanticAnalyzer
         return ValueForType(target);
     }
 
-    private SemanticValue StaticMetaResult(string operation, IReadOnlyList<SemanticValue> arguments,
-        HirSourceRange source)
+    private SemanticValue StaticMetaResult(string operation, IReadOnlyList<SemanticValue> arguments)
     {
-        var types = arguments.Select(argument => hir.Types[argument.DenotedType!.Value.Value].RuntimeType).ToArray();
         if (operation == "alternatives") return RangeValue(ValueForType(hir.Type(TypeRef.Type)));
-        NativeValue result = MetaTypes.Evaluate(operation, types);
-        HirTypeId? denoted = result.Kind == NativeKind.Type ? hir.Type(result.AsType()) : null;
-        if (arguments[0].DenotedType is { } first)
+        HirTypeId first = arguments[0].DenotedType!.Value;
+        TypeRef type = hir.Types[first.Value].RuntimeType;
+        TypeRef? second = arguments.Count > 1 ? hir.Types[arguments[1].DenotedType!.Value.Value].RuntimeType : null;
+        if (operation == "range_rank")
+            return new(hir.Type(TypeRef.Number), HirNodeId.None, new(HirLiteralKind.Number, Number: MetaTypes.RangeRank(type)));
+        if (operation == "type_name")
+            return new(hir.Type(TypeRef.String), HirNodeId.None, new(HirLiteralKind.String, Text: type.ToString()));
+        if (operation is not ("add_null" or "remove_null" or "range_of" or "element_type" or "common_type"))
+            return new(hir.Type(TypeRef.Bool), HirNodeId.None,
+                new(HirLiteralKind.Bool, Boolean: MetaTypes.Predicate(operation, type, second)));
+        if (MetaTypes.Derived(operation, type, second) is not { } derived)
+            return new(hir.Type(TypeRef.Null), HirNodeId.None, new(HirLiteralKind.Null));
+        HirTypeId denoted = operation switch
         {
-            denoted = operation switch
-            {
-                "add_null" => Nullable(first),
-                "remove_null" => NonNullable(first),
-                "range_of" => RangeType(first),
-                "element_type" when hir.Types[first.Value].Element >= 0 => new(hir.Types[first.Value].Element),
-                "common_type" => Join(ValueForType(first), ValueForType(arguments[1].DenotedType!.Value)).Type,
-                _ => denoted
-            };
-        }
-        HirLiteral literal = result.Kind switch
-        {
-            NativeKind.Null => new(HirLiteralKind.Null),
-            NativeKind.Bool => new(HirLiteralKind.Bool, Boolean: result.AsBool()),
-            NativeKind.Number => new(HirLiteralKind.Number, Number: result.AsNumber()),
-            NativeKind.String => new(HirLiteralKind.String, Text: result.AsString()),
-            NativeKind.Type => new(HirLiteralKind.Type, Type: result.AsType()),
-            _ => throw Error(source, $"Unsupported constant type metadata result '{result.Type}'.")
+            "add_null" => Nullable(first),
+            "remove_null" => NonNullable(first),
+            "range_of" => RangeType(first),
+            "element_type" when hir.Types[first.Value].Element >= 0 => new(hir.Types[first.Value].Element),
+            "common_type" => Join(ValueForType(first), ValueForType(arguments[1].DenotedType!.Value)).Type,
+            _ => hir.Type(derived)
         };
-        return new(hir.Type(result.Type), HirNodeId.None, literal, DenotedType: denoted);
+        return new(hir.Type(TypeRef.Type), HirNodeId.None, new(HirLiteralKind.Type, Type: derived), DenotedType: denoted);
+    }
+
+    private SemanticValue StaticAlternatives(HirTypeId type, SemanticValue? callee, SemanticValue operand,
+        HirSourceRange source, SemanticContext context)
+    {
+        var alternatives = MetaRange(MetaTypes.Alternatives(hir.Types[type.Value].RuntimeType)
+            .Select(alternative => MetaType(hir.Type(alternative))), hir.Type(TypeRef.Type));
+        Trace?.Metric("meta.static_alternative_sets", 1);
+        Trace?.Metric("meta.static_alternatives", alternatives.Items.Length);
+        var result = EmitMetaResult(alternatives, source, context);
+        if (!context.Publish) return result;
+        List<HirNodeId> effects = [];
+        foreach (var evaluated in new[] { callee?.Node ?? HirNodeId.None, operand.Node })
+            if (!evaluated.IsNone && (hir.Nodes[evaluated.Value].Effects & ~(HirEffects.ReadLocation | HirEffects.ReadMemory)) != 0)
+                effects.Add(context.Output!.Add(HirKind.Discard, hir.Type(TypeRef.Null), source, [evaluated]));
+        if (effects.Count == 0) return result;
+        effects.Add(result.Node);
+        return result with { Node = context.Output!.Add(HirKind.Block, result.Type, source, effects.ToArray()) };
     }
 
     private SemanticValue DynamicElement(SemanticValue value, SemanticContext context)

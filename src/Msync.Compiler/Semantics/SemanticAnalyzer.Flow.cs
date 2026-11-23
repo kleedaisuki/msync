@@ -53,7 +53,7 @@ internal sealed partial class SemanticAnalyzer
             return value with
             {
                 BranchValue = null,
-                Node = Add(node, value.Type,
+                Node = Add(node with { Data = (int)(known ? HirIfSelection.True : HirIfSelection.False) }, value.Type,
                 known ? [condition.Node, value.Node, ignored] : [condition.Node, ignored, value.Node], context)
             };
         }

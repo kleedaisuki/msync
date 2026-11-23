@@ -2,7 +2,9 @@
   <PropertyGroup><TargetFramework>net10.0</TargetFramework><AllowUnsafeBlocks>true</AllowUnsafeBlocks></PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Msync.Core/Msync.Core.csproj" />
-    <InternalsVisibleTo Include="Msync.NativeTiering.Tests" />
+    <InternalsVisibleTo Include="Msync.HpirRuntime.Tests" />
+    <InternalsVisibleTo Include="Msync.HpirPipeline.Tests" />
+    <InternalsVisibleTo Include="Msync.Transfer.Tests" />
     <InternalsVisibleTo Include="msync" />
   </ItemGroup>
 </Project>

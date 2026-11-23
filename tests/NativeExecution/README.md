@@ -37,6 +37,13 @@ host/nested-store ABI admission. Output pointers are validated without reading
 their uninitialized payload. Rejected ready or pending writes leave the original
 physical location unchanged. These checks also run in the default journey.
 
+`--future-identity` selects the Linux process-gate journey. It checks all
+optimization levels, a portable roundtrip and binding after source removal.
+One copied future remains one item, independently evaluated pending
+arithmetics remain distinct, and demanded control selects without changing
+the chosen datum's identity. The compiler trace also checks that an unrelated
+ready scalar function stays on the LLVM scalar and whole-SSA path.
+
 ## Transfer failure compatibility receipt
 
 The frozen format-6 compiler accepted both programs below, and the frozen CLI
