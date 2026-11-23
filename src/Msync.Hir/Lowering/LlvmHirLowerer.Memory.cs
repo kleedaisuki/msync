@@ -148,6 +148,13 @@ public static partial class LlvmHirLowerer
             var destination = Child(node, 1);
             if (block.HasTerminator) return owner.Null;
             current = node;
+            if (owner.metadata.Types[destination.LogicalType].Kind != TypeKind.Path)
+            {
+                int path = owner.metadata.RuntimeType(TypeRef.Path);
+                destination = ConversionCall(LlvmRuntimeConversionOperation.Coerce,
+                    owner.RepresentationType(TypeKind.Path), path, [destination], path);
+                owner.trace?.Detail?.Metric("transfer.destination_path_projections", 1);
+            }
             owner.fileTransferSources++;
             return owner.DeferredSource(Add(new LlvmFileOutInst(owner.Type(node.Type), value, destination, LlvmFileOutMode.Transfer)), "transfer");
         }

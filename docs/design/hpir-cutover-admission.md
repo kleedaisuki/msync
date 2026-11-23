@@ -121,6 +121,24 @@ This closes both original Scope first frontiers in the table. The
 separate cohort, oracle receipts and live-rerun evidence are retained in
 `artifacts/validation/hpir-cutover-wire7/after-scope-union/`.
 
+### Transfer destinations
+
+The source contract accepts a String or Path on the destination side of
+`->`. Normalize the destination once, at HIR-to-LLVM lowering before
+`FileOut`: an existing Path retains its provenance and goes straight to the
+transfer, while a String or a finite String/Path choice uses the existing
+typed path coercion. Do not coerce the source, where String is a literal
+payload and Path is a live file. This also applies to already sealed HIR;
+no new wire field or runtime descriptor is needed. The
+`transfer.destination_path_projections` compiler metric counts inserted
+coercions.
+
+The v0.9.5 release editor probe exposed this at unoptimized compilation
+because its destination is an absolute String. The packaged CLI journey
+also covers a relative String and a live String/Path choice: compile and
+bind are inert, and detached execution from another directory writes
+literal bytes or copies the live source under the bound directory.
+
 ## Selector follow-up: deferred Number from a Scope fold
 
 The original `affine-scope-fields` case exercised two independent

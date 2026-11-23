@@ -214,6 +214,33 @@ def named_scope_tail(binary: tuple[str, ...], root: Path) -> None:
         assert invoke(cli, root, "run", artifact).stdout.splitlines() == expected
 
 
+def transfer_destination(binary: tuple[str, ...], root: Path) -> None:
+    cli = (*binary, "--no-config", "--color", "never", "--no-telemetry")
+    origin, elsewhere = root / "text-destination", root / "run-text-destination"
+    origin.mkdir()
+    elsewhere.mkdir()
+    source = origin / "write.msync"
+    source.write_text(
+        '"literal payload" -> "./literal.txt";\n'
+        'fn copy(text: Bool) {\n'
+        '    let target = if text { "./text.txt" } else { ./path.txt };\n'
+        '    ./input.txt -> target\n'
+        '};\n'
+        'copy(true); copy(false);\n',
+        encoding="utf-8",
+    )
+    portable, bound = source.with_suffix(".mso"), source.with_suffix(".mexe")
+    invoke(cli, origin, "compile", source.name, "-O0", "-o", portable.name)
+    source.unlink()
+    invoke(cli, origin, "bind-ir", portable.name, "-o", bound.name)
+    assert not list(origin.glob("*.txt"))
+    (origin / "input.txt").write_bytes(b"live file bytes")
+    invoke(cli, elsewhere, "run", str(bound))
+    assert (origin / "literal.txt").read_bytes() == b"literal payload"
+    assert (origin / "text.txt").read_bytes() == (origin / "path.txt").read_bytes() == b"live file bytes"
+    assert not list(elsewhere.glob("*.txt"))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cli", type=Path, required=True, help="Production CLI under test")
@@ -228,6 +255,7 @@ def main() -> None:
         promotion(binary, Path(directory))
         buffered_input(binary, Path(directory))
         named_scope_tail(binary, Path(directory))
+        transfer_destination(binary, Path(directory))
     print("PASS production CLI: detached artifacts, contextual decisions, native admission, and named Scope results")
 
 
