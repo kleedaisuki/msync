@@ -21,6 +21,11 @@ again reuses that named instance. Anonymous `scope { ... }` expressions create
 fresh instances each time they execute, including in a constructor function.
 Both forms can be assigned to mutable bindings; storage types remain fixed.
 
+At the end of a block, a named Scope without a trailing semicolon is the
+block's result. `fn get_pool { scope Pool { id: 1 } };` returns the same named
+instance on every call; `get_pool()::id` selects its `id`. Adding a semicolon
+after the inner Scope discards the result without skipping initialization.
+
 ```msync
 let settings = scope { root: ~/.codex, enabled: true };
 let root = settings::root;

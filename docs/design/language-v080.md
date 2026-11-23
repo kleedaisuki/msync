@@ -12,9 +12,10 @@ from this language contract.
 
 Braces, not indentation, delimit a block. An expression without a final `;` is
 the block result; `;` discards that value and produces `Null`. Empty blocks and
-declarations also produce `Null`. A terminating `return`, `break` or `continue` has internal
-`Never` type, so an unreachable block tail does not widen a function result with
-an artificial Null case.
+ordinary declarations also produce `Null`. A named Scope at the end of a block
+without `;` yields the singleton it declares. A terminating `return`, `break`
+or `continue` has internal `Never` type, so an unreachable block tail does not
+widen a function result with an artificial Null case.
 
 `let` introduces a mutable lexical location with an immutable inferred or
 declared type, and a later declaration may shadow it with a different identity.
@@ -187,9 +188,10 @@ There is no runtime source parsing or generic type inference.
 ### Named structural concepts
 
 Named `fn`, `scope`, and `concept` declarations end with `};` in
-formatted source. Omitting the terminator on a named `fn` or `scope`
-is accepted in existing source. Anonymous functions and scopes are expressions
-and use the surrounding expression's delimiters.
+formatted source, except a named Scope used as a block result. Omitting the
+terminator on a named `fn` or `scope` is also accepted in statement position.
+Anonymous functions and scopes are expressions and use the surrounding
+expression's delimiters.
 
 Concepts express requirements over existing Scope values while keeping the
 runtime type universe closed:
@@ -263,6 +265,11 @@ including recursive calls such as `Family::operation(...)`. They capture the
 same mutable location as ordinary closures, rather than a copied namespace or
 an independently initialized singleton. A named Scope expression supplies its
 name inside that expression; a declaration also binds it in the enclosing scope.
+
+In block tail position, `scope Pool { id: 1 }` both declares and returns that
+same singleton. This is equivalent to `scope Pool { id: 1 }; Pool`, not to
+creating a fresh Scope. Use the semicolon when the block should return Null
+instead. Top-level declarations remain statements.
 
 Fields form a named mapping. A Scope does not expose address arithmetic or
 promise declaration order for storage, display, or enumeration. Initializer

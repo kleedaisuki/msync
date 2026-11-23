@@ -322,7 +322,8 @@ public static class Formatter
             if (node is FunctionExpr { TypeParameterList: { } variables }) Types.Add(variables);
             if (node is ConceptDeclaration { NameSpan: { } name } declaration)
                 ConceptHeaders.Add(declaration.ParameterList?.End ?? name.End);
-            if (node is FunctionDeclaration or ScopeDeclaration) DeclarationEnds.Add(node.Span.End);
+            if (node is FunctionDeclaration or ScopeDeclaration { YieldsValue: false })
+                DeclarationEnds.Add(node.Span.End);
             if (node is PathExpr path) Paths.Add(path.Span);
             if (node is ScopeMember { Shorthand: true }) ScopeShorthands.Add(node.Span.Start);
             if (node is UnaryExpr { Operator: "+" or "-" } unary) UnaryOperators.Add(unary.Span.Start);

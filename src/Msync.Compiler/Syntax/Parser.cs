@@ -208,8 +208,9 @@ public sealed class Parser
         {
             Next(); Token name = Next();
             var scope = Scope(start);
-            Take(TokenKind.Semicolon);
-            return new ScopeDeclaration(name.Text, scope, SourceSpan.Cover(start, Previous.Span)) { NameSpan = name.Span };
+            bool terminated = Take(TokenKind.Semicolon);
+            return new ScopeDeclaration(name.Text, scope, SourceSpan.Cover(start, Previous.Span))
+                { NameSpan = name.Span, YieldsValue = !terminated && end == TokenKind.RightBrace && At(end) };
         }
         var expression = Expression();
         bool discarded = Take(TokenKind.Semicolon);

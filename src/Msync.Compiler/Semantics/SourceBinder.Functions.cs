@@ -171,12 +171,27 @@ internal sealed partial class SourceBinder
         return location;
     }
 
-    private HirNodeId ScopeDeclaration(ScopeDeclaration declaration)
+    private HirNodeId ScopeDeclaration(ScopeDeclaration declaration) => !declaration.YieldsValue || Trace is not { } trace
+        ? BindScopeDeclaration(declaration)
+        : trace.MeasureDetailed("compiler.bind.named_scope_result", (self: this, declaration),
+            static state => state.self.BindScopeDeclaration(state.declaration),
+            attributes: new Dictionary<string, string>(HirTelemetry.Source(hir.Sources, Range(declaration.Span)))
+            {
+                ["scope"] = declaration.Name,
+                ["function"] = scope.Template is { } id ? hir.Templates[id.Value].Name : "<main>"
+            });
+
+    private HirNodeId BindScopeDeclaration(ScopeDeclaration declaration)
     {
-        var location = Declare(declaration.Name, declaration.NameSpan ?? declaration.Span,
-            DeclarationKind.Scope, hir.Type(TypeRef.Scope));
+        var name = declaration.NameSpan ?? declaration.Span;
+        var type = hir.Type(TypeRef.Scope);
+        var location = Declare(declaration.Name, name, DeclarationKind.Scope, type);
         var value = Scope(declaration.Scope, location, true);
-        return Node(HirKind.Declare, hir.Type(TypeRef.Null), declaration.Span, [value], location.Value);
+        var binding = Node(HirKind.Declare, hir.Type(TypeRef.Null), declaration.Span, [value], location.Value);
+        if (!declaration.YieldsValue) return binding;
+        Trace?.Metric("scope.tail_result", 1);
+        var result = Node(HirKind.ReadLocation, type, name, data: location.Value, effects: HirEffects.ReadLocation);
+        return Node(HirKind.Block, type, declaration.Span, [binding, result]);
     }
 
     private HirNodeId Scope(ScopeExpr expression, HirLocationId? self = null, bool named = false)

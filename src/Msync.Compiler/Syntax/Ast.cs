@@ -25,6 +25,7 @@ public sealed record NativeDeclaration(string Name, IReadOnlyList<Parameter> Par
 public sealed record ScopeDeclaration(string Name, ScopeExpr Scope, SourceSpan Span) : Statement(Span)
 {
     public SourceSpan? NameSpan { get; init; }
+    public bool YieldsValue { get; init; }
 }
 public sealed record ConceptDeclaration(string Name, IReadOnlyList<TypeSyntax> Bases, IReadOnlyList<ConceptAssociatedType> Types, IReadOnlyList<ConceptMember> Members, SourceSpan Span) : Statement(Span)
 {

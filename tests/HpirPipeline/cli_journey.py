@@ -195,6 +195,25 @@ def buffered_input(binary: tuple[str, ...], root: Path) -> None:
     assert consumed.stdout.decode().splitlines() == [line, "", "last"]
 
 
+def named_scope_tail(binary: tuple[str, ...], root: Path) -> None:
+    cli = (*binary, "--no-config", "--color", "never", "--no-telemetry")
+    fixture = Path(__file__).with_name("fixtures") / "named_scope_tail.msync"
+    source = root / fixture.name
+    source.write_bytes(fixture.read_bytes())
+    expected = [b"1", b"7", b"7", b"discarded init", b"true", b"2", b"before", b"init", b"11", b"11"]
+    assert invoke(cli, root, "run", source.name, "-O0").stdout.splitlines() == expected
+    formatted = invoke(cli, root, "fmt", source.name, "--stdout").stdout
+    source.write_bytes(formatted)
+    assert invoke(cli, root, "fmt", source.name, "--stdout").stdout == formatted
+    assert invoke(cli, root, "run", source.name, "-O2").stdout.splitlines() == expected
+    invoke(cli, root, "compile", source.name, "--emit", "hir", "-o", "scope-tail.mhir")
+    invoke(cli, root, "compile", source.name, "-o", "scope-tail.mso")
+    source.unlink()
+    invoke(cli, root, "bind-ir", "scope-tail.mso", "-o", "scope-tail.mexe")
+    for artifact in ("scope-tail.mhir", "scope-tail.mexe"):
+        assert invoke(cli, root, "run", artifact).stdout.splitlines() == expected
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cli", type=Path, required=True, help="Production CLI under test")
@@ -208,7 +227,8 @@ def main() -> None:
         contextual_branch(binary, Path(directory))
         promotion(binary, Path(directory))
         buffered_input(binary, Path(directory))
-    print("PASS production CLI: artifact inspection, detached bind/export/run, dry run, contextual decision and native admission")
+        named_scope_tail(binary, Path(directory))
+    print("PASS production CLI: detached artifacts, contextual decisions, native admission, and named Scope results")
 
 
 if __name__ == "__main__":
