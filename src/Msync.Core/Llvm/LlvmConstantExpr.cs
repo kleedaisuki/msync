@@ -84,7 +84,7 @@ public sealed partial class LlvmConstantExpr : LlvmConstant
     public static bool IsSupportedCastOp(LlvmOpcode opcode) => IsDesirableCastOp(opcode);
     public static bool IsSupportedGetElementPtr(LlvmType source) => !source.IsScalableTy();
 
-    private static LlvmConstantExpr Intern(LlvmType type, LlvmOpcode opcode, IReadOnlyList<LlvmConstant> operands,
+    internal static LlvmConstantExpr Intern(LlvmType type, LlvmOpcode opcode, IReadOnlyList<LlvmConstant> operands,
         uint flags = 0, LlvmType? sourceElementType = null, LlvmConstantExprRange? inRange = null, IReadOnlyList<int>? shuffleMask = null)
     {
         LlvmConstantExprKey key = new(type, opcode, operands, flags, sourceElementType, inRange, shuffleMask);

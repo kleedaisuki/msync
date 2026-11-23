@@ -9,8 +9,9 @@ internal sealed record CommandOptions(string Command, string? File, string? Outp
     string? ConfigPath, bool NoConfig, IReadOnlyDictionary<string, object> Overrides,
     string? TracePath, string? TelemetryDatabase, bool NoTelemetry)
 {
-    private static readonly string[] Commands = ["run", "check", "compile", "emit-ir", "bind-ir", "run-ir", "plan", "plan-ir", "disassemble", "fmt", "repl", "doctor", "config", "help", "skill"];
+    private static readonly string[] Commands = ["run", "check", "compile", "analyze", "lower", "optimize", "codegen", "bind", "emit-ir", "bind-ir", "run-ir", "plan", "plan-ir", "disassemble", "fmt", "repl", "doctor", "config", "help", "skill"];
 
+    public bool ExplicitOptimization { get; init; }
     public bool ExplicitCommand { get; init; }
     public bool Json { get; init; }
     public bool EditorJson { get; init; }
@@ -30,7 +31,7 @@ internal sealed record CommandOptions(string Command, string? File, string? Outp
         bool dryRun = false, formattingCheck = false, stdout = false, noConfig = false, noTelemetry = false, json = false;
         bool editorJson = false;
         CompileEmission emission = CompileEmission.Bytecode;
-        bool explicitEmission = false, prepare = false;
+        bool explicitEmission = false, prepare = false, explicitOptimization = false;
         int index = 0;
         bool commandSeen = false;
         if (args.Length != 0 && Commands.Contains(args[0], StringComparer.Ordinal)) { command = args[0]; index++; commandSeen = true; }
@@ -55,10 +56,10 @@ internal sealed record CommandOptions(string Command, string? File, string? Outp
                 case "--editor-json": editorJson = true; break;
                 case "--emit": emission = ParseEmission(Next()); explicitEmission = true; break;
                 case "--prepare": prepare = true; break;
-                case "-O0": optimization = 0; break;
-                case "-O1": optimization = 1; break;
-                case "-O2": optimization = 2; break;
-                case "-O3": optimization = 3; break;
+                case "-O0": optimization = 0; explicitOptimization = true; break;
+                case "-O1": optimization = 1; explicitOptimization = true; break;
+                case "-O2": optimization = 2; explicitOptimization = true; break;
+                case "-O3": optimization = 3; explicitOptimization = true; break;
                 case "--config": configPath = Next(); break;
                 case "--no-config": noConfig = true; break;
                 case "--trace": tracePath = Next(); break;
@@ -92,7 +93,7 @@ internal sealed record CommandOptions(string Command, string? File, string? Outp
             && output?.EndsWith(".mhir", StringComparison.OrdinalIgnoreCase) == true)
             emission = CompileEmission.Hir;
         return new(command, file, output, dryRun, optimization, source, jobs, formattingCheck, stdout, syntax, configPath, noConfig, overrides, tracePath, telemetryDatabase, noTelemetry)
-        { SkillTopics = skillTopics, ExplicitCommand = commandSeen, Json = json, EditorJson = editorJson, Emission = emission };
+        { SkillTopics = skillTopics, ExplicitCommand = commandSeen, ExplicitOptimization = explicitOptimization, Json = json, EditorJson = editorJson, Emission = emission };
     }
 
     private static CompileEmission ParseEmission(string value) => value switch

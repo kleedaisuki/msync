@@ -96,7 +96,8 @@ internal sealed partial class SourceBinder
         hir.SetFunction(program.Entry, hir.Functions[program.Entry.Value] with { Body = program.Body });
         program.Exports = scope.Values;
         program.RootConcepts = scope.Concepts;
-        hir.SetExports(scope.Values.Select(pair => new HirExport(pair.Key, pair.Value)));
+        hir.SetExports(scope.Values.OrderBy(static pair => pair.Value.Value)
+            .Select(pair => new HirExport(pair.Key, pair.Value)));
         SealStandardBindings();
         return program;
     }
@@ -130,7 +131,9 @@ internal sealed partial class SourceBinder
             var initializers = statements.Select(Statement).ToArray();
             Trace?.Metric("declarations.available", declarations.Count);
             Trace?.Metric("declarations.selected", initializers.Length);
-            var fields = scope.Values.Values.ToImmutableArray();
+            // Scope lookup order is hash-dependent; physical module fields follow declaration IDs.
+            var fields = scope.Values.Values.OrderBy(static location => location.Value).ToImmutableArray();
+            Trace?.Metric("layout.fields", fields.Length);
             int layout = hir.ScopeLayouts.Count;
             hir.ScopeLayouts.Add(new(fields.Select(location => new HirField(
                 hir.Locations[location.Value].Name, hir.Locations[location.Value].StorageType,

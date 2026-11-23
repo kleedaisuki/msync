@@ -8,9 +8,11 @@ namespace Msync.Compiler;
 
 public static partial class Compiler
 {
-    internal static HpirProgram LowerHpir(HirModule module, int optimization, CompilationTrace? trace = null)
+    internal static HpirProgram LowerHpir(HirModule module, int optimization, CompilationTrace? trace = null) =>
+        CodegenHpir(OptimizeLlvm(LowerLlvm(module, trace), optimization, trace), optimization, trace);
+
+    internal static HpirProgram CodegenHpir(LlvmHirLoweringResult graph, int optimization, CompilationTrace? trace)
     {
-        var graph = OptimizeTargetGraph(module, optimization, trace);
         PrepareOptimizedHpirGraph(graph, optimization, trace);
         return LlvmHpirLowerer.Lower(graph, trace) with { OptimizationLevel = optimization };
     }
@@ -45,12 +47,9 @@ public static partial class Compiler
         trace?.Metric("functions.pruned", pruned);
     }
 
-    private static LlvmHirLoweringResult OptimizeTargetGraph(HirModule module, int optimization, CompilationTrace? trace)
-    {
-        LlvmHirLoweringResult graph = trace is null ? LlvmHirLowerer.Lower(module)
+    internal static LlvmHirLoweringResult LowerLlvm(HirModule module, CompilationTrace? trace) =>
+        trace is null ? LlvmHirLowerer.Lower(module)
             : trace.MeasureDetailed("compiler.lower", (module, trace),
                 static state => LlvmHirLowerer.Lower(state.module, state.trace),
                 size: static result => LlvmSize(result));
-        return OptimizeLlvm(graph, optimization, trace);
-    }
 }

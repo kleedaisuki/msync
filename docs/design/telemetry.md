@@ -669,7 +669,7 @@ recorder. Diagnostics uses the existing lossless writer admission policy.
 | Work | Observations and evidence |
 | --- | --- |
 | Source parsing | `compiler.parse` owns `compiler.lex` and `compiler.syntax`; source identity/UTF-16 length, token and top-level statement counts. Supplied parsed documents emit `compiler.parse.reused`, not a fabricated parse interval. |
-| Binding | `compiler.bind`, `compiler.bind.standard_demand`, `compiler.bind.standard_module`; declarations, locations, types, templates and modules, available/selected standard declarations, module exports and projection decisions. |
+| Binding | `compiler.bind`, `compiler.bind.standard_demand`, `compiler.bind.standard_module`; declarations, locations, types, templates and modules, available/selected standard declarations, module exports, declaration-ordered layout field count and projection decisions. |
 | Named Scope tail result | `compiler.bind.named_scope_result` identifies the source, enclosing function and Scope declaration; `scope.tail_result` counts a declaration lowered with a read of the same singleton. Statement-position declarations use the ordinary binding path. |
 | Standard-source cache | `compiler.standard.document` identifies the module and whether its lazy document was cold or warm. A warm access is not another parse. |
 | Semantics | `compiler.semantic.body` counts analyzed HIR node kinds, including repeated analysis; `compiler.semantic.standard_module` identifies module work. |
@@ -684,6 +684,7 @@ recorder. Diagnostics uses the existing lossless writer admission policy.
 | Effect transfer | `compiler.semantic.apply_plan` records source attribution for the shared call/loop plan interpreter, actual writes, branches, singleton initialization and guard skips. Specialization counts `plan.writes.exported`; private activation writes do not become retained external effects. |
 | Native artifact I/O | `compiler.artifact.encode`/`.decode` and `.encode_section`/`.decode_section`; compact section identity and byte counts, string/source-span pool counts; allocation-hint normalization has its own interval. Historical format 6 imports record `compiler.artifact.import_v6` and use the same native verifier. |
 | Native verification | `compiler.verify` owns type and per-function validation, including pointer-use and typed-flow intervals. Verification runs at existing admission boundaries; recording does not add validation to trusted compiler output. |
+| LLVM checkpoint I/O | `compiler.mllvm.encode` / `.decode` record artifact extent, version/phase, graph census and concrete failure causes. Profile children `.graph` and `.producer` attribute reference reconstruction and layout, callable, Range and Future tables separately. Resumed codegen records the saved phase/level and the HPIR work it actually performs. |
 | HIR artifact I/O | `compiler.hir.encode`, `.decode`, `.verify`; decoded HIR census and existing boundary validation. Reading HIR does not invent source parsing or binding. |
 | Editor and sessions | The same binder/analyzer/lowerer serves incremental editor prefix work, REPL compilation and prompt analysis. Exact revision reuse, source rebasing and prefix reuse retain their existing editor observations. |
 
@@ -725,9 +726,10 @@ The CLI journey compiles at O0–O3, checks real replay output, validates nested
 ownership and failure causes, and exercises HIR/native artifact routes and SQLite.
 The in-process companion checks byte-identical artifacts with recording off/on,
 persistent mutable sessions, editor revision/rebase/prefix paths, and cancellation
-ancestry restoration. Cross-process artifact bytes are not used as an oracle:
-standard-module field order currently inherits process-randomized immutable-map
-iteration, independently of recording.
+ancestry restoration. That historical telemetry journey uses an in-process
+oracle. The later [checkpoint journey](compiler-stage-checkpoints.md) compares
+separate processes after standard-module physical field order was made
+declaration-ordered instead of hash-dependent.
 
 Local acceptance on 2026-11-13 used .NET 10 Release on Linux x64 and a published
 Native AOT CLI in `artifacts/validation/compiler-telemetry-cli`. Source O0–O3

@@ -1,7 +1,7 @@
 # Save and run compiled programs
 
-`.msync` is source, `.mso` is typed relocatable native IR, and `.mexe` is
-contextual executable IR. Both binary stages can be submitted without the
+`.msync` is source, `.mso` is relocatable HPIR, and `.mexe` is
+context-bound executable HPIR. Both binary stages can be submitted without the
 original source. Binding prepares concrete I/O graphs from the selected context;
 it never serializes live credentials.
 
@@ -27,21 +27,10 @@ failures. It does not compare environment snapshots, check plan freshness or
 automatically rebuild an expired plan. Repeating `run` on a `.mexe` retries the same
 prepared operations; compile with `--prepare` again to refresh selections.
 
-Select optimization according to compilation latency and expected reuse:
-
-| Level | Policy |
-| --- | --- |
-| `-O0` | Keep unoptimized typed native IR; useful for comparing behavior. |
-| `-O1` | Local dataflow/dead-memory cleanup, last-use moves, proved allocation placement, CFG compaction and typed temporary-slot allocation. |
-| `-O2` | Default: also propagate must-facts across blocks and inline proved transparent static calls; callee budget 48 operations, cumulative growth budget 384 operations per caller. |
-| `-O3` | Same proof obligations, with callee budget 144 and cumulative caller growth budget 1536 operations. |
-
-These budgets choose implementation cost, not accepted language features or
-weaker semantics. Calls with opaque work ownership, iterator cleanup or unsafe
-capture/frame-location proofs remain ordinary typed calls. Temporary-slot
-allocation shares nonoverlapping storage of exactly the same static type; it is
-not hardware register allocation and preserves canonical/session location IDs.
-Higher budgets are not an unmeasured universal speedup claim.
+Optimization defaults to `-O2`. `-O0` skips the LLVM-derived middle-end
+passes. HPIR code generation still canonicalizes local storage where
+required. The current HPIR compiler runs the same middle-end passes at
+`-O1`, `-O2`, and `-O3`; it records the requested level.
 
 Machine-independent transformations run before `.mso` emission. Binding adds
 context-dependent computation and prepares I/O execution graphs without replaying
@@ -49,6 +38,23 @@ source or invoking the compiler's optimizer from the VM.
 Native AOT
 compiles the host executable; the language runtime executes typed binary
 instructions and scheduled effects, never embedded debug source.
+
+## Stop and resume compiler stages
+
+```sh
+msync analyze job.msync
+msync lower job.mhir
+msync optimize job.mllvm -O2
+msync disassemble job.opt.mllvm
+msync codegen job.opt.mllvm
+msync bind job.opt.mso
+msync run job.opt.mexe
+```
+
+A `.mllvm` checkpoint contains lowered SSA and its producer facts. An
+optimized checkpoint resumes at its recorded level without rerunning the
+middle end. Passing a lowered checkpoint straight to `codegen` means O0.
+Use `disassemble` to view its SSA; formatted text is not a compiler input.
 
 ## Inspect without executing
 
@@ -59,9 +65,10 @@ slots, constants, control-flow blocks and retained source spans. Bound artifacts
 also show their captured path context and execution graphs: concrete transfer
 kinds, resource reads/writes, predecessor edges, batches and eliminated writes.
 No code is run or rebound, and no SSH/WSL
-connection is opened. The command does not load configuration or telemetry.
+connection is opened. Inspection does not load project configuration.
+Checkpoint inspection can opt into telemetry explicitly.
 
-Use `--json` for the versioned editor document model, or `-` for binary stdin.
+Use `--json` for structured output, or `-` for binary stdin.
 The original source may have been optimized away; disassembly does not invent
 missing expressions or require the source file to remain available.
 
@@ -74,6 +81,6 @@ before printing the graph, without executing transfer writes. Planning may read
 the selected filesystem. `msync plan FILE.mexe` prints its already prepared
 operations without refreshing them. Use `disassemble` for passive inspection.
 
-Current commands use Native IR format 2 for `.mso` and `.mexe`, and HIR format
-4 for `.mhir`. Recompile older artifacts from source. Language semantics and
+Current commands use HPIR format 8 for `.mso` and `.mexe`, HIR format 4 for
+`.mhir`, and checkpoint format 1 for `.mllvm`. Recompile older artifacts from source. Language semantics and
 embedded stdlib URIs remain versioned at 0.8.0.

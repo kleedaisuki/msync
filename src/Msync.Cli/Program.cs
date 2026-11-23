@@ -41,7 +41,16 @@ internal static class Program
             {
                 if (options.Output is not null) throw new ArgumentException("Disassembly writes text to stdout; redirect it to a separate text file instead of using -o.");
                 string artifact = options.File ?? throw new ArgumentException("An artifact filename is required; use 'msync disassemble --help'.");
-                byte[] bytes = artifact == "-" ? await ReadArtifactInput() : await File.ReadAllBytesAsync(artifact);
+                byte[]? bytes = CompilerStageCommands.IsCheckpoint(artifact) ? null
+                    : artifact == "-" ? await ReadArtifactInput() : await File.ReadAllBytesAsync(artifact);
+                if (bytes is null || LlvmCheckpointArtifact.HasMagic(bytes))
+                {
+                    Configuration inspection = Configuration.Load(null, disabled: true, options.Overrides);
+                    telemetry = TelemetrySession.TryOpen(inspection, options.Command, artifact, options.TracePath,
+                        options.TelemetryDatabase, options.NoTelemetry);
+                    telemetry?.SetAttribute("input.kind", "mllvm");
+                    return Complete(CompilerStageCommands.Disassemble(artifact, bytes, options, color, telemetry), telemetry);
+                }
                 string identity = artifact == "-" ? "<stdin>" : new Uri(Path.GetFullPath(artifact)).AbsoluteUri;
                 if (options.Json && !options.EditorJson && HpirArtifact.HasMagic(bytes))
                 {
@@ -70,7 +79,8 @@ internal static class Program
             long exporterStarted = Stopwatch.GetTimestamp();
             telemetry = TelemetrySession.TryOpen(configuration, options.Command, options.File, options.TracePath, options.TelemetryDatabase, options.NoTelemetry);
             telemetry?.RecordStartup(entered, configurationStarted, exporterStarted);
-            telemetry?.SetAttribute("optimization.level", options.Optimization.ToString(CultureInfo.InvariantCulture));
+            if (options.Command is not ("analyze" or "lower" or "bind" or "codegen"))
+                telemetry?.SetAttribute("optimization.level", options.Optimization.ToString(CultureInfo.InvariantCulture));
             bool executes = options.Command is "run" or "run-ir" or "repl";
             if (executes) consoleEncoding ??= ConsoleEncodingScope.Open(redirectedText: true);
             using TextReader? input = executes ? (TextReader?)RedirectedTextInput.Open() ?? new TerminalProgramInput() : null;
@@ -82,6 +92,10 @@ internal static class Program
             if (options.Command == "doctor") return Complete(Doctor(), telemetry);
             string file = options.File ?? throw new ArgumentException("A source or artifact filename is required; use --help for commands.");
             if (options.Command == "fmt") return Complete(Format(file, options), telemetry);
+            if (CompilerStageCommands.IsStage(options.Command))
+                return Complete(await CompilerStageCommands.Run(options, file, telemetry, color), telemetry);
+            if (CompilerStageCommands.IsCheckpoint(file))
+                throw new ArgumentException("A .mllvm checkpoint is compiler input. Use 'msync codegen' to produce a runnable .mso.");
             CompileOutput? export = options.Command == "compile" ? CompileOutput.Resolve(file, options) : null;
             if (export is { } selected)
             {
@@ -108,7 +122,7 @@ internal static class Program
                 if (export is { } hir)
                 {
                     WriteHir(semantic, hir.Path, telemetry);
-                    hir.Report();
+                    hir.Report(color);
                 }
                 else if (options.Output is { } output) WriteHir(semantic, output, telemetry);
                 else HirCommands.Print(semantic, color);

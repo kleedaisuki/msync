@@ -8,12 +8,12 @@ It has no VM stack slots or branch offsets.
 ## Export before lowering
 
 ```text
-msync compile sync.msync --emit hir
+msync analyze sync.msync
 ```
 
-The command saves `sync.mhir` beside the input. Select HIR with `--emit hir`,
-not with the output filename. Use `-o FILE` to choose a path or `-o -` for
-binary stdout. Use `disassemble` to print a human-readable representation.
+The command saves `sync.mhir` beside the input. The existing
+`msync compile sync.msync --emit hir` also works. Use `-o FILE` to choose a
+path or `-o -` for binary stdout. Use `disassemble` to print a human-readable representation.
 Compilation does not execute source effects or authenticate remote endpoints.
 
 ## Inspect without execution
@@ -31,13 +31,15 @@ read-only navigation and refresh behavior as the other compiled artifact stages.
 ## Continue from the semantic file
 
 ```text
-msync compile sync.mhir -O2
+msync lower sync.mhir
+msync optimize sync.mllvm -O2
+msync codegen sync.opt.mllvm
 msync compile sync.mhir --prepare
 msync run sync.mhir
 ```
 
 The original source can be removed. Lowering consumes the semantic tables rather
-than invoking the source binder. `.mso` remains machine-independent bytecode;
+than invoking the source binder. `.mso` remains relocatable HPIR;
 `.mexe` retains its explicit binding context. A standalone `.mhir` does not
 capture cwd, filesystem observations, credentials or live Process handles.
 

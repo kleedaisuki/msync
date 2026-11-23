@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -40,14 +41,14 @@ def command(program: Path, host: Path | None) -> tuple[str, ...]:
 
 def invoke(
     prefix: tuple[str, ...], cwd: Path, *arguments: str, status: int = 0, input_data: bytes | None = None,
-    jit: str | None = None,
+    jit: str | None = None, environment: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     result = subprocess.run(
         [*prefix, *arguments],
         cwd=cwd,
         input=input_data,
         stdin=subprocess.DEVNULL if input_data is None else None,
-        env=None if jit is None else {**os.environ, "MSYNC_JIT": jit},
+        env=environment if jit is None else {**(environment or os.environ), "MSYNC_JIT": jit},
         capture_output=True,
         check=False,
         timeout=30,
@@ -241,22 +242,114 @@ def transfer_destination(binary: tuple[str, ...], root: Path) -> None:
     assert not list(elsewhere.glob("*.txt"))
 
 
+
+def checkpoints(binary: tuple[str, ...], root: Path) -> None:
+    cli = (*binary, "--no-config")
+    origin, detached = root / "checkpoint-source", root / "checkpoint-resume"
+    origin.mkdir()
+    detached.mkdir()
+    source = origin / "capture 𐐀.msync"
+    source.write_text("""\
+fn choose(flag: Bool) { if flag { [1, 2] } else { null } };
+let input? = $std::io::read_line();
+let selected? = choose(input is not null);
+let offset = 7;
+if selected is not null {
+    let joined = $std::string::join($std::ranges::map(selected, fn(value: Number) {
+        (value + offset) as String
+    }), ",");
+    joined -> ./result.txt;
+    $std::io::println(joined);
+} else { $std::io::println("absent"); };
+""", encoding="utf-8")
+    hir, lower, optimized = (origin / f"{source.stem}{suffix}" for suffix in (".mhir", ".mllvm", ".opt.mllvm"))
+
+    invoke(cli, origin, "compile", source.name, "-O2", "-o", "direct.mso")
+    invoke(cli, origin, "compile", source.name, "-O0", "-o", "direct0.mso")
+    invoke(cli, origin, "analyze", source.name)
+    assert invoke(cli, origin, "compile", source.name, "--emit", "hir", "-o", "-").stdout == hir.read_bytes()
+    assert invoke(cli, origin, "codegen", hir.name, "-o", "-").stdout == (origin / "direct.mso").read_bytes()
+
+    invoke(cli, origin, "lower", hir.name)
+    environment = {key: value for key, value in os.environ.items() if key != "NO_COLOR"}
+    raw = invoke(cli, origin, "lower", source.name, "-o", "-", "--color", "always", environment=environment).stdout
+    assert raw.startswith(b"MSYNLLVM") and raw == lower.read_bytes()
+    before = invoke(cli, origin, "disassemble", lower.name).stdout
+    assert before.startswith(b"; msync checkpoint: lowered, O0") and b"getelementptr" in before and b"file.out" in before
+    invoke(cli, origin, "optimize", lower.name, "-O2")
+    colored = invoke(cli, origin, "disassemble", optimized.name, "--color", "always", environment=environment).stdout
+    preview = invoke(cli, origin, "disassemble", optimized.name).stdout
+    assert preview.startswith(b"; msync checkpoint: post-middle-end, O2")
+    assert b"\x1b[" in colored and re.sub(rb"\x1b\[[0-9;]+m", b"", colored) == preview
+    assert b"\x1b[" not in preview
+    assert b"\x1b[" in invoke(cli, origin, "compile", source.name, "--color", "always", environment=environment).stdout
+    assert invoke(cli, origin, "compile", source.name, "--color", "never").stdout == (
+        f"Wrote {source.stem}.mso (portable program).{os.linesep}".encode()
+    )
+
+    invoke(cli, origin, "optimize", lower.name, "-O0", "-o", "post0.mllvm")
+    post0 = invoke(cli, origin, "disassemble", "post0.mllvm").stdout
+    assert post0.startswith(b"; msync checkpoint: post-middle-end, O0") and post0.splitlines()[1:] == before.splitlines()[1:]
+    assert b"needs a lowered checkpoint" in invoke(cli, origin, "optimize", optimized.name, status=1).stderr
+    assert b"would overwrite" in invoke(cli, origin, "optimize", lower.name, "-o", f"./{lower.name}", status=1).stderr
+    assert b"cannot resume codegen with -O1" in invoke(cli, origin, "codegen", optimized.name, "-O1", status=1).stderr
+
+    assert invoke(cli, origin, "codegen", lower.name, "-o", "-").stdout == (origin / "direct0.mso").read_bytes()
+    assert invoke(cli, origin, "codegen", "-", "-o", "-", input_data=(origin / "post0.mllvm").read_bytes()).stdout == (
+        origin / "direct0.mso"
+    ).read_bytes()
+
+    source.unlink()
+    hir.unlink()
+    lower.unlink()
+    optimized.replace(detached / optimized.name)
+    invoke(cli, detached, "codegen", optimized.name, "--trace", "resume.jsonl", "--telemetry-level", "profile")
+    portable = detached / optimized.with_suffix(".mso").name
+    assert portable.read_bytes() == (origin / "direct.mso").read_bytes()
+    records = [cast(Json, json.loads(line)) for line in (detached / "resume.jsonl").read_text(encoding="utf-8").splitlines()]
+    names = {str(item["name"]) for item in records}
+    assert {"compiler.mllvm.decode.graph", "compiler.mllvm.decode.producer", "compiler.hpir.select"} <= names
+    assert not names.intersection({"compile", "source.read", "compiler.parse", "compiler.lower", "compiler.llvm.lower",
+                                   "compiler.optimize", "compiler.hpir.canonicalize.values", "bind", "prepare", "runtime"})
+    producer, = (item for item in records if item["name"] == "compiler.mllvm.decode.producer")
+    assert producer["metrics"]["producer.range_callbacks"] > 0, producer
+
+    invoke(cli, detached, "bind", portable.name)
+    executable = portable.with_suffix(".mexe")
+    result = detached / "result.txt"
+    assert not result.exists()
+    assert invoke(cli, detached, "run", executable.name, input_data=b"present\n").stdout.splitlines() == [b"8,9"]
+    assert result.read_bytes() == b"8,9"
+    result.unlink()
+    assert invoke(cli, detached, "run", executable.name, input_data=b"").stdout.splitlines() == [b"absent"]
+    assert not result.exists()
+
+    saved = (detached / optimized.name).read_bytes()
+    for invalid, reason in ((saved[:-1], b"Regenerate"), (saved[:8] + b"\xff" + saved[9:], b"unsupported checkpoint format")):
+        (detached / "invalid.mllvm").write_bytes(invalid)
+        rejected = invoke(cli, detached, "codegen", "invalid.mllvm", status=1)
+        assert reason in rejected.stderr and not (detached / "invalid.mso").exists(), rejected.stderr
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cli", type=Path, required=True, help="Production CLI under test")
     parser.add_argument("--dotnet", type=Path, help="Optional host for the managed CLI DLL")
+    parser.add_argument("--checkpoint-only", action="store_true")
     args = parser.parse_args()
     parent = ROOT / ".temp" / "hpir" / "cli"
     parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="detached-", dir=parent) as directory:
         binary = command(args.cli, args.dotnet)
-        journey(binary, Path(directory))
-        contextual_branch(binary, Path(directory))
-        promotion(binary, Path(directory))
-        buffered_input(binary, Path(directory))
-        named_scope_tail(binary, Path(directory))
-        transfer_destination(binary, Path(directory))
-    print("PASS production CLI: detached artifacts, contextual decisions, native admission, and named Scope results")
+        checkpoints(binary, Path(directory))
+        if not args.checkpoint_only:
+            journey(binary, Path(directory))
+            contextual_branch(binary, Path(directory))
+            promotion(binary, Path(directory))
+            buffered_input(binary, Path(directory))
+            named_scope_tail(binary, Path(directory))
+            transfer_destination(binary, Path(directory))
+    print("PASS production CLI: detached compiler checkpoints" +
+          ("" if args.checkpoint_only else ", HPIR artifacts, contextual decisions, native admission, and named Scope results"))
 
 
 if __name__ == "__main__":

@@ -340,13 +340,12 @@ shell command or an unrestricted dynamic library loader. The registry owns
 arity, types, dependent range results, and effect classification. Checking and
 compilation do not execute filesystem or process effects.
 
-Optimization defaults to `-O2`; `-O0` retains unoptimized typed IR. `-O1` runs
-local cleanup, lifetime/placement analysis, CFG compaction and typed temporary-slot
-allocation. `-O2` also propagates must-facts across blocks and inlines proved
-transparent static calls within bounded code-growth budgets; `-O3` admits larger
-callee and growth budgets. These are native-IR policies, not a promise that a
-higher level is faster for every workload. See `msync skill workflow artifacts`
-and [research status](RESEARCH.md) for the contracts and remaining work.
+Optimization defaults to `-O2`. `-O0` skips the middle end; HPIR
+code generation still canonicalizes local storage where required. The
+current HPIR pipeline uses the same LLVM-derived middle-end passes for
+`-O1`, `-O2`, and `-O3` and records the requested level. See
+[compiler checkpoints](docs/design/compiler-stage-checkpoints.md) for
+inspecting the actual graph before and after those passes.
 
 ## Typed compilation pipeline
 
@@ -381,8 +380,21 @@ Plain `compile` pays the compilation cost up front without capturing the
 execution environment. `--prepare` also does contextual preparation, which
 may freeze resolved file selections. By default the artifact is saved beside
 the input; use `-o FILE` to choose its path or `-o -` for binary stdout.
-For compiler tooling, `compile FILE --emit hir` saves `.mhir`; use
-`disassemble FILE` to inspect an artifact.
+To inspect or resume individual compiler stages, use:
+
+```sh
+msync analyze sync.msync            # saves sync.mhir
+msync lower sync.mhir               # saves sync.mllvm (before optimization)
+msync optimize sync.mllvm -O2       # saves sync.opt.mllvm
+msync disassemble sync.opt.mllvm    # prints SSA, without compiling or running
+msync codegen sync.opt.mllvm        # saves sync.opt.mso, without re-optimizing
+msync bind sync.opt.mso             # saves sync.opt.mexe
+msync run sync.opt.mexe
+```
+
+A `.mllvm` checkpoint includes the typed graph and the information needed to
+resume without the source or HIR. See [compiler checkpoints](docs/design/compiler-stage-checkpoints.md).
+`compile FILE --emit hir` remains available.
 
 Semantic analysis resolves declarations, types, storage constraints, captures,
 call targets and evaluation policy before executable representation selection.

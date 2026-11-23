@@ -6,7 +6,7 @@ public sealed partial class LlvmModule
 {
     private readonly List<LlvmFunction> functions = [];
     private readonly List<LlvmGlobalVariable> globals = [];
-    private LlvmThreadModel? threadModel;
+    internal LlvmThreadModel? ExplicitThreadModel { get; private set; }
     public LlvmContext Context { get; }
     public string ModuleIdentifier { get; set; }
     public string SourceFileName { get; set; }
@@ -18,8 +18,8 @@ public sealed partial class LlvmModule
     public IReadOnlyList<LlvmGlobalVariable> GlobalVariables { get; }
     // Module.cpp getThreadModel/setThreadModel: the optional field represents
     // the explicit thread-model module flag, not the host's threading state.
-    public LlvmThreadModel GetThreadModel() => threadModel ?? TargetTriple.GetDefaultThreadModel();
-    public void SetThreadModel(LlvmThreadModel model) => threadModel = model;
+    public LlvmThreadModel GetThreadModel() => ExplicitThreadModel ?? TargetTriple.GetDefaultThreadModel();
+    public void SetThreadModel(LlvmThreadModel model) => ExplicitThreadModel = model;
     public LlvmModule(string moduleId, LlvmContext context)
     {
         Context = context;

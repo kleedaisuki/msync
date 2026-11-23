@@ -8,6 +8,8 @@ This replaces the earlier proposed SSA/place surface for `.mexe`; its
 ordering, identity and effect obligations still apply.
 See the [implementation and acceptance plan](hpir-roadmap.md) for phase
 dependencies, exit criteria and delivery gates.
+The [compiler stage checkpoint design](compiler-stage-checkpoints.md)
+defines the named CLI stages and resumable pre-HPIR artifacts.
 
 ## The boundary
 

@@ -56,7 +56,7 @@ internal static class HpirCommandPipeline
         if (export is { } selected)
         {
             Write(program, selected.Path, telemetry);
-            selected.Report();
+            selected.Report(color);
             return 0;
         }
         if (options.Command == "bind-ir")
@@ -118,7 +118,7 @@ internal static class HpirCommandPipeline
         }
     }
 
-    private static void Write(HpirProgram program, string output, TelemetrySession? telemetry)
+    internal static void Write(HpirProgram program, string output, TelemetrySession? telemetry)
     {
         using TelemetrySpan? span = telemetry?.Begin("artifact.write");
         span?.SetAttribute("artifact.kind", program.Stage == HpirStage.Executable ? "executable" : "object");

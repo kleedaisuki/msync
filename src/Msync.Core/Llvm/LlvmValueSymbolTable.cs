@@ -6,7 +6,7 @@ public sealed class LlvmValueSymbolTable
 {
     private readonly Dictionary<string, LlvmValueName> values = new(StringComparer.Ordinal);
     private readonly int maxNameSize;
-    private uint lastUnique;
+    internal uint LastUnique { get; set; }
 
     public LlvmValueSymbolTable(int maxNameSize = -1) => this.maxNameSize = maxNameSize;
     public IEnumerable<LlvmValueName> Entries => values.Values;
@@ -34,7 +34,7 @@ public sealed class LlvmValueSymbolTable
         while (true)
         {
             byte[] suffix = System.Text.Encoding.ASCII.GetBytes(
-                (appendDot ? "." : "") + (++lastUnique).ToString(System.Globalization.CultureInfo.InvariantCulture));
+                (appendDot ? "." : "") + (++LastUnique).ToString(System.Globalization.CultureInfo.InvariantCulture));
             if (maxNameSize > -1 && baseSize + suffix.Length > maxNameSize)
             {
                 baseSize -= baseSize + suffix.Length - maxNameSize;

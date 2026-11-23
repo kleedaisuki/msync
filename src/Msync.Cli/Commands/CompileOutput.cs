@@ -16,7 +16,7 @@ internal readonly record struct CompileOutput(string Path, CompileEmission Emiss
         if (output == "-") return new(output, options.Emission, false);
 
         string suffix = System.IO.Path.GetExtension(output).ToLowerInvariant();
-        if (suffix is ".mso" or ".mexe" or ".mhir" or ".msync" && suffix != extension)
+        if (suffix is ".mso" or ".mexe" or ".mhir" or ".mllvm" or ".msync" && suffix != extension)
         {
             string hint = suffix switch
             {
@@ -39,7 +39,7 @@ internal readonly record struct CompileOutput(string Path, CompileEmission Emiss
         _ => "object"
     };
 
-    internal void Report()
+    internal void Report(string color)
     {
         if (!Announce) return;
         string description = Emission switch
@@ -48,6 +48,6 @@ internal readonly record struct CompileOutput(string Path, CompileEmission Emiss
             CompileEmission.Prepared => "prepared program",
             _ => "portable program"
         };
-        Console.WriteLine($"Wrote {Path} ({description}).");
+        TerminalPresentation.ArtifactWritten(Path, description, color);
     }
 }
