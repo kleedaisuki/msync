@@ -101,11 +101,13 @@ async function run() {
         assert.equal(document.uri.scheme, 'msync-artifact');
         assert.equal(document.languageId, 'msync-ir');
         const text = document.getText();
-        assert.ok(text.includes('FIRST GENERATION') && text.includes('select') && text.includes('Path'));
+        assert.match(text, /^text @\d+ "FIRST GENERATION.*\\u0001"/m);
+        assert.ok(text.includes('select') && text.includes('Path'));
         assert.ok(text.toLowerCase().includes(stage));
         assert.ok(!text.includes('\u0001'), 'Control bytes display escaped rather than changing editor text structure');
         const decoded = await model(filename);
         assert.equal(decoded.schemaVersion, 1);
+        assert.equal(decoded.artifactKind, 'hpir');
         assert.equal(decoded.stage, stage);
         const symbols = await bounded('typed IR outline', vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', document.uri));
         assert.ok(symbols && flatten(symbols).some(symbol => symbol.name.includes('select')));
@@ -196,8 +198,8 @@ async function run() {
     assert.equal(await digest(objectPath), generationTwoHash);
 
     const unsafePath = path.join(cwd, 'unsafe debug metadata.mso');
-    // Native format 2 compresses source metadata. Compile the hostile text as
-    // valid data rather than relying on an uncompressed byte sequence.
+    // Compile the literal through the real wire format; its byte offsets are
+    // not part of the viewer contract.
     await fs.writeFile(sourcePath, source('UNTRUSTED GENERATION', path.join(cwd, 'viewer-side-effect')));
     await command(['compile', sourcePath, '-O0', '-o', unsafePath]);
     await fs.unlink(sourcePath);

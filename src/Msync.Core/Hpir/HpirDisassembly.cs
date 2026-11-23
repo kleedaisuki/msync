@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 
 namespace Msync.Core.Hpir;
 
@@ -19,6 +20,8 @@ public static class HpirDisassembly
         }
         for (int i = 0; i < program.Globals.Count; ++i)
             output.Line($"global @{i} declaration={program.Globals[i].Declaration} layout=@{program.Globals[i].Layout}");
+        for (int i = 0; i < program.TextLiterals.Count; ++i)
+            output.Line($"text @{i} {Quote(program.TextLiterals[i])}");
         for (int i = 0; i < program.TypeLiterals.Count; ++i)
             output.Line($"type @{i} {program.TypeLiterals[i].Kinds} element={program.TypeLiterals[i].Element}");
         for (int i = 0; i < program.TypeCells.Count; ++i)
@@ -65,9 +68,30 @@ public static class HpirDisassembly
         }
     }
 
-    private static string Quote(string value) => "\"" + value.Replace("\\", "\\\\", StringComparison.Ordinal)
-        .Replace("\r", "\\r", StringComparison.Ordinal).Replace("\n", "\\n", StringComparison.Ordinal)
-        .Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
+    private static string Quote(string value)
+    {
+        var text = new StringBuilder(value.Length + 2).Append('"');
+        foreach (char character in value)
+        {
+            switch (character)
+            {
+                case '"': text.Append("\\\""); break;
+                case '\\': text.Append("\\\\"); break;
+                case '\n': text.Append("\\n"); break;
+                case '\r': text.Append("\\r"); break;
+                case '\t': text.Append("\\t"); break;
+                default:
+                    if (char.IsControl(character))
+                    {
+                        text.Append("\\u");
+                        text.Append(((int)character).ToString("x4", CultureInfo.InvariantCulture));
+                    }
+                    else text.Append(character);
+                    break;
+            }
+        }
+        return text.Append('"').ToString();
+    }
 
     private static void WriteFunction(HpirProgram program, HpirFunction function, int id, Listing output,
         Action<HpirListingSite>? sites)
