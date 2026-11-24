@@ -13,6 +13,12 @@
   Extend the existing sink-neutral telemetry; keep recording-disabled paths lean.
   See [observability](docs/design/observability-architecture-v086.md) and
   [compiler telemetry](docs/design/telemetry.md#compiler-telemetry).
+- **Wire user-facing diagnostics end to end for every new or changed failure
+  path.** Preserve the specific cause, stable diagnostic code, originating
+  source identity/range (including earlier REPL submissions), and operation
+  context from producer to CLI/editor and telemetry. Report failures at the
+  owning phase; aggregate cleanup must preserve each primary cause. Verify
+  excerpts, outcome status and recovery through a real failing user journey.
 - Preserve language behavior, alias identity, resource lifetimes. v0.9.5 uses HPIR format 8 and HIR format 4;
   old artifacts must be recompiled. Do not add legacy execution/analysis fallbacks.
 - Validate changed behavior through focused real user journeys and properties;
