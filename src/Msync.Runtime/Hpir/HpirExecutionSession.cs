@@ -4,6 +4,8 @@ using NativePathValue = Msync.Core.Native.NativePath;
 
 namespace Msync.Runtime.Hpir;
 
+internal readonly record struct HpirSubmissionOutcome(HpirSessionValue Value, int FailedTransfers);
+
 // The session owns memory independently of compiled submissions and host text
 // presentation. A new submission always starts a fresh guest stack.
 internal sealed class HpirExecutionSession(ExecutionOptions? options = null) : IDisposable
@@ -26,7 +28,10 @@ internal sealed class HpirExecutionSession(ExecutionOptions? options = null) : I
         }
     }
 
-    internal HpirSessionValue Execute(HpirSessionSubmission submission, CancellationToken token = default)
+    internal HpirSessionValue Execute(HpirSessionSubmission submission, CancellationToken token = default) =>
+        ExecuteWithOutcome(submission, token).Value;
+
+    internal HpirSubmissionOutcome ExecuteWithOutcome(HpirSessionSubmission submission, CancellationToken token = default)
     {
         lock (gate)
         {
@@ -36,16 +41,17 @@ internal sealed class HpirExecutionSession(ExecutionOptions? options = null) : I
         }
     }
 
-    private unsafe HpirSessionValue ExecuteCore(HpirSessionSubmission submission, CancellationToken token)
+    private unsafe HpirSubmissionOutcome ExecuteCore(HpirSessionSubmission submission, CancellationToken token)
     {
-        byte* result = stackalloc byte[submission.ReturnBytes];
-        state.Begin(submission, submission.ReturnBytes == 0 ? 0 : (nint)result);
+        byte* resultRecord = stackalloc byte[submission.ReturnBytes];
+        state.Begin(submission, submission.ReturnBytes == 0 ? 0 : (nint)resultRecord);
         using RuntimeTimelineScope? display = submission.StreamsRange ? options?.Timeline?.Begin("hpir.session.presentation.range") : null;
         if (submission.StreamsRange) state.BeginPresentation();
         try
         {
             var bound = HpirBinding.Prepare(submission.Program, state.Directory.CurrentBinding(), options, token);
-            return Present(submission, HpirExecutor.RunSession(bound, state, options, token));
+            HpirRunOutcome result = HpirExecutor.RunSession(bound, state, options, token);
+            return new(Present(submission, result), result.FailedTransfers);
         }
         catch (Exception error) { display?.Fail(error); throw; }
         finally

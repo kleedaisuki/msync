@@ -14,7 +14,7 @@ internal sealed partial class HpirWork
     internal (long Id, int Capacity) OpenFileBytes(NativePathValue destination, bool append,
         ExecutionOptions? options, BindingContext? binding, HpirWorkSite site, CancellationToken token)
     {
-        FileTransfers owner = fileTransfers ??= new(options, binding);
+        FileTransfers owner = Files(options, binding);
         var input = new ByteInput();
         Task? ordering = Ordering;
         string name = HpirFileByteImports.NativeName(append);

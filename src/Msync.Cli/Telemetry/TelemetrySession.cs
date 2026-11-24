@@ -158,15 +158,18 @@ internal sealed class TelemetrySession : IDisposable
     }
 
     internal void EndSpan(string name, string id, string parent, long startUnix, long elapsed,
-        string status, Exception? error, Dictionary<string, string> spanAttributes, Dictionary<string, ulong> metrics) =>
+        string status, Exception? error, Dictionary<string, string> spanAttributes, Dictionary<string, ulong> metrics)
+    {
+        RecordDiagnostic(error, spanAttributes);
         Record(new("span", traceId, id, parent, name, startUnix, elapsed, null, status,
             status == "cancelled" ? "cancelled" : "complete", spanAttributes, metrics, Causes(error)));
+    }
 
     internal void ObserveCompilation(CompilationObservation observation, string parent)
     {
         parent = observation.ParentSpanId ?? parent;
         Dictionary<string, string> attributes = observation.Attributes is { } suppliedAttributes ? new(suppliedAttributes) : [];
-        RecordCompilationError(observation.Error, attributes);
+        if (observation.Aggregated) RecordDiagnostic(observation.Error, attributes);
         Dictionary<string, ulong> metrics = new()
         {
             ["managed.allocated_bytes"] = (ulong)observation.AllocatedBytes,
@@ -204,8 +207,19 @@ internal sealed class TelemetrySession : IDisposable
             status, observation.Error, attributes, metrics);
     }
 
-    private static void RecordCompilationError(Exception? error, Dictionary<string, string> attributes)
+    private static void RecordDiagnostic(Exception? error, Dictionary<string, string> attributes)
     {
+        if (error is AggregateException group)
+        {
+            int index = 0;
+            foreach (var failure in group.Flatten().InnerExceptions)
+            {
+                if (failure is MsyncException { Span: { } origin })
+                    RecordSource(attributes, $"diagnostic.cause.{index}.source", origin.Source, origin.Start, origin.Length);
+                ++index;
+            }
+            return;
+        }
         SourceDiagnostic? diagnostic = error switch
         {
             CompileException compile => compile.Diagnostic,
@@ -214,8 +228,12 @@ internal sealed class TelemetrySession : IDisposable
         };
         if (diagnostic is null)
         {
-            if (error is MsyncException { Span: { } source })
-                RecordSource(attributes, "source", source.Source, source.Start, source.Length);
+            if (error is MsyncException reported)
+            {
+                if (reported.DiagnosticCode is { } code) attributes["diagnostic.code"] = code;
+                if (reported.Span is { } source)
+                    RecordSource(attributes, "source", source.Source, source.Start, source.Length);
+            }
             return;
         }
         attributes["diagnostic.code"] = diagnostic.Code;
@@ -267,9 +285,23 @@ internal sealed class TelemetrySession : IDisposable
     {
         if (error is null) return [];
         List<TelemetryCause> causes = [];
-        for (Exception? cause = error; cause is not null; cause = cause.InnerException)
-            causes.Add(new(cause.Message, cause.GetType().FullName, cause is IOException ? cause.HResult & 0xffff : null));
+        Append(error);
         return causes.ToArray();
+
+        void Append(Exception cause)
+        {
+            int? code = cause switch
+            {
+                System.ComponentModel.Win32Exception native => native.NativeErrorCode,
+                IOException or UnauthorizedAccessException when (uint)cause.HResult >> 16 == 0x8007
+                    => cause.HResult & 0xffff,
+                _ => null
+            };
+            causes.Add(new(cause.Message, cause.GetType().FullName, code));
+            if (cause is AggregateException group)
+                foreach (Exception failure in group.InnerExceptions) Append(failure);
+            else if (cause.InnerException is { } inner) Append(inner);
+        }
     }
 
     private void Record(TelemetryRecord record) => Enqueue(new Batch(record, null));

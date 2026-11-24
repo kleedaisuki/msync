@@ -92,9 +92,12 @@ internal static unsafe partial class HpirExecutor
             ulong result = Execute(program, frame, literals.Addresses, globals, anchors, ref stack, ref heap,
                 ref work, ref pc, ref machine, diagnostics, census, options, token, session: session).Value;
             if (work is null) return new(result, 0);
-            Exception? cleanup = work.Settle(abort: false, new(options?.Timeline, diagnostics.Source(entry, -1), entry), work.SessionProcesses);
+            var site = new HpirWorkSite(options?.Timeline, diagnostics.Source(entry, -1), entry);
+            if (work.SessionWork) session?.RetainTextWork(work, site);
+            Exception? cleanup = work.Settle(abort: false, site, work.SessionWork);
             int failedTransfers = work.FailedTransfers;
             trace?.SetMetric("transfers.failed", failedTransfers);
+            if (failedTransfers != 0) trace?.Complete(success: false);
             work = null;
             if (cleanup is not null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(cleanup).Throw();
             return new(result, failedTransfers);
@@ -103,7 +106,9 @@ internal static unsafe partial class HpirExecutor
         {
             if (initialization != 0) ReportInitialization(observer!, initialization, error);
             int function = stack.Current == null ? program.EntryPoint : stack.Current->Function;
-            Exception? cleanup = work?.Settle(abort: true, new(options?.Timeline, diagnostics.Source(function, pc), function, pc), work.SessionProcesses);
+            var site = new HpirWorkSite(options?.Timeline, diagnostics.Source(function, pc), function, pc);
+            if (work?.SessionWork == true) session?.RetainTextWork(work, site);
+            Exception? cleanup = work?.Settle(abort: true, site, work.SessionWork);
             Exception failure = cleanup is null ? error : new AggregateException("HPIR execution and work cleanup failed.", error, cleanup);
             if (trace is not null) diagnostics.Failure(trace, failure, function, pc, stack.ActiveFrames());
             if (cleanup is not null) throw failure;

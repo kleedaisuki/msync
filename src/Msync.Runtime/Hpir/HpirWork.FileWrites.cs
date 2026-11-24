@@ -10,7 +10,7 @@ internal sealed partial class HpirWork
     internal void WriteFileText(NativePathValue destination, HpirTransferTextInput input, bool append,
         ExecutionOptions? options, BindingContext? binding, HpirWorkSite site, CancellationToken token)
     {
-        FileTransfers owner = fileTransfers ??= new(options, binding);
+        FileTransfers owner = Files(options, binding);
         Task? ordering = Ordering;
         var result = Submit<bool>(HpirWorkKind.FileWrite,
             cancellation => WriteFileText(owner, destination, input, append, ordering, site, cancellation), site);

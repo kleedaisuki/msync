@@ -24,6 +24,7 @@ internal static class HpirSessionPresentation
         TypeKind.Connection => value.Connection!.Value.ToString(),
         TypeKind.Type => value.Type!.ToString(),
         TypeKind.Function => value.Text ?? $"fn #{value.Bits - 1}",
+        TypeKind.Range => value.Type?.ToString() ?? "Range",
         TypeKind.Process => FormatProcess(value.Process!.Value),
         TypeKind.Scope when value.Scope!.Cycle => "scope { ...cycle... }",
         TypeKind.Scope => "scope { " + string.Join(", ", value.Scope!.Members.Select(member =>

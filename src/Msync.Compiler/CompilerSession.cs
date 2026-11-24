@@ -24,9 +24,14 @@ public class CompilerSession
     }
 
     internal HpirSessionSubmission CompilePhysical(string submission, Document? document = null,
-        CompilationTrace? submissionTrace = null)
+        CompilationTrace? submissionTrace = null, string? sourceIdentity = null)
     {
-        lock (gate) return session.CompilePhysical(submission, document, submissionTrace ?? trace);
+        lock (gate) return session.CompilePhysical(submission, document, submissionTrace ?? trace, sourceIdentity);
+    }
+
+    internal string? SourceText(string identity)
+    {
+        lock (gate) return session.SourceText(identity);
     }
 
     internal void AcceptPhysicalSubmission(Func<int, HpirSessionValue?> observe, CompilationTrace? submissionTrace = null)

@@ -81,7 +81,7 @@ public static partial class LlvmHpirLowerer
             if (TextCell(value))
             {
                 int input = Location(value);
-                if (geometry.MixedTextResult(value))
+                if (geometry.MixedTextResult(value) || geometry.StoredText(value))
                     SelectTextCarrier(store, value, pending => StoreTextField(store, input, payload, pending));
                 else StoreTextField(store, input, payload, pending: true);
             }

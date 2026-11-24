@@ -8,7 +8,7 @@ public static partial class LlvmHpirLowerer
     private sealed partial class Body
     {
         private int resultPointer = -1;
-        private int guestCalls, importCalls;
+        private int guestCalls, importCalls, sessionReturnDemands;
 
         private HpirWidth Result => geometry.FutureResult(function) || geometry.TextResult(function) ? HpirWidth.U64
             : Aggregate(function.ReturnType) ? HpirWidth.Void : Width(function.ReturnType);
@@ -69,6 +69,7 @@ public static partial class LlvmHpirLowerer
             if (ret.ReturnValue is { } text && TextCell(text) && geometry.SessionTextEntry(function))
             {
                 Add(new(HpirOp.Return, A: ObserveText(ret, text)), ret.Source);
+                ++sessionReturnDemands;
                 return;
             }
             if (geometry.FutureResult(function))
@@ -87,13 +88,18 @@ public static partial class LlvmHpirLowerer
                 int result = Reserve((int)Result, (int)Result);
                 Demand(ret, cell, result);
                 Add(new(HpirOp.Return, A: result), ret.Source);
+                if (geometry.IsPersistentSession && geometry.IsEntry(function)) ++sessionReturnDemands;
                 return;
             }
             if (resultPointer >= 0)
             {
                 var value = ret.ReturnValue!;
+                int scalar = geometry.IsPersistentSession && geometry.IsEntry(function) && UnionCell(value)
+                    ? ObserveSessionUnion(ret, value) : -1;
+                if (scalar >= 0) ++sessionReturnDemands;
                 foreach (var leaf in geometry.Leaves(value.Type))
-                    Copy(Width(leaf.Type), Indirect(resultPointer, leaf.Offset, ret), LeafLocation(value, leaf.Offset), ret.Source);
+                    Copy(Width(leaf.Type), Indirect(resultPointer, leaf.Offset, ret),
+                        scalar >= 0 && leaf.Offset == geometry.FieldOffset(value.Type, 1) ? scalar : LeafLocation(value, leaf.Offset), ret.Source);
                 if (geometry.FutureUnionResult(function))
                     Copy(HpirWidth.U64, Indirect(resultPointer, UnionTail(value.Type), ret), UnionCompletion(value), ret.Source);
                 if (Geometry.IsPathRecord(value.Type))

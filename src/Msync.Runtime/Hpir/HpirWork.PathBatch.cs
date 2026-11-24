@@ -9,7 +9,7 @@ internal sealed partial class HpirWork
     internal HpirHostResult<byte> SubmitPathBatch(HpirPathBatchInput input, NativePathValue destination, bool unknownReads,
         ExecutionOptions? options, BindingContext? binding, HpirWorkSite site, out Task? earliest)
     {
-        FileTransfers owner = fileTransfers ??= new(options, binding);
+        FileTransfers owner = Files(options, binding);
         FileResources frontier = owner.NeedResources();
         using RuntimeTimelineScope? trace = site.Begin("hpir.effect.path_batch_admit");
         trace?.SetAttribute("transfer.destination", destination.ToString());

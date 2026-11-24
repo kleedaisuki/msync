@@ -52,6 +52,7 @@ JOURNEYS: tuple[tuple[str, Path], ...] = (
     ("hir-editor", END_TO_END / "hir_editor_journey.py"),
     ("terminal-library", END_TO_END / "terminal_library_journey.py"),
     ("shell-repl", END_TO_END / "repl_shell_journey.py"),
+    ("repl-boundary", END_TO_END / "repl_boundary_journey.py"),
     ("session-age", END_TO_END / "repl_state_journey.py"),
     ("stdlib-cost", ROOT / "tests/Performance/stdlib_expansion.py"),
     ("console-encoding", END_TO_END / "windows_console_encoding_probe.py"),

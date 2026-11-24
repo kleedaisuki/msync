@@ -37,8 +37,9 @@ public static partial class LlvmHpirLowerer
                 var type = structure.Elements[index];
                 int offset = FieldOffset(structure, (uint)index);
                 int completion = TailAtPayloadOffset(logical, offset) is { } tail ? offset + tail : -1;
-                result[index] = new(fields[index].Name, offset, graph.Types[fields[index].Type].Kind,
-                    SessionUnion(type), completion);
+                var kind = graph.Types[fields[index].Type].Kind;
+                result[index] = new(fields[index].Name, offset, kind, SessionUnion(type), completion,
+                    (kind & TypeKind.Range) != 0 ? ReflectedType(fields[index].Type) with { Kind = TypeKind.Range } : null);
             }
             var previous = graph.SessionGeneration!.HpirLayouts?.ScopeLayouts;
             (newSessionScopeLayouts ??= previous is null ? [] : new(previous)).Add(physical, result);
@@ -69,11 +70,12 @@ public static partial class LlvmHpirLowerer
             trace?.Metric("session.scope_fields_at_display", displaysFutures ? graph.FutureFields.Count : 0);
             trace?.Metric("session.future_parameters", graph.FutureParameters.Count);
             trace?.Metric("session.future_results", graph.FutureResults.Count);
-            if (scopeBoundary is not null || graph.FutureParameters.Count != 0 || graph.FutureResults.Count != 0
-                || program.Imports.Any(import => import.Service == HpirService.LiveTransferFutureText
-                    || import.Service == HpirService.LiveTransfer && import.Result != HpirWidth.Void))
-                throw new MsyncException("This HPIR session cannot publish a cross-submission pending carrier"
-                    + (scopeBoundary is null ? "." : $": {scopeBoundary}."));
+            trace?.Metric("session.result.pending", graph.FutureResults.Contains(graph.Entry) ? 1 : 0);
+            if (scopeBoundary is not null)
+            {
+                throw new MsyncException($"Cannot retain this Scope with pending fields: {scopeBoundary}.",
+                    SessionResultSource()) { DiagnosticCode = "E0400" };
+            }
             TypeKind kind = resultType.Kind;
             var resultUnion = SessionUnion(graph.Entry.ReturnType);
             const TypeKind records = TypeKind.Null | TypeKind.Bool | TypeKind.Number | TypeKind.String | TypeKind.Type
@@ -84,7 +86,8 @@ public static partial class LlvmHpirLowerer
                 TypeKind.Null or TypeKind.Bool or TypeKind.Number or TypeKind.String or TypeKind.Type or TypeKind.Scope or TypeKind.Process or TypeKind.Connection => 0,
                 TypeKind.Path => HpirPathImports.PathBytes,
                 TypeKind.Function => HpirCallableAbi.Bytes,
-                _ => throw new MsyncException($"HPIR session result presentation is not supported for {kind}.")
+                _ => throw new MsyncException($"Cannot display a REPL result of type {kind}.",
+                    SessionResultSource()) { DiagnosticCode = "E0400" }
             };
             trace?.Metric("session.generation", session.Number);
             trace?.Metric("session.layout_lookup.inherited_hits", inheritedLayoutHits);
@@ -105,15 +108,26 @@ public static partial class LlvmHpirLowerer
             session.HpirTypes = new(program.TypeLiterals, typeIds, witnesses);
             bool startsProcesses = program.Imports.Any(import => import.Service is HpirService.ProcessStart or HpirService.ProcessSpawn);
             trace?.Metric("session.process_owner", startsProcesses ? 1 : 0);
+            bool storesFileReads = textSlots.Count != 0 && program.Imports.Any(import => import.Service == HpirService.ReadFileText);
+            trace?.Metric("session.file_read_owner", storesFileReads ? 1 : 0);
             trace?.Metric("session.path_origins.relocations", sessionPathRelocations?.Count ?? 0);
             trace?.Metric("session.path_origins.prepared", preparedPathOrigins?.Count ?? 0);
             return new(program, session.Number, kind, sessionCellRelocations ?? new Dictionary<int, HpirSessionCell>())
             {
                 Owner = session.Owner, Witnesses = witnesses, ReturnBytes = resultBytes, ResultUnion = resultUnion,
-                ScopeLayouts = sessionScopeLayouts, StartsProcesses = startsProcesses, TextSlots = textSlots,
+                ScopeLayouts = sessionScopeLayouts, AdmitsRetainedWork = startsProcesses || storesFileReads, TextSlots = textSlots,
                 StreamsRange = graph.SessionStreamsRange, DisplaysFutureScope = displaysFutures, SnapshotLayouts = snapshots,
                 PathRelocations = sessionPathRelocations, PreparedPathOrigins = preparedPathOrigins
             };
+        }
+
+        private SourceSpan? SessionResultSource()
+        {
+            foreach (var block in graph.Entry.BasicBlocks)
+                if (block.LastInstruction is LlvmReturnInstruction result
+                    && ((result.ReturnValue as LlvmInstruction)?.Source ?? result.Source) is { } source)
+                    return source;
+            return graph.Entry.BasicBlocks[0].FirstInstruction?.Source;
         }
     }
 }

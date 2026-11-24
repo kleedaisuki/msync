@@ -8,13 +8,17 @@ namespace Msync.Runtime.Hpir;
 internal sealed partial class HpirWork
 {
     private FileTransfers? fileTransfers;
+    private FileResources? retainedFileResources;
 
-    private sealed class FileTransfers(ExecutionOptions? options, BindingContext? binding) : IDisposable
+    private FileTransfers Files(ExecutionOptions? options, BindingContext? binding) =>
+        fileTransfers ??= new(options, binding, retainedFileResources);
+
+    private sealed class FileTransfers(ExecutionOptions? options, BindingContext? binding, FileResources? inherited) : IDisposable
     {
         internal readonly NativeRuntimeContext Context = new NativeRuntimeContext(options, binding).CaptureDirectory();
         internal readonly SemaphoreSlim Capacity = new(TransferCapacity(options));
         internal Task?[]? PreparedTasks;
-        internal FileResources? Resources { get; private set; }
+        internal FileResources? Resources { get; private set; } = inherited;
 
         internal FileResources NeedResources() => Resources ??= new();
         public void Dispose() => Capacity.Dispose();
@@ -130,8 +134,9 @@ internal sealed partial class HpirWork
     private static int TransferCapacity(ExecutionOptions? options) => options is null ? 4 :
         Math.Max(1, Math.Min(options.Jobs, (int)Math.Min(int.MaxValue, options.MemoryLimit / Math.Max(1, options.BufferSize))));
 
-    private void ResetFileTransfers()
+    private void ResetFileTransfers(bool keepReads)
     {
+        retainedFileResources = keepReads ? fileTransfers?.Resources ?? retainedFileResources : null;
         fileTransfers?.Dispose();
         fileTransfers = null;
     }

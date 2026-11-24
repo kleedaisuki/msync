@@ -34,9 +34,9 @@ public static partial class LlvmHpirLowerer
         {
             if (UnionFlow(value, user) != FutureUnionUse.None) return true;
             if (user is LlvmStoreInstruction store && store.ValueOperand == value)
-                return geometry.FutureStorageDelta(store.GetOperandUse(1)) is not null;
+                return geometry.FutureStorageDelta(store.GetOperandUse(1)) is not null || geometry.ReadySessionUnionStore(store);
             if (user is LlvmReturnInstruction)
-                return geometry.FutureUnionResult(function) || geometry.IsEntry(function) && !geometry.IsPersistentSession;
+                return geometry.FutureUnionResult(function) || geometry.IsEntry(function);
             if (user is not LlvmCallInstruction { CalledFunction: { } target } call) return false;
             if (geometry.RepresentationOperation(call) == LlvmRuntimeConversionOperation.Represent)
                 return geometry.Member(call, CompletionMembers) == TypeKind.Never;
@@ -50,6 +50,26 @@ public static partial class LlvmHpirLowerer
 
         private int UnionCompletion(LlvmValue value) =>
             UnionCell(value) ? checked(RecordLocation(value) + UnionTail(value.Type)) : absentFuture;
+
+        private int ObserveSessionUnion(LlvmInstruction site, LlvmValue value)
+        {
+            int payload = Reserve(8, 8);
+            Copy(HpirWidth.U64, payload, LeafLocation(value, geometry.FieldOffset(value.Type, 1)), site.Source);
+            TypeKind members = geometry.Union(value.Type);
+            if ((members & TypeKind.Number) != 0) Observe(TypeKind.Number, HpirWidth.U64);
+            if ((members & TypeKind.Bool) != 0) Observe(TypeKind.Bool, HpirWidth.U8);
+            return payload;
+
+            void Observe(TypeKind kind, HpirWidth width)
+            {
+                int match = Reserve(1, 1);
+                CompareTag(site, value, kind, match);
+                int branch = CursorBranch(match, site.Source);
+                int import = geometry.DemandImport(width, HpirFutureInput.Either);
+                EmitCall(site, ~import, payload, [UnionCompletion(value), payload]);
+                LinkCursorBranch(branch, branch + 1, code.Count);
+            }
+        }
 
         private void EmitFutureUnionNull(LlvmCallInstruction test)
         {

@@ -134,7 +134,7 @@ internal static class Program
             return Complete(HpirCommandPipeline.Run(program, export, options, file, telemetry, color, input, binary, snapshot), telemetry);
         }
         catch (OperationCanceledException error) { telemetry?.Finish("cancelled", error); TerminalPresentation.Cancelled(color); return 130; }
-        catch (Exception error) when (error is CompileException or SyntaxException or MsyncException or IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or FormatException or OverflowException)
+        catch (Exception error) when (TerminalPresentation.IsUserFailure(error))
         {
             telemetry?.Finish("error", error);
             TerminalPresentation.Error(error, color, snapshot);

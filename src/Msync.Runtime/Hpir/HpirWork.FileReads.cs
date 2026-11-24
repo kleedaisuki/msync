@@ -12,7 +12,7 @@ internal sealed partial class HpirWork
         ExecutionOptions? options, BindingContext? binding, HpirWorkSite site,
         Func<HpirFileMetadata, NativePathValue, NativeRuntimeContext, CancellationToken, ValueTask<T>> read)
     {
-        FileTransfers owner = fileTransfers ??= new(options, binding);
+        FileTransfers owner = Files(options, binding);
         using RuntimeTimelineScope? admission = site.Begin("hpir.file_read.admit");
         bool remote = path.Connection is { Kind: ConnectionKind.Ssh or ConnectionKind.Wsl };
         bool hasWork = owner.Resources?.HasRegistrations == true;
@@ -63,7 +63,7 @@ internal sealed partial class HpirWork
     internal HpirHostResult<string?> SubmitFileText(NativePathValue path, ExecutionOptions? options,
         BindingContext? binding, HpirWorkSite site)
     {
-        FileTransfers owner = fileTransfers ??= new(options, binding);
+        FileTransfers owner = Files(options, binding);
         FileResources frontier = owner.NeedResources();
         FileKeys key = FileKeysFor(path, owner.Context);
         FileWaits waits = frontier.BeforeRead(key);

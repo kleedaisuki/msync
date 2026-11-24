@@ -90,12 +90,25 @@ unchanged. The gate allows the same mixed cell to become ready again with
 an ordinary pointer store. This clears the stdout/Text part of the
 [production session journey](../../tests/LlvmSession/README.md).
 
-Pending closure captures/returns, FileRead and input publications, and
-Number/Bool completions are not yet admitted across submissions.
-Publishing the wrong physical geometry to an older capture is not a
-substitute for a typed closure ABI. Session work ownership also still
-needs pruning by the accepted/exported roots and their closure reachability
-rather than retaining all historical global cells until reset.
+The typed guest call ABI forwards pending Number/Bool arguments and returns
+within a submission. A prompt return observes the selected value while its
+frame and work owner are live. Ready-only session cells can publish isolated
+metadata reads without persisting a different ABI. Genuinely deferred
+scalar bindings still require a persistent scalar lane: waiting at their
+declaration can block a later producer, including a writer that releases a
+child's exit status. Input still observes the
+prompt's shared reader at publication. A String root with a selected mixed
+lane can retain a FileRead job as well as process output: only initialized
+cells holding an actual FileRead completion retain that work. The original
+read lease stays in the file-effect frontier, but new work uses the current
+directory context. A later writer can therefore co-start a FIFO without
+requiring the declaration or forwarding transfer to wait at publication.
+
+An initialized replacement retires its older uncaptured binding from the
+runtime root set. A failed initializer leaves the old binding rooted, and
+captured cells and standard imports retain their address identity. The
+collector can then release completed work from retired cells; it does not
+cancel an already launched process merely because a binding was shadowed.
 
 The compiler carries each Path literal's unique source ID and offset into
 the in-process global relocations. The first linked image captures its directory
@@ -349,6 +362,33 @@ candidate with `dotnet publish src/Msync.Cli -c Release -r linux-x64
 `python3 tests/Msync.EndToEnd/repl_state_journey.py
 --binary .temp/hpir/repl-cutover/msync`.
 
+The v0.9.5 release rejected bare transfers, same-input receipt branches, and
+completion-backed Text transfers by classifying imports and function results
+as session escapes. Import signatures do not prove escape. Selection now
+distinguishes the typed guest ABI, the current prompt result, and actual
+retaining storage. A Path directory source copies with or without a
+semicolon, and an observed receipt prints `true` or `false`. A failed
+transfer still reports its concrete diagnostic and preserves earlier effects
+and initialized bindings.
+
+Each executed prompt input has a stable `<repl:N>` source identity, backed by
+the compiler session's existing source text. Errors in an older callable
+show its original statement, not the current input with the same offset.
+The transfer worker reports its cause and origin, and the VM, execute and
+submission spans reflect the failed receipt without treating it as an
+execution exception. Cleanup failures show each independent cause and retain
+its native error code in telemetry. No source text is added to telemetry by
+the snapshot resolver. A declaration in a compile-failed submission stays
+unpublished; `decltype(dir)` alone cannot verify it because an unbound atom
+can itself be a Path.
+
+Run [the boundary journey](../../tests/Msync.EndToEnd/repl_boundary_journey.py)
+against the actual binary. Its `--ssh` lane copies binary directory contents
+through a private OpenSSH server and exercises a server-side destination
+failure. The local lanes cover result consumption and shadow recovery at O0
+and O2, same- and cross-submission FIFO handoff, root reclamation, and two
+independently attributed process startup failures at close.
+
 A submission has a fresh guest stack but shares the concrete cells, captured
 addresses, heap and process jobs of its session. Its result is projected for
 the terminal using the exact physical offsets for that selection. Nullable
@@ -369,7 +409,7 @@ String conversions and host operations use the actual directory frontier.
 `fs.canonical` executes at the Path demand with the same native filesystem
 operation and no binding-time work. A live `spawn` result retains its process
 job across input; presentation observes readiness and PID without waiting for
-process exit.
+process exit, and reports a startup failure already visible at observation.
 
 A displayed Range is a consumer in the entry execution, not a new host-side
 iterator interpreter. It opens the selected Range, advances one typed element,

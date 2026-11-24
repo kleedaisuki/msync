@@ -27,16 +27,16 @@ internal readonly record struct HpirHostResult<T>(int JobId, T Value)
 
 // The VM thread owns admission, observation and disposal. A worker receives
 // only copied host arguments and a cancellation token, never a guest address.
-internal sealed partial class HpirWork(CancellationToken executionToken, bool sessionProcesses = false)
+internal sealed partial class HpirWork(CancellationToken executionToken, bool sessionWork = false)
 {
     private readonly SortedDictionary<int, Job> jobs = [];
     private CancellationTokenSource? lifetime;
-    private CancellationTokenSource? processLifetime;
+    private CancellationTokenSource? sessionLifetime;
     private CancellationToken submissionToken;
     private int nextJob;
 
     internal int Outstanding => jobs.Count;
-    internal bool SessionProcesses { get; } = sessionProcesses;
+    internal bool SessionWork { get; } = sessionWork;
     internal HpirExecutor.GuestChildren? Guests { get; set; }
 
     internal void BeginSubmission(CancellationToken token)
@@ -85,10 +85,10 @@ internal sealed partial class HpirWork(CancellationToken executionToken, bool se
 
     private CancellationToken AdmissionToken(HpirWorkKind kind, RuntimeTimelineScope? trace)
     {
-        bool sessionProcess = SessionProcesses && kind == HpirWorkKind.Process;
-        var owner = sessionProcess ? processLifetime ??= new()
-            : lifetime ??= CancellationTokenSource.CreateLinkedTokenSource(SessionProcesses ? submissionToken : executionToken);
-        if (sessionProcess) trace?.SetAttribute("work.owner", "session");
+        bool persistent = SessionWork && kind is HpirWorkKind.Process or HpirWorkKind.FileRead;
+        var owner = persistent ? sessionLifetime ??= new()
+            : lifetime ??= CancellationTokenSource.CreateLinkedTokenSource(SessionWork ? submissionToken : executionToken);
+        if (persistent) trace?.SetAttribute("work.owner", "session");
         return Guests?.ActiveToken ?? owner.Token;
     }
 
@@ -144,21 +144,21 @@ internal sealed partial class HpirWork(CancellationToken executionToken, bool se
     // Join admitted process/transfer work. Discardable work is cancelled
     // when nobody outside this execution can retain it. When unwinding, cancel
     // all work but still join its host cleanup before releasing VM resources.
-    internal Exception? Settle(bool abort, HpirWorkSite site, bool keepSessionProcesses = false)
+    internal Exception? Settle(bool abort, HpirWorkSite site, bool keepSessionWork = false)
     {
         using RuntimeTimelineScope? trace = site.Begin("hpir.work.settle");
         trace?.SetMetric("work.outstanding", jobs.Count);
         List<Exception>? failures = null;
         Guests?.Stop(abort, ref failures);
-        int cancelled = 0, joined = 0, retained = 0, pending = 0;
+        int cancelled = 0, joined = 0, retained = 0, pending = 0, reads = 0;
         if (abort && lifetime is { } owner)
         {
             try { owner.Cancel(); }
             catch (Exception error) { (failures ??= []).Add(error); }
         }
-        if (abort && !keepSessionProcesses && processLifetime is { } processes)
+        if (abort && !keepSessionWork && sessionLifetime is { } session)
         {
-            try { processes.Cancel(); }
+            try { session.Cancel(); }
             catch (Exception error) { (failures ??= []).Add(error); }
         }
         int abandonedWrites = AbortFileBytes();
@@ -166,17 +166,22 @@ internal sealed partial class HpirWork(CancellationToken executionToken, bool se
         CloseTextRanges(ref failures, abort, trace);
         CloseDirectories(ref failures, abort, trace);
         foreach (var (_, job) in jobs)
-            if ((!keepSessionProcesses || job.Kind != HpirWorkKind.Process) && job.CancelDiscarded(ref failures)) cancelled++;
+            if (!Keep(job) && job.CancelDiscarded(ref failures, force: abort && SessionWork && job.Kind == HpirWorkKind.FileRead)) cancelled++;
         List<int>? settled = null;
         foreach (var (_, job) in jobs)
         {
-            if (keepSessionProcesses && job.Kind == HpirWorkKind.Process)
+            if (Keep(job))
             {
                 nint cell = job.Cell;
                 ClearOwner(job);
                 job.Cell = cell;
-                ++retained;
-                if (!job.Completion.IsCompleted) ++pending;
+                job.Published = false;
+                if (job.Kind == HpirWorkKind.FileRead) ++reads;
+                else
+                {
+                    ++retained;
+                    if (!job.Completion.IsCompleted) ++pending;
+                }
                 continue;
             }
             try
@@ -193,32 +198,33 @@ internal sealed partial class HpirWork(CancellationToken executionToken, bool se
             {
                 ++joined;
                 job.Dispose();
-                if (keepSessionProcesses) (settled ??= []).Add(job.Id);
+                if (keepSessionWork) (settled ??= []).Add(job.Id);
             }
         }
-        if (!keepSessionProcesses) jobs.Clear();
+        if (!keepSessionWork) jobs.Clear();
         else if (settled is not null)
             foreach (int id in settled) jobs.Remove(id);
         frameOwners?.Clear();
         InnermostFrame = 0;
         Guests?.Dispose();
         Guests = null;
-        ResetFileTransfers();
+        ResetFileTransfers(reads != 0);
         ResetWorkFrontier();
         lifetime?.Dispose();
         lifetime = null;
         submissionToken = default;
-        if (!keepSessionProcesses)
+        if (!keepSessionWork)
         {
-            processLifetime?.Dispose();
-            processLifetime = null;
+            sessionLifetime?.Dispose();
+            sessionLifetime = null;
         }
         trace?.SetMetric("work.joined", joined);
         trace?.SetMetric("work.discarded", cancelled);
-        if (keepSessionProcesses)
+        if (keepSessionWork)
         {
             trace?.SetMetric("work.session_processes", retained);
             trace?.SetMetric("work.session_pending", pending);
+            trace?.SetMetric("work.session_file_reads", reads);
         }
         Exception? failure = failures?.Count switch
         {
@@ -228,6 +234,17 @@ internal sealed partial class HpirWork(CancellationToken executionToken, bool se
         };
         if (failure is not null) trace?.Fail(failure);
         return failure;
+
+        bool Keep(Job job) => keepSessionWork && (job.Kind == HpirWorkKind.Process || job.Published);
+    }
+
+    internal bool RetainFileRead(int id, nint address)
+    {
+        Job job = jobs[id];
+        if (job.Published) return false;
+        job.Published = true;
+        if (job.Cell == 0) job.Cell = address;
+        return true;
     }
 
     private abstract class Job(int id, HpirWorkKind kind, CancellationTokenSource? lifetime, CancellationToken scope,
@@ -243,6 +260,7 @@ internal sealed partial class HpirWork(CancellationToken executionToken, bool se
         internal nint Cell { get; set; }
         internal bool CellExpired { get; set; }
         internal bool Observed { get; set; }
+        internal bool Published { get; set; }
         internal bool RequiredByEffect { get; set; }
         internal Task<NativeProcess>? ProcessDependency { get; set; }
         internal object? AdmissionFiber { get; set; }
@@ -250,9 +268,9 @@ internal sealed partial class HpirWork(CancellationToken executionToken, bool se
         internal Exception Attribute(Exception error) => error is OperationCanceledException or MsyncException { Span: not null }
             ? error : new MsyncException($"HPIR {Kind} work failed: {error.Message}", site.Source, error);
 
-        internal bool CancelDiscarded(ref List<Exception>? failures)
+        internal bool CancelDiscarded(ref List<Exception>? failures, bool force = false)
         {
-            if (lifetime is null || RequiredByEffect || Completion.IsCompleted) return false;
+            if (lifetime is null || !force && RequiredByEffect || Completion.IsCompleted) return false;
             Discarded = true;
             try { lifetime.Cancel(); }
             catch (Exception error) { (failures ??= []).Add(Attribute(error)); }

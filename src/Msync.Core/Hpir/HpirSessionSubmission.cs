@@ -16,9 +16,10 @@ public sealed record HpirSessionSubmission(HpirProgram Program, int Generation, 
     internal IReadOnlyCollection<HpirPathOrigin>? PreparedPathOrigins { get; init; }
     internal int ReturnBytes { get; init; }
     internal HpirSessionUnion? ResultUnion { get; init; }
-    internal bool StartsProcesses { get; init; }
+    internal bool AdmitsRetainedWork { get; init; }
     internal bool StreamsRange { get; init; }
     internal bool DisplaysFutureScope { get; init; }
+    internal IReadOnlyList<HpirSessionRetirement>? Retirements { get; init; }
 }
 
 public readonly record struct HpirSessionCell(int Slot, TypeKind Kind, bool Aliased)
@@ -27,7 +28,8 @@ public readonly record struct HpirSessionCell(int Slot, TypeKind Kind, bool Alia
 }
 
 internal readonly record struct HpirSessionField(string Name, int Offset, TypeKind Kind, HpirSessionUnion? Union,
-    int Completion = -1);
+    int Completion = -1, TypeRef? RangeType = null);
+internal readonly record struct HpirSessionRetirement(int Slot, IReadOnlyList<int> Replacements);
 internal readonly record struct HpirSessionUnion(int RawOffset, int PointerOffset);
 internal readonly record struct HpirSessionAllocation(int Layout, int Site);
 internal readonly record struct HpirSessionSnapshot(TypeKind Item, bool Empty, int Callback = -1);

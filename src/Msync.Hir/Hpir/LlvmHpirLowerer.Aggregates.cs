@@ -7,7 +7,7 @@ public static partial class LlvmHpirLowerer
 {
     private sealed partial class Body
     {
-        private int addressScratch = -1, foldedFutureFields;
+        private int addressScratch = -1, foldedFutureFields, sessionStoreDemands;
         private readonly Dictionary<LlvmValue, int> records = [];
 
         private int RecordLocation(LlvmValue record)
@@ -67,7 +67,8 @@ public static partial class LlvmHpirLowerer
         private void Store(LlvmStoreInstruction store)
         {
             if (TryStoreTextField(store) || TryStorePromptInput(store)) return;
-            if (geometry.FutureStorageDelta(store.GetOperandUse(1)) is { } delta)
+            int? tail = geometry.FutureStorageDelta(store.GetOperandUse(1));
+            if (tail is { } delta)
             {
                 if (store.GetOperandUse(1).TargetStorageType is not null) ++foldedFutureFields;
                 if (geometry.Union(store.ValueOperand.Type) == Msync.Core.TypeKind.Never)
@@ -80,12 +81,28 @@ public static partial class LlvmHpirLowerer
             var value = store.ValueOperand;
             if (!Aggregate(value.Type))
             {
-                Copy(Width(value.Type), Memory(store.PointerOperand), Location(value), store.Source);
+                int source = Location(value);
+                if (FutureCell(value) && geometry.ReadySessionScalarStore(store))
+                {
+                    var width = Width(value.Type);
+                    source = Reserve((int)width, (int)width);
+                    Demand(store, value, source);
+                    ++sessionStoreDemands;
+                }
+                else if (TextCell(value) && geometry.ReadySessionTextStore(store))
+                {
+                    source = ObserveText(store, value);
+                    ++sessionStoreDemands;
+                }
+                Copy(Width(value.Type), Memory(store.PointerOperand), source, store.Source);
                 return;
             }
+            int scalar = tail is null && UnionCell(value) && geometry.ReadySessionUnionStore(store)
+                ? ObserveSessionUnion(store, value) : -1;
+            if (scalar >= 0) ++sessionStoreDemands;
             foreach (var leaf in geometry.Leaves(value.Type))
             {
-                int from = LeafLocation(value, leaf.Offset);
+                int from = scalar >= 0 && leaf.Offset == geometry.FieldOffset(value.Type, 1) ? scalar : LeafLocation(value, leaf.Offset);
                 Copy(Width(leaf.Type), Memory(store.PointerOperand, leaf.Offset, store), from, store.Source);
             }
         }

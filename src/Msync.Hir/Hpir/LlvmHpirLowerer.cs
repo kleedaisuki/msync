@@ -155,6 +155,8 @@ public static partial class LlvmHpirLowerer
             ReportPathBatches(trace);
             ReportConnections(trace);
             trace?.Metric("future.folded_field_lanes", foldedFutureFields);
+            trace?.Metric("session.store.demands", sessionStoreDemands);
+            trace?.Metric("session.return.demands", sessionReturnDemands);
             ReportFileTextWrites(trace);
             ReportFileByteWrites(trace);
             ReportFileRenames(trace);
@@ -283,7 +285,8 @@ public static partial class LlvmHpirLowerer
         }
 
         private MsyncException Error(string reason, LlvmInstruction? instruction = null) =>
-            new($"HPIR selection in '{function.Name}': {reason}", instruction?.Source);
+            new($"HPIR selection in '{function.Name}': {reason}",
+                instruction?.Source ?? function.BasicBlocks[0].FirstInstruction?.Source) { DiagnosticCode = "E0400" };
 
         private HpirWidth Width(LlvmType type) => type switch
         {

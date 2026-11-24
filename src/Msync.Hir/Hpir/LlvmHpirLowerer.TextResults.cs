@@ -225,13 +225,17 @@ public static partial class LlvmHpirLowerer
 
         private void SelectTextCarrier(LlvmInstruction site, LlvmValue value, Action<bool> emit)
         {
+            bool stored = geometry.StoredText(value);
+            int tag = stored ? Reserve(1, 1) : TextTag(value);
+            if (stored)
+                EmitCall(site, ~geometry.ReadyTextLayoutTest(), tag, [Location(value)], safepoint: false);
             int branch = code.Count;
-            Add(new(HpirOp.Branch, A: TextTag(value), B: branch + 1), site.Source);
-            emit(true);
+            Add(new(HpirOp.Branch, A: tag, B: branch + 1), site.Source);
+            emit(!stored);
             int join = code.Count;
             Add(new(HpirOp.Jump), site.Source);
             code[branch] = code[branch] with { D = code.Count };
-            emit(false);
+            emit(stored);
             code[join] = code[join] with { A = code.Count };
         }
 

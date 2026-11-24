@@ -12,7 +12,7 @@ internal sealed partial class HpirWork
     internal HpirHostResult<byte> SubmitLiveTransfer(NativePathValue? source, HpirTransferTextInput text, NativePathValue destination,
         ExecutionOptions? options, BindingContext? binding, HpirWorkSite site, string? selection = null)
     {
-        FileTransfers owner = fileTransfers ??= new(options, binding);
+        FileTransfers owner = Files(options, binding);
         FileResources frontier = owner.NeedResources();
         using RuntimeTimelineScope? trace = site.Begin("hpir.effect.admit");
         FileKeys? read = source is { } input ? FileKeysFor(input, owner.Context) : null;

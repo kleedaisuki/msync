@@ -51,23 +51,49 @@ internal static partial class TerminalPresentation
             + (interactive ? "; enter another statement or /quit" : ""));
     }
 
-    public static void Error(Exception error, string policy, SourceSnapshot? source = null, string? help = null)
+    internal static bool IsUserFailure(Exception error) =>
+        error is CompileException or SyntaxException or MsyncException or IOException or UnauthorizedAccessException
+            or ArgumentException or InvalidOperationException or FormatException or OverflowException
+        || error is AggregateException group
+            && group.InnerExceptions.All(failure => failure is OperationCanceledException || IsUserFailure(failure));
+
+    public static void Error(Exception error, string policy, SourceSnapshot? source = null, string? help = null,
+        Func<string, SourceSnapshot?>? resolve = null)
     {
-        lock (DiagnosticGate) RenderError(error, policy, source, help);
+        lock (DiagnosticGate) RenderError(error, policy, source, help, resolve);
     }
 
-    private static void RenderError(Exception error, string policy, SourceSnapshot? source, string? help)
+    private static void RenderError(Exception error, string policy, SourceSnapshot? source, string? help,
+        Func<string, SourceSnapshot?>? resolve)
     {
-        SourceDiagnostic? diagnostic = error switch { CompileException compiled => compiled.Diagnostic, SyntaxException syntax => syntax.Diagnostic, _ => null };
-        Msync.Core.SourceSpan? runtimeSpan = (error as MsyncException)?.Span;
-        if (diagnostic is null && runtimeSpan is { } span && source is { } snapshot && snapshot.Name == span.Source)
-            diagnostic = new("E0300", error.Message, snapshot.Text, snapshot.Name, new(span.Start, span.Length),
-                Label: "this runtime operation failed", Help: help);
         bool color = Colors(policy, error: true);
+        if (error is AggregateException group)
+        {
+            Console.Error.WriteLine(Paint("error", ErrorColor, color) + $": {group.InnerExceptions.Count} related failures");
+            foreach (Exception failure in group.InnerExceptions) RenderError(failure, policy, source, help, resolve);
+            return;
+        }
+        if (error is OperationCanceledException)
+        {
+            Cancelled(policy);
+            return;
+        }
+        SourceDiagnostic? diagnostic = error switch { CompileException compiled => compiled.Diagnostic, SyntaxException syntax => syntax.Diagnostic, _ => null };
+        var located = error as MsyncException;
+        Msync.Core.SourceSpan? runtimeSpan = located?.Span;
+        if (diagnostic is null && runtimeSpan is { } span)
+        {
+            SourceSnapshot? snapshot = source?.Name == span.Source ? source : resolve?.Invoke(span.Source);
+            if (snapshot is { } text && span.Start >= 0 && span.Start <= text.Text.Length
+                && span.Length >= 0 && span.Length <= text.Text.Length - span.Start)
+                diagnostic = new(located?.DiagnosticCode ?? "E0300", error.Message, text.Text, text.Name, new(span.Start, span.Length),
+                    Label: located?.DiagnosticCode is null ? "this runtime operation failed" : "cannot compile this operation", Help: help);
+        }
         if (diagnostic is not null) Render(diagnostic, color);
         else
         {
-            Console.Error.WriteLine(Paint("error", ErrorColor, color) + $": {error.Message}");
+            string prefix = located?.DiagnosticCode is { } code ? $"error[{code}]" : "error";
+            Console.Error.WriteLine(Paint(prefix, ErrorColor, color) + $": {error.Message}");
             if (runtimeSpan is { } origin)
                 Console.Error.WriteLine($"  {Paint("-->", GutterColor, color)} {origin.Source} (source offset {origin.Start}..{origin.Start + origin.Length})");
             if (help is not null) Detail("help", help, CommandColor, color);

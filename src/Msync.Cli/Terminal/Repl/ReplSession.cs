@@ -4,6 +4,7 @@ using Msync.Core;
 using Msync.Runtime;
 using Msync.Core.Hpir;
 using Msync.Runtime.Hpir;
+using System.Globalization;
 
 namespace Msync.Cli;
 
@@ -30,7 +31,7 @@ internal sealed class ReplSession
         this.telemetry = telemetry;
         profile = options.Profile;
         compiler = new(optimization: optimization);
-        execution = new(options);
+        execution = new(options with { ReportError = ReportTransferError });
         inputReader = Console.IsInputRedirected ? options.Input : null;
     }
 
@@ -53,7 +54,38 @@ internal sealed class ReplSession
 
     public async Task<int> RunAsync()
     {
-        await ExecuteAsync(ShellPrelude, CancellationToken.None, prelude: true);
+        int status;
+        try { status = await RunPromptAsync(); }
+        catch (Exception error)
+        {
+            try { Close(); }
+            catch (Exception cleanup) { throw new AggregateException("REPL execution and cleanup failed.", error, cleanup); }
+            throw;
+        }
+        try { Close(); }
+        catch (Exception error) when (TerminalPresentation.IsUserFailure(error))
+        {
+            TerminalPresentation.Error(error, color, resolve: ResolveSource);
+            return 1;
+        }
+        return status;
+    }
+
+    private void Close()
+    {
+        using TelemetrySpan? close = telemetry?.Begin("repl.close");
+        using IDisposable? owner = close is null ? null : telemetry?.Timeline?.Attach(close.Id);
+        try
+        {
+            execution.Dispose();
+            close?.Complete();
+        }
+        catch (Exception error) { close?.Fail(error); throw; }
+    }
+
+    private async Task<int> RunPromptAsync()
+    {
+        await ExecuteAsync(new("<repl:prelude>", ShellPrelude), CancellationToken.None, prelude: true);
         await using InteractivePrompt? prompt = InteractivePrompt.IsSupported
             ? new(syntax.IsIncomplete, PromptNames, color: TerminalPresentation.Colors(color), describe: DescribePromptBindings, analyze: AnalyzePrompt, colorPolicy: color,
                 workingDirectory: () => execution.WorkingDirectory) : null;
@@ -76,7 +108,6 @@ internal sealed class ReplSession
         finally
         {
             if (!editing) Console.CancelKeyPress -= Cancel;
-            execution.Dispose();
         }
     }
 
@@ -107,9 +138,10 @@ internal sealed class ReplSession
     {
         string source = input.Text;
         if (source.Trim() is "/quit" or "/exit") return true;
+        SourceSnapshot snapshot = new("<repl:" + (++submissionIndex).ToString(CultureInfo.InvariantCulture) + ">", source);
         try
         {
-            if (!Command(source)) await ExecuteAsync(source, input.CancellationToken);
+            if (!Command(source)) await ExecuteAsync(snapshot, input.CancellationToken);
             pending = "";
         }
         catch (SyntaxException error) when (!editing && error.IsIncomplete) { pending = source; }
@@ -118,21 +150,29 @@ internal sealed class ReplSession
             TerminalPresentation.Cancelled(color, interactive: true);
             pending = "";
         }
-        catch (Exception error) when (error is SyntaxException or CompileException or MsyncException or IOException or UnauthorizedAccessException or ArgumentException)
+        catch (Exception error) when (TerminalPresentation.IsUserFailure(error))
         {
-            TerminalPresentation.Error(error, color);
+            TerminalPresentation.Error(error, color, snapshot, resolve: ResolveSource);
             pending = "";
         }
         return false;
     }
 
-    private async ValueTask ExecuteAsync(string source, CancellationToken cancellationToken, bool prelude = false)
+    private SourceSnapshot? ResolveSource(string identity) =>
+        compiler.SourceText(identity) is { } text ? new(identity, text) : null;
+
+    private void ReportTransferError(Exception error) => TerminalPresentation.Error(error, color,
+        help: "Check the source, destination and permissions, then retry. Completed transfers are retained.",
+        resolve: ResolveSource);
+
+    private async ValueTask ExecuteAsync(SourceSnapshot source, CancellationToken cancellationToken, bool prelude = false)
     {
         using TelemetrySpan? submission = telemetry?.Begin("repl.submission");
         if (submission is not null)
         {
-            submission.SetMetric("submission.index", submissionIndex++);
+            submission.SetMetric("submission.index", submissionIndex);
             submission.SetAttribute("submission.kind", prelude ? "prelude" : "input");
+            submission.SetAttribute("submission.source", source.Name);
         }
         using CancellationTokenSource cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         lock (cancellationGate) active = cancellation;
@@ -143,7 +183,7 @@ internal sealed class ReplSession
             {
                 try
                 {
-                    module = compiler.CompilePhysical(source, syntax.Take(source), compile?.CompilerTrace);
+                    module = compiler.CompilePhysical(source.Text, syntax.Take(source.Text), compile?.CompilerTrace, source.Name);
                     compile?.Complete();
                 }
                 catch (Exception error)
@@ -159,20 +199,22 @@ internal sealed class ReplSession
             ProcessCounters? before = execute?.MeasureProcess();
             try
             {
-                HpirSessionValue result = execution.Execute(module, cancellation.Token);
-                if (result.Kind != TypeKind.Null)
+                HpirSubmissionOutcome outcome = execution.ExecuteWithOutcome(module, cancellation.Token);
+                execute?.SetMetric("transfers.failed", outcome.FailedTransfers);
+                submission?.SetMetric("transfers.failed", outcome.FailedTransfers);
+                if (outcome.Value.Kind != TypeKind.Null)
                 {
                     using TelemetrySpan? display = execute?.Begin("repl.display");
                     try
                     {
-                        await DisplayAsync(result, display, cancellation.Token);
+                        await DisplayAsync(outcome.Value, display, cancellation.Token);
                         display?.Complete();
                     }
                     catch (Exception error) { display?.Fail(error); throw; }
                 }
                 compiler.AcceptPhysicalSubmission(execution.ObserveBinding, execute?.CompilerTrace);
-                execute?.Complete();
-                submission?.Complete();
+                execute?.Complete(outcome.FailedTransfers == 0);
+                submission?.Complete(outcome.FailedTransfers == 0);
             }
             catch (Exception error)
             {

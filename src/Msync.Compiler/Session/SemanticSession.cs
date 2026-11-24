@@ -27,11 +27,12 @@ internal sealed partial class SemanticSession(string sourceName, int optimizatio
 
     public IReadOnlyCollection<string> BindingNames => accepted?.Exports.Keys.ToArray() ?? [];
 
-    public HpirSessionSubmission CompilePhysical(string source, Document? document = null, CompilationTrace? trace = null)
+    public HpirSessionSubmission CompilePhysical(string source, Document? document = null, CompilationTrace? trace = null,
+        string? sourceIdentity = null)
     {
         using var transaction = workspace.BeginTransaction();
         using var additions = instances.BeginAdditions();
-        BoundProgram bound = Compiler.Bind(Binder(), source, sourceName, document, trace);
+        BoundProgram bound = Compiler.Bind(Binder(), source, sourceIdentity ?? sourceName, document, trace);
         SemanticSessionDispatch nextDispatches = dispatches.Fork();
         SemanticAnalyzer analyzer = new(bound, codeCache: instances, sessionDispatch: nextDispatches);
         HirModule module = Compiler.Analyze(analyzer, facts, trace);
@@ -49,11 +50,50 @@ internal sealed partial class SemanticSession(string sourceName, int optimizatio
                 });
         graph = Compiler.OptimizeLlvm(graph, optimization, trace);
         Compiler.PrepareOptimizedHpirGraph(graph, optimization, trace);
+        var retirements = PlanRetirements(bound, graph.SessionGeneration!, trace);
         var (submission, layout) = lowering.EmitPhysical(graph, trace);
         pending = new(bound, analyzer.FinalState, layout, nextDispatches);
         additions.Commit();
         transaction.Commit();
-        return submission with { Program = submission.Program with { OptimizationLevel = optimization } };
+        return submission with
+        {
+            Program = submission.Program with { OptimizationLevel = optimization },
+            Retirements = retirements
+        };
+    }
+
+    private List<HpirSessionRetirement>? PlanRetirements(BoundProgram bound, LlvmHirLoweringSession.Generation generation,
+        CompilationTrace? trace)
+    {
+        if (accepted is null || generation.ShadowPaths is null) return null;
+        return trace is null ? Retirements(bound, generation) :
+            trace.MeasureDetailed("compiler.session.retirement_plan", (owner: this, bound, generation),
+                static state => state.owner.Retirements(state.bound, state.generation),
+                metrics: static plan => new Dictionary<string, ulong> { ["roots.candidates"] = (ulong)(plan?.Count ?? 0) });
+    }
+
+    private List<HpirSessionRetirement>? Retirements(BoundProgram bound, LlvmHirLoweringSession.Generation generation)
+    {
+        List<HpirSessionRetirement>? result = null;
+        foreach (var (name, previous) in bound.SessionShadows)
+        {
+            if (!accepted!.Exports.TryGetValue(name, out var visible) || previous != visible
+                || generation.CapturedRoots.Contains(previous)
+                || workspace.Locations[previous.Value].Kind == HirLocationKind.Import) continue;
+            int replacement = generation.Roots[bound.Exports[name]].Slot;
+            int old = generation.Roots[previous].Slot;
+            var path = generation.ShadowPaths!.FirstOrDefault(path => path[0] == replacement);
+            (result ??= []).Add(new(old, path is null ? [replacement] : [.. path.Where(slot => slot != old)]));
+        }
+        return result;
+    }
+
+    internal string? SourceText(string identity)
+    {
+        for (int i = workspace.Sources.Count - 1; i >= 0; --i)
+            if (workspace.Sources[i].Name == identity)
+                return workspace.Sources[i].Text;
+        return null;
     }
 
     internal SemanticEditorResult AnalyzeEditor(string source, Document? document = null,

@@ -9,7 +9,7 @@ internal sealed partial class HpirWork
     internal void RenameFile(NativePathValue source, NativePathValue destination, ExecutionOptions? options,
         BindingContext? binding, HpirWorkSite site, CancellationToken token)
     {
-        FileTransfers owner = fileTransfers ??= new(options, binding);
+        FileTransfers owner = Files(options, binding);
         Task? ordering = Ordering;
         var result = Submit<bool>(HpirWorkKind.FileWrite,
             cancellation => RenameFile(owner, source, destination, ordering, site, cancellation), site);

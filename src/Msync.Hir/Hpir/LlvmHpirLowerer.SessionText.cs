@@ -11,6 +11,8 @@ public static partial class LlvmHpirLowerer
         private IReadOnlySet<int>? inheritedTextSlots;
         private HashSet<int>? newTextSlots;
         private HashSet<LlvmValue>? storedText;
+        private HashSet<LlvmValue>? retainableText;
+        private bool? hasFileOutput;
 
         internal bool HasStoredText => storedText is { Count: > 0 };
         internal bool StoredText(LlvmValue value) => storedText?.Contains(value) == true;
@@ -34,24 +36,37 @@ public static partial class LlvmHpirLowerer
             if (graph.SessionGeneration is not { } session) return;
             inheritedTextSlots = session.HpirLayouts?.TextSlots;
             var sources = graph.NativeCalls.Where(pair => pair.Value is "process.stdout" or "process.stderr").ToArray();
-            if (sources.Length == 0 && inheritedTextSlots is not { Count: > 0 }) return;
+            if (sources.Length == 0 && !HasFileText && inheritedTextSlots is not { Count: > 0 }) return;
             var cells = graph.SessionCells.Where(cell => graph.Types[cell.Type].Kind == TypeKind.String && !cell.Aliased)
                 .ToDictionary(cell => cell.Slot);
             HashSet<int> linked = [];
-            HashSet<LlvmValue> knownCompletions = [];
+            retainableText = [];
             Queue<LlvmValue> queue = new();
             foreach (var (slot, cell) in cells)
                 if (IsTextSlot(slot)) Link(cell, null);
             foreach (var (target, _) in sources)
                 foreach (var user in target.Users)
                     if (user is LlvmCallInstruction call && ReferenceEquals(call.CalledFunction, target)) Enqueue(call);
+            int reads = 0;
+            if (HasFileText)
+                foreach (var function in entries.Keys)
+                foreach (var block in function.BasicBlocks)
+                foreach (var instruction in block.Instructions)
+                    if (instruction is LlvmFileInInst { Format: LlvmFileInFormat.Text } input)
+                    {
+                        Enqueue(input);
+                        ++reads;
+                    }
             while (queue.TryDequeue(out var value))
             {
                 foreach (var user in value.Users)
                 {
                     if (user is LlvmStoreInstruction store && store.ValueOperand == value
                         && SessionStringCell(store.PointerOperand) is { } cell)
-                        Link(cells[cell.Slot], store.Source);
+                    {
+                        if (!cells[cell.Slot].Captured || value is not LlvmFileInInst)
+                            Link(cells[cell.Slot], store.Source);
+                    }
                     else if (user is LlvmCallInstruction narrow && NarrowsText(narrow))
                     {
                         if (StoredText(value)) (storedText ??= []).Add(narrow);
@@ -60,6 +75,7 @@ public static partial class LlvmHpirLowerer
                 }
             }
             trace?.Metric("session.text.effect_producers", sources.Length);
+            trace?.Metric("session.text.file_read_producers", reads);
             trace?.Metric("session.text.slots_linked", linked.Count);
             trace?.Metric("session.text.stored_operands", storedText?.Count ?? 0);
 
@@ -97,14 +113,14 @@ public static partial class LlvmHpirLowerer
 
             void Enqueue(LlvmValue value)
             {
-                if (knownCompletions.Add(value)) queue.Enqueue(value);
+                if (retainableText.Add(value)) queue.Enqueue(value);
             }
         }
 
         private HpirSessionCell? SessionStringCell(LlvmValue pointer)
-            => SessionTextCell(pointer) is { Kind: TypeKind.String } cell ? cell : null;
+            => CanonicalCell(pointer) is { Kind: TypeKind.String } cell ? cell : null;
 
-        private HpirSessionCell? SessionTextCell(LlvmValue pointer)
+        private HpirSessionCell? CanonicalCell(LlvmValue pointer)
         {
             while (pointer is LlvmGetElementPtrInstruction { HasAllZeroIndices: true } gep)
                 pointer = gep.PointerOperand;
@@ -114,10 +130,42 @@ public static partial class LlvmHpirLowerer
             return origin.Cell is { Aliased: false } cell ? cell : null;
         }
 
+        internal bool ReadySessionScalarStore(LlvmStoreInstruction store) =>
+            IsPersistentSession && CanonicalCell(store.PointerOperand) is { Kind: TypeKind.Number or TypeKind.Bool }
+            && (store.ValueOperand.Type.IsDoubleTy() || store.ValueOperand.Type.IsIntegerTy(1))
+            && OwnsScalarPublication(store.ValueOperand);
+
+        internal bool ReadySessionUnionStore(LlvmStoreInstruction store) =>
+            IsPersistentSession && CanonicalCell(store.PointerOperand) is { Union: not null }
+            && OwnsScalarPublication(store.ValueOperand);
+
+        private bool OwnsScalarPublication(LlvmValue value)
+        {
+            // A ready-only cell must not wait for work that a later input
+            // or a later effect in this input has not yet admitted.
+            while (value is LlvmCallInstruction { CalledFunction: { } target } call)
+            {
+                if (FileMetadata(target) != HpirFileMetadata.Invalid)
+                {
+                    hasFileOutput ??= HasLiveTransferSources || entries.Keys.Any(static function => function.BasicBlocks
+                        .Any(static block => block.Instructions.Any(static instruction => instruction is LlvmFileOutInst)));
+                    return hasFileOutput == false;
+                }
+                if (call.ArgumentCount != 1 || RepresentationOperation(call) != LlvmRuntimeConversionOperation.Represent)
+                    break;
+                value = call.GetArgument(0);
+            }
+            return false;
+        }
+
+        internal bool ReadySessionTextStore(LlvmStoreInstruction store) =>
+            IsPersistentSession && StringValue(store.ValueOperand)
+            && (!StoredTextAddress(store.PointerOperand) || retainableText?.Contains(store.ValueOperand) != true);
+
         internal HpirSessionUnion? PromptInputStore(LlvmStoreInstruction store) =>
             IsPersistentSession && store.ValueOperand is LlvmCallInstruction { CalledFunction: { } target }
                 && StandardTextTarget(target) == HpirService.ReadLineText
-                && SessionTextCell(store.PointerOperand) is { Kind: TypeKind.String | TypeKind.Null, Union: { } union }
+                && CanonicalCell(store.PointerOperand) is { Kind: TypeKind.String | TypeKind.Null, Union: { } union }
                 ? union : null;
 
         internal int ReadyTextLayoutTest() => PhysicalLayoutImport(TextLayout());
@@ -147,8 +195,9 @@ public static partial class LlvmHpirLowerer
         {
             int text = Location(value), ready = Reserve(8, 8);
             int wait = geometry.TextInputImport(HpirService.DemandText);
-            if (geometry.MixedTextResult(value))
+            if (geometry.MixedTextResult(value) || geometry.StoredText(value))
             {
+                if (geometry.StoredText(value)) ++storedTextDemands;
                 SelectTextCarrier(site, value, pending =>
                 {
                     if (pending) EmitCall(site, ~wait, ready, [text]);
@@ -156,23 +205,7 @@ public static partial class LlvmHpirLowerer
                 });
                 return ready;
             }
-            if (!geometry.StoredText(value))
-            {
-                EmitCall(site, ~wait, ready, [text]);
-                return ready;
-            }
-            // These two layouts share a storage lane, not a value protocol.
-            int direct = Reserve(1, 1);
-            EmitCall(site, ~geometry.ReadyTextLayoutTest(), direct, [text], safepoint: false);
-            int branch = code.Count;
-            Add(new(HpirOp.Branch, A: direct, B: branch + 1), site.Source);
-            Copy(HpirWidth.U64, ready, text, site.Source);
-            int join = code.Count;
-            Add(new(HpirOp.Jump), site.Source);
-            code[branch] = code[branch] with { D = code.Count };
             EmitCall(site, ~wait, ready, [text]);
-            code[join] = code[join] with { A = code.Count };
-            ++storedTextDemands;
             return ready;
         }
     }

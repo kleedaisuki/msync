@@ -290,7 +290,7 @@ public static partial class LlvmHpirLowerer
                 {
                     if (user is LlvmStoreInstruction root && root.ValueOperand == input
                         && (geometry.StoredTextAddress(root.PointerOperand) || geometry.TextFieldStorage(root.GetOperandUse(1))
-                            || geometry.PromptInputStore(root).HasValue)) continue;
+                            || geometry.PromptInputStore(root).HasValue || geometry.ReadySessionTextStore(root))) continue;
                     if (user is LlvmReturnInstruction
                         && (geometry.SessionTextEntry(function) || geometry.TextResult(function))) continue;
                     if (user is LlvmInstruction forwarded && geometry.TextResult(forwarded)
@@ -428,7 +428,7 @@ public static partial class LlvmHpirLowerer
         {
             if (FutureCell(user) && FutureOperands(user) is { } inputs && inputs.Contains(value)) return true;
             if (user is LlvmStoreInstruction store && store.ValueOperand == value)
-                return geometry.FutureStorageDelta(store.GetOperandUse(1)) is not null;
+                return geometry.FutureStorageDelta(store.GetOperandUse(1)) is not null || geometry.ReadySessionScalarStore(store);
             if (user is LlvmReturnInstruction) return geometry.IsEntry(function) || geometry.FutureResult(function);
             if (user is not LlvmCallInstruction { CalledFunction: { } target } call) return false;
             if (UnionFlow(value, user) != FutureUnionUse.None) return true;

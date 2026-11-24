@@ -60,11 +60,29 @@ internal sealed unsafe partial class HpirSessionState : IDisposable
 
     internal HpirWork? BeginWork(RuntimeTimeline? timeline, CancellationToken token)
     {
-        if (work is null && !active!.StartsProcesses) return null;
-        work ??= new(default, sessionProcesses: true);
+        if (work is null && !active!.AdmitsRetainedWork) return null;
+        work ??= new(default, sessionWork: true);
         workTimeline = timeline;
         work.BeginSubmission(token);
         return work;
+    }
+
+    internal void RetainTextWork(HpirWork owner, HpirWorkSite site)
+    {
+        if (storedTextSlots is not { Count: > 0 } slots || owner.Outstanding == 0) return;
+        using var trace = site.Begin("hpir.session.retain_text_work");
+        int retained = 0;
+        foreach (int slot in slots)
+        {
+            if (!cells.TryGetValue(slot, out var cell) || *(byte*)cell.Flag == 0) continue;
+            nint address = *(nint*)cell.Address;
+            if (address == 0 || HpirHeap.HasLayout(address, textLayout)) continue;
+            var completion = (HpirTextCompletion*)address;
+            if (completion->Kind == HpirTextCompletionKind.FileRead && owner.RetainFileRead(completion->Job, address))
+                ++retained;
+        }
+        trace?.SetMetric("roots.text_slots", slots.Count);
+        trace?.SetMetric("work.file_reads_retained", retained);
     }
 
     internal HpirSessionValue ObserveResult(TypeKind kind, ulong bits, RuntimeTimelineScope? trace) => presentedScope ??
@@ -88,6 +106,8 @@ internal sealed unsafe partial class HpirSessionState : IDisposable
             trace?.SetMetric("roots.globals", marked);
             trace?.SetMetric("heap.live_bytes", sweep.LiveBytes);
             trace?.SetMetric("heap.reclaimed_bytes", sweep.ReclaimedBytes);
+            trace?.SetMetric("gc.process_results_released", sweep.ProcessResultsReleased);
+            trace?.SetMetric("gc.file_read_results_released", sweep.FileReadResultsReleased);
         }
         return heap;
     }
@@ -267,6 +287,7 @@ internal sealed unsafe partial class HpirSessionState : IDisposable
 
     internal void End()
     {
+        if (active?.Retirements is { } retirements) Retire(retirements);
         active = null;
         presentedScope = null;
         resultRecord = 0;
@@ -276,6 +297,23 @@ internal sealed unsafe partial class HpirSessionState : IDisposable
         NativeMemory.Free(globals);
         globals = null;
         heap?.TrackWork(work);
+    }
+
+    private void Retire(IReadOnlyList<HpirSessionRetirement> retirements)
+    {
+        using var trace = options?.Timeline?.Begin("hpir.session.retire_roots");
+        int removed = 0;
+        foreach (var retirement in retirements)
+        {
+            foreach (int slot in retirement.Replacements)
+            {
+                if (!IsInitialized(slot)) continue;
+                if (cells.Remove(retirement.Slot)) ++removed;
+                break;
+            }
+        }
+        trace?.SetMetric("roots.candidates", retirements.Count);
+        trace?.SetMetric("roots.retired", removed);
     }
 
     public void Dispose()

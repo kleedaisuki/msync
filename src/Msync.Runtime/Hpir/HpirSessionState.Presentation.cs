@@ -135,6 +135,7 @@ internal sealed unsafe partial class HpirSessionState
             TypeKind.Process when *(nint*)pointers == 0 => Scalar(TypeKind.Null, 0),
             TypeKind.Process => ObserveProcess(*(nint*)pointers),
             TypeKind.Function => ObserveCallable(pointers),
+            TypeKind.Range => new(kind, 0, Type: field.RangeType),
             TypeKind.Path => field.Union is null ? Aggregate(kind, address)
                 : new(kind, 0, Path: UnionPath(raw, pointers).ToHost(contextual: true)),
             _ => throw new MsyncException($"HPIR presentation is not supported for field '{field.Name}' of type {kind}.")

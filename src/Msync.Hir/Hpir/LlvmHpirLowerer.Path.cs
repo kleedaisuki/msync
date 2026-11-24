@@ -266,7 +266,8 @@ public static partial class LlvmHpirLowerer
             bool observed = !transfer.UseEmpty;
             int source = text ? Location(transfer.Value) : PathRecordAddress(transfer.Value, transfer);
             int destination = PathRecordAddress(transfer.Destination, transfer);
-            if (geometry.MixedTextResult(transfer.Value)) SelectTextCarrier(transfer, transfer.Value, Emit);
+            if (geometry.MixedTextResult(transfer.Value) || geometry.StoredText(transfer.Value))
+                SelectTextCarrier(transfer, transfer.Value, Emit);
             else Emit(pending);
             ++livePathTransfers;
             return true;

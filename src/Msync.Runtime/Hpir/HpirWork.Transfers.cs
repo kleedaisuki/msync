@@ -11,7 +11,8 @@ internal sealed partial class HpirWork
     internal void SubmitPreparedTransfer(int binding, IReadOnlyList<HpirPreparedTransfer> transfers,
         ExecutionOptions? options, BindingContext? context, HpirWorkSite site, string functionName, bool shared)
     {
-        FileTransfers owner = fileTransfers ??= new(options, shared ? context : null);
+        shared |= retainedFileResources?.HasRegistrations == true;
+        FileTransfers owner = Files(options, shared ? context : null);
         Task?[] scheduled = owner.PreparedTasks ??= new Task?[transfers.Count];
         HpirPreparedTransfer transfer = transfers[binding];
         Task? ordering = Ordering;

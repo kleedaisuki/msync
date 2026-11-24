@@ -49,11 +49,13 @@ internal sealed partial class HpirWork
     {
         var job = (ProcessJob)jobs[id];
         int? pid = job.Started.IsCompletedSuccessfully ? job.Started.Result.ProcessId : null;
-        return job.Finished.Status switch
+        var status = job.Finished.Status;
+        if (status == TaskStatus.Faulted)
+            _ = Observe(job, job.Finished, CancellationToken.None, null);
+        return status switch
         {
             TaskStatus.RanToCompletion => new(HpirSessionProcessState.Exited, pid, job.Finished.Result.ExitCode),
             TaskStatus.Canceled => new(HpirSessionProcessState.Cancelled, pid),
-            TaskStatus.Faulted => new(HpirSessionProcessState.Failed, pid),
             _ => new(HpirSessionProcessState.Running, pid)
         };
     }
