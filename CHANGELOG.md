@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.6
+
+- **Breaking source change:** use `object Name { ... }` and `object { ... }`
+  instead of `scope`, and use `Object` in place of the builtin type `Scope`.
+  Rename user bindings that collide with the new spellings. The reflection
+  predicate is now `$std::meta::is_object`; `type_name(Object)` returns
+  "Object". Member access, instance identity, and artifact formats are unchanged.
+
+- Restore `$std::fs::create_directories` in HPIR. Its filesystem write
+  respects pending transfers, and failures keep the source and host cause.
+
 ## 0.9.3
 
 - Save a portable program with `compile`, or prepare it directly with `compile --prepare`.
