@@ -89,7 +89,7 @@ async function run() {
 
     const expected = [
         ['concept Named', 'keyword'], ['Named {', 'type'], ['Labeled)', 'type'],
-        ['fn label', 'keyword'], ['label(item', 'function'], ['scope Catalog', 'keyword'],
+        ['fn label', 'keyword'], ['label(item', 'function'], ['object Catalog', 'keyword'],
         ['Catalog {', 'type'], ['instance =', 'variable'], ['object { name', 'keyword'],
         ['1.5,', 'number'], [' .5,', 'number', 1], ['1e3,', 'number'], ['0xFF,', 'number'],
         ['0b10_01,', 'number'], ['0o77,', 'number'], ['1_000,', 'number'],

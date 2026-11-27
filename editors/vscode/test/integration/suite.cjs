@@ -169,7 +169,7 @@ async function run() {
         const expected = [
             ['MyClass', 'type'], ['new:', 'function'], ['get:', 'function'],
             ['my_instance', 'variable'], ['construct', 'function'], ['ClassAlias', 'type'],
-            ['scope MyClass', 'keyword'], ['fn()', 'keyword'], ['fn(some)', 'keyword'],
+            ['object MyClass', 'keyword'], ['fn()', 'keyword'], ['fn(some)', 'keyword'],
             ['SomeClass', 'type'], ['remote: ssh', 'variable'],
             ['anonymous', 'variable'], ['object { remote', 'keyword'], ['Object =', 'type'],
             ['if true', 'controlKeyword'], ['else { null', 'controlKeyword'],

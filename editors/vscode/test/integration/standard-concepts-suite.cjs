@@ -140,7 +140,7 @@ async function run() {
         ['concept PairShape', 'keyword'], ['PairShape {', 'type'],
         ['typename First', 'keyword'], ['First,', 'type'], ['Second,', 'type'],
         ['First) ->', 'type'], ['fn preserve', 'keyword'], ['preserve(value', 'function'],
-        ['Option?)', 'type'], ['scope SameNumber', 'keyword'], ['SameNumber {', 'type'],
+        ['Option?)', 'type'], ['object SameNumber', 'keyword'], ['SameNumber {', 'type'],
         ['numbers =', 'variable'], ['data::Option', 'type'], ['Option::some', 'type'],
         ['EqualitySet::with_equality', 'type'], ['with_equality(', 'function'],
         ['Set::new', 'type'],
@@ -153,8 +153,8 @@ async function run() {
     const call = library.indexOf('BPlusTree::node(', clear);
     assert.ok(tree >= 0 && clear > tree && call > clear, 'BPlusTree::clear self call');
     const selfReference = [
-        [tree, 'scope', 'keyword'],
-        [tree + 'scope '.length, 'BPlusTree', 'type'],
+        [tree, 'object', 'keyword'],
+        [tree + 'object '.length, 'BPlusTree', 'type'],
         [clear + 'clear: '.length, 'fn', 'keyword'],
         [call, 'BPlusTree', 'type'],
         [call + 'BPlusTree::'.length, 'node', 'function'],
