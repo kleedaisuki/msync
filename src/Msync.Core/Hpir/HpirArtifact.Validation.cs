@@ -63,6 +63,7 @@ public static partial class HpirArtifact
         HpirService.FailDiagnostic => (uint)import.Binding < (uint)program.TextLiterals.Count
             && import.Result == HpirWidth.Void && import.Arguments.Length == 0,
         HpirService.FileMetadata => HpirFileMetadataImports.Valid(program, import),
+        HpirService.CreateDirectories => HpirDirectoryCreationImports.Valid(program, import),
         HpirService.RenameFile => HpirFileRenameImports.Valid(program, import),
         HpirService.Path => HpirPathImports.Valid(program, import),
         HpirService.HasLayout => (uint)import.Binding < (uint)program.Layouts.Count

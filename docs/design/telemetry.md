@@ -348,6 +348,14 @@ endpoint, counts atomic source/destination registrations including their
 physical aliases, and links overlapping residual or prepared predecessors.
 `hpir.file_rename.rename` reports the synchronous host operation, dry-run
 simulation or failure at the original guest source.
+`paths.create_directories_sites`, `paths.create_directories_text` and
+`paths.create_directories_unions` count the selected mkdir sites and input
+representations. Directory creation shares `hpir.file_write.admit` so
+its actual predecessors are linked. `hpir.directory_create.apply` carries
+the path, endpoint and original guest source; `hpir.directory_create.host`
+distinguishes created, existing and simulated results. Runtime failures
+preserve their host cause under E0300; a pending result is attributed at
+`hpir.directory_create.observe`.
 The selector reports `vectors.at`, `vectors.front`, `vectors.first`, `vectors.size` and
 `vectors.bounds_known` for materialized vector consumers. `vectors.type_quantifiers`
 and `vectors.scalar_quantifiers` count typed predicate loops, while

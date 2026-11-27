@@ -46,6 +46,10 @@ internal static unsafe partial class HpirExecutor
                 CallFileTextWrite(program, ref work, active, diagnostics, pc, import, call.Arguments,
                     frame, options, token, anchors);
                 return;
+            case HpirService.CreateDirectories:
+                CallCreateDirectories(program, ref work, active, diagnostics, pc, import, call, frame, destination,
+                    options, token, anchors);
+                return;
             case HpirService.RenameFile:
                 CallFileRename(program, ref work, active, diagnostics, pc, call.Arguments, frame, options, token, anchors);
                 return;

@@ -149,6 +149,7 @@ internal sealed class TelemetrySession : IDisposable
 
     private void ObserveTimeline(RuntimeTimelineRecord observation)
     {
+        if (observation.Error is { } error) RecordDiagnostic(error, observation.Attributes);
         bool span = observation.DurationNanoseconds.HasValue;
         Record(new(span ? "span" : "event", traceId, observation.SpanId, observation.ParentSpanId,
             observation.Name, span ? observation.StartUnixNanoseconds : null, observation.DurationNanoseconds,

@@ -5,6 +5,11 @@ than making old backend mechanisms part of the language contract. Supply a
 fixed executable with `--binary /absolute/path/to/msync`; use isolated product
 outputs when building concurrently. Functional runs are not latency evidence.
 
+`directory_creation_journey.py` checks nested creation and idempotence
+through source and detached artifacts, plus dry-run, file collisions,
+source diagnostics and REPL recovery. The release packaging smoke also runs
+the shipped standard-library fixture with the staged executable.
+
 ## Native-model migration contracts
 
 | Journey | Retained behavior |

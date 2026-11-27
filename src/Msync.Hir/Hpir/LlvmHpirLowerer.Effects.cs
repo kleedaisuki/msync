@@ -74,7 +74,7 @@ public static partial class LlvmHpirLowerer
         {
             LlvmFileInInst { Format: LlvmFileInFormat.Text or LlvmFileInFormat.Lines } => true,
             LlvmCallInstruction { CalledFunction: { } target } => FileMetadata(target) != HpirFileMetadata.Invalid
-                || IsFileRename(target)
+                || IsFileRename(target) || IsDirectoryCreation(target)
                 || WorkBinding(target)?.Operation is LlvmRuntimeValueOperation.Barrier or LlvmRuntimeValueOperation.Acquire,
             _ => false
         };

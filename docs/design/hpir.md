@@ -438,6 +438,19 @@ a live typed check at the original control point. A preceding file writer
 or opaque resource operation leaves the predicate on the actual execution
 frontier, where it can observe and wait for that writer.
 
+`fs.create_directories` is a live, synchronous write with a ready Bool
+result. A `Path` uses its captured endpoint and anchors; a `String` uses
+the current context. A mixed argument is selected through the existing
+Path representation, never through a boxed native value. The operation
+reserves a destination write lease in the same frontier as transfers,
+including prepared transfers, and releases it on completion or failure.
+Binding does not create anything. Execution reports `false` for an
+existing directory and `true` after creating it; dry-run simulates a
+successful write without modifying the destination or connecting to its
+endpoint. The local operation uses
+[Directory.CreateDirectory](https://learn.microsoft.com/en-us/dotnet/api/system.io.directory.createdirectory?view=net-10.0);
+remote endpoints use the existing recursive directory action.
+
 A first-class Type witness is a word-sized image-relative ID into an
 immutable literal table. Nested type elements are separate table links.
 Static type predicates use producer contracts and need no runtime call.

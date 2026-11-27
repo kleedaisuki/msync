@@ -136,7 +136,7 @@ public static partial class LlvmHpirLowerer
                 case LlvmCallInstruction call when call.CalledFunction is { } target && geometry.TryLayoutImport(target, source, out int layout):
                     EmitImportCall(call, layout, [Location(call.GetArgument(0))], safepoint: false);
                     return;
-                case LlvmCallInstruction call when TryFileRename(call) || TryReadyRegex(call) || TryPathSelection(call) || TryPathCall(call)
+                case LlvmCallInstruction call when TryFileRename(call) || TryDirectoryCreation(call) || TryReadyRegex(call) || TryPathSelection(call) || TryPathCall(call)
                     || TryUniformProjection(call) || TryScalarImport(call) || TryCallable(call):
                     return;
                 default:

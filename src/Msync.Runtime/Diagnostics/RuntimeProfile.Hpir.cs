@@ -359,6 +359,7 @@ public sealed partial class RuntimeProfile
                     HpirService.ParsePathF64 => "path.parse_number",
                     HpirService.ParsePathBool => "path.parse_bool",
                     HpirService.Path => "path." + HpirPathImports.Decode(import.Binding).Op,
+                    HpirService.CreateDirectories => HpirDirectoryCreationImports.Name,
                     HpirService.RenameFile => "fs.rename",
                     HpirService.DirectorySource => HpirDirectoryImports.DecodeSource(import.Binding).Recursive
                         ? "fs.recursive_directory_iterator" : "fs.directory_iterator",

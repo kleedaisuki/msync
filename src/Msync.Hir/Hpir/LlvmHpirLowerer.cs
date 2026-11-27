@@ -160,6 +160,7 @@ public static partial class LlvmHpirLowerer
             ReportFileTextWrites(trace);
             ReportFileByteWrites(trace);
             ReportFileRenames(trace);
+            ReportDirectoryCreation(trace);
             ReportProcesses(trace);
             ReportWork(trace);
             trace?.Metric("union.packs", unionPacks);

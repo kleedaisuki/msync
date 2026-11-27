@@ -13,7 +13,7 @@ public static partial class LlvmHpirLowerer
         private readonly Dictionary<(HpirPathOp Operation, bool LeftText, bool RightText), int> pathImports = [];
         private LlvmStructType? pathRecord;
         internal bool PathAnchorsNeeded => pathImports.Count != 0 || LiveTextFileAnchors || HasFileMetadata || HasFileText
-            || HasFileTextWrites || HasFileRename || HasTextProcessSpawn || HasTextDirectoryPath;
+            || HasFileTextWrites || HasFileRename || HasDirectoryCreation || HasTextProcessSpawn || HasTextDirectoryPath;
 
         internal static bool IsPathRecord(LlvmType type) => type is LlvmStructType { Name: "msync.path" };
 
@@ -193,7 +193,7 @@ public static partial class LlvmHpirLowerer
 
         private bool PathTextDemand(LlvmCallInstruction call, LlvmValue input) =>
             call.CalledFunction is { } target && call.ArgumentCount == 1 && call.GetArgument(0) == input
-            && geometry.PathOperation(call, target) == HpirPathOp.FromText;
+            && (geometry.PathOperation(call, target) == HpirPathOp.FromText || geometry.IsDirectoryCreation(target));
 
         private int PathCallAddress(LlvmCallInstruction site, LlvmValue value, bool text, bool union)
         {

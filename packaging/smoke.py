@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -82,6 +83,23 @@ def journey(binary: Path, workspace: Path, runner: Path | None = None) -> None:
     )
 
 
+def standard_library(binary: Path, workspace: Path, runner: Path | None = None) -> None:
+    workspace.mkdir()
+    shutil.copyfile(ROOT / "packaging/stdlib-smoke.msync", workspace / "stdlib.msync")
+    run(binary, ["run", "stdlib.msync"], workspace, runner)
+    outputs: dict[str, bytes] = {
+        "payload": b"installed standard library",
+        "status": b"ready",
+        "windows-spelling": rb"D:\Code\agents\target\new\runtime\artifacts",
+        "quoted-content": b'say "hello"',
+    }
+    for name, expected in outputs.items():
+        assert (workspace / "std-output" / name).read_bytes() == expected, name
+    print(
+        "PASS: packaged standard library, recursive directory creation and exact output bytes"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
@@ -93,7 +111,10 @@ def main() -> None:
     temporary = ROOT / ".temp"
     temporary.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="package-smoke-", dir=temporary) as name:
-        journey(args.binary.resolve(), Path(name), runner)
+        workspace = Path(name)
+        binary = args.binary.resolve()
+        journey(binary, workspace, runner)
+        standard_library(binary, workspace / "stdlib", runner)
 
 
 if __name__ == "__main__":

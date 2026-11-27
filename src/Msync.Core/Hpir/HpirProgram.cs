@@ -81,7 +81,7 @@ public enum HpirService : byte { AllocateObject, MathF64, FormatF64, WriteText, 
     PathSelection = (byte)Regex + 2, LiveTransferSelection, WriteFileText, RegexFind, ProcessSpawn, ProcessControl,
     ProcessTextReady, Work, TextRangeJoin, DirectorySource, DirectoryOpen, DirectoryNext, DirectoryClose,
     LiveTransferNumberText, RenameFile, FileBytesOpen, FileBytesChunk, TypeName, RangePackWords, AppendTextChunk, ReadStdinText,
-    TextFormat, AllocateSessionScope, SessionRangeItem, LivePathBatch, ConcatTextPending }
+    TextFormat, AllocateSessionScope, SessionRangeItem, LivePathBatch, ConcatTextPending, CreateDirectories }
 
 public enum HpirFailure : byte { UnknownCallable, Unreachable, RangeStalled, RangeEmpty, RangeIndex, RangeIndexStalled }
 

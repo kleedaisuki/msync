@@ -87,7 +87,8 @@ internal static partial class TerminalPresentation
             if (snapshot is { } text && span.Start >= 0 && span.Start <= text.Text.Length
                 && span.Length >= 0 && span.Length <= text.Text.Length - span.Start)
                 diagnostic = new(located?.DiagnosticCode ?? "E0300", error.Message, text.Text, text.Name, new(span.Start, span.Length),
-                    Label: located?.DiagnosticCode is null ? "this runtime operation failed" : "cannot compile this operation", Help: help);
+                    Label: located?.DiagnosticCode is null or "E0300" ? "this runtime operation failed" : "cannot compile this operation",
+                    Help: help);
         }
         if (diagnostic is not null) Render(diagnostic, color);
         else
