@@ -19,7 +19,7 @@ let meta = $std::meta;
 let categories = [
     meta::is_null(Null), meta::is_bool(Bool), meta::is_number(Number),
     meta::is_string(String), meta::is_path(Path), meta::is_range(Range),
-    meta::is_function(Function), meta::is_scope(Scope),
+    meta::is_function(Function), meta::is_object(Object),
     meta::is_process(Process), meta::is_connection(Connection),
     meta::is_type(Type), meta::is_never(meta::remove_null(Null)),
     meta::is_union(Number or Null), meta::is_scalar(String or Path),
@@ -56,13 +56,13 @@ fn adjust(value) {
 };
 (adjust(4) as String) -> ./generic-number.txt;
 adjust("Klee") -> ./generic-string.txt;
-fn apply_policy(policy: Scope, value: Number) {
+fn apply_policy(policy: Object, value: Number) {
     if meta::has_member(policy, "apply") { policy::apply(value) }
     else { value }
 };
-(apply_policy(scope { apply: fn(value: Number) { value * 2 } }, 6)
+(apply_policy(object { apply: fn(value: Number) { value * 2 } }, 6)
     as String) -> ./policy.txt;
-(apply_policy(scope { note: "identity" }, 6) as String)
+(apply_policy(object { note: "identity" }, 6) as String)
     -> ./default-policy.txt;
 
 let calls = 0;
@@ -100,13 +100,13 @@ if parameters is not null {
     as String) -> ./unevaluated-process.txt;
 (meta::has_member({
     "must not execute" -> ./forbidden-member.txt;
-    scope { path: ~ }
+    object { path: ~ }
 }, "path") as String) -> ./has-member.txt;
-let member? = meta::member_type(scope { path: ~ }, "path");
+let member? = meta::member_type(object { path: ~ }, "path");
 if member is not null { meta::type_name(member) -> ./member-type.txt; };
-$std::string::join(meta::member_names(scope { beta: 2, alpha: 1 }), "|")
+$std::string::join(meta::member_names(object { beta: 2, alpha: 1 }), "|")
     -> ./members.txt;
-(meta::member_count(scope { beta: 2, alpha: 1 }) as String)
+(meta::member_count(object { beta: 2, alpha: 1 }) as String)
     -> ./member-count.txt;
 (calls as String) -> ./calls.txt;
 acquire;
@@ -157,7 +157,7 @@ NEGATIVE: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "dynamic-member-name",
-        "$std::meta::has_member(scope { value: 1 }, $std::io::read_text(./name.txt));",
+        "$std::meta::has_member(object { value: 1 }, $std::io::read_text(./name.txt));",
         "statically",
     ),
     (

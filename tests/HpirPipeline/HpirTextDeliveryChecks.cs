@@ -8,7 +8,7 @@ internal static class HpirTextDeliveryChecks
 {
     private const string Name = "typed-text-delivery.msync";
     private const string Handoff = """
-        fn defer() { scope { line?: $std::io::read_line() } };
+        fn defer() { object { line?: $std::io::read_line() } };
         let packet = defer();
         $std::io::println("returned");
         $std::io::flush();
@@ -36,7 +36,7 @@ internal static class HpirTextDeliveryChecks
             if (HpirMachineImage.IsSupported) CheckFormat(format, root, native: true);
         }
         finally { Directory.Delete(root, recursive: true); }
-        Console.WriteLine("PASS HPIR Text: pending Scope handoff, actual flush, typed dynamic formats and failure lineage");
+        Console.WriteLine("PASS HPIR Text: pending Object handoff, actual flush, typed dynamic formats and failure lineage");
     }
 
     private static void GateHandoff(HpirProgram program, bool native)

@@ -1,6 +1,6 @@
 # Canonical families keep instance data separate from shared operations.
 # A storage policy may choose buffering, but retained state is always a snapshot.
-scope SnapshotStorage {
+object SnapshotStorage {
     snapshot: fn(values: Range) -> Range {
         $std::ranges::materialize(values)
     },
@@ -16,16 +16,16 @@ fn construction_range(initial: Range or Type) {
 
 fn entry_seed(keys: Range, values: Range) {
     $std::ranges::transform($std::ranges::zip(keys, values), fn(pair) {
-        scope { key?: pair::first, value?: pair::second }
+        object { key?: pair::first, value?: pair::second }
     })
 };
 
-scope List {
+object List {
     new: fn(initial: Range or Type) {
         List::with_storage(construction_range(initial), SnapshotStorage)
     },
     with_storage: fn(initial: Range or Type, storage: $std::concepts::RangeStorage) {
-        scope {
+        object {
             items: $std::ranges::materialize(storage::snapshot(construction_range(initial))),
             storage: storage,
         }
@@ -145,7 +145,7 @@ scope List {
 };
 
 # Null is the absent alternative, outside a concrete comparison carrier.
-scope Equivalence {
+object Equivalence {
     same: fn(left?, right?) {
         if left is null {
             right is null
@@ -170,12 +170,12 @@ scope Equivalence {
     },
 };
 
-scope EqualitySet {
+object EqualitySet {
     new: fn(initial: Range or Type) {
         let source = construction_range(initial);
         EqualitySet::with_policy(
             source,
-            scope {
+            object {
                 Self: decltype($std::ranges::front(source)),
                 equal: Equivalence::same,
             },
@@ -191,7 +191,7 @@ scope EqualitySet {
         storage: $std::concepts::RangeStorage
     ) {
         let source = $std::ranges::materialize(construction_range(initial));
-        let self = scope {
+        let self = object {
             items: $std::ranges::materialize($std::ranges::take(source, 0)),
             equality: equality,
             storage: storage,
@@ -311,11 +311,11 @@ scope EqualitySet {
     },
 };
 
-scope Map {
+object Map {
     new: fn(initial: Range) {
         Map::with_policy(
             initial,
-            scope {
+            object {
                 Self: decltype($std::ranges::front(initial)::key),
                 equal: Equivalence::same,
             },
@@ -345,7 +345,7 @@ scope Map {
     },
     from_seeds: fn(keys: Range, values: Range, equality: $std::concepts::Equality,
         storage: $std::concepts::RangeStorage) {
-        scope {
+        object {
             keys: $std::ranges::materialize(keys),
             values: $std::ranges::materialize(values),
             equality: equality,
@@ -356,7 +356,7 @@ scope Map {
         Map::from_seeds(
             $std::ranges::empty_of(key),
             $std::ranges::empty_of(value),
-            scope { Self: key, equal: Equivalence::same },
+            object { Self: key, equal: Equivalence::same },
             SnapshotStorage
         )
     },
@@ -372,7 +372,7 @@ scope Map {
         Map::new(
             $std::ranges::take(
                 [
-                    scope {
+                    object {
                         key?: key_prototype,
                         value?: value_prototype
                     }
@@ -385,11 +385,11 @@ scope Map {
         Map::new(
             $std::ranges::take(
                 [
-                    scope {
+                    object {
                         key?: key_prototype,
                         value?: value_prototype
                     },
-                    scope {
+                    object {
                         key?: key_prototype,
                         value?: null
                     }
@@ -404,7 +404,7 @@ scope Map {
             $std::ranges::transform(
                 $std::ranges::zip(self::keys, self::values),
                 fn(pair) {
-                    scope {
+                    object {
                         key?: pair::first,
                         value?: pair::second
                     }
@@ -515,7 +515,7 @@ scope Map {
     },
 };
 
-scope Stack {
+object Stack {
     new: fn(initial: Range or Type) {
         List::new(initial)
     },
@@ -559,7 +559,7 @@ scope Stack {
     },
 };
 
-scope Queue {
+object Queue {
     new: fn(initial: Range or Type) {
         List::new(initial)
     },
@@ -600,7 +600,7 @@ scope Queue {
 
 # Container ordering treats Null first and all NaNs as one final equivalence
 # class. Language Number comparison remains IEEE; Path ordering remains lexical.
-scope NaturalOrder {
+object NaturalOrder {
     less: fn(left?, right?) -> Bool {
         if left is null {
             return right is not null;
@@ -623,10 +623,10 @@ scope NaturalOrder {
 
 # Source-only sequence used for bounded page contents, traversal stacks and
 # append-only snapshot assembly. Each link is an ordinary logical allocation.
-scope _Chain {
+object _Chain {
     empty: fn(element: Type) {
-        let link?: Scope = null;
-        scope {
+        let link?: Object = null;
+        object {
             first?: link,
             last?: link,
             count: 0,
@@ -636,8 +636,8 @@ scope _Chain {
     node: fn(self, reference?) {
         let Item = decltype($std::ranges::front(self::seed));
         let value?: Item = null;
-        let link?: Scope = null;
-        let Node = decltype(scope { value?: value, previous?: link, next?: link });
+        let link?: Object = null;
+        let Node = decltype(object { value?: value, previous?: link, next?: link });
         reference as Node?
     },
     size: fn(self) {
@@ -652,8 +652,8 @@ scope _Chain {
         let Item = decltype($std::ranges::front(self::seed));
         let typed: Item = value;
         let previous? = _Chain::node(self, self::last);
-        let link?: Scope = null;
-        let node = scope {
+        let link?: Object = null;
+        let node = object {
             value?: typed,
             previous?: previous,
             next?: link
@@ -732,7 +732,7 @@ scope _Chain {
             $std::ranges::front(self::seed); return;
         };
         let previous? = _Chain::node(self, next::previous);
-        let node = scope {
+        let node = object {
             value?: typed,
             previous?: previous,
             next?: next
@@ -792,12 +792,12 @@ fn _same_scope(left?, right?) {
     $std::ranges::contains([left], right)
 };
 
-scope BTree {
+object BTree {
     new: fn(key_prototype?, value_prototype?) {
         BTree::with_policy(
             key_prototype,
             value_prototype,
-            scope {
+            object {
                 Self: decltype(key_prototype),
                 sample?: key_prototype,
                 less: NaturalOrder::less,
@@ -821,7 +821,7 @@ scope BTree {
         BTree::from_seeds(
             $std::ranges::empty_of(key),
             $std::ranges::empty_of(value),
-            scope {
+            object {
                 Self: key,
                 sample?: null,
                 less: NaturalOrder::less
@@ -854,7 +854,7 @@ scope BTree {
         let value_seed = $std::ranges::take(values, 0);
         let first = BTree::page(key_seed, value_seed, true);
         let root = first;
-        scope {
+        object {
             pages: 1,
             root: root,
             count: 0,
@@ -867,11 +867,11 @@ scope BTree {
         }
     },
     page: fn(key_seed: Range, value_seed: Range, leaf: Bool) {
-        scope {
+        object {
             leaf: leaf,
             keys: _Chain::empty(decltype($std::ranges::front(key_seed))),
             values: _Chain::empty(decltype($std::ranges::front(value_seed))),
-            children: _Chain::empty(Scope),
+            children: _Chain::empty(Object),
         }
     },
     node: fn(self, node) {
@@ -915,7 +915,7 @@ scope BTree {
             let index = BTree::lower(self, node, key);
             if index < _Chain::size(node::keys) {
                 if BTree::equal(self, _Chain::get(node::keys, index), key) {
-                    return scope {
+                    return object {
                         node: current,
                         index: index
                     };
@@ -1032,7 +1032,7 @@ scope BTree {
                 } else {
                     0
                 };
-                return scope {
+                return object {
                     key?: _Chain::get(node::keys, item),
                     value?: _Chain::get(node::values, item),
                 };
@@ -1182,7 +1182,7 @@ scope BTree {
             };
             _Chain::push(
                 output,
-                scope {
+                object {
                     key?: _Chain::get(node::keys, index),
                     value?: _Chain::get(node::values, index),
                 }
@@ -1226,7 +1226,7 @@ scope BTree {
             };
             _Chain::push(
                 output,
-                scope {
+                object {
                     key?: key,
                     value?: _Chain::get(node::values, index),
                 }
@@ -1316,7 +1316,7 @@ scope BTree {
         };
     },
     validate: fn(self) {
-        let state = scope {
+        let state = object {
             valid: true,
             count: 0,
             depth: -1,
@@ -1358,12 +1358,12 @@ scope BTree {
 };
 
 # Internal pages contain separator keys only; values stay in linked leaf pages.
-scope BPlusTree {
+object BPlusTree {
     new: fn(key_prototype?, value_prototype?) {
         BPlusTree::with_policy(
             key_prototype,
             value_prototype,
-            scope {
+            object {
                 Self: decltype(key_prototype),
                 sample?: key_prototype,
                 less: NaturalOrder::less,
@@ -1387,7 +1387,7 @@ scope BPlusTree {
         BPlusTree::from_seeds(
             $std::ranges::empty_of(key),
             $std::ranges::empty_of(value),
-            scope {
+            object {
                 Self: key,
                 sample?: null,
                 less: NaturalOrder::less
@@ -1420,7 +1420,7 @@ scope BPlusTree {
         let value_seed = $std::ranges::take(values, 0);
         let first = BPlusTree::page(key_seed, value_seed, true);
         let root = first;
-        scope {
+        object {
             pages: 1,
             root: root,
             count: 0,
@@ -1433,12 +1433,12 @@ scope BPlusTree {
         }
     },
     page: fn(key_seed: Range, value_seed: Range, leaf: Bool) {
-        let link?: Scope = null;
-        scope {
+        let link?: Object = null;
+        object {
             leaf: leaf,
             keys: _Chain::empty(decltype($std::ranges::front(key_seed))),
             values: _Chain::empty(decltype($std::ranges::front(value_seed))),
-            children: _Chain::empty(Scope),
+            children: _Chain::empty(Object),
             next?: link,
         }
     },
@@ -1496,7 +1496,7 @@ scope BPlusTree {
             let index = BPlusTree::child_position(self, node, key);
             _Chain::push(
                 path,
-                scope {
+                object {
                     node: current,
                     index: index
                 }
@@ -1507,7 +1507,7 @@ scope BPlusTree {
     leaf: fn(self, key?) {
         let path = _Chain::empty(
             decltype(
-                scope {
+                object {
                     node: self::root,
                     index: 0
                 }
@@ -1575,7 +1575,7 @@ scope BPlusTree {
         for index in $std::ranges::sequence(middle, length, 1) {
             _Chain::pop(left::keys);
         };
-        scope {
+        object {
             key?: separator,
             right: right_index
         }
@@ -1583,7 +1583,7 @@ scope BPlusTree {
     insert: fn(self, key?, value?) {
         let path = _Chain::empty(
             decltype(
-                scope {
+                object {
                     node: self::root,
                     index: 0
                 }
@@ -1696,7 +1696,7 @@ scope BPlusTree {
     remove: fn(self, key?) {
         let path = _Chain::empty(
             decltype(
-                scope {
+                object {
                     node: self::root,
                     index: 0
                 }
@@ -1806,7 +1806,7 @@ scope BPlusTree {
             ) {
                 _Chain::push(
                     output,
-                    scope {
+                    object {
                         key?: _Chain::get(node::keys, index),
                         value?: _Chain::get(node::values, index),
                     }
@@ -1862,7 +1862,7 @@ scope BPlusTree {
                     };
                     _Chain::push(
                         output,
-                        scope {
+                        object {
                             key?: key,
                             value?: _Chain::get(node::values, index),
                         }
@@ -1956,8 +1956,8 @@ scope BPlusTree {
         };
     },
     validate: fn(self) {
-        let link?: Scope = null;
-        let state = scope {
+        let link?: Object = null;
+        let state = object {
             valid: true,
             count: 0,
             depth: -1,
@@ -2043,7 +2043,7 @@ fn _set_link(tree, node, left: Bool, child) {
     };
 };
 
-# Links below are ordinary Scope references; tree nodes are logical allocations.
+# Links below are ordinary Object references; tree nodes are logical allocations.
 fn _set_find(self, key?) {
     let tree = self;
     let index = _set_ref(tree, tree::root);
@@ -2214,11 +2214,11 @@ fn _set_bound(self, key?) {
 
 # Ordered Set with logarithmic point operations and an explicit comparison policy.
 # Comparator-equivalent keys are unique; snapshots retain membership, not deep copies.
-scope Set {
+object Set {
     new: fn(initial: Range or Type) {
         Set::with_policy(
             initial,
-            scope {
+            object {
                 Self: decltype(
                     $std::ranges::front(construction_range(initial))
                 ),
@@ -2234,8 +2234,8 @@ scope Set {
         let source = construction_range(initial);
         let Item = decltype($std::ranges::front(source));
         let nil_key?: Item = null;
-        let link?: Scope = null;
-        let nil = scope {
+        let link?: Object = null;
+        let nil = object {
             key?: nil_key,
             left?: link,
             right?: link,
@@ -2247,7 +2247,7 @@ scope Set {
         nil::left = nil;
         nil::right = nil;
         nil::parent = nil;
-        let self = scope {
+        let self = object {
             root: nil,
             nil: nil,
             count: 0,
@@ -2293,7 +2293,7 @@ scope Set {
             };
             index = _set_child(tree, index, direction);
         };
-        let inserted = scope {
+        let inserted = object {
             key?: typed,
             left?: tree::nil,
             right?: tree::nil,
@@ -2558,11 +2558,11 @@ fn _heap_sift_down(self, start) {
     node::value = value;
 };
 
-scope Heap {
+object Heap {
     new: fn(initial: Range or Type) {
         Heap::with_policy(
             initial,
-            scope {
+            object {
                 Self: decltype(
                     $std::ranges::front(construction_range(initial))
                 ),
@@ -2578,8 +2578,8 @@ scope Heap {
         let source = construction_range(initial);
         let Item = decltype($std::ranges::front(source));
         let nil_value?: Item = null;
-        let link?: Scope = null;
-        let nil = scope {
+        let link?: Object = null;
+        let nil = object {
             value?: nil_value,
             left?: link,
             right?: link,
@@ -2589,7 +2589,7 @@ scope Heap {
         nil::left = nil;
         nil::right = nil;
         nil::parent = nil;
-        let self = scope {
+        let self = object {
             root: nil,
             nil: nil,
             count: 0,
@@ -2597,11 +2597,11 @@ scope Heap {
             seed: $std::ranges::take(source, 0)
         };
         if not(decltype(initial) is Type) {
-            let parents = _Chain::empty(Scope);
-            let rows = _Chain::empty(Scope);
+            let parents = _Chain::empty(Object);
+            let rows = _Chain::empty(Object);
             for value? in $std::ranges::materialize(source) {
                 let typed: Item = value;
-                let node = scope {
+                let node = object {
                     value?: typed,
                     left?: nil,
                     right?: nil,
@@ -2660,7 +2660,7 @@ scope Heap {
         } else {
             _heap_node(self, $std::math::floor((index - 1) / 2))
         };
-        let node = scope {
+        let node = object {
             value?: typed,
             left?: self::nil,
             right?: self::nil,
@@ -2741,7 +2741,7 @@ scope Heap {
     },
     snapshot: fn(self) {
         let output = _Chain::empty(decltype($std::ranges::front(self::seed)));
-        let pending = _Chain::empty(Scope);
+        let pending = _Chain::empty(Object);
         if self::count > 0 {
             _Chain::push(pending, self::root);
         };
@@ -2774,7 +2774,7 @@ scope Heap {
         Heap::drain(Heap::with_policy(Heap::snapshot(self), self::order))
     },
     validate: fn(self) -> Bool {
-        let pending = _Chain::empty(Scope);
+        let pending = _Chain::empty(Object);
         if self::count > 0 {
             _Chain::push(pending, self::root);
         };

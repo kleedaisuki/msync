@@ -44,18 +44,18 @@ try
 
     foreach ((string name, string source, bool eliminated) in new[]
     {
-        ("write-read", "let value = exists ./flag; let box = scope { item: false }; box::item = value; box::item", true),
-        ("alias-write", "let box = scope { item: 0 }; let alias = box; alias::item = 9; box::item", true),
-        ("last-write", "let box = scope { item: 0 }; box::item = 4; box::item = 9; box::item", true),
-        ("escaped-return", "let box = scope { item: 1 }; box::item = 9; box", false),
-        ("escaped-read", "let box = scope { item: 1 }; box::item = 9; let seen = box::item; scope { object: box, seen: seen }", false),
-        ("captured-object", "let box = scope { item: 0 }; let mutate = fn { box::item = 9; }; mutate(); box::item", false),
-        ("captured-rebinding", "let box = scope { item: 1 }; let other = scope { item: 2 }; let replace = fn { box = other; }; replace(); box::item = 9; other::item", false),
-        ("captured-field-store", "let Box = scope { item: 1, update: fn { item = 7; } }; Box::update(); Box::item", true),
-        ("captured-field-read", "let Box = scope { item: 1, read: fn { item } }; Box::item = 9; Box::read()", true),
-        ("branch-alias", "let box = scope { item: 0 }; if exists ./flag { box::item = 9; }; box::item", false),
-        ("loop-liveout", "let previous = scope { item: 0 }; for item in [1, 2] { let box = scope { item: item }; previous = box; }; previous::item", false),
-        ("rebound-alias", "let box = scope { item: 1 }; let alias = box; alias = scope { item: 2 }; alias::item = 9; box::item", true)
+        ("write-read", "let value = exists ./flag; let box = object { item: false }; box::item = value; box::item", true),
+        ("alias-write", "let box = object { item: 0 }; let alias = box; alias::item = 9; box::item", true),
+        ("last-write", "let box = object { item: 0 }; box::item = 4; box::item = 9; box::item", true),
+        ("escaped-return", "let box = object { item: 1 }; box::item = 9; box", false),
+        ("escaped-read", "let box = object { item: 1 }; box::item = 9; let seen = box::item; object { object: box, seen: seen }", false),
+        ("captured-object", "let box = object { item: 0 }; let mutate = fn { box::item = 9; }; mutate(); box::item", false),
+        ("captured-rebinding", "let box = object { item: 1 }; let other = object { item: 2 }; let replace = fn { box = other; }; replace(); box::item = 9; other::item", false),
+        ("captured-field-store", "let Box = object { item: 1, update: fn { item = 7; } }; Box::update(); Box::item", true),
+        ("captured-field-read", "let Box = object { item: 1, read: fn { item } }; Box::item = 9; Box::read()", true),
+        ("branch-alias", "let box = object { item: 0 }; if exists ./flag { box::item = 9; }; box::item", false),
+        ("loop-liveout", "let previous = object { item: 0 }; for item in [1, 2] { let box = object { item: item }; previous = box; }; previous::item", false),
+        ("rebound-alias", "let box = object { item: 1 }; let alias = box; alias = object { item: 2 }; alias::item = 9; box::item", true)
     })
     {
         Module original = Compiler.Compile(source, name, 0);
@@ -136,19 +136,19 @@ try
             new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, ParameterTypes: [TypeRef.Scope])
             { CodeSignature = new([Opaque], Null, []) }
     ]);
-    await CheckImages(invalid, Scalarize(invalid), $"error:Scope has no member 'missing':{missingSpan}", "selected opaque field diagnostic");
+    await CheckImages(invalid, Scalarize(invalid), $"error:Object has no member 'missing':{missingSpan}", "selected opaque field diagnostic");
     Module fieldSlots = Compiler.Compile("let field = 0; if exists ./flag { field = 1; } else { field = 2; }; field", optimization: 0);
     var applicabilityScan = new ObservedInstructions(fieldSlots.Functions[0].Instructions);
     FunctionCode noAllocation = fieldSlots.Functions[0] with { Instructions = applicabilityScan };
     Module noWork = fieldSlots with { Functions = [noAllocation] };
-    Require(ReferenceEquals(Scalarize(noWork).Functions[0], noAllocation), "Scope-free preparation changed the function");
+    Require(ReferenceEquals(Scalarize(noWork).Functions[0], noAllocation), "Object-free preparation changed the function");
     Require(applicabilityScan.Enumerations == 1 && applicabilityScan.IndexerReads == 0,
-        "Scope-free preparation constructed CFG/liveness after its allocation applicability scan");
+        "Object-free preparation constructed CFG/liveness after its allocation applicability scan");
     Random random = new(80119);
     for (int sample = 0; sample < 24; sample++)
     {
         int[] values = [0, 1]; int alias = 0; int observed = 0;
-        StringBuilder source = new("let left = scope { item: 0 }; let right = scope { item: 1 }; let alias = left; let observed = 0;\n");
+        StringBuilder source = new("let left = object { item: 0 }; let right = object { item: 1 }; let alias = left; let observed = 0;\n");
         for (int step = 0; step < 64; step++)
         {
             if (random.Next(3) == 0)
@@ -176,7 +176,7 @@ try
         {
             StringBuilder source = new("let dynamic = exists ./flag;\n");
             for (int index = 0; index < count; index++)
-                source.Append($"let box{index} = scope {{ item: false }}; box{index}::item = dynamic; let read{index} = box{index}::item;\n");
+                source.Append($"let box{index} = object {{ item: false }}; box{index}::item = dynamic; let read{index} = box{index}::item;\n");
             Module input = Compiler.Compile(source.ToString(), "scope-scaling", 0);
             for (int warm = 0; warm < 3; warm++) Scalarize(input);
             var times = new List<double>(); var allocations = new List<long>();
@@ -192,7 +192,7 @@ try
             Console.WriteLine($"{count} instances: {times[4]:F3} ms, {allocations[4] / 1_000_000.0:F3} MB allocation");
         }
     }
-    Console.WriteLine($"Scope scalarization: {assertions} contracts passed.");
+    Console.WriteLine($"Object scalarization: {assertions} contracts passed.");
 
     async Task CheckImages(Module before, Module after, string expected, string label)
     {

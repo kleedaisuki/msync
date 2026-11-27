@@ -10,7 +10,7 @@ internal static class HpirPromotionChecks
 {
     private const string SourceName = "hpir-live-promotion.msync";
     private const string Source = """
-        scope Ledger { tally: 3 };
+        object Ledger { tally: 3 };
         fn step(n: Number) -> Number {
             Ledger::tally = Ledger::tally + 1;
             n + 2

@@ -29,7 +29,7 @@ NEGATIVE: tuple[tuple[str, str, str], ...] = (
     (
         "order-return-contract",
         (
-            "$std::containers::Heap::with_policy([1,2], scope { Self: Number, "
+            "$std::containers::Heap::with_policy([1,2], object { Self: Number, "
             'sample?: null, less: fn(a:Number,b:Number) { "not Bool" } });'
         ),
         "StrictOrder",
@@ -37,9 +37,9 @@ NEGATIVE: tuple[tuple[str, str, str], ...] = (
     (
         "record-order-carrier",
         (
-            '$std::containers::Heap::with_policy([scope{other:"wrong"}], scope {'
-            "Self:Scope, sample?:scope{priority:0}, "
-            "less:fn(a:Scope,b:Scope)->Bool{a::priority < b::priority} });"
+            '$std::containers::Heap::with_policy([object{other:"wrong"}], object {'
+            "Self:Object, sample?:object{priority:0}, "
+            "less:fn(a:Object,b:Object)->Bool{a::priority < b::priority} });"
         ),
         "priority",
     ),
@@ -56,7 +56,7 @@ def property_program() -> tuple[str, dict[str, bytes]]:
     for _ in range(96):
         kind: str = generator.choice(kinds)
         value: int = generator.randrange(-16, 17)
-        steps.append(f'scope {{ kind: "{kind}", value: {value} }}')
+        steps.append(f'object {{ kind: "{kind}", value: {value} }}')
         result: int | None
         if kind == "push":
             heapq.heappush(model, value)
@@ -119,14 +119,14 @@ Heap::extend(queue, [9, 1, 7, 1]);
 $std::string::join($std::ranges::map(Heap::drain(queue),
     fn(value: Number) { value as String }), ",") -> ./drain.txt;
 (Heap::is_empty(queue) as String) -> ./drained.txt;
-let maximum = Heap::with_policy([3, 1, 4, 1, 5], scope {
+let maximum = Heap::with_policy([3, 1, 4, 1, 5], object {
     Self: Number,
     sample?: null,
     less: fn(left: Number, right: Number) -> Bool { left > right },
 });
 $std::string::join($std::ranges::map(Heap::drain(maximum),
     fn(value: Number) { value as String }), ",") -> ./reversed.txt;
-let words = Heap::with_policy(["tiny", "a", "medium"], scope {
+let words = Heap::with_policy(["tiny", "a", "medium"], object {
     Self: String,
     sample?: null,
     less: fn(left: String, right: String) -> Bool {
@@ -135,7 +135,7 @@ let words = Heap::with_policy(["tiny", "a", "medium"], scope {
 });
 $std::string::join(Heap::drain(words), ",") -> ./words.txt;
 let comparisons = 0;
-let counted = Heap::with_policy($std::ranges::sequence(256, 0, -1), scope {
+let counted = Heap::with_policy($std::ranges::sequence(256, 0, -1), object {
     Self: Number,
     sample?: null,
     less: fn(left: Number, right: Number) -> Bool {
@@ -151,15 +151,15 @@ let counted_top? = Heap::peek(counted);
 if counted_top is not null {
     (counted_top as String) -> ./counted-top.txt;
 };
-let first_job = scope { priority: 1, name: "first" };
+let first_job = object { priority: 1, name: "first" };
 let jobs = Heap::with_policy([
-    scope { priority: 7, name: "later" },
+    object { priority: 7, name: "later" },
     first_job,
-    scope { priority: 4, name: "middle" },
-], scope {
-    Self: Scope,
+    object { priority: 4, name: "middle" },
+], object {
+    Self: Object,
     sample?: null,
-    less: fn(left: Scope, right: Scope) -> Bool {
+    less: fn(left: Object, right: Object) -> Bool {
         $std::ranges::contains([first_job], left)
             and not $std::ranges::contains([first_job], right)
     },

@@ -1,8 +1,8 @@
 # Connections: native SSH and WSL
 
-Connection is a physical endpoint, distinct from lexical Scope. `$local`, `$wsl`
+Connection is a physical endpoint, distinct from lexical Object. `$local`, `$wsl`
 and `ssh://...` produce Connection values. Write `connection @ path` to select
-the physical endpoint. Lexical Scope member selection still uses `::`.
+the physical endpoint. Lexical Object member selection still uses `::`.
 
 ```msync
 let remote = ssh://forge;
@@ -27,6 +27,6 @@ if exists source { source -> remote @ ~/.codex };
 ```
 
 `connection @ path` uses the selected endpoint's path grammar. Keep remote POSIX
-paths separate from Windows drive spelling. Use a Scope member for a lexical
+paths separate from Windows drive spelling. Use an Object member for a lexical
 setting and a Connection for endpoint qualification; changing a name's spelling
 alone does not change its type.

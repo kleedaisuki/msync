@@ -56,7 +56,7 @@ let result = countdown(3);
 
 A generic-body error is diagnosed at the failing expression with the concrete
 argument types and the call site. Fix the argument's capabilities or the body;
-an arbitrary type annotation does not turn a Path into a Scope or Connection.
+an arbitrary type annotation does not turn a Path into an Object or Connection.
 
 A Path is callable too: `./tool("argument")` starts a native Process with exact
 arguments, not shell interpolation. Read `msync skill library process` for
@@ -84,5 +84,5 @@ A later `let root = ...` shadows the old location without retargeting `redirect`
 `global` is invalid at top level, and cannot replace a parameter or an already
 introduced local binding. Repeating the same import is allowed. A nested block
 may shadow an imported name; leaving the block restores that imported name.
-Scope bodies contain fields, not statements; a function-valued Scope field may
+Object bodies contain fields, not statements; a function-valued Object field may
 import its prior lexical ancestor fields with the same rules.

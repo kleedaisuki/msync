@@ -89,12 +89,12 @@ for item in [1, 2, 3] {
 };
 ((first() + second() * 10 + third() * 100) as String) -> ./iteration-captures.txt;
 fn local_fields(value: Number) {
-    let row = scope { left: value, right: value + 1 };
+    let row = object { left: value, right: value + 1 };
     row::left = row::left + 3;
     row::left + row::right
 };
 (local_fields(4) as String) -> ./local-fields.txt;
-fn escaped(value: Number) { scope { value: value } };
+fn escaped(value: Number) { object { value: value } };
 let left = escaped(1);
 let right = escaped(2);
 let alias = left;

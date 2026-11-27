@@ -13,14 +13,14 @@ ROOT: Path = Path(__file__).resolve().parents[2]
 PROGRAM: str = """
 let io = $std::io;
 let flag = io::read_line() is null;
-let row = if flag { scope { alpha: 0, key: 11 } } else { scope { key: 22, zed: 0 } };
+let row = if flag { object { alpha: 0, key: 11 } } else { object { key: 22, zed: 0 } };
 let alias = row;
 row::key = row::key + 3;
 io::println(alias::key as String);
 concept Keyed { key: Number };
 fn update(value: Keyed) {
     let first = value::key;
-    value = scope { key: 29, extra: true };
+    value = object { key: 29, extra: true };
     first + value::key
 };
 io::println(update(row) as String);
@@ -28,7 +28,7 @@ let captured = row;
 fn read { captured::key };
 io::println(read() as String);
 io::println($std::ranges::front([row])::key as String);
-let nested = scope { sample: scope { value: 19 } };
+let nested = object { sample: object { value: 19 } };
 io::println(nested::sample::value as String);
 let count = 0;
 fn tick {
@@ -37,7 +37,7 @@ fn tick {
     count
 };
 fn statics {
-    scope Counter { first: tick(), second: tick() };
+    object Counter { first: tick(), second: tick() };
     Counter::second = Counter::second + 1;
     Counter::first * 10 + Counter::second
 };

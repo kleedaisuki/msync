@@ -88,7 +88,7 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
     assert "msync skill language" in root and len(root.splitlines()) < 80, root
     assert "Null" in pages[("language", "types")]
     assert "means **file is null**" in pages[("language", "types")]
-    assert "Scope" in pages[("language", "scopes")]
+    assert "Object" in pages[("language", "scopes")]
     assert "singleton" in pages[("language", "scopes")]
     assert "connection @ path" in pages[("paths", "connections")]
     assert " as Number" in pages[("language", "conversions")]
@@ -107,7 +107,7 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
 
     containers = pages[("library", "containers")]
     assert "msync skill library containers Set" in containers
-    assert "scope Set {" not in containers, (
+    assert "object Set {" not in containers, (
         "Module overview should not dump implementation bodies"
     )
     family = invoke(

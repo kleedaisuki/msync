@@ -221,8 +221,8 @@ internal static class HpirSessionChecks
             let value = 7;
             fn read() { value };
             fn set(next: Number) { global value; value = next; };
-            let object = scope { value: 1 };
-            let alias = object;
+            let record = object { value: 1 };
+            let alias = record;
             let text = "retained: λ";
             $std::io::println("once");
             null
@@ -238,8 +238,8 @@ internal static class HpirSessionChecks
             && path.WorkingDirectory == Path.GetFullPath(Environment.CurrentDirectory),
             "A Path result must retain its source spelling and contextual origin.");
         _ = Submit("""
-            let display_record = scope { n: 7, caption: "row", location?: ./relative/nested, absent?: null };
-            let display_root = scope { first: display_record, second: display_record };
+            let display_record = object { n: 7, caption: "row", location?: ./relative/nested, absent?: null };
+            let display_root = object { first: display_record, second: display_record };
             null
             """);
         var view = Submit("display_root");
@@ -281,12 +281,12 @@ internal static class HpirSessionChecks
             """);
         Require(session.BindingNames.Contains("before") && !session.BindingNames.Contains("failed")
             && !session.BindingNames.Contains("after"), "Accept only the actually published prefix.");
-        Number("before + object::value + read()", 22);
+        Number("before + record::value + read()", 22);
         Fail("let value = \"not-a-number\" as Number; null");
         Number("value + read()", 14);
-        Number("value = 9; alias::value = 5; read() + object::value", 14);
+        Number("value = 9; alias::value = 5; read() + record::value", 14);
         Number("let value = 100; read() + value", 109);
-        Number("set(6); read() + value + object::value", 111);
+        Number("set(6); read() + value + record::value", 111);
         _ = Submit("""
             let action = fn { 4 };
             let stable = action;
@@ -341,7 +341,7 @@ internal static class HpirSessionChecks
                 let i = 0;
                 loop {
                     if i >= limit { break i; };
-                    let cell = scope { n: i };
+                    let cell = object { n: i };
                     i = cell::n + 1;
                 }
             };
@@ -362,7 +362,7 @@ internal static class HpirSessionChecks
             "Missing typed caller result observation.");
         Require(runtime.Any(item => item.Name == "hpir.session.presentation"
             && item.Metrics.GetValueOrDefault("scope.records") == 3 && item.Metrics.GetValueOrDefault("scope.fields") == 10),
-            "Missing concrete Scope display work attribution.");
+            "Missing concrete Object display work attribution.");
         if (HpirMachineImage.IsSupported && Environment.GetEnvironmentVariable("MSYNC_JIT") == "force")
             Require(runtime.Any(item => item.Name == "hpir.machine.publish"
                 && item.Metrics.GetValueOrDefault("code.bytes") > 0), "The forced session must emit native guest code.");

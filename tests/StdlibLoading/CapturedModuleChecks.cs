@@ -17,18 +17,18 @@ internal static class CapturedModuleChecks
             ("replace-root-module", Read + List + """
                 let before = read(list);
                 let root = $std;
-                root::containers = scope { List: scope { size: fn(self) { 99 } } };
+                root::containers = object { List: object { size: fn(self) { 99 } } };
                 if before == 2 { read(list) } else { 0 }
                 """, 99),
             ("replace-module-family", Read + List + """
                 let before = read(list);
                 let module = $std::containers;
-                module::List = scope { size: fn(self) { 77 } };
+                module::List = object { size: fn(self) { 77 } };
                 if before == 2 { read(list) } else { 0 }
                 """, 77),
             ("capture-materialized-root", "let root = $std; " + Read + List + """
                 let before = read(list);
-                root::containers = scope { List: scope { size: fn(self) { 99 } } };
+                root::containers = object { List: object { size: fn(self) { 99 } } };
                 if before == 2 { read(list) } else { 0 }
                 """, 99),
             ("root-materialization-control", Read + List + """
@@ -40,13 +40,13 @@ internal static class CapturedModuleChecks
                 let old = $std::containers::List;
                 let before = read(list);
                 let module = $std::containers;
-                module::List = scope { size: fn(self) { 77 } };
+                module::List = object { size: fn(self) { 77 } };
                 if before == 2 { old::size(list) + read(list) } else { 0 }
                 """, 79),
             ("callee-before-mutating-argument", Read + List + """
                 let module = $std::containers;
                 fn change(self) {
-                    module::List = scope { size: fn(self) { 99 } };
+                    module::List = object { size: fn(self) { 99 } };
                     self
                 };
                 let before = $std::containers::List::size(change(list));
@@ -58,16 +58,16 @@ internal static class CapturedModuleChecks
                 """ + List + """
                 let before = read(list);
                 let module = $std::containers;
-                module::List = scope { size: fn(self) { 77 } };
+                module::List = object { size: fn(self) { 77 } };
                 if before == 2 { read(list) } else { 0 }
                 """, 77),
             ("lexical-std-shadow", """
-                let std = scope { containers: scope { List: scope {
+                let std = object { containers: object { List: object {
                     size: fn(self) { 2 }
                 } } };
                 fn read(self) { $std::containers::List::size(self) };
                 let before = read(0);
-                std::containers = scope { List: scope { size: fn(self) { 99 } } };
+                std::containers = object { List: object { size: fn(self) { 99 } } };
                 before * 100 + read(0)
                 """, 299)
         ];
@@ -105,13 +105,13 @@ internal static class CapturedModuleChecks
         const string prefix = """
             let Shape = decltype({
                 let root = $std;
-                root::bool = scope { identity: fn(value: Bool) { not value } };
-                scope { value: root::bool::identity(false) }
+                root::bool = object { identity: fn(value: Bool) { not value } };
+                object { value: root::bool::identity(false) }
             });
             """;
-        const string valid = prefix + "let value: Shape = scope { value: true }; if value::value and not $std::bool::identity(false) { 7 } else { 0 }";
-        const string invalid = prefix + "let value: Shape = scope { other: true }; value";
-        const string publisher = "let root = $std; root::bool = scope { identity: fn(value: Bool) { not value } }; if root::bool::identity(false) { 7 } else { 0 }";
+        const string valid = prefix + "let value: Shape = object { value: true }; if value::value and not $std::bool::identity(false) { 7 } else { 0 }";
+        const string invalid = prefix + "let value: Shape = object { other: true }; value";
+        const string publisher = "let root = $std; root::bool = object { identity: fn(value: Bool) { not value } }; if root::bool::identity(false) { 7 } else { 0 }";
         int routes = 0;
         foreach (int level in new[] { 0, 2 })
         {
@@ -120,7 +120,7 @@ internal static class CapturedModuleChecks
                 throw new InvalidOperationException("A query imposed its current module schema as a storage ABI");
             var rejected = editor.AnalyzeEditor(invalid).Diagnostic;
             if (rejected is not { Code: "E0205" } || !rejected.Message.Contains("'value'", StringComparison.Ordinal))
-                throw new InvalidOperationException("A query lost the returned Scope's actual required field");
+                throw new InvalidOperationException("A query lost the returned Object's actual required field");
             if (editor.BindingNames.Count != 0)
                 throw new InvalidOperationException("A module query published candidate bindings into the accepted editor session");
             HirModule hir = Compiler.Analyze(valid, "query-module-storage.msync");
@@ -154,7 +154,7 @@ internal static class CapturedModuleChecks
         }
         await Submit(Read + List);
         Check(await Submit("read(list)"), 2, $"session initial O{level}");
-        await Submit("let family = $std::containers::List; let root = $std; root::containers = scope { List: scope { size: fn(self) { 99 } } };");
+        await Submit("let family = $std::containers::List; let root = $std; root::containers = object { List: object { size: fn(self) { 99 } } };");
         Check(await Submit("read(list)"), 99, $"session replacement O{level}");
         Check(await Submit("family::size(list)"), 2, $"session retained alias O{level}");
     }
@@ -178,7 +178,7 @@ internal static class CapturedModuleChecks
             0, $"root publication retained canonical initialized cells O{level}");
         Check(await Submit("root::bool::identity = fn(value: Bool) { not value }; (if read() { 10 } else { 0 }) + (if boolean::identity(false) { 1 } else { 0 })"),
             11, $"root member mutation retained shared namespace identity O{level}");
-        Check(await Submit("root::bool = scope { identity: fn(value: Bool) { false } }; (if read() { 10 } else { 0 }) + (if boolean::identity(false) { 1 } else { 0 })"),
+        Check(await Submit("root::bool = object { identity: fn(value: Bool) { false } }; (if read() { 10 } else { 0 }) + (if boolean::identity(false) { 1 } else { 0 })"),
             1, $"module replacement updated the canonical cell without moving retained aliases O{level}");
     }
 

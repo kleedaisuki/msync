@@ -20,7 +20,7 @@ var programs = new (string Name, string Source, string Expected)[]
         fn values() {
             let cell? = null;
             let values = [fn { cell }];
-            cell = scope { value: "record" };
+            cell = object { value: "record" };
             values
         };
         let get = $std::ranges::first(values());
@@ -47,7 +47,7 @@ var programs = new (string Name, string Source, string Expected)[]
             let cell? = null;
             let getters = [fn { cell }];
             cell = initial;
-            scope {
+            object {
                 getters: getters,
                 set: fn(value: Number) { cell = value; },
             }
@@ -64,7 +64,7 @@ var programs = new (string Name, string Source, string Expected)[]
         """, "11"),
     ("borrowed-record", """
         fn pass(values: Range) { values };
-        let record = scope { flag: false };
+        let record = object { flag: false };
         let values = pass([record]);
         let selected = $std::ranges::first(values);
         selected::flag = true;
@@ -72,7 +72,7 @@ var programs = new (string Name, string Source, string Expected)[]
         """, "shared"),
     ("borrowed-callback-result", """
         fn pass(callback: Function) { [callback()] };
-        let record = scope { flag: false };
+        let record = object { flag: false };
         let getter = fn { record };
         let values = pass(getter);
         let selected = $std::ranges::first(values);

@@ -80,7 +80,7 @@ def main() -> None:
     source: Path = work / "current.msync"
     source.write_text('let line? = $std::io::read_line(); '
         'let n = if line is null { 0 } else { line as Number }; '
-        'let row = scope { value: n }; '
+        'let row = object { value: n }; '
         'fn bump(row) { row::value = row::value + 1; row::value }; '
         '$std::io::println(bump(row) as String)')
     source_hash: str = digest(source)

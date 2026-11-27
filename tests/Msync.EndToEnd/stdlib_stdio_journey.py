@@ -105,7 +105,7 @@ async def pipe_prompt(binary: Path, directory: Path) -> None:
 async def pipe_pending_scope(binary: Path, directory: Path) -> None:
     source: Path = directory / "pending.msync"
     source.write_text(
-        'fn defer_line() { scope { line?: $std::io::read_line() } };\n'
+        'fn defer_line() { object { line?: $std::io::read_line() } };\n'
         'let handoff = defer_line();\n'
         '$std::io::print("returned"); $std::io::flush();\n'
         'let line? = handoff::line;\n'

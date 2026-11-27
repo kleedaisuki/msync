@@ -12,12 +12,12 @@ of responsibility, not a set of names to copy regardless of semantics.
 
 Every operation below accepts ordinary built-in `Type` values, including
 `decltype(expression)` and parameterized Range types. These values describe the
-closed type universe; a Type value for Scope does not encode member contracts
+closed type universe; a Type value for Object does not encode member contracts
 or prove satisfaction of a concept.
 
 | Family | Operations | Meaning |
 | --- | --- | --- |
-| Primary kinds | `is_null`, `is_bool`, `is_number`, `is_string`, `is_path`, `is_range`, `is_function`, `is_scope`, `is_process`, `is_connection`, `is_type`, `is_never` | Exact outer kind; `Number?` is not classified as Number |
+| Primary kinds | `is_null`, `is_bool`, `is_number`, `is_string`, `is_path`, `is_range`, `is_function`, `is_object`, `is_process`, `is_connection`, `is_type`, `is_never` | Exact outer kind; `Number?` is not classified as Number |
 | Composite kinds | `is_union`, `is_scalar`, `is_nullable` | Null counts as a union alternative; scalar alternatives are Bool, Number, String, Path, Connection and Type, excluding Null and Never |
 | Relations | `is_same`, `accepts`, `is_assignable`, `is_convertible`, `is_castable` | Equality; exact storage admission; assignment admission; implicit conversion; legal explicit `as` conversion |
 | Transformations | `add_null`, `remove_null`, `common_type`, `range_of` | Idempotent null admission/removal, finite union, and construction of a Range type |
@@ -87,7 +87,7 @@ fn label(value) {
     if meta::has_member(value, "name") { value::name }
     else { value as String }
 };
-label(scope { name: "Klee" });
+label(object { name: "Klee" });
 label(42);
 
 let increment = fn(value: Number) { value + 1 };
@@ -103,20 +103,20 @@ Type producers still retain effects: `is_same(compute_type(), Number)` evaluates
 the candidate argument expression.
 
 A concept can participate through an ordinary constrained callable; there is no
-runtime Concept value and no `Scope`-kind shortcut for structural satisfaction:
+runtime Concept value and no `Object`-kind shortcut for structural satisfaction:
 
 ```msync
 concept Named { name: String, };
 let accepts_named = fn(value: Named) { value::name };
-let valid = meta::is_invocable(accepts_named, scope { name: "Klee" });
-let invalid = meta::is_invocable(accepts_named, scope { name: 42 });
+let valid = meta::is_invocable(accepts_named, object { name: "Klee" });
+let invalid = meta::is_invocable(accepts_named, object { name: 42 });
 ```
 
 Metadata inference uses a separate Compilation with shared immutable source AST
 and code, copied semantic locations, and fresh specialization tables. It does
 not reparse a generated source string or invoke an alternate evaluator. A
 failed detection cannot reserve a stale Never specialization in the real
-program or attach callable/concept contracts to its live locations. Scope
+program or attach callable/concept contracts to its live locations. Object
 memory views, source provenance graphs and indexed Buffer element constraints
 are cloned with their internal alias relationships intact. No query bytecode or
 runtime AST is serialized; artifacts contain the resulting ordinary values.

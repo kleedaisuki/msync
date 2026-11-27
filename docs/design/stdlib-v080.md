@@ -30,7 +30,7 @@ implement a second empty-container mode or infer from the first real insert.
 
 Collection `cursor(self)` operations use the same `$std::ranges::Cursor`
 interface over frozen membership. A later insert or clear cannot move a
-cursor or invalidate its indexes; existing Scope element aliases remain
+cursor or invalidate its indexes; existing Object element aliases remain
 live. The order is the family's snapshot/entry order, including heap array
 order for Heap (use `Heap::sorted` for priority order without draining).
 See [iterator and algorithm contracts](ranges-v080.md).
@@ -40,8 +40,8 @@ See [iterator and algorithm contracts](ranges-v080.md).
 The current canonical source API separates three things that the earlier
 factory-object API combined:
 
-1. A named Scope owns a family of reusable constructors and operations.
-2. An anonymous Scope owns each instance's data and selected policy values.
+1. A named Object owns a family of reusable constructors and operations.
+2. An anonymous Object owns each instance's data and selected policy values.
 3. A concept constrains the fields or operations actually needed by an
    algorithm. It does not create a new runtime kind or a global instance search.
 
@@ -67,20 +67,20 @@ are fresh anonymous Scopes; aliases retain the same mutable instance identity.
 | `$std::regex::Pattern` | Pattern expression | Existing native regular-expression primitives |
 
 Generic `fn` operations specialize using the actual instance row and policy
-callable identities. A policy is an ordinary Scope value selected explicitly by
+callable identities. A policy is an ordinary Object value selected explicitly by
 the caller, not a runtime string switch, reflection registry or implicit global
 implementation. Named family functions receive `self` explicitly, so their
-data dependencies remain visible to compiler dataflow and Scope scalarization.
+data dependencies remain visible to compiler dataflow and Object scalarization.
 The model borrows the organization and explicit receiver of
 [Rust associated functions and methods](https://doc.rust-lang.org/book/ch05-03-method-syntax.html),
 without importing `impl`, ownership syntax or another open type universe.
 Concept bounds play the capability role described by
 [Rust trait bounds](https://doc.rust-lang.org/book/ch10-02-traits.html), but msync
-uses its existing structural checking and native Scope/Fn specialization.
+uses its existing structural checking and native Object/Fn specialization.
 
 The expression-problem motivation is closely related to
 [object algebras](https://www.cs.utexas.edu/~wcook/projects/oa/oa.pdf): an
-operation family and its carrier can vary independently. Here ordinary Scope
+operation family and its carrier can vary independently. Here ordinary Object
 records and explicit policy arguments provide that separation, while existing
 specialization removes known callable indirection. This does not introduce a
 second runtime object model.
@@ -92,7 +92,7 @@ policy owns the selected read/write behavior; a chunk policy preserves ordered
 text concatenation. Signature satisfaction alone is not proof of these laws,
 purity, or permission to reorder effects.
 
-Construction is an explicit `Family::new(...)` operation; a named Scope is not
+Construction is an explicit `Family::new(...)` operation; a named Object is not
 implicitly callable. The unpublished factory-object entrypoints and duplicate
 `collections` module have been removed rather than retained as adapters.
 Low-level `Path`, `Process`, `Range`, `io` and `fs` remain directly useful; a
@@ -108,7 +108,7 @@ An equality policy is a reusable source declaration, rather than a constructor
 option interpreted by a runtime registry:
 
 ```msync
-scope FoldCase {
+object FoldCase {
     Self: String,
     equal: fn(left: String, right: String) -> Bool {
         $std::string::to_lowercase(left) == $std::string::to_lowercase(right)
@@ -178,7 +178,7 @@ maintaining another authoritative signature table.
 | `$std::process` | Completed values and live process operations | Runtime-owned process lifetime/control, never a fabricated portable PID |
 | `$std::bool` | Boolean expression tools | Existing source composition remains valid |
 | `$std::containers` | Named collection families and explicit equality/storage policies | Typed data records; shared associated functions, Range snapshots and ordinary statically described namespace fields |
-| `$std::data` | Option, Result, Either and Pair composition | Closed runtime kinds; native null sum, Scope products and explicit eliminators |
+| `$std::data` | Option, Result, Either and Pair composition | Closed runtime kinds; native null sum, Object products and explicit eliminators |
 | `$std::concepts` | Reusable structural and policy contracts | Compile-time declarations; no runtime concept values or implicit instance registry |
 | `$std::meta` | Closed-type and callable metaprogramming | Unevaluated compiler queries and finite Type operations, not a user-extensible runtime type hierarchy |
 | `$std::shell` | Native terminal-oriented commands | Ordinary typed source composition over Path, Range, IO and Process; REPL directory state belongs to the execution context |
@@ -205,7 +205,7 @@ signature. `try_invoke_result(operation, Type, ...)` asks the compiler for a
 particular invocation's result in one query. A valid `Null` result is the Type
 value `Null`, distinct from the `null` of an ill-formed call.
 
-`members_of(value)` returns a Range of ordinary Scope descriptors in ordinal
+`members_of(value)` returns a Range of ordinary Object descriptors in ordinal
 name order: `name`, `type`, `storage_type`, and `admits_null`. A field's current
 flow type can differ from its fixed storage contract; the descriptor exposes
 both. An empty result retains the descriptor element shape. `common_type_of`
@@ -215,17 +215,17 @@ These are small compiler queries, not a runtime reflection registry. Following
 the declaration/type distinction in
 [WG21 P2996R13](https://open-std.org/JTC1/SC22/WG21/docs/papers/2025/p2996r13.html),
 the result describes the supplied operand without executing it. msync emits
-ordinary typed Scope/Range construction for descriptors; it does not introduce
+ordinary typed Object/Range construction for descriptors; it does not introduce
 C++ reflection handles, splicing, or a second language. The focused
 `stdlib_reflection_journey.py` exercises source, source-free `.mhir`, `.mso`,
 and `.mexe`, checking descriptor fields, type witnesses, fresh identity and
 absence of operand/call effects.
 
-The namespace is a mutable lexical Scope, not a hardcoded spelling prefix.
+The namespace is a mutable lexical Object, not a hardcoded spelling prefix.
 Selective module loading must preserve shared module locations: a source
 function capturing a standard module and later code selecting it through the
 root must observe the same module object and permitted field assignments.
-Parsing may be cached; a first caller's live Scope, captured binding slots,
+Parsing may be cached; a first caller's live Object, captured binding slots,
 working directory or home directory must not become process-global cache data.
 
 The object services are ordinary structural values. A generic algorithm states
@@ -262,7 +262,7 @@ If a module becomes a first-class value, or the whole standard root escapes,
 its complete shape is required. Persistent REPL and editor sessions also retain
 complete shape because future requests are not known to the current source
 unit. This is static source selection, not runtime lazy-module machinery, an IR
-extension or a cache of one caller's live semantic Scope.
+extension or a cache of one caller's live semantic Object.
 
 The demand-loading owner accepted 48 focused real source/object/executable
 contracts for shared cells and later root replacement. Its matched managed O0
@@ -284,7 +284,7 @@ map, not an ABI or a requirement to reproduce pointer categories.
 | --- | --- |
 | Sequence access, count, search, predicates and folds | Range-consuming functions; early-return operations stop demand immediately |
 | Transform, filter, take/drop and related adapters | Lazy Range expressions; constructing an adapter does not run its callback |
-| Zip, enumerate, chunk, sliding and flattening | Range values with inferred element or Scope structure; no second tuple/Array subsystem |
+| Zip, enumerate, chunk, sliding and flattening | Range values with inferred element or Object structure; no second tuple/Array subsystem |
 | Reverse, sorting and reusable snapshots | Explicit buffering/materialization where forward iteration is insufficient |
 | Mutating algorithms over iterator references | Return transformed Ranges or perform explicit callbacks/IO; do not pretend that immutable scalar elements are C++ writable references |
 | Parallel execution policies | Not a name-only wrapper: source callbacks retain single-VM mutation and task-owner semantics; independent IO is scheduled by the runtime |
@@ -340,7 +340,7 @@ operation's Path parameter to introduce the implicit conversion.
 Adapters retain their source and callback; callback execution occurs on demand.
 A terminal may finish early. Materializing operations document the finite-input
 requirement and own their buffers; no arbitrary item-count quota is introduced.
-Returned Scope elements preserve instance identity and shared captured locations.
+Returned Object elements preserve instance identity and shared captured locations.
 
 Each API must state whether another enumeration re-evaluates its source or
 reuses an owned materialization. Filesystem-backed Ranges are observations,
@@ -442,7 +442,7 @@ the intended layer boundary; elementary mathematics and stream iteration are
 host capabilities rather than reimplementations in user source.
 
 Source object composition also supplied a compiler convergence discriminator:
-the first row-based Map exposed a loop analysis comparing freshly joined Scope
+the first row-based Map exposed a loop analysis comparing freshly joined Object
 metadata by reference instead of semantic state. That defect is fixed; the
 retained column-based source representation is independently simpler and
 cheaper, not a substitute for compiler convergence. The measurements and
@@ -464,7 +464,7 @@ programs at O0/O2/O3 through source, relocatable and context-bound execution:
   → actual file bytes.
 * Target-dependent cast → inferred Number/Path/Connection → Unicode scalar
   access and lexical filename inspection, without authenticating the Connection.
-* Zip/enumerate records → inferred Scope fields → projected String results.
+* Zip/enumerate records → inferred Object fields → projected String results.
 * `take(0)` and a mutable callback counter → source fold → exact demand counts.
 * A discarded String join and byte writer → latent callback writes retained.
 * File size → Number division/rounding and source mathematical composition.

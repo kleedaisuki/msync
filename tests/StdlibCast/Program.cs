@@ -16,7 +16,7 @@ void Check(bool condition, string message)
 string Snapshot(Value value) => value switch
 {
     NumberValue number => "Number:" + BitConverter.DoubleToInt64Bits(number.Data).ToString("x16", CultureInfo.InvariantCulture),
-    ScopeValue scope => "Scope:" + string.Join(',', scope.Members.Select(item => item.Key + ":" + Snapshot(item.Value))),
+    ScopeValue scope => "Object:" + string.Join(',', scope.Members.Select(item => item.Key + ":" + Snapshot(item.Value))),
     _ => value.Type + ":" + value
 };
 Module RoundTrip(Module module)
@@ -41,11 +41,11 @@ try
         ("null as Null", "Null:null"),
         ("\"ssh://forge\" as Connection", "Connection:ssh://forge"),
         ("ssh://forge as String", "String:ssh://forge"),
-        ("let item = scope { value: \"before\" }; let alias = item as Scope; alias::value = \"after\"; item::value", "String:after"),
+        ("let item = object { value: \"before\" }; let alias = item as Object; alias::value = \"after\"; item::value", "String:after"),
         ("let callback = fn { \"captured\" }; (callback as Function)()", "String:captured"),
         ("null as Path?", "Null:null"),
         ("let parsed = \"12\" as Number; if decltype(parsed) is Number { \"typed\" } else { \"wrong\" }", "String:typed"),
-        ("let alias = scope { item: \"field\" } as Scope; alias::item", "String:field"),
+        ("let alias = object { item: \"field\" } as Object; alias::item", "String:field"),
         ("fn convert(value) { value as Number }; let first = convert(\"12\"); let second = first as String; if decltype(first) is Number and decltype(second) is String { second } else { \"wrong\" }", "String:12"),
         ("let target = Number; let values = $std::ranges::transform([\"12\"], fn(value) { value as Number }); target = String; $std::ranges::first(values)", "Number:4028000000000000"),
         ("let target = if exists ./flag { Number } else { String }; if target is Number { \"number\" } else { \"string\" }", "String:number")
@@ -61,7 +61,7 @@ try
     foreach ((string source, string code) in new[]
     {
         ("null as String", "E0220"),
-        ("scope { item: true } as Number", "E0220"),
+        ("object { item: true } as Number", "E0220"),
         ("./file as Process", "E0220"),
         ("let item?: String = null; item as Path", "E0220"),
         ("let target = Number; \"12\" as target", "E0202"),

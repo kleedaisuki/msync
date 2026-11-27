@@ -50,7 +50,7 @@ internal static class ScopeCrossingArmChecks
                     $"Counted arm must replay the exact canonical path for {variant}/{image.Stage}.");
             }
         }
-        Console.WriteLine("PASS whole guarded Scope crossing: 22 artifact routes, both branch paths, lazy X projection, Cell fallback, exact counters");
+        Console.WriteLine("PASS whole guarded Object crossing: 22 artifact routes, both branch paths, lazy X projection, Cell fallback, exact counters");
     }
 
     private static IReadOnlyDictionary<string, ulong> FunctionCounters(IReadOnlyList<RuntimeProfileSample> samples) =>
@@ -73,7 +73,7 @@ internal static class ScopeCrossingArmChecks
         }
         catch (MsyncException error) when (variant == Variant.MissingSelected)
         {
-            Require(error.Span == BxSpan && error.Message == "Scope has no member 'stop_x'",
+            Require(error.Span == BxSpan && error.Message == "Object has no member 'stop_x'",
                 "A late guard miss must preserve the selected member failure and original span.");
         }
     }

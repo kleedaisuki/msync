@@ -10,7 +10,7 @@ internal static class InlineNativeChecks
     internal static async Task RunAsync()
     {
         // The old stack inline/vector-owner fast path is retired; exercise typed fields and real native boundaries.
-        await Number("let row = scope { value: 0 }; row::value = $std::math::floor(41.75); $std::ranges::at([$std::ranges::front([row::value])], 0) + 1", 42);
+        await Number("let row = object { value: 0 }; row::value = $std::math::floor(41.75); $std::ranges::at([$std::ranges::front([row::value])], 0) + 1", 42);
         foreach (double index in new[] { -1d, double.PositiveInfinity, 1d, .5d })
         {
             NativeProgram program = At(index);

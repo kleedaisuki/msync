@@ -115,15 +115,15 @@ def main() -> None:
         cwd = Path(directory)
         source = cwd / "source with spaces.msync"
         source.write_text(
-            "scope Demo { copy: fn(file: Path, destination: Path) -> Bool { file -> destination } };\n"
+            "object Demo { copy: fn(file: Path, destination: Path) -> Bool { file -> destination } };\n"
             'let message = "hello ""Klee""\n世界";\n'
             "if exists ./missing { message -> ./must-not-exist; };\n"
             "Demo::copy(./missing, ./must-not-exist);\n"
-            "fn state() { scope Shared { count: 7 }; Shared };\n"
+            "fn state() { object Shared { count: 7 }; Shared };\n"
             "let first = state(); let second = state();\n"
-            "let local = scope { count: 2 };\n"
+            "let local = object { count: 2 };\n"
             "local::count = 9;\n"
-            "scope Counter { value: 3 };\n"
+            "object Counter { value: 3 };\n"
             "Counter::value = 8;\n"
             "let remainder = first::count % (local::count + Counter::value);\n",
             encoding="utf-8",

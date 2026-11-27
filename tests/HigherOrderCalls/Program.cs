@@ -28,41 +28,41 @@ var cases = new (string Name, string Source, Value Expected)[]
         """, new NumberValue(10)),
     ("nested-result-fold", """
         fn ok(value?) {
-            scope { fold: fn(on_ok: Function, on_error: Function) { on_ok(value) } }
+            object { fold: fn(on_ok: Function, on_error: Function) { on_ok(value) } }
         };
         fn err(error?) {
-            scope { fold: fn(on_ok: Function, on_error: Function) { on_error(error) } }
+            object { fold: fn(on_ok: Function, on_error: Function) { on_error(error) } }
         };
-        fn fold(result: Scope, on_ok: Function, on_error: Function) {
+        fn fold(result: Object, on_ok: Function, on_error: Function) {
             result::fold(on_ok, on_error)
         };
-        fn zip(left: Scope, right: Scope) {
+        fn zip(left: Object, right: Object) {
             fold(left, fn(first?) {
-                fold(right, fn(second?) { ok(scope { first?: first, second?: second }) }, err)
+                fold(right, fn(second?) { ok(object { first?: first, second?: second }) }, err)
             }, err)
         };
         let zipped = zip(ok("joined"), ok(5));
-        fold(zipped, fn(pair: Scope) {
+        fold(zipped, fn(pair: Object) {
             $std::string::concat(pair::first, pair::second as String)
         }, fn(error: String) { error })
         """, new StringValue("joined5")),
     ("nested-result-error", """
-        fn ok(value?) { scope { fold: fn(on_ok: Function, on_error: Function) { on_ok(value) } } };
-        fn err(error?) { scope { fold: fn(on_ok: Function, on_error: Function) { on_error(error) } } };
-        fn fold(value: Scope, on_ok: Function, on_error: Function) { value::fold(on_ok, on_error) };
-        fn zip(left: Scope, right: Scope) {
+        fn ok(value?) { object { fold: fn(on_ok: Function, on_error: Function) { on_ok(value) } } };
+        fn err(error?) { object { fold: fn(on_ok: Function, on_error: Function) { on_error(error) } } };
+        fn fold(value: Object, on_ok: Function, on_error: Function) { value::fold(on_ok, on_error) };
+        fn zip(left: Object, right: Object) {
             fold(left, fn(first?) {
-                fold(right, fn(second?) { ok(scope { first?: first, second?: second }) }, err)
+                fold(right, fn(second?) { ok(object { first?: first, second?: second }) }, err)
             }, err)
         };
-        fold(zip(ok(4), err("right error")), fn(pair: Scope) { "wrong" }, fn(error: String) { error })
+        fold(zip(ok(4), err("right error")), fn(pair: Object) { "wrong" }, fn(error: String) { error })
         """, new StringValue("right error")),
     ("recursive-fresh-scope", """
-        fn count(state: Scope) {
+        fn count(state: Object) {
             if state::remaining <= 0 { 0 }
-            else { count(scope { remaining: state::remaining - 1 }) + 1 }
+            else { count(object { remaining: state::remaining - 1 }) + 1 }
         };
-        count(scope { remaining: 8 })
+        count(object { remaining: 8 })
         """, new NumberValue(8)),
     ("recursive-callable-argument", """
         fn repeat(operation: Function, count: Number, value: Number) {
@@ -110,7 +110,7 @@ var cases = new (string Name, string Source, Value Expected)[]
         """, new NumberValue(1)),
     ("captured-parameter-result-contract", """
         fn owner(value?: Number) {
-            scope {
+            object {
                 read: fn { let marker = 0; value },
                 clear: fn { value = null; },
             }
@@ -139,7 +139,7 @@ var cases = new (string Name, string Source, Value Expected)[]
         $std::string::join(lines("before"), "|")
         """, new StringValue("after|mutation")),
     ("returned-scope-alias", """
-        fn create() { let local = scope { value: 1 }; local };
+        fn create() { let local = object { value: 1 }; local };
         let first = create();
         let second = first;
         second::value = 3;
@@ -165,7 +165,7 @@ var cases = new (string Name, string Source, Value Expected)[]
             writer(0);
             { let input = 0; input = 1; };
             for input in [1, 2] { input = input + 1; };
-            let state = scope { input: 0, set: fn { input = 1; } };
+            let state = object { input: 0, set: fn { input = 1; } };
             state::set();
             match input {
                 String => { $std::string::lines(input) },
@@ -217,7 +217,7 @@ var rejected = new (string Name, string Source)[]
         """),
     ("deferred-mutable-scope-payload", """
         fn reverse(value: Range<String>) { $std::ranges::reverse(value) };
-        fn lines(state: Scope) {
+        fn lines(state: Object) {
             if state::value is null {
                 ["none"]
             } else {
@@ -226,7 +226,7 @@ var rejected = new (string Name, string Source)[]
                 pending
             }
         };
-        $std::string::join(lines(scope { value?: ["before"] }), "|")
+        $std::string::join(lines(object { value?: ["before"] }), "|")
         """),
 };
 int checks = 0;

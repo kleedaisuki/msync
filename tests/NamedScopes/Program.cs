@@ -21,21 +21,21 @@ foreach (int level in new[] { 0, 2, 3 })
 {
     foreach ((string name, string source, string expected) in new[]
     {
-        ("named-identity", "fn factory(value: String) { scope Saved { item: value }; Saved }; let first = factory(\"first\"); first::item = \"changed\"; let second = factory(\"second\"); second::item", "changed"),
-        ("named-expression", "fn factory(value: String) { let object = scope Shared { item: value }; object }; let first = factory(\"first\"); first::item = \"changed\"; factory(\"ignored\")::item", "changed"),
-        ("anonymous-fresh", "fn factory(value: String) { scope { item: value } }; let first = factory(\"first\"); first::item = \"changed\"; factory(\"second\")::item", "second"),
-        ("initializer-effects", "let count = 0; fn factory() { scope Saved { item: { count = count + 1; \"value\" } }; Saved }; factory(); factory(); if count == 1 { \"once\" } else { \"repeated\" }", "once"),
-        ("captured-cell", "fn factory(value: String) { scope Saved { item: value, read: fn { item }, write: fn(value: String) { item = value; } }; Saved }; let first = factory(\"first\"); let second = factory(\"second\"); second::write(\"shared\"); first::read()", "shared"),
-        ("recursive-initializer", "fn factory(depth: Number) { scope Saved { item: if depth == 0 { \"inner\" } else { factory(depth - 1); \"outer\" } }; Saved }; let first = factory(1); first::item", "inner"),
-        ("initializer-flow-facts", "let flag = false; fn factory() { scope Saved { item: { flag = true; \"value\" } }; Saved }; factory(); flag = false; factory(); if flag { \"stale\" } else { \"skipped\" }", "skipped"),
-        ("specialized-capture", "fn factory(value: Scope) { scope Saved { read: fn { value::item } }; Saved }; if false { factory(scope { item: \"unselected\" }); }; factory(scope { item: \"selected\" })::read()", "selected"),
-        ("selected-first", "fn factory(value: String) { scope Saved { item: value }; Saved }; if false { factory(\"unselected\"); }; factory(\"selected\")::item", "selected"),
-        ("self-forward-member", "scope family { make: fn(value:String) { family::later(value) }, later: fn(value:String) { scope {item:value} } }; family::make(\"forward\")::item", "forward"),
-        ("self-expression", "let value = scope Family { make: fn { Family::later() }, later: fn { \"expression\" } }; value::make()", "expression"),
-        ("self-shared-mutation", "scope Family { item: \"before\", read: fn { Family::item } }; let alias = Family; alias::item = \"after\"; Family::read()", "after"),
-        ("self-binding-mutation", "scope Family { read: fn { Family::item }, item: \"before\" }; let original = Family; Family = scope {item: \"replacement\"}; original::read()", "replacement"),
-        ("self-recursive-operation", "scope Family { depth: fn(value:Number)->Number { if value == 0 { 0 } else { Family::depth(value - 1) + 1 } } }; if Family::depth(4) == 4 { \"recursive\" } else { \"wrong\" }", "recursive"),
-        ("self-singleton-first-capture", "fn factory(value:String) { scope Saved { read: fn { Saved::item }, item:value }; Saved }; factory(\"first\"); factory(\"ignored\")::read()", "first"),
+        ("named-identity", "fn factory(value: String) { object Saved { item: value }; Saved }; let first = factory(\"first\"); first::item = \"changed\"; let second = factory(\"second\"); second::item", "changed"),
+        ("named-expression", "fn factory(value: String) { let record = object Shared { item: value }; record }; let first = factory(\"first\"); first::item = \"changed\"; factory(\"ignored\")::item", "changed"),
+        ("anonymous-fresh", "fn factory(value: String) { object { item: value } }; let first = factory(\"first\"); first::item = \"changed\"; factory(\"second\")::item", "second"),
+        ("initializer-effects", "let count = 0; fn factory() { object Saved { item: { count = count + 1; \"value\" } }; Saved }; factory(); factory(); if count == 1 { \"once\" } else { \"repeated\" }", "once"),
+        ("captured-cell", "fn factory(value: String) { object Saved { item: value, read: fn { item }, write: fn(value: String) { item = value; } }; Saved }; let first = factory(\"first\"); let second = factory(\"second\"); second::write(\"shared\"); first::read()", "shared"),
+        ("recursive-initializer", "fn factory(depth: Number) { object Saved { item: if depth == 0 { \"inner\" } else { factory(depth - 1); \"outer\" } }; Saved }; let first = factory(1); first::item", "inner"),
+        ("initializer-flow-facts", "let flag = false; fn factory() { object Saved { item: { flag = true; \"value\" } }; Saved }; factory(); flag = false; factory(); if flag { \"stale\" } else { \"skipped\" }", "skipped"),
+        ("specialized-capture", "fn factory(value: Object) { object Saved { read: fn { value::item } }; Saved }; if false { factory(object { item: \"unselected\" }); }; factory(object { item: \"selected\" })::read()", "selected"),
+        ("selected-first", "fn factory(value: String) { object Saved { item: value }; Saved }; if false { factory(\"unselected\"); }; factory(\"selected\")::item", "selected"),
+        ("self-forward-member", "object family { make: fn(value:String) { family::later(value) }, later: fn(value:String) { object {item:value} } }; family::make(\"forward\")::item", "forward"),
+        ("self-expression", "let value = object Family { make: fn { Family::later() }, later: fn { \"expression\" } }; value::make()", "expression"),
+        ("self-shared-mutation", "object Family { item: \"before\", read: fn { Family::item } }; let alias = Family; alias::item = \"after\"; Family::read()", "after"),
+        ("self-binding-mutation", "object Family { read: fn { Family::item }, item: \"before\" }; let original = Family; Family = object {item: \"replacement\"}; original::read()", "replacement"),
+        ("self-recursive-operation", "object Family { depth: fn(value:Number)->Number { if value == 0 { 0 } else { Family::depth(value - 1) + 1 } } }; if Family::depth(4) == 4 { \"recursive\" } else { \"wrong\" }", "recursive"),
+        ("self-singleton-first-capture", "fn factory(value:String) { object Saved { read: fn { Saved::item }, item:value }; Saved }; factory(\"first\"); factory(\"ignored\")::read()", "first"),
     })
     {
         Module raw = Compiler.Compile(source, name, level);
@@ -54,18 +54,18 @@ foreach (int level in new[] { 0, 2, 3 })
         compiler.AcceptSubmission(session.GetLocalValue);
         return result;
     }
-    await Submit("fn factory(value: String) { scope Saved { item: value }; Saved }; let object = factory(\"before\");");
-    await Submit("object::item = \"after\";");
+    await Submit("fn factory(value: String) { object Saved { item: value }; Saved }; let record = factory(\"before\");");
+    await Submit("record::item = \"after\";");
     Check(await Submit("factory(\"ignored\")::item") is StringValue { Data: "after" }, $"REPL singleton persisted O{level}");
-    await Submit("scope Other { item: \"different\" };");
+    await Submit("object Other { item: \"different\" };");
     Check(await Submit("Other::item") is StringValue { Data: "different" }, $"REPL declaration identity O{level}");
-    await Submit("scope SelfFamily { read: fn { SelfFamily::item }, item: \"before\" };");
+    await Submit("object SelfFamily { read: fn { SelfFamily::item }, item: \"before\" };");
     await Submit("SelfFamily::item = \"after\";");
     Check(await Submit("SelfFamily::read()") is StringValue { Data: "after" }, $"REPL self capture O{level}");
     try
     {
-        _ = Compiler.Compile("fn factory(value: Scope) { scope Saved { item: value }; Saved }; factory(scope { field: \"text\" }); factory(scope { field: 1 })", "fixed-singleton-schema", level);
-        throw new InvalidOperationException("Named Scope changed its nested field schema across specializations");
+        _ = Compiler.Compile("fn factory(value: Object) { object Saved { item: value }; Saved }; factory(object { field: \"text\" }); factory(object { field: 1 })", "fixed-singleton-schema", level);
+        throw new InvalidOperationException("Named Object changed its nested field schema across specializations");
     }
     catch (CompileException error)
     {
@@ -73,14 +73,14 @@ foreach (int level in new[] { 0, 2, 3 })
     }
     foreach (string pending in new[]
     {
-        "scope Pending { item: Pending };",
-        "scope Pending { read: fn { Pending::value }, value: 1, item: Pending::read() };"
+        "object Pending { item: Pending };",
+        "object Pending { read: fn { Pending::value }, value: 1, item: Pending::read() };"
     })
     {
         try
         {
             _ = Compiler.Compile(pending, "pending-self", level);
-            throw new InvalidOperationException("A Scope read its unpublished self location");
+            throw new InvalidOperationException("An Object read its unpublished self location");
         }
         catch (CompileException error)
         {
@@ -89,7 +89,7 @@ foreach (int level in new[] { 0, 2, 3 })
         }
     }
     ExecutionSession independent = new();
-    Module independentModule = Compiler.Compile("scope Other { item: \"independent\" }; Other::item", "isolated", level);
+    Module independentModule = Compiler.Compile("object Other { item: \"independent\" }; Other::item", "isolated", level);
     Check(await independent.ExecuteAsync(independentModule) is StringValue { Data: "independent" }, $"Session isolation O{level}");
 }
 Console.WriteLine($"PASS: {assertions} named singleton/anonymous freshness/source/mso/mexe/session contracts");

@@ -76,7 +76,7 @@ def _polygon(directory: Path, size: int, seed: int) -> Fixture:
             hits += 1
             checksum = (checksum + index) % 1000003
     rows: str = "\n".join(
-        f"    scope {{ ax: {ax}, ay: {ay}, bx: {bx}, by: {by} }},"
+        f"    object {{ ax: {ax}, ay: {ay}, bx: {bx}, by: {by} }},"
         for (ax, ay), (bx, by) in edges
     )
     source: str = (
@@ -206,7 +206,7 @@ fn detector(divisor: Number, high: Number, low: Number) {
         $std::io::println(changes as String);
         $std::io::println(exposure as String);
     };
-    scope { ingest: ingest, report: report }
+    object { ingest: ingest, report: report }
 };
 """
         + definitions
@@ -247,7 +247,7 @@ fn make_row(tick: Number) {
     state = (state * 48271) % 2147483647;
     let low = state % 4096;
     let high = low + (state % 31);
-    scope { low: low, high: high, keep: tick % 7 != 0 }
+    object { low: low, high: high, keep: tick % 7 != 0 }
 };
 let rows = $std::ranges::materialize($std::ranges::transform($std::ranges::iota(0, count), make_row));
 let selected = 0;
@@ -320,12 +320,12 @@ def _bands(directory: Path, size: int, seed: int) -> Fixture:
         for score in scores:
             checksum = (checksum * 131 + score + ordinal) % 1_000_003
     rows: str = "\n".join(
-        f"    scope {{ lower: {low}, upper: {high}, gain: {gain} }},"
+        f"    object {{ lower: {low}, upper: {high}, gain: {gain} }},"
         for low, high, gain in base
     )
     source: str = (
         _INPUT
-        + "let moving = scope { lower: 510, upper: 790, gain: 8 };\nlet bands = [\n"
+        + "let moving = object { lower: 510, upper: 790, gain: 8 };\nlet bands = [\n"
         + rows
         + "\n    moving,\n];\n"
         + """\
@@ -390,12 +390,12 @@ def _segment_screening(directory: Path, size: int, seed: int) -> Fixture:
         hits += passed
         checksum = (checksum * 131 + passed * ordinal) % 1_000_003
     rows: str = "\n".join(
-        f"    scope {{ start_x: {x0}, start_y: {y0}, stop_x: {x1}, stop_y: {y1} }},"
+        f"    object {{ start_x: {x0}, start_y: {y0}, stop_x: {x1}, stop_y: {y1} }},"
         for x0, y0, x1, y1 in static
     )
     source: str = (
         _INPUT
-        + "let moving = scope { start_x: 713, start_y: -713, stop_x: 802, stop_y: 661 };\n"
+        + "let moving = object { start_x: 713, start_y: -713, stop_x: 802, stop_y: 661 };\n"
         + "let edges = [\n"
         + rows
         + "\n    moving,\n];\n"
@@ -468,7 +468,7 @@ def _literal_segment_parity(directory: Path, size: int, seed: int) -> Fixture:
             checksum = (checksum * 131 + ordinal) % 1_000_003
 
     rows: str = "\n".join(
-        f'    scope {{ west_x: {ax}, west_y: {ay}, east_x: {bx}, east_y: {by}, label: "row-{i}" }},'
+        f'    object {{ west_x: {ax}, west_y: {ay}, east_x: {bx}, east_y: {by}, label: "row-{i}" }},'
         for i, (ax, ay, bx, by) in enumerate(segments)
     )
     source: str = (
@@ -534,7 +534,7 @@ def _ordered_calibration(directory: Path, size: int, seed: int) -> Fixture:
         checksum = (checksum * 131 + bucket + 5_000_000) % 1_000_003
 
     rows: str = "\n".join(
-        f"    scope {{ decay: {decay!r}, offset: {offset!r}, gain: {gain!r} }},"
+        f"    object {{ decay: {decay!r}, offset: {offset!r}, gain: {gain!r} }},"
         for decay, offset, gain in coefficients
     )
     source: str = (
@@ -569,7 +569,7 @@ def cases() -> tuple[Case, ...]:
         Case(
             "polygon-queries",
             "compute",
-            "Seeded point-in-polygon queries over a concave Scope-edge polygon",
+            "Seeded point-in-polygon queries over a concave Object-edge polygon",
             16384,
             _polygon,
         ),
@@ -592,7 +592,7 @@ def cases() -> tuple[Case, ...]:
         Case(
             "band-classification",
             "compute",
-            "Classify seeded samples against eight calibrated bands including a moving Scope",
+            "Classify seeded samples against eight calibrated bands including a moving Object",
             8192,
             _bands,
         ),

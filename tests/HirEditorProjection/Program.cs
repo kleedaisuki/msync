@@ -98,8 +98,8 @@ NativePresentation? Native(string identity)
 }
 SemanticValuePresenter presenter = new(view, Native);
 Require(nativeQueries == 0, "Presenter construction does not load native declarations");
-Require(presenter.Describe("Named", [named]).SemanticRole == "type", "Named Scope has type role");
-Require(presenter.Describe("instance", [anonymous]).SemanticRole == "variable", "Anonymous Scope has variable role");
+Require(presenter.Describe("Named", [named]).SemanticRole == "type", "Named Object has type role");
+Require(presenter.Describe("instance", [anonymous]).SemanticRole == "variable", "Anonymous Object has variable role");
 Require(presenter.Describe("alias", [callable]).Signature == "fn alias(path?: Path) -> Bool", "Function names, parameter names and nullable spelling");
 Require(presenter.Describe("alias", [callable]).SemanticRole == "function", "Callable role");
 Require(presenter.Describe("generic", [template]).Signature.Contains("inferred at call", StringComparison.Ordinal), "Open template has a useful signature without a body");
@@ -121,9 +121,9 @@ Require(presenter.Describe("contract", [optionalContract]).Members!.Single().Typ
 Require(presenter.Describe("union", [unionScope]).Members!.Single().Members!.Single() is
     { Name: "shared", Type: "String or Number" }, "True HIR type unions preserve nested common fields");
 Require(presenter.Describe("optional_union", [optionalUnion]).Members!.Single().Members!.Single().Name == "shared",
-    "Null alternatives do not erase valid Scope capabilities");
+    "Null alternatives do not erase valid Object capabilities");
 Require(presenter.Describe("callable_or_scope", [functionOrScope]).Members is null,
-    "A Function-or-Scope union does not expose Scope-only members");
+    "A Function-or-Object union does not expose Object-only members");
 Require(presenter.Describe("process", [childProcess]).Members!.Select(item => item.Name).SequenceEqual(["stdout", "stderr", "exit_code", "success"]), "Process fields require no extra HIR type entries");
 Require(presenter.Describe("exists", [alias]).Signature.StartsWith("native fn exists(path:", StringComparison.Ordinal), "Native aliases retain actual parameter names");
 Require(SemanticStandardCatalog.Builtins.Single(member => member.Name == "$std").Members!
@@ -138,7 +138,7 @@ Require(presenter.Describe("file", [path]).KnownPath is { Raw: "./file", Working
 EditorSemanticIndex index = new(view);
 Require(index.Occurrences().Single().SemanticRole == "type", "Concrete observations beat generic recovery alternatives");
 Require(index.At(24).Bindings.Single().Name == "outer", "Future local declaration is not visible");
-Require(index.At(26).Bindings.Single() is { Name: "parameter", SemanticRole: "variable" }, "Parameter does not inherit a named Scope type role");
+Require(index.At(26).Bindings.Single() is { Name: "parameter", SemanticRole: "variable" }, "Parameter does not inherit a named Object type role");
 Require(index.At(55).Bindings.Single().Name == "outer", "Leaving lexical owner restores outer scope");
 Require(index.At(61).Receiver!.Members!.Single().Members!.Single().Name == "shared", "Receiver completion preserves nested generic intersection");
 Require(index.At(71) is { HasPhysicalOwner: true, PhysicalEndpoint.Address: "forge" }, "Physical owner is preserved");

@@ -36,17 +36,17 @@ let equal = fn(a: String, b: String) {
 
 let custom_set = EqualitySet::with_equality(
     $std::ranges::take([""], 0),
-    scope {
+    object {
         Self: String,
         equal: equal
     }
 );
 let custom_map = Map::with_equality(
-    $std::ranges::take([scope {
+    $std::ranges::take([object {
         key: "",
         value: 0
     }], 0),
-    scope {
+    object {
         Self: String,
         equal: equal
     }
@@ -114,9 +114,9 @@ NEGATIVE: tuple[tuple[str, str], ...] = (
     ),
     (
         (
-            "let policy = scope { Self: Number, "
+            "let policy = object { Self: Number, "
             "equal: fn(a: String, b: String) { a == b } }; "
-            "$std::containers::Map::with_equality([scope { key: 0, value: 0 }], policy);"
+            "$std::containers::Map::with_equality([object { key: 0, value: 0 }], policy);"
         ),
         "E0214",
     ),

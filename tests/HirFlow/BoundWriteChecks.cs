@@ -54,7 +54,7 @@ internal static class BoundWriteChecks
         Check(program.IsStable(privateBlock), "A private block inside a REPL remains a closed lifetime");
         Check(!program.IsStable(module), "Standard source exports remain externally writable");
         Check(program.IsStable(local), "A standard source function's private local can be stable");
-        Check(!program.IsStable(field), "Scope field constancy is not inferred from absent source writes");
+        Check(!program.IsStable(field), "Object field constancy is not inferred from absent source writes");
         Check(program.IsStable(iteration) && program.IsStable(pattern), "Loop/match declaration identities are private");
         Check(program.Original(captured) == written, "Capture identity resolves without physical layout");
 

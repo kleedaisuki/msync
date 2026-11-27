@@ -18,15 +18,15 @@ internal static class HpirConcatChecks
         $std::io::println($std::ranges::at(text, 1));
         $std::io::println($std::string::join($std::ranges::materialize(text), ","));
 
-        fn plan(left: Scope) {
-            let right = scope { label: "right" };
-            let skipped = scope { label: "unreachable" };
+        fn plan(left: Object) {
+            let right = object { label: "right" };
+            let skipped = object { label: "unreachable" };
             $std::ranges::concat([left], $std::ranges::drop([skipped, right], 1))
         };
-        let left = scope { label: "left" };
+        let left = object { label: "left" };
         let parts = plan(left);
         let garbage = $std::ranges::materialize(
-            $std::ranges::transform($std::ranges::iota(0, 8192), fn(value: Number) { scope { value: value } })
+            $std::ranges::transform($std::ranges::iota(0, 8192), fn(value: Number) { object { value: value } })
         );
         $std::io::println($std::ranges::size(garbage) as String);
         $std::io::println($std::ranges::front(parts)::label);
@@ -55,7 +55,7 @@ internal static class HpirConcatChecks
             Check(program, native: false);
             if (HpirMachineImage.IsSupported) Check(program, native: true);
         }
-        Console.WriteLine("PASS HPIR concat: no-copy empty and segment plans, direct pulls, bulk pack, and aliased Scope lifetime");
+        Console.WriteLine("PASS HPIR concat: no-copy empty and segment plans, direct pulls, bulk pack, and aliased Object lifetime");
     }
 
     private static void Check(HpirProgram program, bool native)

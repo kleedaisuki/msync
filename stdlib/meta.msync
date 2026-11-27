@@ -5,7 +5,7 @@ native fn is_union(type: Type) -> Bool;
 # Scalar alternatives are Bool, Number, String, Path, Connection and Type.
 native fn is_scalar(type: Type) -> Bool;
 
-# Equality and acceptance inspect closed types, not Scope member contracts.
+# Equality and acceptance inspect closed types, not Object member contracts.
 native fn is_same(first: Type, second: Type) -> Bool;
 native fn accepts(target: Type, source: Type) -> Bool;
 # Assignment and implicit conversion admit only the Path/String conversion pair.
@@ -34,7 +34,7 @@ fn is_number(type: Type) -> Bool { is_same(type, Number) };
 fn is_string(type: Type) -> Bool { is_same(type, String) };
 fn is_path(type: Type) -> Bool { is_same(type, Path) };
 fn is_function(type: Type) -> Bool { is_same(type, Function) };
-fn is_scope(type: Type) -> Bool { is_same(type, Scope) };
+fn is_object(type: Type) -> Bool { is_same(type, Object) };
 fn is_process(type: Type) -> Bool { is_same(type, Process) };
 fn is_connection(type: Type) -> Bool { is_same(type, Connection) };
 fn is_type(type: Type) -> Bool { is_same(type, Type) };
@@ -58,11 +58,11 @@ native fn parameter_count(operation) -> Number?;
 native fn parameter_types(operation) -> Range<Type>?;
 native fn is_variadic(operation) -> Bool;
 # A single declared signature, or null when the callable domain is ambiguous.
-native fn signature_of(operation) -> Scope?;
+native fn signature_of(operation) -> Object?;
 # Nullable receivers must first be narrowed to guarantee a member exists.
 native fn has_member(value?, name: String) -> Bool;
 native fn member_type(value?, name: String) -> Type?;
 native fn member_names(value?) -> Range<String>;
 native fn member_count(value?) -> Number;
 # Ordered descriptors distinguish a field's current type from its storage type.
-native fn members_of(value?) -> Range<Scope>;
+native fn members_of(value?) -> Range<Object>;

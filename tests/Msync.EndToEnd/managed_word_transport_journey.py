@@ -22,10 +22,10 @@ PROGRAM: str = """fn next_number() -> Number {
     if line is null { 0 } else { line as Number }
 };
 fn traverse(count: Number, rotation: Number, select_word: Bool) -> String {
-    let head = scope { key: 0, ordinal: 1, next?: null };
+    let head = object { key: 0, ordinal: 1, next?: null };
     let tail = head;
     for ordinal in $std::ranges::iota(1, count + 1) {
-        let added = scope { key: ordinal * 3, ordinal: ordinal + 1, next?: null };
+        let added = object { key: ordinal * 3, ordinal: ordinal + 1, next?: null };
         tail::next = added;
         tail = added;
     };

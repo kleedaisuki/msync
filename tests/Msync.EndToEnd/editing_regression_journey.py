@@ -50,10 +50,10 @@ def symbol_mode(
     uri = (directory / "outline.msync").as_uri()
     sources = [
         (
-            "scope SomeScope { new: fn() { scope { item: $wsl } } };\n"
-            "let object = SomeScope::new();\nlet space = object::item;\n"
+            "object SomeScope { new: fn() { object { item: $wsl } } };\n"
+            "let record = SomeScope::new();\nlet space = record::item;\n"
         ),
-        "scope SomeScope {\n    new: fn() {\n        scope { item: $wsl }\n    },\n",
+        "object SomeScope {\n    new: fn() {\n        object { item: $wsl }\n    },\n",
         "fn unfinished(item: Path) {\n    let local = item;\n",
         "let still_editing =\n",
         "fn\n",

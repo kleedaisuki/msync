@@ -13,7 +13,7 @@ internal static class HeapDeferredChecks
             fn make() {
                 let child = $std::process::spawn("{{childPath}}", ["--child"]);
                 let status = $std::process::exit_code(child);
-                scope { child: child, queue: Heap::new([status]) }
+                object { child: child, queue: Heap::new([status]) }
             };
             let state = make();
             let saved = Heap::snapshot(state::queue);
@@ -21,7 +21,7 @@ internal static class HeapDeferredChecks
             $std::process::close_stdin(state::child);
             let selected? = Heap::pop(state::queue);
             let snapshot? = $std::ranges::front(saved);
-            scope {
+            object {
                 selected_ok: if selected is not null and selected == 0 { true } else { false },
                 snapshot_ok: if snapshot is not null and snapshot == 0 { true } else { false },
                 output: $std::process::stdout($std::process::wait(state::child)),

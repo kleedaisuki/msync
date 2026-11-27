@@ -44,7 +44,7 @@ try
             file::move_to(first, directory::child(folder, "moved.txt"));
             let copied = file::copy_to(first, ./work/copy.txt);
             let snapshot = directory::snapshot(folder);
-            scope {
+            object {
                 record: first,
                 initial: initial,
                 moved: file::name(alias) == "moved.txt",
@@ -70,8 +70,8 @@ try
         }
 
         const string policy = """
-            let state = scope { text: "", reads: 0, writes: 0 };
-            scope memory {
+            let state = object { text: "", reads: 0, writes: 0 };
+            object memory {
                 read: fn(path: Path) -> String {
                     state::reads = state::reads + 1;
                     state::text
@@ -96,7 +96,7 @@ try
             file::append(record, " policy");
             let text = file::read_text(record);
             let lines = $std::ranges::size(file::read_lines(record));
-            scope {
+            object {
                 untouched: untouched,
                 text: text,
                 reads: state::reads,
@@ -126,7 +126,7 @@ try
             let local = command::on(extended, $local);
             let result = command::capture_input(local, "hello 星");
             completed::write_to(result, ./command-output);
-            scope {
+            object {
                 result: result,
                 good: result::success and result::code == 0
                     and result::output == "echo:hello 星",
@@ -145,9 +145,9 @@ try
             Require(((ScopeValue)value["result"]).Members.Values.All(member => member is not FunctionValue), "Completed data owns object methods");
             Require(await File.ReadAllTextAsync(Path.Combine(root, "command-output")) == "echo:hello 星", "Completed output publication");
         }
-        Reject("$std::files::File::with_policy(./x, scope { read: fn(path:Path) { 1 }, lines: fn(path:Path) { [path as String] }, write: fn(path:Path,text:String) {}, append: fn(path:Path,text:String) {} })", "read", level);
+        Reject("$std::files::File::with_policy(./x, object { read: fn(path:Path) { 1 }, lines: fn(path:Path) { [path as String] }, write: fn(path:Path,text:String) {}, append: fn(path:Path,text:String) {} })", "read", level);
         Reject("let value = $std::files::File::new(./x); value::path = 1;", "Path", level);
-        Reject("$std::commands::Command::run(scope { executable: ./x, arguments: true, runner: $std::commands::NativeProcess })", "arguments", level);
+        Reject("$std::commands::Command::run(object { executable: ./x, arguments: true, runner: $std::commands::NativeProcess })", "arguments", level);
     }
     Console.WriteLine($"PASS {checks} canonical native service contracts");
 }

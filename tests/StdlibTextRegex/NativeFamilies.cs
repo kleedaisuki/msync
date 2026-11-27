@@ -24,7 +24,7 @@ internal static class NativeFamilies
             ("let p = $std::regex::Pattern::new(\"😀\"); $std::ranges::size($std::regex::Pattern::matches(p, \"😀a😀\"))", "2"),
             ("""
                 let calls = 0;
-                scope EagerChunks {
+                object EagerChunks {
                     append: fn(chunks: Range<String>, text: String) {
                         calls = calls + 1;
                         $std::ranges::materialize(
@@ -63,9 +63,9 @@ internal static class NativeFamilies
             }
             foreach (string source in new[]
             {
-                "$std::text::StringBuilder::with_policy(scope { build: fn(chunks:Range<String>) { \"\" } });",
-                "$std::text::StringBuilder::with_policy(scope { append: fn(chunks:Range<String>,text:String){chunks}, build: fn(chunks:Range<String>) { false } });",
-                "$std::regex::Pattern::is_match(scope {expression: 4}, \"text\");",
+                "$std::text::StringBuilder::with_policy(object { build: fn(chunks:Range<String>) { \"\" } });",
+                "$std::text::StringBuilder::with_policy(object { append: fn(chunks:Range<String>,text:String){chunks}, build: fn(chunks:Range<String>) { false } });",
+                "$std::regex::Pattern::is_match(object {expression: 4}, \"text\");",
                 "let b = $std::text::StringBuilder::new(); b::length = \"wrong\";",
             })
             {

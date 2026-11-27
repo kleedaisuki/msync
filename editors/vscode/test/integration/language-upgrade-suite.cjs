@@ -42,8 +42,8 @@ async function run() {
         'concept Named { name: String, };',
         'concept Labeled { Named, };',
         'fn label(item: Labeled) -> String { item::name };',
-        'scope Catalog { title: "catalog", };',
-        'let instance = scope { name: "Klee", };',
+        'object Catalog { title: "catalog", };',
+        'let instance = object { name: "Klee", };',
         'let result = label(instance);',
         'let numbers = [1.5, .5, 1e3, 0xFF, 0b10_01, 0o77, 1_000, -0];',
         'let text = 1.5e2 as String;',
@@ -69,7 +69,7 @@ async function run() {
         return document.positionAt(offset + delta);
     };
     const hovers = [];
-    for (const [spelling, expected] of [['Labeled)', /Labeled/], ['text =', /String/], ['local_path =', /Path/], ['numbers =', /Range/], ['Catalog {', /Scope/]]) {
+    for (const [spelling, expected] of [['Labeled)', /Labeled/], ['text =', /String/], ['local_path =', /Path/], ['numbers =', /Range/], ['Catalog {', /Object/]]) {
         const text = hoverText(await bounded(`hover ${spelling}`, vscode.commands.executeCommand('vscode.executeHoverProvider', document.uri, position(spelling))));
         assert.match(text, expected, spelling);
         hovers.push({spelling, text});
@@ -90,7 +90,7 @@ async function run() {
     const expected = [
         ['concept Named', 'keyword'], ['Named {', 'type'], ['Labeled)', 'type'],
         ['fn label', 'keyword'], ['label(item', 'function'], ['scope Catalog', 'keyword'],
-        ['Catalog {', 'type'], ['instance =', 'variable'], ['scope { name', 'keyword'],
+        ['Catalog {', 'type'], ['instance =', 'variable'], ['object { name', 'keyword'],
         ['1.5,', 'number'], [' .5,', 'number', 1], ['1e3,', 'number'], ['0xFF,', 'number'],
         ['0b10_01,', 'number'], ['0o77,', 'number'], ['1_000,', 'number'],
         ['**3**2', 'operator'], ['as String', 'keyword'], ['@ ./input', 'operator'],

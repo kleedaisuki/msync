@@ -66,7 +66,7 @@ internal sealed partial class SemanticAnalyzer
         var shape = value.Scope ?? ValueForType(value.Type).Scope;
         if (shape is { } known && context.Objects.TryGetValue(known.Region, out var latest)) shape = latest;
         if (shape is null)
-            throw Error(node.Source, $"Scope pattern field '{node.Text}' needs a statically described Scope.", "E0205");
+            throw Error(node.Source, $"Object pattern field '{node.Text}' needs a statically described Object.", "E0205");
         return KnownPatternField(node.Source, TryScopeField(shape, node.Text!, context, out _), context);
     }
 

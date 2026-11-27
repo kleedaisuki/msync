@@ -17,11 +17,11 @@ checks += SessionSnapshotChecks.Run();
 BindingRollback();
 await Query("decltype(match true { true => 1, _ => 2 }); 7", 7);
 await Query("decltype(for item in [1] { item }); 7", 7);
-await Query("decltype(scope { item: 1 }); 7", 7);
+await Query("decltype(object { item: 1 }); 7", 7);
 await Query("fn recurse(value: Number) -> Number { recurse(value) }; decltype(recurse(1)); 7", 7);
 await Query("let value = 1; decltype({ value = 9; value }); value", 1);
 await Query("let value = 1; decltype(if exists ./query_only { value = 3 } else { value = 4 }); value", 1);
-await Query("let value = scope { item: 1 }; decltype({ value::item = 9; value }); value::item", 1, emittedScopes: 1);
+await Query("let value = object { item: 1 }; decltype({ value::item = 9; value }); value::item", 1, emittedScopes: 1);
 
 SemanticContext parent = new(new(0));
 HirLocationId location = new(3);
@@ -56,7 +56,7 @@ async Task Query(string source, double expected, int emittedScopes = 0)
     Check(bound.Hir.Locations.Count == locations, "Query published a location.");
     Check(bound.Hir.Matches.Count == matches, "Query published Match payload.");
     Check(bound.Hir.Fors.Count == fors, "Query published For payload.");
-    Check(bound.Hir.Scopes.Count == scopes + emittedScopes, "Query published Scope payload.");
+    Check(bound.Hir.Scopes.Count == scopes + emittedScopes, "Query published Object payload.");
     Check(bound.Hir.Calls.Count == calls, "Query published Call payload.");
     Check(bound.Hir.Closures.Count == closures, "Query published Closure payload.");
     Check(bound.Hir.Adaptations.Count == adaptations, "Query published callback adaptation.");

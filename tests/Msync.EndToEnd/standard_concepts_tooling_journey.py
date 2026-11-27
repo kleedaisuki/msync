@@ -108,13 +108,13 @@ let capable = $std::meta::is_invocable(arithmetic, Number);
         labels = {item["label"] for item in inherited}
         assert {"first", "second"} <= labels, inherited
 
-        invalid = '$std::containers::EqualitySet::with_equality(["x"], scope { missing: true });'
+        invalid = '$std::containers::EqualitySet::with_equality(["x"], object { missing: true });'
         notify(client, uri, 2, invalid)
         rejected = diagnostics(client, uri, 2)["diagnostics"]
         assert len(rejected) == 1 and rejected[0]["code"] == "E0214", rejected
         failure = rejected[0]
         assert "equal" in failure["message"].lower(), failure
-        assert failure["range"]["start"] == position(invalid, invalid.index("scope")), (
+        assert failure["range"]["start"] == position(invalid, invalid.index("object")), (
             failure
         )
         assert any(
@@ -256,7 +256,7 @@ def terminal(binary: Path, directory: Path) -> dict[str, object]:
             complete_product(windows.key, windows.until, screen)
             windows.send("\r")
             windows.prompt(windows.line("CONCEPT_READY"))
-            windows.evaluate('identify(scope { first?: 41, second?: "kept" })', "41")
+            windows.evaluate('identify(object { first?: 41, second?: "kept" })', "41")
             windows.send("\x04")
             windows.exit()
         finally:
@@ -273,7 +273,7 @@ def terminal(binary: Path, directory: Path) -> dict[str, object]:
             )
             console.send(b"\r")
             console.prompt(console.line("CONCEPT_READY"))
-            console.evaluate('identify(scope { first?: 41, second?: "kept" })', "41")
+            console.evaluate('identify(object { first?: 41, second?: "kept" })', "41")
             console.send(b"\x04")
             console.process.wait(timeout=5)
             assert console.process.returncode == 0

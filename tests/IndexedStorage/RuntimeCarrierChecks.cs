@@ -82,7 +82,7 @@ internal static class RuntimeCarrierChecks
             let before = $std::storage::vector_snapshot(owner);
             let alias = owner;
             $std::storage::vector_push(alias, 4);
-            scope {
+            object {
                 items: owner,
                 before: before,
                 after: $std::storage::vector_snapshot(owner),

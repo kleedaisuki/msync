@@ -16,10 +16,10 @@ def run(binary: Path) -> dict[str, Any]:
     client: Client = Client(binary)
     uri: str = "file:///msync-editor-probe-recovery.msync"
     malformed: str = (
-        "let ready = scope { useful: true }; "
+        "let ready = object { useful: true }; "
         "fn inspect(scope) { (scope::endpoint @ /tmp/) }; "
-        "inspect(scope { endpoint: ssh://one }); "
-        "inspect(scope { endpoint: true });"
+        "inspect(object { endpoint: ssh://one }); "
+        "inspect(object { endpoint: true });"
     )
     valid: str = "let recovered = true; recovered"
     try:
@@ -31,7 +31,7 @@ def run(binary: Path) -> dict[str, Any]:
             "textDocument/hover",
             {"textDocument": {"uri": uri}, "position": {"line": 0, "character": 5}},
         )
-        assert hovered is not None and "ready: Scope" in hovered["contents"]["value"], (
+        assert hovered is not None and "ready: Object" in hovered["contents"]["value"], (
             hovered
         )
         notify(client, uri, 2, valid)

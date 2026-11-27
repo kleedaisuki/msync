@@ -5,7 +5,7 @@ if count? or initial? {
 } else {
     let n = count as Number;
     let value = initial as Number;
-    let state = scope {
+    let state = object {
         writes: 0
     };
     let observe = fn() {

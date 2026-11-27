@@ -12,8 +12,8 @@ internal static class AddressViewJourney
     {
         (string Name, string Source, double Result)[] cases =
         [
-            ("first-number", "let item = scope { value: 1, other: 2 }; item::value = 7; item::value + item::other", 9),
-            ("first-function", "let item = scope { run: fn { 4 }, other: 2 }; item::run = fn { 7 }; item::run() + item::other", 9),
+            ("first-number", "let item = object { value: 1, other: 2 }; item::value = 7; item::value + item::other", 9),
+            ("first-function", "let item = object { run: fn { 4 }, other: 2 }; item::run = fn { 7 }; item::run() + item::other", 9),
             ("captured-root", "let value = 1; fn read() { value }; value = 7; read()", 7)
         ];
         foreach (var test in cases)

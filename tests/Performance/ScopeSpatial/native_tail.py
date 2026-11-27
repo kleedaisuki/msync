@@ -87,12 +87,12 @@ def program(case: str, rows: int) -> str:
     if case.startswith("manifest"):
         return """let seed = $std::io::read_text(./seed.txt) as Number;
 fn build(values: Range, directory: Path, endpoint: Connection) {
-    let records = $std::storage::vector_empty(decltype(scope {
+    let records = $std::storage::vector_empty(decltype(object {
         name: "", path: directory, enabled: true, endpoint: endpoint,
     }));
     for value in values {
         let name = $std::string::concat("file-", value as String);
-        $std::storage::vector_push(records, scope {
+        $std::storage::vector_push(records, object {
             name: name, path: directory/name, enabled: true, endpoint: endpoint,
         });
     };
@@ -119,11 +119,11 @@ $std::string::concat(total as String,
 fn build(values: Range) {
     let records = $std::storage::vector_empty(decltype({
         let value = 0;
-        scope { label: "kept", path: ./fixed, flag: true }
+        object { label: "kept", path: ./fixed, flag: true }
     }));
     for value in values {
         $std::storage::vector_push(records,
-            scope { label: "kept", path: ./fixed, flag: true });
+            object { label: "kept", path: ./fixed, flag: true });
     };
     $std::storage::vector_take(records)
 };

@@ -12,10 +12,10 @@ internal static class PointerArithmeticJourney
     {
         (string Name, string Source, double Expected)[] cases =
         [
-            ("numbers", "let item=scope { left:1, right:2 }; item::right=7; item::left+item::right", 8),
-            ("mixed-roots", "let item=scope { number:1, run:fn {4}, nested:scope { value:6 } }; item::run=fn {7}; item::nested::value=9; item::number+item::run()+item::nested::value", 17),
-            ("zero-sized-prefix", "let item=scope { empty?:null, number:7, run:fn {4} }; item::number+item::run()", 11),
-            ("scope-alias", "let original=scope { value:1 }; let row=scope { count:2, item:original }; row::item::value=7; original::value+row::count", 9)
+            ("numbers", "let item=object { left:1, right:2 }; item::right=7; item::left+item::right", 8),
+            ("mixed-roots", "let item=object { number:1, run:fn {4}, nested:object { value:6 } }; item::run=fn {7}; item::nested::value=9; item::number+item::run()+item::nested::value", 17),
+            ("zero-sized-prefix", "let item=object { empty?:null, number:7, run:fn {4} }; item::number+item::run()", 11),
+            ("scope-alias", "let original=object { value:1 }; let row=object { count:2, item:original }; row::item::value=7; original::value+row::count", 9)
         ];
         int executions = 0;
         foreach (bool combine in new[] { false, true })
@@ -64,7 +64,7 @@ internal static class PointerArithmeticJourney
 
     private static async Task ScaledArrayAsync()
     {
-        var input = LlvmHirLowerer.Lower(Compiler.Analyze("let item=scope { left:1, right:7 }; item::right", "scaled-array-gep.msync"));
+        var input = LlvmHirLowerer.Lower(Compiler.Analyze("let item=object { left:1, right:7 }; item::right", "scaled-array-gep.msync"));
         var address = input.Module.Functions.SelectMany(function => function.BasicBlocks).SelectMany(block => block.Instructions)
             .OfType<LlvmGetElementPtrInstruction>().Last(gep => gep.IndexCount == 2 && gep.GetIndex(1) is LlvmConstantInt { IsOne: true });
         LlvmTransformBuilder builder = new(address);

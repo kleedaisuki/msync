@@ -36,7 +36,7 @@ Set::insert(set, 2);
 ($std::ranges::sum(Set::snapshot(set)) as String) -> ./set.txt;
 let seeded = Set::new([3, 3, 6]);
 ($std::ranges::sum(Set::snapshot(seeded)) as String) -> ./seeded.txt;
-let reverse_order = scope {
+let reverse_order = object {
     Self: Number,
     sample?: null,
     less: fn(a: Number, b: Number) { a > b }
@@ -65,7 +65,7 @@ let legacy = BPlusTree::new(7, "legacy");
 BPlusTree::insert(legacy, 8, "value");
 ($std::ranges::matches(legacy::value_prototype, "legacy") as String)
     -> ./legacy.txt;
-let items = $std::ranges::materialize([scope { label: "shape" }]);
+let items = $std::ranges::materialize([object { label: "shape" }]);
 $std::ranges::at(items, 0)::label -> ./shape.txt;
 let types = List::empty(Number);
 List::push(types, String);
@@ -152,7 +152,7 @@ text(ranges::set_intersection(left, right)) -> ./intersection.txt;
 text(ranges::set_difference(left, right)) -> ./difference.txt;
 text(ranges::set_symmetric_difference(left, right)) -> ./symmetric.txt;
 text(ranges::merge(ranges::empty_of(Number), right)) -> ./empty.txt;
-let counts = scope { left: 0, right: 0, compare: 0 };
+let counts = object { left: 0, right: 0, compare: 0 };
 let first = ranges::map([1, 3], fn(value: Number) {
     counts::left = counts::left + 1;
     value
@@ -172,10 +172,10 @@ text([counts::left, counts::right, counts::compare]) -> ./still_cold.txt;
 text([counts::left, counts::right, counts::compare]) -> ./after_first.txt;
 text(lazy) -> ./lazy.txt;
 text([counts::left, counts::right, counts::compare]) -> ./after_all.txt;
-let original = scope { key: 1, label: "original" };
+let original = object { key: 1, label: "original" };
 let joined = ranges::merge_with(
     [original],
-    [scope { key: 1, label: "later" }],
+    [object { key: 1, label: "later" }],
     fn(a, b) { a::key < b::key }
 );
 let member = ranges::first(joined);

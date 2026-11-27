@@ -51,7 +51,7 @@ internal sealed partial class SemanticAnalyzer
                 continue;
             }
             if (supplied.BranchValue is { Arms.Length: > 1 })
-                throw Error(source, $"Type parameter '{variable.Name}' has unresolved correlated Scope alternatives.", "E0214");
+                throw Error(source, $"Type parameter '{variable.Name}' has unresolved correlated Object alternatives.", "E0214");
             var associated = RequireConcept(supplied, concept, source, caller);
             foreach (var (projection, linked) in program.AssociatedProjections)
             {

@@ -50,12 +50,12 @@ internal static class GuardedScopeChecks
             }
             catch (MsyncException error)
             {
-                Require(error.Span == FirstField && error.Message == "Scope has no member 'absent'",
+                Require(error.Span == FirstField && error.Message == "Object has no member 'absent'",
                     "A guard miss must leave the original failing field and span selected.");
             }
         }
         await CheckDeferred();
-        Console.WriteLine("PASS guarded Scope comparison, branch exits and dead stores, counted/detailed PCs, signed zero/NaN, Cell, interior entry and deferred fallback");
+        Console.WriteLine("PASS guarded Object comparison, branch exits and dead stores, counted/detailed PCs, signed zero/NaN, Cell, interior entry and deferred fallback");
     }
 
     private static async Task CheckLayoutVersions()

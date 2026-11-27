@@ -41,7 +41,7 @@ internal static class BackendChecks
             ("signed-zero", "let i=0; let value=0.0; loop { if i>=129 {break;}; value=-value; i=i+1; }; value", -0d),
             ("zero-divisor", "let i=0; let value=0; loop { if i>=129 {break;}; value=i%0; i=i+1; }; value", double.NaN),
             ("captured-write", "let n=1; fn change() {n=0.25;}; let before=n; change(); before+n", 1.25),
-            ("alias-write", "let row=scope {n:1}; fn change(row) {row::n=0.25;}; let before=row::n; change(row); before+row::n", 1.25)
+            ("alias-write", "let row=object {n:1}; fn change(row) {row::n=0.25;}; let before=row::n; change(row); before+row::n", 1.25)
         ];
         foreach ((string name, string source, double expected) in cases)
             foreach (int level in new[] { 0, 2 })

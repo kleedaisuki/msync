@@ -79,7 +79,7 @@ void Check(bool condition, string message)
 ScopeLayout layout = new(new[] { "first", ".codex", "cell" });
 CellValue cell = new(new StringValue("before"));
 ScopeValue value = new(layout, [Value.True, new NumberValue(3), cell]) { AllocationSite = 17 };
-Check(ReferenceEquals(value.Members, value), "Scope allocated a separate member-view object");
+Check(ReferenceEquals(value.Members, value), "Object allocated a separate member-view object");
 Check(value.TryGetFieldOffset("cell", out int offset) && offset == 2, "Field offset lookup changed");
 Check(value.GetField(2) is StringValue { Data: "before" }, "Indexed read did not dereference shared storage");
 value.SetField(2, new StringValue("indexed"));
@@ -94,7 +94,7 @@ Check(ReferenceEquals(mapped.Layout, layout) && mapped.AllocationSite == 17, "Cl
 mapped.SetMember("cell", new StringValue("independent"));
 Check(cell.Data is StringValue { Data: "named" }, "Cloning the visible values retained old mutable cells");
 try { value.SetMember("missing", Value.Null); throw new InvalidOperationException("Missing field write succeeded"); }
-catch (MsyncException error) { Check(error.Message == "Scope has no member 'missing'", "Missing field write diagnostic changed"); }
+catch (MsyncException error) { Check(error.Message == "Object has no member 'missing'", "Missing field write diagnostic changed"); }
 try { _ = ScopeLayout.Parse("a\0a"); throw new InvalidOperationException("Duplicate member layout succeeded"); }
 catch (ArgumentException error) { Check(error.Message.Contains("same key", StringComparison.Ordinal), "Duplicate construction error changed"); }
 
@@ -104,21 +104,21 @@ ScopeValue emptySecond = new(emptyLayout, Array.Empty<Value>());
 RangeValue emptyValues = new(new Value[] { emptyFirst, emptySecond, emptyFirst }, TypeRef.Scope);
 RuntimeContext nativeContext = new(new(WorkingDirectory: Environment.CurrentDirectory));
 static ValueTask<Value> NoCallback(Value target, IReadOnlyList<Value> arguments, CancellationToken token) =>
-    throw new InvalidOperationException("Unexpected callback during Scope collection lookup");
+    throw new InvalidOperationException("Unexpected callback during Object collection lookup");
 RangeValue unique = (RangeValue)await NativeRegistry.InvokeAsync("ranges.unique", [emptyValues], nativeContext, NoCallback);
 int uniqueCount = 0;
 await foreach (Value item in unique.Items) uniqueCount++;
-Check(uniqueCount == 2, "Native unique merged two Scope instances sharing empty storage");
+Check(uniqueCount == 2, "Native unique merged two Object instances sharing empty storage");
 Check(await NativeRegistry.InvokeAsync("ranges.contains", [new RangeValue(new Value[] { emptyFirst }, TypeRef.Scope), emptySecond], nativeContext, NoCallback)
-    is BoolValue { Data: false }, "Native contains mistook a distinct empty Scope for an alias");
+    is BoolValue { Data: false }, "Native contains mistook a distinct empty Object for an alias");
 Check(await NativeRegistry.InvokeAsync("ranges.contains", [new RangeValue(new Value[] { emptyFirst }, TypeRef.Scope), emptyFirst], nativeContext, NoCallback)
-    is BoolValue { Data: true }, "Native contains lost the same Scope alias");
+    is BoolValue { Data: true }, "Native contains lost the same Object alias");
 HashSet<Value> identities = [emptyFirst, emptySecond, value];
 int hash = value.GetHashCode();
 value.SetField(0, Value.False);
 value.SetMember("cell", new StringValue("mutated-again"));
-Check(identities.Count == 3 && identities.Contains(value) && value.GetHashCode() == hash, "Field mutation changed Scope hash identity");
-Check(!value.Equals(mapped) && !emptyFirst.Equals(emptySecond) && emptyFirst.Equals((Value)emptyFirst), "Scope identity follows payload/layout instead of its instance");
+Check(identities.Count == 3 && identities.Contains(value) && value.GetHashCode() == hash, "Field mutation changed Object hash identity");
+Check(!value.Equals(mapped) && !emptyFirst.Equals(emptySecond) && emptyFirst.Equals((Value)emptyFirst), "Object identity follows payload/layout instead of its instance");
 
 Module Factory() => new([new StringValue("original")],
 [
@@ -145,13 +145,13 @@ try
 {
     foreach ((string name, string source, string expected) in new[]
     {
-        ("constructor-cells", "fn make(value) { scope { field: value, read: fn { field }, write: fn(newValue) { field = newValue; } } }; let first = make(\"first\"); let second = make(\"second\"); first::write(\"changed\"); if second::read() == \"second\" { first::read() } else { \"aliased\" }", "changed"),
-        ("closure-field-alias", "let item = scope { field: \"before\", read: fn { field } }; let alias = item; alias::field = \"after\"; item::read()", "after"),
-        ("loop-instances", "let read = fn { \"none\" }; for item in [\"first\", \"second\", \"third\"] { let object = scope { field: item, read: fn { field } }; read = object::read; }; read()", "third"),
-        ("branch-layout", "let object = if exists ./selected { scope { first: true, value: \"selected\" } } else { scope { value: \"other\", first: false } }; object::value", "other"),
-        ("nullable-field", "let object = scope { field?: \"before\", read: fn { field } }; object::field = null; if object::read() is null { \"cleared\" } else { \"stale\" }", "cleared"),
-        ("dot-member", "let object = scope { .codex: \"dot\" }; object::.codex", "dot"),
-        ("empty-instance-identity", "fn make() { scope {} }; let first = make(); let second = make(); let count = 0; for object in $std::ranges::unique([first, second, first]) { count = count + 1; }; if count == 2 and not $std::ranges::contains([first], second) and $std::ranges::contains([first], first) { \"distinct\" } else { \"merged\" }", "distinct")
+        ("constructor-cells", "fn make(value) { object { field: value, read: fn { field }, write: fn(newValue) { field = newValue; } } }; let first = make(\"first\"); let second = make(\"second\"); first::write(\"changed\"); if second::read() == \"second\" { first::read() } else { \"aliased\" }", "changed"),
+        ("closure-field-alias", "let item = object { field: \"before\", read: fn { field } }; let alias = item; alias::field = \"after\"; item::read()", "after"),
+        ("loop-instances", "let read = fn { \"none\" }; for item in [\"first\", \"second\", \"third\"] { let record = object { field: item, read: fn { field } }; read = record::read; }; read()", "third"),
+        ("branch-layout", "let record = if exists ./selected { object { first: true, value: \"selected\" } } else { object { value: \"other\", first: false } }; record::value", "other"),
+        ("nullable-field", "let record = object { field?: \"before\", read: fn { field } }; record::field = null; if record::read() is null { \"cleared\" } else { \"stale\" }", "cleared"),
+        ("dot-member", "let record = object { .codex: \"dot\" }; record::.codex", "dot"),
+        ("empty-instance-identity", "fn make() { object {} }; let first = make(); let second = make(); let count = 0; for object in $std::ranges::unique([first, second, first]) { count = count + 1; }; if count == 2 and not $std::ranges::contains([first], second) and $std::ranges::contains([first], first) { \"distinct\" } else { \"merged\" }", "distinct")
     })
     {
         foreach (int level in new[] { 0, 2, 3 })
@@ -164,7 +164,7 @@ try
             }
         }
     }
-    Module repeated = Compiler.Compile("fn make(value) { scope { field: value } }; scope { first: make(\"first\"), second: make(\"second\") }", "layout-reuse", 0);
+    Module repeated = Compiler.Compile("fn make(value) { object { field: value } }; object { first: make(\"first\"), second: make(\"second\") }", "layout-reuse", 0);
     ScopeValue pair = (ScopeValue)await Interpreter.ExecuteAsync(repeated, new(WorkingDirectory: root));
     ScopeValue left = (ScopeValue)pair.Members["first"];
     ScopeValue right = (ScopeValue)pair.Members["second"];
@@ -174,10 +174,10 @@ try
     const string permuted = """
         let trace = 0;
         fn mark(value: Number) { global trace; trace = trace * 10 + value; value };
-        let left = scope { z: mark(1), a: mark(2) };
-        let right = scope { a: mark(3), z: mark(4) };
+        let left = object { z: mark(1), a: mark(2) };
+        let right = object { a: mark(3), z: mark(4) };
         left::a = 99;
-        scope { left: left, right: right, trace: trace }
+        object { left: left, right: right, trace: trace }
         """;
     using MemoryStream typed = new();
     Msync.Hir.HirArtifact.WriteProduced(Compiler.Analyze(permuted, "permuted-scope"), typed);
@@ -200,14 +200,14 @@ try
 
     CompilerSession privateCompiler = new(optimization: 2);
     Module privateFrames = privateCompiler.Compile(
-        "fn take_field(n: Number) { let row = scope { x: n }; row::x }; take_field(37)");
+        "fn take_field(n: Number) { let row = object { x: n }; row::x }; take_field(37)");
     Check(privateFrames.Functions.Where(function => function.Name == "take_field"
         && function.ReturnType == TypeRef.Number).ToArray() is [var privateFrame]
         && privateFrame.Instructions.All(instruction => instruction.Op != OpCode.NewScope),
         "Stable REPL entry slots blocked scalar replacement in a private callable");
     Check(await new ExecutionSession().ExecuteAsync(privateFrames) is NumberValue { Data: 37 },
         "Private frame optimization changed the REPL result");
-    Module places = Compiler.Compile("let object = scope { field: \"before\" }; object::field = \"after\"; object::field", "source-places", 0);
+    Module places = Compiler.Compile("let record = object { field: \"before\" }; record::field = \"after\"; record::field", "source-places", 0);
     Instruction[] fieldAccesses = places.Functions.SelectMany(function => function.Instructions)
         .Where(instruction => instruction.Op is OpCode.LoadField or OpCode.StoreField).ToArray();
     Check(fieldAccesses is [{ Op: OpCode.StoreField } write, { Op: OpCode.LoadField } read] && write.A == read.A,

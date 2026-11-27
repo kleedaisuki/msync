@@ -45,12 +45,12 @@ PROGRAMS: tuple[Program, ...] = (
     ),
     Program(
         "scope-field",
-        'scope State { value: "before", write: fn { global value; value = "after"; }, read: fn { global value; value } }; let alias = State; alias::write(); State::read() -> ./result;',
+        'object State { value: "before", write: fn { global value; value = "after"; }, read: fn { global value; value } }; let alias = State; alias::write(); State::read() -> ./result;',
         (("result", b"after"),),
     ),
     Program(
         "scope-rebind",
-        'let object = scope { file: "before" }; fn read() { global object; object::file }; object = scope { file: "after" }; read() -> ./result;',
+        'let record = object { file: "before" }; fn read() { global record; record::file }; record = object { file: "after" }; read() -> ./result;',
         (("result", b"after"),),
     ),
     Program(
@@ -114,7 +114,7 @@ INVALID: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ),
     (
         "field-refinement",
-        "scope State { value?: ./input, clear: fn { global value; value = null; } }; if State::value is not null { State::clear(); State::value -> ./result; };",
+        "object State { value?: ./input, clear: fn { global value; value = null; } }; if State::value is not null { State::clear(); State::value -> ./result; };",
         ("Null", "Handle"),
     ),
 )
@@ -227,7 +227,7 @@ def repl(binary: Path, root: Path) -> int:
 def editor(binary: Path, root: Path) -> int:
     client = Client(binary, cwd=root)
     uri = (root / "editing.msync").as_uri()
-    text = 'let root = scope { item: "root" }; fn copy() { "copy" }; fn read(parameter: String) { let local = "local"; global ro; root::item };'
+    text = 'let root = object { item: "root" }; fn copy() { "copy" }; fn read(parameter: String) { let local = "local"; global ro; root::item };'
     try:
         client.request("initialize", {"capabilities": {}})
         notify(client, uri, 1, text, opening=True)
@@ -254,7 +254,7 @@ def editor(binary: Path, root: Path) -> int:
         hover, _ = client.request("textDocument/hover", parameters)
         assert diagnostics(client, uri, 2)["diagnostics"] == [], corrected
         assert (
-            "root: Scope" in hover["contents"]["value"]
+            "root: Object" in hover["contents"]["value"]
             and "item" in hover["contents"]["value"]
         ), hover
         definition, _ = client.request("textDocument/definition", parameters)

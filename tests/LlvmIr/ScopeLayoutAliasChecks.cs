@@ -10,7 +10,7 @@ internal static class ScopeLayoutAliasChecks
 {
     internal static async Task<int> RunAsync()
     {
-        const string source = "fn edge_value(edge) { edge::ay + edge::by }; edge_value(scope { ax:1, ay:2, bx:3, by:4 })";
+        const string source = "fn edge_value(edge) { edge::ay + edge::by }; edge_value(object { ax:1, ay:2, bx:3, by:4 })";
         var hir = Compiler.Analyze(source, "scope-layout-alias.msync");
         int functionIndex = Enumerable.Range(0, hir.Functions.Length).Single(index => hir.Functions[index].Name == "edge_value");
         var function = hir.Functions[functionIndex];

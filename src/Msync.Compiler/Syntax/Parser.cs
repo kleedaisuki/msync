@@ -15,13 +15,18 @@ public sealed class Parser
     private readonly IReadOnlyList<Token> tokens;
     private readonly bool editorMode;
     private readonly CancellationToken cancellationToken;
+    private readonly CompilationTrace? trace;
+    private int objectDeclarations;
+    private int objectExpressions;
+    private int namedObjectExpressions;
     private SyntaxException? firstError;
     private int errorCount;
     private int? incompleteRoot;
     private int position;
     private Parser(string source, string sourceName) : this(source, sourceName, new Lexer(source, sourceName).Lex()) { }
     private Parser(string source, string sourceName, IReadOnlyList<Token> tokens, bool editorMode = false,
-        SyntaxException? firstError = null, CancellationToken cancellationToken = default)
+        SyntaxException? firstError = null, CancellationToken cancellationToken = default,
+        CompilationTrace? trace = null)
     {
         this.source = source;
         this.sourceName = sourceName;
@@ -29,6 +34,7 @@ public sealed class Parser
         this.editorMode = editorMode;
         this.firstError = firstError;
         this.cancellationToken = cancellationToken;
+        this.trace = trace;
     }
     public static Document Parse(string source, string sourceName = "<source>")
     {
@@ -43,11 +49,12 @@ public sealed class Parser
             static state => new Lexer(state.source, state.sourceName).Lex(),
             attributes: new Dictionary<string, string> { ["source.file"] = sourceName },
             metrics: static result => new Dictionary<string, ulong> { ["tokens"] = (ulong)result.Count });
-        return trace.MeasureDetailed("compiler.syntax", (source, sourceName, tokens), static state =>
+        return trace.MeasureDetailed("compiler.syntax", (source, sourceName, tokens, trace), static state =>
         {
-            Parser parser = new(state.source, state.sourceName, state.tokens);
+            Parser parser = new(state.source, state.sourceName, state.tokens, trace: state.trace.Detail);
             return new Document(parser.Statements(TokenKind.End), new(0, state.source.Length));
-        }, metrics: static document => new Dictionary<string, ulong> { ["statements"] = (ulong)document.Statements.Count });
+        }, attributes: new Dictionary<string, string> { ["source.file"] = sourceName },
+            metrics: static document => new Dictionary<string, ulong> { ["statements"] = (ulong)document.Statements.Count });
     }
 
     public static EditorParseResult ParseForEditor(string source, string sourceName = "<source>") =>
@@ -65,7 +72,7 @@ public sealed class Parser
         var (tokens, error) = lexed;
         var regexSpans = tokens.Where(token => token.Kind == TokenKind.Regex).Select(token => token.Span).ToList();
         if (error is { IsIncomplete: true } && source[error.Span.Start] == '<') regexSpans.Add(error.Span);
-        Parser parser = new(source, sourceName, tokens, editorMode: true, error, cancellationToken);
+        Parser parser = new(source, sourceName, tokens, editorMode: true, error, cancellationToken, trace);
         List<Statement> statements = [];
         try { _ = parser.Statements(TokenKind.End, statements); }
         catch (SyntaxException syntax)
@@ -204,8 +211,9 @@ public sealed class Parser
             Take(TokenKind.Semicolon);
             return new FunctionDeclaration(function.Name!, function, SourceSpan.Cover(start, Previous.Span));
         }
-        if (Word("scope") && Peek().Kind == TokenKind.Atom)
+        if (Word("object") && Peek().Kind == TokenKind.Atom)
         {
+            trace?.Metric("object.declarations", ++objectDeclarations);
             Next(); Token name = Next();
             var scope = Scope(start);
             bool terminated = Take(TokenKind.Semicolon);
@@ -423,9 +431,11 @@ public sealed class Parser
         if (TakeWord("match")) return Match(token.Span);
         if (TakeWord("for")) return For(token.Span);
         if (Word("fn")) return Function();
-        if (TakeWord("scope"))
+        if (TakeWord("object"))
         {
             Token? name = At(TokenKind.Atom) && Peek().Kind == TokenKind.LeftBrace ? Next() : null;
+            if (name is null) trace?.Metric("object.anonymous_expressions", ++objectExpressions);
+            else trace?.Metric("object.named_expressions", ++namedObjectExpressions);
             return Scope(token.Span) with { Name = name?.Text, NameSpan = name?.Span };
         }
         if (TakeWord("loop")) { var body = Block(); return new LoopExpr(body, SourceSpan.Cover(token.Span, body.Span)); }
@@ -622,7 +632,7 @@ public sealed class Parser
 
     private ScopeExpr Scope(SourceSpan start)
     {
-        Require(TokenKind.LeftBrace, "Expected '{' after scope.");
+        Require(TokenKind.LeftBrace, "Expected '{' after object.");
         List<ScopeMember> members = [];
         Expr? value = null;
         while (!At(TokenKind.RightBrace) && !At(TokenKind.End))
@@ -634,28 +644,28 @@ public sealed class Parser
                 var member = new NameExpr(name.Text, name.Span);
                 members.Add(new(name.Text, member, SourceSpan.Cover(colon.Span, name.Span))
                     { NameSpan = name.Span, Shorthand = true });
-                if (!Take(TokenKind.Comma) && !At(TokenKind.RightBrace)) Fail("Expected ',' after a scope member.");
+                if (!Take(TokenKind.Comma) && !At(TokenKind.RightBrace)) Fail("Expected ',' after an object member.");
                 continue;
             }
             if (IsScopeMember(0))
             {
                 var name = Next();
                 bool nullable = Take(TokenKind.Question);
-                Require(TokenKind.Colon, "Expected ':' after the scope member name.");
+                Require(TokenKind.Colon, "Expected ':' after the object member name.");
                 var member = Expression();
                 members.Add(new(name.Text, member, SourceSpan.Cover(name.Span, member.Span))
                 { NameSpan = name.Span, Nullable = nullable });
-                if (!Take(TokenKind.Comma) && !At(TokenKind.RightBrace)) Fail("Expected ',' after a scope member.");
+                if (!Take(TokenKind.Comma) && !At(TokenKind.RightBrace)) Fail("Expected ',' after an object member.");
                 continue;
             }
             value = Expression(); Take(TokenKind.Comma); Take(TokenKind.Semicolon);
             if (!At(TokenKind.RightBrace))
             {
-                Fail("A scope's final value must be its last expression.");
+                Fail("An object's final value must be its last expression.");
                 if (editorMode && !At(TokenKind.End)) Next();
             }
         }
-        Token close = Require(TokenKind.RightBrace, "Expected '}' after scope members.");
+        Token close = Require(TokenKind.RightBrace, "Expected '}' after object members.");
         return new(members, value, SourceSpan.Cover(start, close.Span)) { EditorIncomplete = close.Text.Length == 0 };
     }
     private IfExpr If(SourceSpan start)
@@ -777,13 +787,13 @@ public sealed class Parser
             List<PatternField> fields = [];
             while (!At(TokenKind.RightBrace) && !At(TokenKind.End))
             {
-                var name = At(TokenKind.String) ? Next() : Require(TokenKind.Atom, "Expected a Scope field.");
-                Require(TokenKind.Colon, "Expected ':' in the Scope pattern.");
+                var name = At(TokenKind.String) ? Next() : Require(TokenKind.Atom, "Expected an Object field.");
+                Require(TokenKind.Colon, "Expected ':' in the Object pattern.");
                 var field = ParsePattern(true);
                 fields.Add(new(name.Text, field, SourceSpan.Cover(name.Span, field.Span)));
                 if (!Take(TokenKind.Comma)) break;
             }
-            Require(TokenKind.RightBrace, "Expected '}' after the Scope pattern.");
+            Require(TokenKind.RightBrace, "Expected '}' after the Object pattern.");
             return new ScopePattern(fields, SourceSpan.Cover(token.Span, Previous.Span));
         }
         if (TakeWord("_")) return new WildcardPattern(token.Span);
@@ -895,5 +905,5 @@ public sealed class Parser
             new(start.Start, Math.Max(name.Span.End, Previous.Span.End) - start.Start)) { DeclaresAssociatedType = declares };
     }
     private bool ContinuesBarePath() => source[Previous.Span.End..Current.Span.Start].All(c => c is ' ' or '\t');
-    private static bool CanContinuePath(string text) => text is not ("+" or "-" or "*" or "**" or "%" or "as" or "satisfies" or "concept" or "true" or "false" or "null" or "and" or "or" or "is" or "not" or "in" or "else" or "if" or "fn" or "scope" or "let" or "match" or "for" or "exists" or "return" or "break" or "continue" or "loop" or "native" or "release" or "acquire" or "acqrel") && !LanguageTypes.Contains(text);
+    private static bool CanContinuePath(string text) => text is not ("+" or "-" or "*" or "**" or "%" or "as" or "satisfies" or "concept" or "true" or "false" or "null" or "and" or "or" or "is" or "not" or "in" or "else" or "if" or "fn" or "object" or "let" or "match" or "for" or "exists" or "return" or "break" or "continue" or "loop" or "native" or "release" or "acquire" or "acqrel") && !LanguageTypes.Contains(text);
 }

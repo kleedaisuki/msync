@@ -1,6 +1,6 @@
 let constants = $std::storage::vector_new([ROUND_CONSTANTS]);
 
-scope Sha {
+object Sha {
     bits: $std::storage::vector_new([AND_NIBBLES]),
     word: fn(words, index: Number) -> Number { $std::storage::vector_get(words, index) },
 
@@ -97,4 +97,4 @@ loop {
     h7 = (h7 + h) % modulus;
     base = base + 16;
 };
-scope { h0: h0, h1: h1, h2: h2, h3: h3, h4: h4, h5: h5, h6: h6, h7: h7 }
+object { h0: h0, h1: h1, h2: h2, h3: h3, h4: h4, h5: h5, h6: h6, h7: h7 }

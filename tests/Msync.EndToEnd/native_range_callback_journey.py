@@ -17,7 +17,7 @@ let seq = r::sequence(0, 6, 1);
 let input = r::transform(seq, fn(x: Number) { x * 2 });
 let filtered = r::filter(input, fn(x: Number) { x > 4 });
 for x in r::take(filtered, 2) { io::println(x as String); };
-let records = r::transform([3, 1, 2], fn(x: Number) { scope { value: x } });
+let records = r::transform([3, 1, 2], fn(x: Number) { object { value: x } });
 for record in records { io::println(record::value as String); };
 let merged = r::merge(r::sort([8, 4, 6]), r::sort([7, 3, 5]));
 for x in merged { io::println(x as String); };

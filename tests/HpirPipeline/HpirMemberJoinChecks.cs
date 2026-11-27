@@ -8,8 +8,8 @@ internal static class HpirMemberJoinChecks
 {
     private const string Source = """
         let ranges = $std::ranges;
-        let first = scope { n: 2 };
-        let second = scope { n: 4 };
+        let first = object { n: 2 };
+        let second = object { n: 4 };
         let seen = 0;
         let items = [first, first, second];
         let view = ranges::map(items, fn(item) {
@@ -69,7 +69,7 @@ internal static class HpirMemberJoinChecks
         var trace = new CompilationTrace(observations.Add, includeOptimizerPasses: true);
         HpirProgram executable = Prepare(root, Source, level, trace);
         if (!observations.Any(record => record.Metrics?.GetValueOrDefault("range.transform.scope_text_vector_plans") == 1))
-            throw new InvalidOperationException($"O{level}: Scope snapshot did not select the physical Text map");
+            throw new InvalidOperationException($"O{level}: Object snapshot did not select the physical Text map");
         CheckOutput(root, executable, level, "6|7|5");
     }
 

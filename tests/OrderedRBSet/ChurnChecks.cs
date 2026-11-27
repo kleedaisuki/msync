@@ -16,9 +16,9 @@ internal static class ChurnChecks
                     value
                 }
             ));
-            let prototype = scope { priority: 0, label: "" };
+            let prototype = object { priority: 0, label: "" };
             let tree = set_type::with_policy(
-                $std::ranges::take([prototype], 0), scope {
+                $std::ranges::take([prototype], 0), object {
                     Self: decltype(prototype),
                     sample: prototype,
                     less: fn(left, right) -> Bool {
@@ -28,7 +28,7 @@ internal static class ChurnChecks
             );
             fn fill(tree) {
                 for priority in $std::ranges::iota(0, 16) {
-                    set_type::insert(tree, scope {
+                    set_type::insert(tree, object {
                         priority: priority,
                         label: $std::string::repeat("payload", 128),
                     });
@@ -42,13 +42,13 @@ internal static class ChurnChecks
                 let traversal = observe_indices(tree::arena, set_type::size(tree));
                 for index in traversal::indices { $std::storage::vector_push(row_ids, index); };
                 for priority in $std::ranges::iota(0, 16) {
-                    if set_type::remove(tree, scope {
+                    if set_type::remove(tree, object {
                         priority: priority, label: "query only"
                     }) { removed = removed + 1; };
                 };
                 if round < 4 { fill(tree); };
             };
-            scope {
+            object {
                 arena: tree::arena,
                 retained: retained,
                 row_ids: $std::storage::vector_take(row_ids),

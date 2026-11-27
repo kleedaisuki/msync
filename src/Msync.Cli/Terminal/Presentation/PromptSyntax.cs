@@ -7,7 +7,7 @@ namespace Msync.Cli;
 
 internal static class PromptSyntax
 {
-    internal static readonly string[] Keywords = ["let", "global", "fn", "scope", "concept", "typename", "as", "native", "if", "else", "for", "in", "match", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "return", "break", "continue", "loop", "release", "acquire", "acqrel", .. LanguageTypes.Names];
+    internal static readonly string[] Keywords = ["let", "global", "fn", "object", "concept", "typename", "as", "native", "if", "else", "for", "in", "match", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "return", "break", "continue", "loop", "release", "acquire", "acqrel", .. LanguageTypes.Names];
     internal static readonly string[] Builtins = ["$std", "$local", "$wsl", "$pwd", "$file", "$path", "$env"];
     internal static readonly string[] Commands = ["/help", "/?", "/syntax", "/quit", "/exit", "/clear", "/pwd", "/cd"];
 
@@ -64,7 +64,7 @@ internal static class PromptSyntax
                     : word is "if" or "else" or "match" or "for" or "in" or "loop" or "return" or "break" or "continue" or "release" or "acquire" or "acqrel" ? AnsiColor.Magenta
                     : word == "type" || Keywords.Contains(word, StringComparer.Ordinal) ? char.IsUpper(word[0]) ? AnsiColor.Magenta : AnsiColor.Cyan
                     : previous == "fn" ? AnsiColor.Yellow
-                    : previous is "scope" or "concept" or "typename" or "type" ? AnsiColor.Magenta
+                    : previous is "object" or "concept" or "typename" or "type" ? AnsiColor.Magenta
                     : bindings is not null && bindings.TryGetValue(selected, out var value) ? ValueColor(value.SemanticRole)
                     : DeclaredColor(text, lexeme.Span.End);
                 previous = word; chain = selected;
@@ -122,7 +122,7 @@ internal static class PromptSyntax
             : source.EndsWith("fn", StringComparison.Ordinal) ? "fn name(parameters) { result }; omit ';' on the result"
             : source.EndsWith("let", StringComparison.Ordinal) ? "let name = value; add '?' to admit Null"
             : source.EndsWith("global", StringComparison.Ordinal) ? "global root, .codex; import prior definition-time ancestor locations inside fn"
-            : source.EndsWith("scope", StringComparison.Ordinal) ? "scope Name { member: value }; select with Name::member"
+            : source.EndsWith("object", StringComparison.Ordinal) ? "object Name { member: value }; select with Name::member"
             : source.EndsWith("release", StringComparison.Ordinal) ? "before fence; release Path(args) keeps its Process live"
             : source.EndsWith("acquire", StringComparison.Ordinal) ? "join this invocation's pending work; acquire process joins only that Process"
             : source.EndsWith("acqrel", StringComparison.Ordinal) ? "acqrel expression applies before and after ordering fences"
@@ -173,7 +173,7 @@ internal static class PromptSyntax
         while (begin > 0 && (char.IsLetterOrDigit(qualifier[begin - 1]) || qualifier[begin - 1] is '_' or ':' or '$')) begin--;
         return bindings.TryGetValue(qualifier[begin..], out var value) && value.Members is { Count: > 0 } members
             ? string.Join(", ", members.Select(member => $"{member.Name}: {member.Type}"))
-            : "Scope::member selects a member; Connection @ path qualifies a path";
+            : "value::member selects a member; Connection @ path qualifies a path";
     }
 
     internal static bool InsideLiteral(string text, int offset) => EditorLexemes.Scan(text).Any(lexeme =>

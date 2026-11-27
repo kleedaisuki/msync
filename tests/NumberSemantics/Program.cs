@@ -69,7 +69,7 @@ try
             "ranges." + operation + " accepted zero stride");
 
     Require(ExplicitConversions.Possible(new(TypeKind.Number | TypeKind.Bool), TypeRef.Number), "Supported scalar cast union rejected");
-    Require(!ExplicitConversions.Possible(new(TypeKind.String | TypeKind.Scope), TypeRef.Number), "Unsupported Scope variant admitted by scalar cast");
+    Require(!ExplicitConversions.Possible(new(TypeKind.String | TypeKind.Scope), TypeRef.Number), "Unsupported Object variant admitted by scalar cast");
     Require(!ExplicitConversions.Possible(new(TypeKind.String | TypeKind.Null), TypeRef.Number), "Null discarded by scalar cast");
     Require(ExplicitConversions.Possible(new(TypeKind.String | TypeKind.Null), new(TypeKind.Number | TypeKind.Null)), "Nullable scalar cast rejected");
 

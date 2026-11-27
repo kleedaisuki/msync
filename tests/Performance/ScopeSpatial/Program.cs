@@ -66,7 +66,7 @@ Report report = new(RuntimeInformation.FrameworkDescription, Environment.GetEnvi
 string output = Path.GetFullPath(Option("--output", ".temp/scope-spatial/report.json"));
 Directory.CreateDirectory(Path.GetDirectoryName(output)!);
 File.WriteAllText(output, JsonSerializer.Serialize(report, ReportJson.Default.Report));
-Console.WriteLine($"PASS {observations.Count} physical Scope build/scan scenarios; report {output}");
+Console.WriteLine($"PASS {observations.Count} physical Object build/scan scenarios; report {output}");
 
 string Option(string name, string fallback)
 {
@@ -96,10 +96,10 @@ static string Source(string scenario, int size)
         fn build(values: Range) {
             let records = $std::storage::vector_empty(decltype({
                 let value = 0;
-                scope { {{fields}} }
+                object { {{fields}} }
             }));
             for value in values {
-                $std::storage::vector_push(records, scope { {{fields}} });
+                $std::storage::vector_push(records, object { {{fields}} });
             };
             $std::storage::vector_take(records)
         };

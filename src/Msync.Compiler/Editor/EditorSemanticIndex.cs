@@ -19,7 +19,7 @@ internal sealed class EditorSemanticIndex(SemanticObservationView view,
                 ? group.Where(item => item.Concrete).ToArray() : group.ToArray();
             string? name = observations.Select(item => item.Name).FirstOrDefault(item => item is not null);
             SemanticMember member = presenter.Describe(name ?? "", observations.Select(item => item.Value));
-            if (observations.All(item => item.IsParameter) && member.Type.StartsWith("Scope", StringComparison.Ordinal))
+            if (observations.All(item => item.IsParameter) && member.Type.StartsWith("Object", StringComparison.Ordinal))
                 member = member with { SemanticRole = "variable" };
             result.Add(new(group.Key, member.Type, member.Signature, member.Description,
                 member.Members, member.Endpoint, member.SemanticRole, member.KnownPath, member.KnownText));
@@ -195,7 +195,7 @@ internal sealed class EditorSemanticIndex(SemanticObservationView view,
     private static SemanticMember Binding(string name, IReadOnlyList<SemanticBindingView> bindings, SemanticValuePresenter presenter)
     {
         var member = presenter.Describe(name, bindings.Select(item => item.Value));
-        return bindings.All(item => item.IsParameter) && member.Type.StartsWith("Scope", StringComparison.Ordinal)
+        return bindings.All(item => item.IsParameter) && member.Type.StartsWith("Object", StringComparison.Ordinal)
             ? member with { SemanticRole = "variable" } : member;
     }
 

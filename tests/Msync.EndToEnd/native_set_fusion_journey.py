@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that bound Set keeps a live order alias while the VM fuses Scope copies."""
+"""Check that bound Set keeps a live order alias while the VM fuses Object copies."""
 from __future__ import annotations
 
 import argparse

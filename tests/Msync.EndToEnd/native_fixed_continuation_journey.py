@@ -52,7 +52,7 @@ def with_shared_counter(source: bytes) -> bytes:
     return source.replace(b"fn(n: Number) {", b"fn(n: Number, node) {\n    node::value=node::value+1;").replace(
         b"fn wrap(n: Number)", b"fn wrap(n: Number, node)"
     ).replace(b"calculate(n)", b"calculate(n,node)").replace(
-        b"let i=0;", b"let shared=scope {value:0};\nlet i=0;"
+        b"let i=0;", b"let shared=object {value:0};\nlet i=0;"
     ).replace(b"wrap(i)", b"wrap(i,shared)") + b"$std::io::println(shared::value as String);\n"
 
 
@@ -64,15 +64,15 @@ let read_once=fn(seed: Number) {
 };
 let announce=fn(n: Number) { $std::io::println("cold"); n };
 """ + with_shared_counter(BODY.replace(b"COLD_BODY", b"""
-        let root=scope {value:17, next?:null};
-        let seed=scope {value:19, next?:root};
+        let root=object {value:17, next?:null};
+        let seed=object {value:19, next?:root};
         root::next=seed;
         let j=0;
         let sum=0;
         loop {
             if j>=6000 {break;};
-            let left=scope {value:j, next?:null};
-            let right=scope {value:j+1, next?:left};
+            let left=object {value:j, next?:null};
+            let right=object {value:j+1, next?:left};
             left::next=right;
             sum=sum+left::next::value;
             j=j+1;
@@ -127,7 +127,7 @@ fn run_loop(node) {
     };
     total
 };
-let shared=scope {value:0};
+let shared=object {value:0};
 $std::io::println(run_loop(shared) as String);
 $std::io::println(shared::value as String);
 """
@@ -135,12 +135,12 @@ SEGMENT_SOURCE: bytes = b"""
 fn climb(n: Number, root) {
     if n == 0 { root::value }
     else {
-        let kept=scope { value:n, next?:root };
+        let kept=object { value:n, next?:root };
         let result=climb(n - 1, root);
         kept::value + kept::next::value + result
     }
 };
-let root=scope {value:7};
+let root=object {value:7};
 let first=climb(DEPTH, root);
 root::value=11;
 let second=climb(DEPTH, root);

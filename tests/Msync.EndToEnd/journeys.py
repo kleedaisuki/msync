@@ -145,7 +145,7 @@ def repl(binary: Path, cwd: Path) -> None:
 def run(binary: Path, cwd: Path) -> None:
     source = cwd / "source.msync"
     source.write_text(
-        "scope sample { item: input.txt, copy: fn(a, b) { a -> b }, };\n"
+        "object sample { item: input.txt, copy: fn(a, b) { a -> b }, };\n"
         "let value: Path = sample::item;\n"
         "sample::copy(value, output.txt);\n",
         encoding="utf-8",

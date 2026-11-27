@@ -71,7 +71,7 @@ internal static class DuplicateConstructionChecks
             if (failure is not null)
             {
                 Check(failure.Span == scopeSpan, name + ": selected error lost its field source span");
-                Check(failure.Message.Contains("Scope has no member 'item'", StringComparison.Ordinal),
+                Check(failure.Message.Contains("Object has no member 'item'", StringComparison.Ordinal),
                     name + ": dynamic lookup lost its concrete diagnostic");
             }
             if (scenario == "pure-entry")

@@ -27,7 +27,7 @@ const string swap = """
     """;
 
 const string mutation = """
-    let s = scope { n: 5 };
+    let s = object { n: 5 };
     let q = s;
     q::n = 9;
     fn bump() -> Number { s::n = s::n + 1; 2 };
@@ -67,7 +67,7 @@ const string finiteCallable = """
 
 const string layoutChoice = """
     fn observe(choice: Bool) -> Number {
-        let s = if choice { scope { n: 41 } } else { scope { a: 0, n: 17 } };
+        let s = if choice { object { n: 41 } } else { object { a: 0, n: 17 } };
         s::n + 1
     };
     observe(true) * 100 + observe(false)
@@ -75,7 +75,7 @@ const string layoutChoice = """
 
 const string sameOffset = """
     fn observe(choice: Bool) -> Number {
-        let s = if choice { scope { n: 41 } } else { scope { n: 17, z: 0 } };
+        let s = if choice { object { n: 41 } } else { object { n: 17, z: 0 } };
         s::n + 1
     };
     observe(true) * 100 + observe(false)
@@ -86,15 +86,15 @@ const string vectorGc = """
         let i = 0;
         loop {
             if i >= limit { break i; };
-            let temporary = scope { value: i };
+            let temporary = object { value: i };
             i = temporary::value + 1;
         }
     };
-    let first = scope { n: 2 };
+    let first = object { n: 2 };
     let alias = first;
-    let second = scope { n: 7 };
+    let second = object { n: 7 };
     let view = [first, second];
-    first = scope { n: 100 };
+    first = object { n: 100 };
     alias::n = 20;
     let sum = 0;
     for row in view {

@@ -21,16 +21,16 @@ Expect("let power=-2**2; let inverse=2**-2;", "-2 ** 2", "2 ** -2");
 Expect("let value=2; (-value) as String; let copy-config=2; -copy-config; let flag=--flag; let path=./-filename;",
     "(-value) as String", "-copy-config;", "--flag", "./-filename");
 Expect("let value=ssh://forge @ ./config; let text=value as String;", "ssh://forge @ ./config", "value as String");
-string namedScopeSource = "let x = scope NamedScope { item:1 };";
+string namedScopeSource = "let x = object NamedScope { item:1 };";
 foreach (string text in new[] { namedScopeSource, Format(namedScopeSource) })
 {
     var binding = (LetStatement)Parser.Parse(text).Statements[0];
     var scope = (ScopeExpr)binding.Value;
     if (scope.Name != "NamedScope" || scope.NameSpan is not { } nameSpan || text[nameSpan.Start..nameSpan.End] != "NamedScope")
-        throw new Exception($"Named Scope expression identity was lost:\n{text}");
+        throw new Exception($"Named Object expression identity was lost:\n{text}");
 }
-Expect("scope SomeClass { new: fn -> Scope { scope { item: ~/.codex/AGENTS.md } }, copy: fn(where: Connection, object: Scope) { where @ object::item -> ./ } };",
-    "scope SomeClass {\n    new: fn -> Scope {", "where @ object::item -> ./");
+Expect("object SomeClass { new: fn -> Object { object { item: ~/.codex/AGENTS.md } }, copy: fn(where: Connection, record: Object) { where @ record::item -> ./ } };",
+    "object SomeClass {\n    new: fn -> Object {", "where @ record::item -> ./");
 Expect("concept Monoid { type Self; identity: Self, combine: fn(left: Self, right: Self) -> Self, };", "concept Monoid {", "identity: Self,\n", "combine: fn(");
 Expect("concept Product { first?: typename First, second?: typename Second, };",
     "first?: typename First,", "second?: typename Second,");
@@ -45,7 +45,7 @@ if (chain.Split('\n').Count(line => line.TrimStart().StartsWith("and ", StringCo
     throw new Exception($"Long chains must expose each operand:\n{chain}");
 foreach (int depth in new[] { 0, 3, 8, 12 })
 {
-    string source = "let value = " + string.Concat(Enumerable.Repeat("scope { child: ", depth))
+    string source = "let value = " + string.Concat(Enumerable.Repeat("object { child: ", depth))
         + "[" + string.Join(", ", Enumerable.Range(0, 24)) + "]"
         + string.Concat(Enumerable.Repeat(" }", depth)) + ";";
     string result = Format(source);
@@ -64,7 +64,7 @@ for (int iteration = 0; iteration < 1_000; iteration++)
     var expression = (ExpressionStatement)Parser.Parse(result).Statements[0];
     if (((StringExpr)expression.Expression).Value != payload) throw new Exception("String content changed");
 }
-Expect("fn first() { true } fn second() { false }", "}\n\nfn second");
+Expect("fn first() { true } fn second() { false }", "};\n\nfn second");
 Expect("# Paragraph one.\n\n# Paragraph two.\nlet x=true;", "# Paragraph one.\n\n# Paragraph two.");
 Expect("fn numeric(value) { value / 2 + 3 * -1 }", "value / 2 + 3 * -1");
 Console.WriteLine("PASS 1000 arbitrary UTF16 literals and declaration/comment paragraphs");

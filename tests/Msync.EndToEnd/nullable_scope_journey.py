@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preserve the user's annotated nullable Scope through real CLI, IR and LSP."""
+"""Preserve the user's annotated nullable Object through real CLI, IR and LSP."""
 
 from __future__ import annotations
 
@@ -16,19 +16,19 @@ from lsp_latency import Client
 from navigation_journey import position as lsp_position
 
 ROOT = Path(__file__).resolve().parents[2]
-PAYLOAD = b"nullable Scope\x00\xff\r\n"
-HEADER = """scope SomeClass {
- new: fn -> Scope { scope { item: ~/.codex/AGENTS.md } },
- copy: fn(where: Connection, object: Scope) { where @ object::item -> ./ }
+PAYLOAD = b"nullable Object\x00\xff\r\n"
+HEADER = """object SomeClass {
+ new: fn -> Object { object { item: ~/.codex/AGENTS.md } },
+ copy: fn(where: Connection, record: Object) { where @ record::item -> ./ }
 };
 """
 
 
 def source(rebuilt: bool) -> str:
-    tail = "scope { item: some::item }" if rebuilt else "some"
+    tail = "object { item: some::item }" if rebuilt else "some"
     return (
         HEADER
-        + "let object? = {\n"
+        + "let record? = {\n"
         + " let some = SomeClass::new();\n"
         + f" if exists some::item {{ {tail} }}\n"
         + "};\n"
@@ -71,13 +71,13 @@ def editor_cases(binary: Path, directory: Path) -> int:
         client.send("initialized", {})
         notify(client, uri, 1, HEADER, opening=True)
         assert diagnostics(client, uri, 1)["diagnostics"] == [], (
-            "an uninstantiated Scope parameter was incorrectly diagnosed",
+            "an uninstantiated Object parameter was incorrectly diagnosed",
             client.notifications,
         )
         for version, rebuilt in enumerate((False, True), 2):
             text = source(rebuilt)
             notify(client, uri, version, text)
-            offset = text.index("object::item") + len("object::")
+            offset = text.index("record::item") + len("record::")
             position = lsp_position(text, offset + 1)
             parameters: dict[str, Any] = {
                 "textDocument": {"uri": uri},

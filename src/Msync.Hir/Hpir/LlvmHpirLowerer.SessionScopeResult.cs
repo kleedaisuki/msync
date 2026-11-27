@@ -11,18 +11,18 @@ public static partial class LlvmHpirLowerer
         private string? PrivateSessionResultBoundary(NativeCodeType result)
         {
             if (result.Kind != TypeKind.Scope || result.Layouts is not { Count: 1 } choices)
-                return "returned Scope geometry is not singular";
+                return "returned Object geometry is not singular";
             int logical = choices[0];
             if (graph.SessionGeneration!.HpirLayouts?.LogicalIds.ContainsKey(logical) == true
                 || graph.StaticScopes.Any(scope => scope.Layout == logical))
-                return "the returned Scope shares established storage geometry";
+                return "the returned Object shares established storage geometry";
             if (graph.FutureFields.Any(field => field.Layout != logical
                 || graph.Types[graph.Layouts[field.Layout].Fields[field.Ordinal].Type].Kind is not (TypeKind.Number or TypeKind.Bool)))
-                return "a pending field is outside the returned scalar Scope geometry";
+                return "a pending field is outside the returned scalar Object geometry";
             return entries.Keys.SelectMany(static function => function.BasicBlocks)
                 .SelectMany(static block => block.Instructions)
                 .OfType<LlvmStoreInstruction>().Any(store => RetainsScope(store, logical))
-                ? "the returned Scope can enter retaining storage" : null;
+                ? "the returned Object can enter retaining storage" : null;
         }
 
         private bool RetainsScope(LlvmStoreInstruction store, int layout)

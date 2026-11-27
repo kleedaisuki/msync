@@ -92,13 +92,13 @@ match file {
 Function values use the theme's **function** color, including scope members and
 aliases such as `let callback = Module::operation;`. The `fn` and `scope`
 keywords use the theme's **keyword** color in every declaration form. Names of
-named `scope Name { ... }` declarations and their aliases use the **type** color,
+named `object Name { ... }` declarations and their aliases use the **type** color,
 matching explicit type names and concept constraints. Standard modules such as
 `$std::math` are named scopes and use the same type role. Values of anonymous
-`scope { ... }` expressions
+`object { ... }` expressions
 use the ordinary **identifier** color, including
 instances returned by constructor-like functions. Their inferred type is still
-Scope: hover and completion retain their declared members. Colors
+Object: hover and completion retain their declared members. Colors
 come from your VS Code theme; the extension does not impose a dark-only palette.
 Semantic highlighting is enabled by default for msync and can still be disabled
 in your language-specific editor settings. Before inference finishes, direct
@@ -107,26 +107,26 @@ in your language-specific editor settings. Before inference finishes, direct
 keywords and `?` use the theme's **control-flow** role. `let`, `is`, `as`,
 `null`, `true`, and `false` use the ordinary **keyword** role in semantic
 highlighting. The control role maps directly to TextMate's `keyword.control`
-without inheriting the theme's general semantic keyword rule. Every Scope member
+without inheriting the theme's general semantic keyword rule. Every Object member
 can be inspected, including scalar and Connection-valued members.
 
-Hover a name to inspect its actual inferred type, function signature or Scope
+Hover a name to inspect its actual inferred type, function signature or Object
 members. Generic functions acquire parameter and result types from their calls;
-inspection never executes the program. A Scope is a lexical collection, not a
+inspection never executes the program. An Object is a lexical collection, not a
 physical Connection:
 
 ```text
-scope MyClass {
-    new: fn() { scope { x: ~/.codex } },
+object MyClass {
+    new: fn() { object { x: ~/.codex } },
     get: fn(instance) { instance::x },
 };
 let instance = MyClass::new();
 MyClass::get(instance) -> ./;
 ```
 
-Keep the constructor's Scope when passing it to `get`. Adding `::x` to the
+Keep the constructor's Object when passing it to `get`. Adding `::x` to the
 binding selects the Path instead, so `instance::x` inside `get` can no longer
-select a Scope member. Diagnostics identify the failing expression and retain
+select an Object member. Diagnostics identify the failing expression and retain
 the call context rather than repeating the document URI in the message.
 
 **Format Document** uses the compiler's formatter with an 80-column target.
@@ -150,7 +150,7 @@ let selected = $local @ file;
 concept Named { name: String, };
 concept Labeled { Named, };
 fn label(item: Labeled) -> String { item::name };
-let instance = scope { name: "Klee", };
+let instance = object { name: "Klee", };
 let title = label(instance);
 ```
 
@@ -176,14 +176,14 @@ step of `$std::concepts::Option`. Completing a segment replaces only that
 segment; it does not duplicate `$` or its namespace qualifier. Hover shows the
 actual requirement and its source documentation. Definition navigation opens
 the executable's embedded `concepts.msync`; associated names navigate to their
-inline binder. Concepts are compile-time constraints, not runtime Scope fields.
+inline binder. Concepts are compile-time constraints, not runtime Object fields.
 
 Named class Scopes group constructors and associated operations. Instances
 remain ordinary data Scopes, with explicit receiver arguments and policy
 Scopes checked by concepts:
 
 ```text
-scope SameNumber {
+object SameNumber {
     Self: Number,
     equal: fn(left: Number, right: Number) -> Bool { left == right },
 };
@@ -326,8 +326,8 @@ values, VS Code version, logs and phases.
 `MSYNC_TEST_VSCODE_VERSION` selects a download version. The journey exercises a
 nullable diagnostic and a correcting edit, brace formatting, generic-function
 navigation, completion, hover, symbols, UTF-16 semantic ranges and server restart.
-The screenshot regression additionally checks constructor-returned Scope values,
-function/Scope aliases, inferred semantic roles, useful hovers, 80-column
+The screenshot regression additionally checks constructor-returned Object values,
+function/Object aliases, inferred semantic roles, useful hovers, 80-column
 formatting and member-access diagnostics with call context. A transfer fixture
 must remain unexecuted throughout. `MSYNC_TEST_PROTOCOL_ONLY=1`
 selects the narrower semantic URI journey, including incomplete edits.
@@ -366,10 +366,10 @@ are not a human visual review. The historical 0.7 evidence is not used as
 acceptance of the rewritten compiler.
 
 The refined product-polish host journey in `.temp/vscode-host-IP92gO` validated
-18 semantic roles: named Scope declarations and aliases, anonymous Scope
+18 semantic roles: named Object declarations and aliases, anonymous Object
 instances, declaration keywords, function values, explicit types, control
 flow and `?`. It inspected Connection, Bool, String and Path members, displayed
-`fn get(some: Scope) -> Path`, wrapped the long call to 42 columns, and retained
+`fn get(some: Object) -> Path`, wrapped the long call to 42 columns, and retained
 the typed call context on the failing member expression. It used VS Code 1.144.0
 and fingerprinted the development compiler assemblies in its isolated metadata.
 

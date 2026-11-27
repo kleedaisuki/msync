@@ -38,8 +38,8 @@ $std::io::println(run(limit) as String);
 """
 CAPTURE_SOURCE: str = """
 fn discarded(seed: Number) {
-    let first = scope { value: seed, next?: null };
-    let second = scope { value: seed + 1, next?: null };
+    let first = object { value: seed, next?: null };
+    let second = object { value: seed + 1, next?: null };
     first::next = second; second::next = first;
     first
 };
@@ -60,7 +60,7 @@ fn counter(seed: Number) {
         value = (value + delta) % 131071;
     };
     fn peek() -> Number { value };
-    scope { bump: bump, peek: peek }
+    object { bump: bump, peek: peek }
 };
 fn run(limit: Number) {
     let left = counter(-7);
@@ -85,7 +85,7 @@ fn capture(seed: Number) {
     fn { value }
 };
 fn churn(limit: Number) {
-    let cell = scope { read: capture(0) };
+    let cell = object { read: capture(0) };
     let anchor = capture(7);
     let i = 0;
     let total = 0;
@@ -101,8 +101,8 @@ $std::io::println(churn(40000) as String);
 """
 FIELD_SOURCE: str = """
 fn make(seed: Number) {
-    let left = scope { prefix: "label", value: seed, keep: true, next?: null };
-    let right = scope { prefix: "label", value: seed + 3, keep: false, next?: null };
+    let left = object { prefix: "label", value: seed, keep: true, next?: null };
+    let right = object { prefix: "label", value: seed + 3, keep: false, next?: null };
     left::next = right;
     right::next = left;
     left

@@ -13,7 +13,7 @@ internal static class InstCombineMemoryJourney
         (string Name, string Source, double Expected)[] cases =
         [
             ("shared-scope-fields", """
-                let item = scope { left: 1, right: 2 };
+                let item = object { left: 1, right: 2 };
                 let alias = item;
                 item::left = 3;
                 alias::left = 9;
@@ -21,14 +21,14 @@ internal static class InstCombineMemoryJourney
                 """, 11),
             ("branch-field-store", """
                 fn update(flag: Bool) {
-                    let item = scope { value: 1 };
+                    let item = object { value: 1 };
                     if flag { item::value = 7; } else { item::value = 9; };
                     item::value
                 };
                 update(true) + update(false)
                 """, 16),
             ("captured-field-address", """
-                let item = scope { value: 2 };
+                let item = object { value: 2 };
                 let reader = fn { item::value };
                 item::value = 11;
                 reader()

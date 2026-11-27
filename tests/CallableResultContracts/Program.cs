@@ -14,7 +14,7 @@ if (args is ["--check", var sourcePath])
 int checks = 0;
 const string resultRecords = """
     fn choose(flag: Bool) -> $std::concepts::Result {
-        let payload = scope { code: 7, output: "failure" };
+        let payload = object { code: 7, output: "failure" };
         if flag {
             $std::data::Result::ok(payload)
         } else {
@@ -25,20 +25,20 @@ const string resultRecords = """
     let first = $std::data::Result::fold(result,
         fn(value) { value }, fn(error) { error });
     let second = $std::data::Result::get_or(choose(true), first);
-    scope { first: first, second: second }
+    object { first: first, second: second }
     """;
 const string mutableParameter = """
     fn box(value?) {
-        scope {
+        object {
             read: fn { value },
             clear: fn { value = null; },
         }
     };
-    let state = box(scope { code: 7 });
+    let state = box(object { code: 7 });
     let before? = state::read();
     state::clear();
     let after? = state::read();
-    scope { before?: before, after?: after }
+    object { before?: before, after?: after }
     """;
 
 foreach (int level in new[] { 0, 2, 3 })
@@ -58,29 +58,29 @@ foreach (int level in new[] { 0, 2, 3 })
         Require(value["after"] is NullValue, "An actual captured-parameter setter was incorrectly treated as read-only");
     }
     Reject("""
-        let operation = fn { scope { code: 7 } };
+        let operation = fn { object { code: 7 } };
         operation();
-        operation = fn { scope { output: "different" } };
+        operation = fn { object { output: "different" } };
         operation()
-        """, level, "Scope { output: String }", "Scope { code: Number }");
+        """, level, "Object { output: String }", "Object { code: Number }");
     Reject("""
-        let operation = fn { scope { code: 7 } };
+        let operation = fn { object { code: 7 } };
         operation();
-        operation = fn { if exists ./callable-contract-absent { scope { code: 7 } } };
+        operation = fn { if exists ./callable-contract-absent { object { code: 7 } } };
         operation()
-        """, level, "Scope { code: Number }?", "requires Scope { code: Number }");
+        """, level, "Object { code: Number }?", "requires Object { code: Number }");
     Reject("""
         fn box(value?) {
-            scope {
+            object {
                 read: fn { value },
-                replace: fn { value = scope { other: 1 }; },
+                replace: fn { value = object { other: 1 }; },
             }
         };
-        let state = box(scope { code: 7 });
+        let state = box(object { code: 7 });
         state::read();
         state::replace();
         state::read()
-        """, level, "Scope { other: Number }", "Scope { code: Number }");
+        """, level, "Object { other: Number }", "Object { code: Number }");
 }
 
 Console.WriteLine($"PASS {checks} callable result contracts");

@@ -18,10 +18,10 @@ PROGRAMS: dict[str, tuple[str, dict[str, bytes]]] = {
         PREFIX
         + """
 let rows = $std::ranges::materialize([
-    scope { x: seed, y: seed + 1 },
-    scope { x: seed + 2, y: seed + 3 },
-    scope { x: seed + 4, y: seed + 5 },
-    scope { x: seed + 6, y: seed + 7 },
+    object { x: seed, y: seed + 1 },
+    object { x: seed + 2, y: seed + 3 },
+    object { x: seed + 4, y: seed + 5 },
+    object { x: seed + 6, y: seed + 7 },
 ]);
 let first = 0;
 let second = 0;
@@ -35,7 +35,7 @@ for row in rows { second = second + row::y; };
     "scope-carried-snapshot": (
         PREFIX
         + """
-let holder = scope {
+let holder = object {
     items: $std::ranges::materialize($std::ranges::iota(0, 4)),
 };
 let values = holder::items;
@@ -51,7 +51,7 @@ for value in values { second = second + value + seed; };
     "scope-shared": (
         PREFIX
         + """
-let shared = scope { x: seed, y: seed + 1 };
+let shared = object { x: seed, y: seed + 1 };
 let rows = $std::ranges::materialize([shared, shared]);
 let first = 0;
 let second = 0;
@@ -142,9 +142,9 @@ for value in values { squares = squares + value * value; };
         PREFIX
         + """
 let nodes = $std::ranges::materialize([
-    scope { value: seed, next: 2 },
-    scope { value: seed + 1, next: 0 },
-    scope { value: seed + 2, next: -1 },
+    object { value: seed, next: 2 },
+    object { value: seed + 1, next: 0 },
+    object { value: seed + 2, next: -1 },
 ]);
 let index = 1;
 let total = 0;

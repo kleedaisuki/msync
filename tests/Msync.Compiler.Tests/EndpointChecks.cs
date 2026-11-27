@@ -22,7 +22,7 @@ internal static class EndpointChecks
         const string source = """
             let remote = ssh://forge;
             let alias = remote;
-            scope Hosts { primary: remote, nested: scope { guest: wsl://Ubuntu } };
+            object Hosts { primary: remote, nested: object { guest: wsl://Ubuntu } };
             let projected = Hosts::primary;
             let same = if exists ~/condition { ssh://forge } else { ssh://forge };
             let different = if exists ~/condition { ssh://forge } else { ssh://other };
@@ -48,9 +48,9 @@ internal static class EndpointChecks
         Check(Binding(analysis, source, "environment").Endpoint == new NativeConnection(ConnectionKind.Environment), "$env is not a local filesystem endpoint");
         Check(Binding(analysis, source, "search").Endpoint == new NativeConnection(ConnectionKind.SearchPath), "$path is not an ordinary local endpoint");
         SemanticOccurrence hosts = analysis.Occurrences.Single(item => item.Span.Start == source.IndexOf("Hosts", StringComparison.Ordinal));
-        Check(hosts.Members!.Single(item => item.Name == "primary").Endpoint == Forge, "Scope member endpoint identity was lost");
+        Check(hosts.Members!.Single(item => item.Name == "primary").Endpoint == Forge, "Object member endpoint identity was lost");
         var nested = hosts.Members!.Single(item => item.Name == "nested");
-        Check(nested.Members!.Single().Endpoint == new NativeConnection(ConnectionKind.Wsl, "Ubuntu"), "nested Scope descriptors lost their endpoint identity");
+        Check(nested.Members!.Single().Endpoint == new NativeConnection(ConnectionKind.Wsl, "Ubuntu"), "nested Object descriptors lost their endpoint identity");
         const string prefix = "$wsl @ ";
         string incomplete = source + prefix;
         EditorContext recovery = EditorCompiler.Analyze(incomplete, "file:///endpoints.msync").At(incomplete.Length);
@@ -80,8 +80,8 @@ internal static class EndpointChecks
             let captured = ssh://other;
             let frozen = lexical();
             fn member(value) { value::host };
-            let scopedFirst = member(scope { host: ssh://forge });
-            let scopedSecond = member(scope { host: ssh://other });
+            let scopedFirst = member(object { host: ssh://forge });
+            let scopedSecond = member(object { host: ssh://other });
             """;
         EditorAnalysis analysis = EditorCompiler.Analyze(source, "file:///generic-endpoints.msync");
         Check(analysis.Diagnostic is null, "generic endpoint sample failed compilation: " + analysis.Diagnostic?.EditorMessage);
@@ -90,7 +90,7 @@ internal static class EndpointChecks
         Check(Binding(analysis, source, "known").Endpoint == Forge, "a literal-returning function lost its known endpoint");
         Check(Binding(analysis, source, "frozen").Endpoint == Forge, "a later shadow changed a captured endpoint hint");
         Check(Binding(analysis, source, "scopedFirst").Endpoint == Forge && Binding(analysis, source, "scopedSecond").Endpoint == Other,
-            "exact Scope-identity specializations lost their immutable member metadata");
+            "exact Object-identity specializations lost their immutable member metadata");
         int sharedMember = source.IndexOf("value::host", StringComparison.Ordinal) + "value::".Length;
         Check(analysis.Occurrences.Single(item => item.Span.Start == sharedMember && item.Span.Length == 4).Endpoint is null,
             "a shared generic source occurrence reports the last specialized endpoint");
@@ -103,11 +103,11 @@ internal static class EndpointChecks
     private static void SessionBindingDescriptions()
     {
         CompilerSession session = new();
-        _ = session.Compile("let remote = ssh://forge; scope Hosts { guest: $wsl }; fn send(file) { file -> remote @ file };");
+        _ = session.Compile("let remote = ssh://forge; object Hosts { guest: $wsl }; fn send(file) { file -> remote @ file };");
         session.AcceptSubmission();
         IReadOnlyList<SemanticMember> first = session.DescribeBindings();
         Check(first.Single(item => item.Name == "remote").Endpoint == Forge, "live session lost its accepted endpoint");
-        Check(first.Single(item => item.Name == "Hosts").Members!.Single().Endpoint == new NativeConnection(ConnectionKind.Wsl), "live Scope members lost endpoint metadata");
+        Check(first.Single(item => item.Name == "Hosts").Members!.Single().Endpoint == new NativeConnection(ConnectionKind.Wsl), "live Object members lost endpoint metadata");
         Check(first.Single(item => item.Name == "send").Signature.StartsWith("fn send(", StringComparison.Ordinal), "live session lost callable signature metadata");
         const string selected = "remote @ ";
         EditorContext query = session.AnalyzeEditor(selected).At(selected.Length);

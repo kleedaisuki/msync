@@ -67,7 +67,7 @@ Use `msync help COMMAND` for command options or `msync help syntax` for the
 language guide. Terminal help and source diagnostics use the terminal's own
 color palette; `--color never` or `NO_COLOR` disables it. Redirected skill output
 is plain Markdown by default. The VS Code extension uses inferred function and
-Scope roles for highlighting, signatures, and member completion. Its formatter
+Object roles for highlighting, signatures, and member completion. Its formatter
 targets 80 columns while preserving literals and structural indentation.
 
 ## Expressions and bindings
@@ -96,8 +96,8 @@ is an ordinary new transfer, not a recovery or rollback transaction.
 
 `let` declares a mutable location with a fixed inferred or annotated type, such
 as `let value: Path = ...`. Assignment changes its value, never its storage type.
-Scope aliases share mutable fields; nullable fields require `?`, for example
-`scope { filename?: null }`. Stores solve its non-null payload type at compile
+Object aliases share mutable fields; nullable fields require `?`, for example
+`object { filename?: null }`. Stores solve its non-null payload type at compile
 time, not by widening types during execution.
 Function arguments are generic by default; annotations constrain admitted
 specializations. Functions are values, can capture lexical bindings, call
@@ -126,7 +126,7 @@ Names such as `.codex` are legal lexical bindings. A matching binding is used
 before bare-name Path fallback; completing that variable does not turn it into a
 directory name or append a separator.
 
-Type names include `Bool`, `String`, `Path`, `Range`, `Function`, `Scope`,
+Type names include `Bool`, `String`, `Path`, `Range`, `Function`, `Object`,
 `Process`, `Connection`, `Null`, and `Type`. `Range<T>` specifies an item type, `|`
 specifies a union, and `?` explicitly permits null. Numeric literals and `Number`
 use IEEE 754 binary64. Decimal (`1_024.5`), exponent (`1e3`), hexadecimal
@@ -149,7 +149,7 @@ concept NamedAction {
 fn apply(action: NamedAction, value: String) -> String {
     action::run(value)
 };
-scope Echo {
+object Echo {
     name: "echo",
     run: fn(value: String) -> String { value },
 };
@@ -214,7 +214,7 @@ let name = match input.txt {
 };
 ```
 
-## Paths, connections, and scopes
+## Paths, connections, and objects
 
 Bare path operands remain paths. Quoted strings remain data: `"hello" -> out`
 writes literal UTF-8 bytes, while an explicit path join or connection qualifier
@@ -230,7 +230,7 @@ let source = ($pwd @ pwd) / "a file with spaces.txt";
 source -> backup/source;
 ```
 
-`$local`, `$wsl`, and `ssh://host` are `Connection` values, not lexical scopes.
+`$local`, `$wsl`, and `ssh://host` are `Connection` values, not objects.
 Native OpenSSH configuration, aliases, agent use, and credential prompts remain
 owned by the native SSH client. An unselected branch does not authenticate an
 endpoint. One finite remote transfer owns one native connection/channel,
@@ -250,17 +250,17 @@ for file in ~/.codex/<.+> {
 };
 ```
 
-A lexical Scope selects declared members instead of qualifying physical paths.
-Write `connection @ path` to select a physical endpoint; `::` selects lexical
-Scope members only. Named Scopes are shared singletons; anonymous `scope { ... }`
-expressions construct fresh instances. Both functions and scopes can be anonymous:
+Use `value::member` to select a declared Object member and
+`connection @ path` to qualify a path with a physical endpoint.
+Named Objects are shared singletons; anonymous `object { ... }`
+expressions construct fresh instances. Both functions and objects can be anonymous:
 
 ```rust
-scope Package {
+object Package {
     input: input.txt,
     enabled: true,
     copy: fn(file, destination) { file -> destination },
-    nested: scope { label: "codex", },
+    nested: object { label: "codex", },
 };
 let alias = Package;
 alias::copy(alias::input, output.txt);
@@ -280,7 +280,7 @@ lists the embedded modules and progressively displays their actual declarations.
 Use `msync skill library containers Set new` for one operation, or
 `msync skill library console` for a runnable standard-stream recipe.
 
-Named Scope families use PascalCase; associated functions use snake_case and
+Named Object families use PascalCase; associated functions use snake_case and
 take their instance explicitly. Instances store data and selected policies,
 rather than duplicating a set of method closures:
 
@@ -403,9 +403,8 @@ binding does not recover type, frame or call facts from its operands. The lowere
 not call back into type inference. Editor queries use semantic observations,
 not speculative IR compilation.
 
-`scope { ... }` allocates builtin storage on the logical heap and binds its
-namespace fields to statically laid-out locations. Scope is not a generic
-runtime object. String, Path, Connection and the other builtins have complete
+`object { ... }` allocates builtin storage on the logical heap and binds its
+fields to statically laid-out locations. `Object` is not a universal base type. String, Path, Connection and the other builtins have complete
 native representations; captures distinguish values from locations. Compiler
 and VM may eliminate or coallocate physical storage while preserving identity,
 aliases, effects and resource lifetimes. There is no source allocator or

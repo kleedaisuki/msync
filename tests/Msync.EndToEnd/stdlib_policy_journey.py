@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise native Scope families and policy composition through actual CLI stages."""
+"""Exercise native Object families and policy composition through actual CLI stages."""
 
 from __future__ import annotations
 
@@ -28,8 +28,8 @@ $std::files::File::read_text(file) -> ./read.txt;
 if file::path == alias::path and not exists ./native.txt {
     "shared-record" -> ./file-alias.txt;
 };
-let memory = scope { text: "", writes: 0, reads: 0 };
-scope upper_store {
+let memory = object { text: "", writes: 0, reads: 0 };
+object upper_store {
     read: fn(path: Path) -> String {
         memory::reads = memory::reads + 1;
         memory::text
@@ -59,7 +59,7 @@ if memory::reads == 1 and memory::writes == 2
     "selected-policy" -> ./policy-selected.txt;
 };
 let append_calls = 0;
-scope eager_chunks {
+object eager_chunks {
     append: fn(chunks: Range<String>, text: String) -> Range<String> {
         append_calls = append_calls + 1;
         $std::ranges::materialize($std::ranges::concat(chunks, [text]))
@@ -188,7 +188,7 @@ def reject_services(binary: Path, directory: Path) -> int:
     programs: tuple[tuple[str, str], ...] = (
         (
             (
-                "$std::text::StringBuilder::with_policy(scope { "
+                "$std::text::StringBuilder::with_policy(object { "
                 "append: fn(chunks: Range<String>, text: String) { true }, "
                 'build: fn(chunks: Range<String>) { "" } });'
             ),
@@ -196,7 +196,7 @@ def reject_services(binary: Path, directory: Path) -> int:
         ),
         (
             (
-                "$std::files::File::with_policy(./target, scope { "
+                "$std::files::File::with_policy(./target, object { "
                 "read: fn(path: Path) { 1 } });"
             ),
             "read",

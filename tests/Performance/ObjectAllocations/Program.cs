@@ -94,11 +94,11 @@ internal static class Program
         if (name == "io") return "./input -> ./output; \"io\"";
         string range = string.Join(",", Enumerable.Range(0, count));
         if (name == "objects") return $$"""
-            fn make(value) { scope { value: value, read: fn { value } } };
+            fn make(value) { object { value: value, read: fn { value } } };
             let result = "";
             for item in [{{range}}] {
-                let object = make(if exists ./flag { "left" } else { "right" });
-                result = object::read();
+                let record = make(if exists ./flag { "left" } else { "right" });
+                result = record::read();
             };
             result
             """;

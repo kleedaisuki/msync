@@ -47,7 +47,7 @@ def terminal_guidance(binary: Path, cwd: Path) -> dict[str, int]:
     topics = [
         (["--help"], ["check", "fmt", "--color", "-O3", "default: O2"]),
         (["-h"], ["check", "fmt", "--color", "-O3", "default: O2"]),
-        (["help", "syntax"], ["fn", "scope", "null", "match"]),
+        (["help", "syntax"], ["fn", "object", "null", "match"]),
         (["check", "--help"], ["check", "FILE", "-O3"]),
         (["compile", "--help"], ["compile", "FILE", "-O3"]),
     ]
@@ -80,7 +80,7 @@ def terminal(binary: Path, cwd: Path) -> dict[str, int]:
         "delimiter": ("fn copy(value) {\n    value\n", ["}", "help:"]),
         "generic": (
             "fn get(some) {\n    some::x\n};\nget(./);\n",
-            ["Path", "Scope", "Connection", "call", "get", "help:"],
+            ["Path", "Object", "Connection", "call", "get", "help:"],
         ),
     }
     for name, (source, fragments) in cases.items():
@@ -248,8 +248,8 @@ def editor(binary: Path, cwd: Path) -> dict[str, int]:
     client = Client(binary)
     uri = (cwd / "screenshot.msync").as_uri()
     source = (
-        "scope MyClass {\n"
-        "    new: fn() { scope { x: ~/.codex } },\n"
+        "object MyClass {\n"
+        "    new: fn() { object { x: ~/.codex } },\n"
         "    get: fn(some) { some::x }\n"
         "};\n"
         "let make = MyClass::new;\n"
@@ -291,8 +291,8 @@ def editor(binary: Path, cwd: Path) -> dict[str, int]:
         client.input.flush()
         checks = [
             ("fn", 0, "keyword"),
-            ("scope", 0, "keyword"),
-            ("scope", 1, "keyword"),
+            ("object", 0, "keyword"),
+            ("object", 1, "keyword"),
             ("MyClass", 0, "type"),
             ("MyClass", 1, "type"),
             ("new", 0, "function"),
@@ -312,7 +312,7 @@ def editor(binary: Path, cwd: Path) -> dict[str, int]:
             assert actual == expected, (spelling, count, actual, expected, tokens)
         for spelling, expected in [
             ("make", "fn"),
-            ("MyClass", "Scope"),
+            ("MyClass", "Object"),
             ("instance", "x"),
         ]:
             hover, _ = client.request(
@@ -328,7 +328,7 @@ def editor(binary: Path, cwd: Path) -> dict[str, int]:
 
         for spelling, fragments in [
             ("let", ["mutable value", "fixed", "shadows"]),
-            ("scope", ["Field values are mutable", "types stay fixed", "?"]),
+            ("object", ["Field values are mutable", "types stay fixed", "?"]),
             ("fn", ["callable value", "specialized"]),
         ]:
             hover, _ = client.request(
@@ -353,7 +353,7 @@ def editor(binary: Path, cwd: Path) -> dict[str, int]:
         ), suggestions
         assert (
             suggestions["Alias"]["kind"] == 7
-            and "Scope" in suggestions["Alias"]["detail"]
+            and "Object" in suggestions["Alias"]["detail"]
         ), suggestions
         member_position = position(source, "get", 1)
         member_position["character"] += 1
@@ -435,7 +435,7 @@ def editor(binary: Path, cwd: Path) -> dict[str, int]:
 def editing_recovery(binary: Path, cwd: Path) -> dict[str, int]:
     client = Client(binary)
     uri = (cwd / "editing.msync").as_uri()
-    declaration = "scope Box { get: fn(x) { x }, value: true };\n"
+    declaration = "object Box { get: fn(x) { x }, value: true };\n"
     try:
         initialized, _ = client.request("initialize", {"capabilities": {}})
         legend = initialized["capabilities"]["semanticTokensProvider"]["legend"][
@@ -460,7 +460,7 @@ def editing_recovery(binary: Path, cwd: Path) -> dict[str, int]:
                 "position": position(unfinished, "Box"),
             },
         )
-        assert "Box: Scope" in hover["contents"]["value"], hover
+        assert "Box: Object" in hover["contents"]["value"], hover
         members, _ = client.request(
             "textDocument/completion",
             {

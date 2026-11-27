@@ -6,7 +6,7 @@ import os
 import subprocess
 from pathlib import Path
 
-SOURCE: str = '''let row = scope { n: 7 };
+SOURCE: str = '''let row = object { n: 7 };
 fn increment(value: Number) { value + 1 };
 if $std::fs::exists(./input) { "ready" -> ./output; };
 $std::io::println(increment(row::n) as String)

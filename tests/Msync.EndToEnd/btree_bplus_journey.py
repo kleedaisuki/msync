@@ -84,7 +84,7 @@ def trace() -> tuple[list[Mutation], dict[int, int]]:
 def tree_program(family: str, definitions: str = "") -> tuple[str, dict[str, bytes]]:
     mutations, model = trace()
     records: list[str] = [
-        "scope { insert: "
+        "object { insert: "
         + str(item.insert).lower()
         + ", key: "
         + str(item.key)
@@ -159,7 +159,7 @@ let restored? = Tree::get(alias, 999);
 if restored is not null {
     text(restored::value) -> ./fresh.txt;
 };
-let folded = Tree::with_policy("", 0, scope {
+let folded = Tree::with_policy("", 0, object {
     sample: "",
     less: fn(left: String, right: String) {
         $std::string::to_lowercase(left) < $std::string::to_lowercase(right)
@@ -173,18 +173,18 @@ if folded_value is not null {
     ((replaced and folded_value::value == 9 and Tree::size(folded) == 2
         and Tree::validate(folded)) as String) -> ./equality-policy.txt;
 };
-let records = Tree::with_policy(scope { group: "", id: 0 }, 0, scope {
-    sample: scope { group: "", id: 0 },
-    less: fn(left: Scope, right: Scope) {
+let records = Tree::with_policy(object { group: "", id: 0 }, 0, object {
+    sample: object { group: "", id: 0 },
+    less: fn(left: Object, right: Object) {
         if left::group == right::group { left::id < right::id } else {
             left::group < right::group
         }
     },
 });
-Tree::insert(records, scope { group: "b", id: 2 }, 22);
-Tree::insert(records, scope { group: "a", id: 3 }, 13);
-Tree::insert(records, scope { group: "a", id: 1 }, 11);
-let selected_record? = Tree::get(records, scope { group: "a", id: 3 });
+Tree::insert(records, object { group: "b", id: 2 }, 22);
+Tree::insert(records, object { group: "a", id: 3 }, 13);
+Tree::insert(records, object { group: "a", id: 1 }, 11);
+let selected_record? = Tree::get(records, object { group: "a", id: 3 });
 if selected_record is not null {
     ((selected_record::value == 13 and Tree::validate(records)) as String)
         -> ./record-policy.txt;

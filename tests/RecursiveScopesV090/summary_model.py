@@ -51,8 +51,8 @@ class Heap:
 def contract_key(root: Root) -> tuple[str, ...]:
     return (
         "root-schema",
-        "first:Scope|Null",
-        "last:Scope|Null",
+        "first:Object|Null",
+        "last:Object|Null",
         "count:Number",
         f"seed:Range<{root.item}>",
         "normal-return:Null",
@@ -134,11 +134,11 @@ def counterexamples() -> dict[str, bool]:
 
     concrete_next: dict[str, str | None] = {"old": None, "new": None}
     concrete_next["new"] = "new"
-    bad_strong_summary: set[str] = {"Scope"}
+    bad_strong_summary: set[str] = {"Object"}
     actual_kinds: set[str] = {
-        "Null" if value is None else "Scope" for value in concrete_next.values()
+        "Null" if value is None else "Object" for value in concrete_next.values()
     }
-    weak_summary: set[str] = {"Null", "Scope"}
+    weak_summary: set[str] = {"Null", "Object"}
     strong_site_update_is_wrong: bool = (
         not actual_kinds <= bad_strong_summary and actual_kinds <= weak_summary
     )

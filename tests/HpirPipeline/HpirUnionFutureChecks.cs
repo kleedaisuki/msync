@@ -13,7 +13,7 @@ internal static class HpirUnionFutureChecks
         };
         fn relay(value: Number?) -> Number? { value };
         fn sample() {
-            scope { item?: relay(choose(exists ./select, $std::io::read_text(./seed.txt) as Number)) }
+            object { item?: relay(choose(exists ./select, $std::io::read_text(./seed.txt) as Number)) }
         };
         let kept = sample();
         let churn = 0;

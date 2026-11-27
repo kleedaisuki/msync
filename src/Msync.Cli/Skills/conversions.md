@@ -19,4 +19,4 @@ target. A non-nullable target requires a nullable operand to be narrowed first.
 Path/String conversion retains endpoint spelling and path provenance. Merely
 creating or converting a Connection does not authenticate it. Typed Range
 conversion converts demanded elements rather than eagerly consuming the source.
-Compatible Scope, Function and Process conversions preserve identity.
+Compatible Object, Function and Process conversions preserve identity.

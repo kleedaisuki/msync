@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify declaration-owned Scope roles in real file and library LSP documents."""
+"""Verify declaration-owned Object roles in real file and library LSP documents."""
 
 from __future__ import annotations
 
@@ -14,12 +14,12 @@ from lsp_analysis_journey import diagnostics, notify
 from lsp_latency import Client
 
 ROOT: Path = Path(__file__).resolve().parents[2]
-SOURCE: str = """scope Tree {
+SOURCE: str = """object Tree {
     node: fn(value: Number) { value },
     unused: fn(value) { Tree::node(value) },
-    shadow: fn { let Tree = scope { value: 1 }; Tree::value },
+    shadow: fn { let Tree = object { value: 1 }; Tree::value },
 };
-let inline = scope LocalTree {
+let inline = object LocalTree {
     node: fn(value: Number) { value },
     unused: fn(value) { LocalTree::node(value) },
 };
@@ -80,11 +80,11 @@ def verify(binary: Path, directory: Path) -> dict[str, object]:
 
         library_source: str
         library_source, _ = client.request("msync/stdlibSource", {"uri": LIBRARY})
-        assert "scope BPlusTree {" in library_source
+        assert "object BPlusTree {" in library_source
         notify(client, LIBRARY, 1, library_source, opening=True)
         diagnostics(client, LIBRARY, 1)
         library_data: list[int] = tokens(client, LIBRARY)
-        tree: int = library_source.index("scope BPlusTree {")
+        tree: int = library_source.index("object BPlusTree {")
         clear: int = library_source.index("clear: fn(self)", tree)
         member: int = library_source.index("BPlusTree::node", clear)
         assert role_at(library_source, member, library_data, legend) == "type", (

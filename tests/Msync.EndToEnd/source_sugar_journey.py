@@ -25,7 +25,7 @@ let get = fn() {
 };
 let fallback = fn() => 7;
 $std::io::println((get() ?? fallback()) as String);
-let required = fn(record: Scope?) {
+let required = fn(record: Object?) {
     $std::io::println((record?::count ?? 0) as String);
 };
 required(record);

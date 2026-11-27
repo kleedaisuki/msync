@@ -1,15 +1,15 @@
 # Named operation families share code; instances contain data and explicit policy.
-scope NativeText {
+object NativeText {
     read: $std::io::read_text,
     lines: $std::io::read_lines,
     write: $std::io::write_text,
     append: $std::io::append_text,
 };
 
-scope File {
+object File {
     with_policy: fn(path: Path or String,
         policy: $std::concepts::TextIOPolicy) {
-        scope { path: path as Path, policy: policy }
+        object { path: path as Path, policy: policy }
     },
     new: fn(path: Path or String) { with_policy(path, NativeText) },
     name: fn(self: $std::concepts::PathRecord) {
@@ -80,8 +80,8 @@ scope File {
     },
 };
 
-scope Directory {
-    new: fn(path: Path or String) { scope { path: path as Path } },
+object Directory {
+    new: fn(path: Path or String) { object { path: path as Path } },
     name: fn(self: $std::concepts::PathRecord) {
         $std::path::filename(self::path)
     },

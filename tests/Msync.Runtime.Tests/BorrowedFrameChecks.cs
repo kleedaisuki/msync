@@ -21,7 +21,7 @@ internal static class BorrowedFrameChecks
             below + read() + current
             """, 127);
         await Number("""
-            let location = scope { value: 10 };
+            let location = object { value: 10 };
             fn write(alias) { alias::value = 42; alias::value };
             write(location) + location::value
             """, 84);

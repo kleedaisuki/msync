@@ -107,7 +107,7 @@ internal sealed partial class SemanticAnalyzer
         var view = hir.Types[contract.Value];
         var layouts = hir.Types[value.Value].ScopeDomain;
         if ((view.RuntimeType.Kind & TypeKind.Scope) == 0 || view.ScopeDomain.Equals(layouts)) return contract;
-        Trace?.Metric("scope.views.physical_domain_transfers", 1);
+        Trace?.Metric("object.views.physical_domain_transfers", 1);
         return hir.Type(view with { ScopeDomain = layouts });
     }
 
@@ -366,7 +366,7 @@ internal sealed partial class SemanticAnalyzer
                     if (found is not null && (member is null || hir.Types[found.StorageType.Value].Shape >= 0))
                         member = ValueForType(found.AdmitsNull ? Nullable(found.StorageType) : found.StorageType);
                 }
-                if (member is null) throw Error(source, $"Scope is missing required field '{field.Name}'.", "E0205");
+                if (member is null) throw Error(source, $"Object is missing required field '{field.Name}'.", "E0205");
                 HirTypeId requiredType = field.AdmitsNull ? Nullable(field.StorageType) : field.StorageType;
                 var required = hir.Types[requiredType.Value];
                 if (!AcceptsRuntime(required.RuntimeType, Runtime(member), implicitConversion: false))

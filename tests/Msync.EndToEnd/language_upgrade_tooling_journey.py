@@ -54,7 +54,8 @@ def protocol(binary: Path, directory: Path) -> dict[str, object]:
     uri = (directory / "tooling.msync").as_uri()
     text = """concept HasItem { item: Path, };
 fn fetch(value: HasItem) -> Path { value::item };
-scope Named { item: ./marker.txt, };
+object Named { item: ./marker.txt, };
+let record: Object = object { item: ./marker.txt };
 let result = fetch(Named);
 let decimal = 1.25e-3;
 let hex = 0xff;
@@ -107,7 +108,8 @@ if null? { match true { true => {}, false => {} }; };
         assert roles["as"] == ["keyword"]
         assert roles["@"] == ["operator"]
         assert set(roles["fn"]) == {"keyword"}
-        assert set(roles["scope"]) == {"keyword"}
+        assert set(roles["object"]) == {"keyword"}
+        assert set(roles["Object"]) == {"type"}
         for word in ("for", "if", "match", "?", "continue"):
             assert set(roles[word]) == {"controlKeyword"}, (word, roles)
         for word in ("let", "is", "null", "true"):
@@ -175,7 +177,7 @@ if null? { match true { true => {}, false => {} }; };
             "concept Cell<Payload> { value: Payload, };\n"
             "concept Entry<Item: Named> : Cell<Item> {};\n"
             "fn unwrap(cell: Cell<String>) { cell::value };\n"
-            'unwrap(scope { value: "ok" });\n'
+            'unwrap(object { value: "ok" });\n'
         )
         notify(client, uri, 5, generic_text)
         assert not diagnostics(client, uri, 5)["diagnostics"]
@@ -193,6 +195,14 @@ if null? { match true { true => {}, false => {} }; };
         assert target["range"]["start"] == position(
             generic_text, generic_text.index("Payload")
         ), reference
+        legacy = "let record: Scope = object { item: ./marker.txt };"
+        notify(client, uri, 6, legacy)
+        failure = diagnostics(client, uri, 6)["diagnostics"][0]
+        assert failure["range"]["start"] == position(legacy, legacy.index("Scope")), failure
+        assert failure["code"] == "E0202" and "Scope" in failure["message"], failure
+        migrated = legacy.replace("Scope", "Object")
+        notify(client, uri, 7, migrated)
+        assert not diagnostics(client, uri, 7)["diagnostics"]
         return {
             "semantic_roles": roles,
             "concept_hover_definition_completion": True,
@@ -210,9 +220,11 @@ numeric
 "42" as Number
 concept HasItem { item: Path, };
 fn fetch(value: HasItem) -> Path { value::item };
-scope Named { item: ./marker.txt, };
+object Named { item: ./marker.txt, };
 fetch(Named)
 $local @ ./marker.txt
+object { field: 7 }
+$std::meta::type_name(Object)
 /quit
 """
     completed = subprocess.run(
@@ -230,6 +242,8 @@ $local @ ./marker.txt
         "1000.5" in completed.stdout
         and "42" in completed.stdout
         and "marker.txt" in completed.stdout
+        and "object { field: 7 }" in completed.stdout
+        and "Object" in completed.stdout.splitlines()
     ), completed.stdout
     return {"redirected_repl": True}
 

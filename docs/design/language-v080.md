@@ -12,14 +12,14 @@ from this language contract.
 
 Braces, not indentation, delimit a block. An expression without a final `;` is
 the block result; `;` discards that value and produces `Null`. Empty blocks and
-ordinary declarations also produce `Null`. A named Scope at the end of a block
+ordinary declarations also produce `Null`. A named Object at the end of a block
 without `;` yields the singleton it declares. A terminating `return`, `break`
 or `continue` has internal `Never` type, so an unreachable block tail does not
 widen a function result with an artificial Null case.
 
 `let` introduces a mutable lexical location with an immutable inferred or
 declared type, and a later declaration may shadow it with a different identity.
-Assignment updates the existing value and checks, never widens, its storage type. Scope
+Assignment updates the existing value and checks, never widens, its storage type. Object
 aliases share an instance and its mutable field locations. The November 9
 requirement supersedes the original immutable model; the full inference,
 aliasing and optimization contract is in
@@ -41,8 +41,8 @@ read as a file. Both annotated block tails and explicit returns convert values.
 `Bool` and `Null` are separate types. Null does not coerce to Bool or participate
 in ordinary boolean comparisons. `is null`, `is not null`, and postfix `?` test
 null identity. In particular **`value?` means `value is null`**, not its negation.
-A binding must explicitly admit null with `?` or a nullable annotation. Scope
-fields likewise require `?`, for example `scope { filename?: null }`. A nullable
+A binding must explicitly admit null with `?` or a nullable annotation. Object
+fields likewise require `?`, for example `object { filename?: null }`. A nullable
 Null initializer leaves a compile-time payload inference hole: store constraints
 supply its non-null type evidence, then the solved storage type is fixed. Branch
 refinement removes null from the other branch, and a null arm in `match` removes
@@ -69,7 +69,7 @@ cannot be folded to false by comparing the metatype's bit with Number or String.
 Successful singleton type tests retain Type as the value type and record the
 proved denotation for branch-local casts; ordinary payload narrowing is separate.
 
-The finite semantic universe includes Bool, String, Path, Function, Scope,
+The finite semantic universe includes Bool, String, Path, Function, Object,
 Connection, Process, Null, Range with an inferred item type, and Type values.
 Number is the numeric carrier for arithmetic, range/count APIs and numeric
 process exit results. Unions use the Core `TypeKind` bitset, with an
@@ -126,7 +126,7 @@ failures still produce an actual conversion diagnostic during execution.
 | Bool or Number (zero/NaN false, otherwise true), String/Path containing `true`/`false` |
 | Connection or String naming a builtin endpoint or an explicit `ssh://`/`wsl://` endpoint |
 | Range with an item constraint | Range whose elements admit the requested conversion, applied lazily |
-| Scope, Function, Process, Type | Compatible identity only; concept constraints are checked structurally |
+| Object, Function, Process, Type | Compatible identity only; concept constraints are checked structurally |
 
 Nullable targets admit Null; nonnullable targets require prior null handling.
 A conversion of a union must admit every possible source case. Text-to-Bool is
@@ -187,13 +187,13 @@ There is no runtime source parsing or generic type inference.
 
 ### Named structural concepts
 
-Named `fn`, `scope`, and `concept` declarations end with `};` in
-formatted source, except a named Scope used as a block result. Omitting the
-terminator on a named `fn` or `scope` is also accepted in statement position.
-Anonymous functions and scopes are expressions and use the surrounding
+Named `fn`, `object`, and `concept` declarations end with `};` in
+formatted source, except a named Object used as a block result. Omitting the
+terminator on a named `fn` or `object` is also accepted in statement position.
+Anonymous functions and objects are expressions and use the surrounding
 expression's delimiters.
 
-Concepts express requirements over existing Scope values while keeping the
+Concepts express requirements over existing Object values while keeping the
 runtime type universe closed:
 
 ```msync
@@ -219,13 +219,13 @@ concepts. Multiple bases are comma-separated and all their requirements apply.
 `Monoid<Number>` fixes the argument; a bare `Monoid` infers it from a
 Type-valued member, a payload member, or concrete operation annotations.
 Type arguments affect compile-time checking only. An application does not
-add a runtime tag or change a Scope's layout. Parameter-dependent writable
+add a runtime tag or change an Object's layout. Parameter-dependent writable
 members do not silently widen their declared storage types.
 
 Body-local associated declarations (`type Self;` and `typename Self`) and
 body-local bases remain accepted. Associated types are local or inherited.
-Associated Scope carriers retain deep field shape rather than discarding it
-to the broad Scope kind. Implementing functions may remain generic.
+Associated Object carriers retain deep field shape rather than discarding it
+to the broad Object kind. Implementing functions may remain generic.
 
 Constraints apply at specialization, annotated returns/bindings and static `as`
 checks. Concept names resolve in their definition-time lexical environment,
@@ -244,44 +244,49 @@ rather than narrowed because their current value happens to be Null. Metadata
 queries establish such obligations only in their isolated semantic workspace.
 
 There is no `requires`, `trait`, `impl`, global instance search, operator
-overloading or additional runtime TypeKind. Different Scope dictionaries may
+overloading or additional runtime TypeKind. Different Object dictionaries may
 express different algebras over the same carrier. Structural checking cannot
 prove associativity, purity or commutativity and supplies no parallel-reduction
 or floating-point-reassociation proof. See
 [algebraic constraints and rationale](algebra-constraints-v080.md).
 
-### Scope identity and source class composition
+### Object identity and source class composition
 
-`scope Name { ... }` is a named declaration singleton: the first executed
+`object` replaces the former `scope` keyword, and `Object` replaces the
+former `Scope` type name. Both changes are source-breaking; there are no
+aliases for the old spellings. A lexical scope still describes name lookup
+and capture, not a value. Neither the member operator nor the layout changes.
+
+`object Name { ... }` is a named declaration singleton: the first executed
 initializer establishes one shared instance per declaration within the current
 program or REPL session. Repeated calls/loop visits reach that same instance;
 specializations must agree on its fixed field schema. Reentrant initialization
 uses the first published canonical instance. Session reset creates an independent
 registry; this is not cross-program/process shared state.
 
-A named Scope reserves its lexical location before constructing its fields.
-Member functions can therefore select later members through the Scope name,
+A named Object reserves its lexical location before constructing its fields.
+Member functions can therefore select later members through the Object name,
 including recursive calls such as `Family::operation(...)`. They capture the
 same mutable location as ordinary closures, rather than a copied namespace or
-an independently initialized singleton. A named Scope expression supplies its
+an independently initialized singleton. A named Object expression supplies its
 name inside that expression; a declaration also binds it in the enclosing scope.
 
-In block tail position, `scope Pool { id: 1 }` both declares and returns that
-same singleton. This is equivalent to `scope Pool { id: 1 }; Pool`, not to
-creating a fresh Scope. Use the semicolon when the block should return Null
+In block tail position, `object Pool { id: 1 }` both declares and returns that
+same singleton. This is equivalent to `object Pool { id: 1 }; Pool`, not to
+creating a fresh Object. Use the semicolon when the block should return Null
 instead. Top-level declarations remain statements.
 
-Fields form a named mapping. A Scope does not expose address arithmetic or
+Fields form a named mapping. An Object does not expose address arithmetic or
 promise declaration order for storage, display, or enumeration. Initializer
 expressions still evaluate in source order; changing slot placement must not
 reorder their effects or change the locations captured by closures.
 
-`scope { ... }` constructs a fresh instance each time it is evaluated. Thus a
+`object { ... }` constructs a fresh instance each time it is evaluated. Thus a
 named namespace can expose an anonymous factory for independent objects:
 
 ```msync
-scope Counter {
-    new: fn { scope { value: 0 } },
+object Counter {
+    new: fn { object { value: 0 } },
 };
 let first = Counter::new();
 let second = Counter::new();
@@ -302,7 +307,7 @@ ancestors into an `fn`; it is not a declaration in a process-wide name table.
 Resolve the nearest prior binding at the function's definition, never an
 unrelated caller local or a later declaration. A nested function can import a
 grandparent binding even when its parent did not explicitly import it. Prior
-Scope fields are legitimate ancestors for functions defined inside that Scope.
+Object fields are legitimate ancestors for functions defined inside that Object.
 An import retains the binding's type, Null admission, declaration origin and
 identity. Ordinary 0.8 implicit capture remains supported.
 
@@ -315,8 +320,8 @@ is invalid because top-level bindings already share their lexical environment.
 A parameter or a local `let` with the same name conflicts with the import;
 repeating an import of the same still-visible location is harmless. Reimporting
 after shadowing with a new local is also a conflict, rather than silently
-retargeting that local. Scope syntax remains fields plus a value expression;
-functions inside a Scope may import preceding fields, but `global` does not
+retargeting that local. Object syntax remains fields plus a value expression;
+functions inside an Object may import preceding fields, but `global` does not
 create exported fields.
 
 The Rust 0.7.3 baseline owns a deliberately different value model. Its parser
@@ -326,8 +331,8 @@ maps into a fresh invocation environment. Frozen maps can contain a live
 slot updates, whereas a captured literal remains the old literal. Importing does
 not import the owner's `cells` map: assigning the imported name changes the
 invocation's local value, not the outer binding. Prior macro/symbol/boolean
-definitions can also be imported by their frozen identity. A root Scope has the
-same top-level restriction; a Scope nested in a macro inherits that invocation's
+definitions can also be imported by their frozen identity. A root Object has the
+same top-level restriction; an Object nested in a macro inherits that invocation's
 import context. One old imported-name-set quirk allowed reimport after a local
 rebind to reset the name to the captured value; 0.8 instead keeps the explicit
 lexical-identity conflict rule above.
@@ -356,9 +361,9 @@ operand itself remains unevaluated. Ordinary Bool parameters are not value
 specializations: calls with true and false share one type specialization and
 retain their runtime branch.
 
-Scopes are lexical member values; Connections are physical endpoint values.
+Objects are lexical member values; Connections are physical endpoint values.
 `$wsl`, `$local`, native endpoint contexts and `ssh://...` produce Connections.
-Scope/Process `::` selects a member. `connection @ path` evaluates the Connection
+Object/Process `::` selects a member. `connection @ path` evaluates the Connection
 first, then qualifies a Path or String without discarding raw path provenance.
 For example `ssh://forge @ ~/.codex -> ./backup;` selects a remote source.
 `remote @ ./reports/<.*>` selects entries after qualifying the directory; call
@@ -381,7 +386,7 @@ the new reader; the connection-first source and newly emitted artifacts produce
 `21`, while rejecting the new HIR node tag. The language-upgrade tests retain
 the source/portable/executable check and both serialized HIR node orders.
 
-A scope selected
+An object selected
 by control flow exposes the intersection of member names
 that exist in every alternative, with each member's joined semantic type.
 Identical dictionary allocation identity is not required for member projection.
@@ -389,7 +394,7 @@ Identical dictionary allocation identity is not required for member projection.
 Standard-library module files are executable compiler inputs embedded from
 `stdlib/*.msync`. Parsed documents are cached; semantic values are constructed
 with the current lexical/runtime ownership. `$std::fs`, `$std::ranges` and other
-module names are actual Scope members. Native declarations resolve registered
+module names are actual Object members. Native declarations resolve registered
 host identities with declared signatures; known dependent range capabilities
 specialize item and callback results at each use. The compiler does not require
 a Runtime assembly reference. An unqualified native name may select a unique
@@ -419,8 +424,8 @@ checks comment and regex braces, actual multiline strings and incomplete EOF.
 Range literals initialize their elements exactly once, in source order, when the
 literal expression executes. Initializers use ordinary expression evaluation:
 `[value]` and `[value + 0]` read `value` at the same time. The resulting sequence
-retains its element values and shared Scope identities; enumerating it again does
-not rerun initializers, create replacement Scopes, or repeat their effects.
+retains its element values and shared Object identities; enumerating it again does
+not rerun initializers, create replacement Objects, or repeat their effects.
 There are no implicit per-element functions or syntax-selected evaluation modes.
 
 Ordinary function calls evaluate their callee and arguments and execute their
@@ -517,7 +522,7 @@ actual call with parameter/argument types as a related location. An incompatible
 annotated argument highlights that argument, with the parameter declaration as
 a related location. In particular, passing `Constructor()::path` to a generic
 function expecting lexical member access explains that the Path member is not
-the Scope itself; it does not misdescribe every `::` as Connection qualification.
+the Object itself; it does not misdescribe every `::` as Connection qualification.
 The representation follows the source-language/actionable guidance in
 [GCC's diagnostic guidelines](https://gcc.gnu.org/onlinedocs/gccint/Guidelines-for-Diagnostics.html)
 and the primary/related labels, help and source-edit separation used by
@@ -532,22 +537,22 @@ its later-inferred parameter/result types. Multiple call types aggregate rather
 than making a shared source occurrence depend on the last call checked.
 
 Parser-owned identifier spans distinguish declaration names from keywords and
-quoted member spellings. Scope-member occurrences, constructor-returned Scopes
-and Function/Scope aliases retain their semantic roles. Syntactic declaration
+quoted member spellings. Object-member occurrences, constructor-returned Objects
+and Function/Object aliases retain their semantic roles. Syntactic declaration
 roles are seeded inside uncalled generic bodies without inventing argument
-types or executing/specializing those bodies. Scope member presentation is
-cached by semantic Scope identity only within the current analysis, so repeated
+types or executing/specializing those bodies. Object member presentation is
+cached by semantic Object identity only within the current analysis, so repeated
 standard-library references share their member descriptors without retaining
 a previous document's lexical context.
 
 Focused executable checks are `tests/Msync.Compiler.Tests --diagnostics`:
 source-edit recompilation, delimiter provenance, all newline coordinates,
-Null/Bool/match explanations, the supplied Scope constructor/call example,
+Null/Bool/match explanations, the supplied Object constructor/call example,
 polymorphic hover aggregation, exact semantic identifier spans and uncalled
 nested declarations. Actual CLI/LSP and extension-host journeys exercise the
 same structures through the installed user interfaces.
 
-Editor snapshots may end inside a function, Scope initializer, binding,
+Editor snapshots may end inside a function, Object initializer, binding,
 qualified selection or call argument. `Parser.ParseForEditor` retains the enclosing
 syntax with grammar-owned missing expressions and missing delimiter tokens,
 while preserving the first original lexer/parser diagnostic and source ranges.
@@ -556,7 +561,7 @@ normal source/artifact compilation path.
 
 `EditorAnalysis.At(caret)` queries immutable lexical snapshots recorded by the
 same inference helpers used for ordinary compilation. It returns actual visible
-bindings and the inferred receiver of `::`, including returned-Scope chains.
+bindings and the inferred receiver of `::`, including returned-Object chains.
 Snapshots retain persistent environment roots plus lexical owner/point offsets;
 member/signature rendering occurs only for the requested caret, with a local
 cache, not for every environment at every expression. Completed lexical owners
@@ -581,12 +586,12 @@ Focused tests compare later real module functions, constants and instructions
 against a session that performed no probes. Tolerant diagnostics retain the
 active generic call chain, so source recovery does not erase call-site guidance.
 
-Presentation origin is independent of structural type. A named `scope Name {}`
-and its aliases have the type presentation role; an anonymous Scope value and a
+Presentation origin is independent of structural type. A named `object Name {}`
+and its aliases have the type presentation role; an anonymous Object value and a
 constructor-returned instance have the ordinary variable role. Both still have
-semantic type Scope and permit heterogeneous, independently inferred fields.
+semantic type Object and permit heterogeneous, independently inferred fields.
 Functions use the function role regardless of named/anonymous spelling.
-The literal `scope` and `fn` tokens remain keywords, not declaration-role
+The literal `object` and `fn` tokens remain keywords, not declaration-role
 identifiers. Named concepts and `$std` module namespaces use the type role;
 `if`/`else`/`match`, `?`, `acquire`/`release` and `as` use control-flow coloring,
 while `@` is an operator. Formatter layout uses a soft 80-column target and
@@ -596,7 +601,7 @@ see [tooling details](tooling-v080.md).
 ### Static endpoint hints and live prompt bindings
 
 Editor descriptors may retain an `Endpoint` Connection identity from a literal
-SSH/WSL URI or a builtin endpoint. Aliases and lexical Scope members preserve
+SSH/WSL URI or a builtin endpoint. Aliases and lexical Object members preserve
 that identity. A control-flow join retains it only when both alternatives name
 the same Connection; aggregation across generic source occurrences likewise
 requires every observed choice to have that same non-null identity. This is
@@ -609,7 +614,7 @@ identities nested in Range item metadata, before body inference. Otherwise a
 type-shared `identity(firstHost)` specialization could incorrectly advertise the
 first host for `identity(secondHost)`, or carry it into a returned closure.
 Captured location identities participate in specialization, but a mutable
-location's current Scope payload, callable or endpoint is not a permanent
+location's current Object payload, callable or endpoint is not a permanent
 constant. Reuse its current-value facts only while the reaching write and
 alias/effect dependencies remain valid; see
 [mutable state and effects](mutable-state-and-effects-v080.md). A function that
@@ -619,7 +624,7 @@ statically returns a literal Connection can retain that literal result normally.
 lexical environment into an independent semantic snapshot: names, types,
 callable signatures, nested members and known endpoint identities. It performs
 no recompilation and excludes compiler-internal slots such as `$std` (an
-explicit user alias of the standard Scope remains visible). The prompt requests
+explicit user alias of the standard Object remains visible). The prompt requests
 a snapshot once before editing, not for every keystroke. Execution-prefix
 reconciliation and lexical shadowing therefore govern both execution and hints.
 `tests/Msync.Compiler.Tests --editor-endpoints` covers literal/builtin aliases,
@@ -629,7 +634,7 @@ unchanged type specialization counts and accepted/reconciled prompt snapshots.
 A REPL can pass `ExecutionSession.GetLocalValue` to
 `CompilerSession.AnalyzeEditor(submission, resolveAcceptedValue)`. The fork then
 hydrates accepted Path/Connection/String facts from initialized root values and
-Scope fields. A captured Path retains its actual working directory, home and
+Object fields. A captured Path retains its actual working directory, home and
 native projection after `/cd`; completion does not rebind its spelling against
 the current process directory. Function captures are hydrated by matching the
 actual FunctionValue and zipping its capture vector in Template capture order,
@@ -641,9 +646,9 @@ metadata as well as its own specialization cache. Previously returned analyses
 therefore remain stable when a later real submission adds a specialization;
 concurrent caret queries read no mutable live Template state. Value observation
 never enumerates a Range or invokes a callable, and it does not enlarge static
-Scope capabilities or specialize code on runtime Bool values. The focused
+Object capabilities or specialize code on runtime Bool values. The focused
 `tests/PathProjection --editor-session` journey executes accepted declarations,
-changes cwd/home, checks direct/Scope/captured/returned-closure projections, and
+changes cwd/home, checks direct/Object/captured/returned-closure projections, and
 then executes new real generic calls after editor-only probes.
 
 Caret contexts retain the grammar-owned receiver kind: lexical `Member` selection

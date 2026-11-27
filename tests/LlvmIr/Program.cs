@@ -9,7 +9,7 @@ using Msync.Hir;
 internal static class Program
 {
     private const string ScopeSource = """
-        let item = scope { left: 1, right: 2 };
+        let item = object { left: 1, right: 2 };
         let alias = item;
         alias::left = 4;
         item::left + item::right
@@ -289,16 +289,16 @@ internal static class Program
         DceReceipt dce = DceChecks.Run(output);
         LlvmModule scope = Lower(ScopeSource, "llvm-scope.msync");
         LlvmInstruction[] scopeCode = Instructions(scope);
-        Require(scopeCode.OfType<LlvmHeapAllocInst>().Any(), "A source Scope must become an ordinary heap allocation.");
+        Require(scopeCode.OfType<LlvmHeapAllocInst>().Any(), "A source Object must become an ordinary heap allocation.");
         LlvmGetElementPtrInstruction[] fields = scopeCode.OfType<LlvmGetElementPtrInstruction>()
             .Where(instruction => instruction.SourceElementType is LlvmStructType structure
                 && structure.NumElements == 2 && structure.Elements.All(type => type.IsDoubleTy())).ToArray();
-        Require(fields.Length != 0, "Source Scope fields lost their typed struct GEP representation.");
+        Require(fields.Length != 0, "Source Object fields lost their typed struct GEP representation.");
         Require(fields.All(field => field.Source is { Source: "llvm-scope.msync", Length: > 0 }),
-            "Scope field instructions lost their producing source context.");
-        Require(fields.All(field => field.ResultElementType.IsDoubleTy()), "Scope field addresses must retain their Number type.");
+            "Object field instructions lost their producing source context.");
+        Require(fields.All(field => field.ResultElementType.IsDoubleTy()), "Object field addresses must retain their Number type.");
         Require(scopeCode.OfType<LlvmStoreInstruction>().Any(store => fields.Any(field => ReferenceEquals(field, store.PointerOperand))),
-            "Source Scope initialization/mutation must store through a field address.");
+            "Source Object initialization/mutation must store through a field address.");
         Require(scopeCode.OfType<LlvmLoadInstruction>().Any(load => fields.Any(field => ReferenceEquals(field, load.PointerOperand))),
             "A source member read must load through a field address.");
         Require(scopeCode.Any(instruction => instruction.Opcode == LlvmOpcode.FAdd),
@@ -307,7 +307,7 @@ internal static class Program
         Require(scopeDump.Contains("heapalloc", StringComparison.Ordinal)
             && scopeDump.Contains("getelementptr", StringComparison.Ordinal)
             && scopeDump.Contains("load", StringComparison.Ordinal)
-            && scopeDump.Contains("store", StringComparison.Ordinal), "The source Scope IR dump omitted its memory operations.");
+            && scopeDump.Contains("store", StringComparison.Ordinal), "The source Object IR dump omitted its memory operations.");
 
         LlvmHirLoweringResult ioLowering = LlvmHirLowerer.Lower(Compiler.Analyze(IoSource, "llvm-io.msync"));
         LlvmModule io = ioLowering.Module;

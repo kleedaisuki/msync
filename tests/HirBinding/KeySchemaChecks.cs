@@ -9,7 +9,7 @@ internal static class KeySchemaChecks
     internal static void Run()
     {
         int checks = 0;
-        var program = new SourceBinder().Bind("let first = scope { value: 1 }; let second = scope { value: 2 }; fn make(value) { fn { value } }; let left = make(1); let right = make(2);", "key-schemas.msync");
+        var program = new SourceBinder().Bind("let first = object { value: 1 }; let second = object { value: 2 }; fn make(value) { fn { value } }; let left = make(1); let right = make(2);", "key-schemas.msync");
         var analyzer = new SemanticAnalyzer(program);
         analyzer.Analyze();
         var state = analyzer.FinalState;

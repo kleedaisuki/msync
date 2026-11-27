@@ -22,7 +22,7 @@ internal static class EarlyLoopJourney
         new("duplicate-products", "fn duplicates(a: Number, b: Number) { a * b + a * b }; duplicates(2, 3)", 12),
         new("memory-callback-kill", """
             fn memory(seed: Number) {
-                let item = scope { value: seed };
+                let item = object { value: seed };
                 let before = item::value;
                 item::value = seed + 1;
                 let written = item::value;
@@ -34,7 +34,7 @@ internal static class EarlyLoopJourney
             """, 238),
         new("loop-memory-alias", """
             fn accumulate(limit: Number) {
-                let item = scope { value: 1 }; let alias = item; let index = 0;
+                let item = object { value: 1 }; let alias = item; let index = 0;
                 loop {
                     if index >= limit { break; };
                     alias::value = item::value + index;
@@ -45,8 +45,8 @@ internal static class EarlyLoopJourney
             accumulate(4)
             """, 7),
         new("loop-callback-clobber", """
-            fn mutate(row: Scope) { row::value = row::value + 1; };
-            let item = scope { value: 1 }; let index = 0; let total = 0;
+            fn mutate(row: Object) { row::value = row::value + 1; };
+            let item = object { value: 1 }; let index = 0; let total = 0;
             loop {
                 if index >= 3 { break; };
                 let before = item::value;

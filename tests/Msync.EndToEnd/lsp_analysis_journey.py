@@ -182,7 +182,7 @@ def semantic_refresh_lifecycle(binary: Path) -> dict[str, float]:
         before, _ = client.request(
             "textDocument/semanticTokens/full", {"textDocument": {"uri": uri}}
         )
-        notify(client, uri, 2, "let named = scope { x: true };\nnamed\n")
+        notify(client, uri, 2, "let named = object { x: true };\nnamed\n")
         assert diagnostics(client, uri, 2)["diagnostics"] == []
         respond(first["id"])
         second = refresh()

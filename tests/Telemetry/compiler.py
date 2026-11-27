@@ -18,8 +18,8 @@ ROOT: Path = Path(__file__).resolve().parents[2]
 Row = dict[str, Any]
 
 SOURCE: str = """fn update(flag: Bool, seed: Number) {
-    let row = if flag { scope { n: seed, text: "left" } }
-        else { scope { text: "right", n: seed + 1 } };
+    let row = if flag { object { n: seed, text: "left" } }
+        else { object { text: "right", n: seed + 1 } };
     let alias = row;
     alias::n = row::n + 2;
     row::n
@@ -110,6 +110,11 @@ def compilation(binary: Path, fixture: Path) -> None:
         rows: list[Row] = records(trace)
         ownership(rows)
         names: set[str] = {row["name"] for row in rows}
+        syntax = next(
+            row for row in rows if row["name"] == "compiler.syntax"
+            and row["attributes"].get("source.file", "").endswith(source.name)
+        )
+        assert syntax["metrics"]["object.anonymous_expressions"] == 2, syntax
         assert {
             "compiler.lex",
             "compiler.syntax",
@@ -195,7 +200,8 @@ def failures(binary: Path, fixture: Path) -> None:
     cases: list[tuple[str, str, str]] = [
         ("lex", 'let value = "unfinished', "compiler.lex"),
         ("syntax", "let = 1;", "compiler.syntax"),
-        ("bind", "let value = scope { n: 1, n: 2 };", "compiler.bind"),
+        ("object-syntax", "let value = object { n: 1,", "compiler.syntax"),
+        ("bind", "let value = object { n: 1, n: 2 };", "compiler.bind"),
         ("semantic", 'let value: Number = "not a number";', "compiler.semantic.body"),
     ]
     for name, text, phase in cases:
@@ -229,6 +235,9 @@ def failures(binary: Path, fixture: Path) -> None:
         assert all(int(row["attributes"]["source.offset"]) >= 0 for row in failed), (
             failed
         )
+        if name == "object-syntax":
+            assert "E0103" in process.stderr and text in process.stderr, process.stderr
+            assert failed[0]["metrics"]["object.anonymous_expressions"] == 1, failed
         assert not any(row["name"] == "compiler.lower" for row in rows), rows
     print(
         "PASS lexical/syntax/binding/semantic failures: exact failed stage, causes and no fabricated later stages"

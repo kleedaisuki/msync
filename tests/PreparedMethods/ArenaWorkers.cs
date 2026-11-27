@@ -18,7 +18,7 @@ internal static class ArenaWorkers
         Require(!child.WritesArenaRows && child.Exits.IsEmpty
             && child.Worker.RowStride == ArenaNumberRowLayout.Stride
             && child.Worker.Slots[child.Worker.Result] == NativeWorkerType.Index,
-            "Arena reads must select original lanes, without a reconstructed Scope shape.");
+            "Arena reads must select original lanes, without a reconstructed Object shape.");
         Require(child.Worker.Instructions.Any(op => op.Op == NativeWorkerOp.BranchIfFalse),
             "A dynamic direction requires a selected raw child load.");
         byte[] rows = new byte[4 * ArenaNumberRowLayout.Stride];

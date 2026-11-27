@@ -26,9 +26,9 @@ internal sealed partial class SemanticAnalyzer
     {
         if (nullable && Runtime(value) == TypeRef.Null) return ImmutableDictionary<HirTypeId, HirTypeId>.Empty;
         if (Runtime(value).Nullable && !nullable)
-            throw ConceptError(conceptId, source, "a non-null Scope", Runtime(value).ToString());
+            throw ConceptError(conceptId, source, "a non-null Object", Runtime(value).ToString());
         if (value.Scope is not { } shape)
-            throw ConceptError(conceptId, source, "a structural Scope", Runtime(value).ToString());
+            throw ConceptError(conceptId, source, "a structural Object", Runtime(value).ToString());
         if (context.Objects.TryGetValue(shape.Region, out var current)) shape = current;
         var definition = program.Concepts[conceptId];
         var associated = ImmutableDictionary.CreateBuilder<HirTypeId, HirTypeId>();

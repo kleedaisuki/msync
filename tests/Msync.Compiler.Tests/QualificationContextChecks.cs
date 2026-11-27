@@ -24,7 +24,7 @@ internal static class QualificationContextChecks
     {
         Qualified(Prefix + "remote @ (/tmp/§)", Remote, "/tmp");
         Qualified(Prefix + "let folder = /tmp; remote @ (folder/§)", Remote, "/tmp");
-        Qualified("scope Endpoints { remote: ssh://forge }; Endpoints::remote @ (./rel/§)", Remote, "./rel");
+        Qualified("object Endpoints { remote: ssh://forge }; Endpoints::remote @ (./rel/§)", Remote, "./rel");
         Qualified(Prefix + "remote @ (\"folder\"/§)", Remote, "folder");
         Qualified(Prefix + "remote @ { /tmp/§ }", Remote, "/tmp");
         Qualified(Prefix + "remote @ (if true { /tmp/§ } else { other })", Remote, "/tmp");
@@ -74,12 +74,12 @@ internal static class QualificationContextChecks
             EditorContext context = At(Prefix + expression);
             Check(!context.HasPhysicalOwner && context.Receiver?.Type != "Connection", "physical leaf ownership crossed an evaluation boundary: " + expression);
         }
-        EditorContext lexical = At(Prefix + "scope Config { root: ./rel }; remote @ (Config::ro§)");
-        Check(!lexical.HasPhysicalOwner && lexical.Receiver?.Type == "Scope" && lexical.Receiver.Members?.Single().Name == "root",
-            "outer qualification turned a Scope member-name lookup into a physical pathname");
+        EditorContext lexical = At(Prefix + "object Config { root: ./rel }; remote @ (Config::ro§)");
+        Check(!lexical.HasPhysicalOwner && lexical.Receiver?.Type == "Object" && lexical.Receiver.Members?.Single().Name == "root",
+            "outer qualification turned an Object member-name lookup into a physical pathname");
         EditorContext unknown = At("fn inspect(remote: Connection) { remote @ \"./rel/§\" }");
         Check(unknown.HasPhysicalOwner && unknown.PhysicalEndpoint is null, "opaque leaf ownership became an ordinary local path");
-        EditorContext ambiguous = At("fn inspect(settings) { settings::endpoint @ \"./rel/§\" }; inspect(scope { endpoint: ssh://one }); inspect(scope { endpoint: ssh://two });");
+        EditorContext ambiguous = At("fn inspect(settings) { settings::endpoint @ \"./rel/§\" }; inspect(object { endpoint: ssh://one }); inspect(object { endpoint: ssh://two });");
         Check(ambiguous.HasPhysicalOwner && ambiguous.PhysicalEndpoint is null, "a physical leaf reports one of several actual generic endpoint owners");
         EditorContext rewritten = At(Prefix + "fn inspect(unknown: Connection) { $local @ (unknown @ \"./rel/§\") }");
         Check(rewritten.HasPhysicalOwner && rewritten.PhysicalEndpoint is null,
@@ -95,7 +95,7 @@ internal static class QualificationContextChecks
         Check(path.Receiver?.KnownPath is null, "qualification invented a path value for an opaque parameter");
         EditorContext contextual = At("$env @ (/tmp/§)");
         Check(contextual.Receiver?.KnownPath is null, "a contextual endpoint was projected as an ordinary physical path");
-        const string polymorphic = "fn inspect(settings) { settings::endpoint @ (/tmp/§) }; inspect(scope { endpoint: ssh://one }); inspect(scope { endpoint: ssh://two });";
+        const string polymorphic = "fn inspect(settings) { settings::endpoint @ (/tmp/§) }; inspect(object { endpoint: ssh://one }); inspect(object { endpoint: ssh://two });";
         Check(At(polymorphic).Receiver?.KnownPath is null, "one specialization overwrote the endpoint of another invocation's source receiver");
     }
 
@@ -109,7 +109,7 @@ internal static class QualificationContextChecks
 
     private static void MalformedRecovery()
     {
-        const string source = "let ready = scope { useful: true }; fn inspect(scope) { scope::endpoint @ (/tmp/) }; inspect(scope { endpoint: ssh://one }); inspect(scope { endpoint: ssh://two });";
+        const string source = "let ready = object { useful: true }; fn inspect(scope) { scope::endpoint @ (/tmp/) }; inspect(object { endpoint: ssh://one }); inspect(object { endpoint: ssh://two });";
         EditorAnalysis analysis = EditorCompiler.Analyze(source, "file:///malformed.msync");
         Check(analysis.Diagnostic is not null, "malformed keyword parameter lost its diagnostic");
         Check(analysis.At(source.Length).Bindings.Any(item => item.Name == "ready" && item.Members?.Single().Name == "useful"),

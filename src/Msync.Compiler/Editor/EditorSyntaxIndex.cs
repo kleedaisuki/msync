@@ -75,7 +75,7 @@ internal sealed record EditorSyntaxIndex(
             if (node is ConceptDeclaration concept)
                 yield return (concept.Span, concept.Parameters.Concat(concept.Types).Where(type => type.NameSpan is { Length: > 0 })
                     .Select(type => new SemanticMember(type.Name, "Type", concept.Parameters.Contains(type) ? type.Name : $"typename {type.Name}",
-                    "An associated type selected from the constrained Scope.", SemanticRole: "type")
+                    "An associated type selected from the constrained Object.", SemanticRole: "type")
                     { IsConstraint = true }).ToArray());
             foreach (var scope in ConceptTypeScopes(SyntaxTraversal.Children(node))) yield return scope;
         }
@@ -116,8 +116,8 @@ internal sealed record EditorSyntaxIndex(
                 case NativeDeclaration native:
                     Add(native.NameSpan, "Function", FunctionSignature(native.Name, native.Parameters, Slice(source, native.ReturnType.Span), source));
                     break;
-                case ScopeDeclaration scope: Add(scope.NameSpan, "Scope", $"{scope.Name}: Scope", "type"); break;
-                case ScopeExpr { Name: { } name } scope: Add(scope.NameSpan, "Scope", $"scope {name}", "type"); break;
+                case ScopeDeclaration scope: Add(scope.NameSpan, "Object", $"{scope.Name}: Object", "type"); break;
+                case ScopeExpr { Name: { } name } scope: Add(scope.NameSpan, "Object", $"object {name}", "type"); break;
                 case ConceptDeclaration concept:
                     var header = concept.ParameterList is { } parametersSpan ? Slice(source, parametersSpan) : "";
                     Add(concept.NameSpan, "Concept", $"concept {concept.Name}{header}", "type");
@@ -153,12 +153,12 @@ internal sealed record EditorSyntaxIndex(
                     Add(name.Span, "Function", FunctionSignature(name.Name, function.Parameters,
                         function.ReturnType is { } lambdaResult ? Slice(source, lambdaResult.Span) : "inferred at call", source));
                     break;
-                case LetStatement { Pattern: NamePattern name, Value: ScopeExpr }: Add(name.Span, "Scope", $"{name.Name}: Scope"); break;
+                case LetStatement { Pattern: NamePattern name, Value: ScopeExpr }: Add(name.Span, "Object", $"{name.Name}: Object"); break;
                 case ScopeMember { Value: FunctionExpr function } member:
                     Add(member.NameSpan, "Function", FunctionSignature(member.Name, function.Parameters,
                         function.ReturnType is { } memberResult ? Slice(source, memberResult.Span) : "inferred at call", source));
                     break;
-                case ScopeMember { Value: ScopeExpr } member: Add(member.NameSpan, "Scope", $"{member.Name}: Scope"); break;
+                case ScopeMember { Value: ScopeExpr } member: Add(member.NameSpan, "Object", $"{member.Name}: Object"); break;
             }
             Seed(SyntaxTraversal.Children(node), source, occurrences, typeSpans);
         }
@@ -187,9 +187,9 @@ internal sealed record EditorSyntaxIndex(
         {
             if (span is { } location) occurrences[location] = new(location, type, signature,
                 type == "Concept" ? "A named structural constraint. Required fields and function signatures are checked at specialization."
-                    : type == "Type" ? "An associated type selected from the constrained Scope."
+                    : type == "Type" ? "An associated type selected from the constrained Object."
                     : type == "Function" ? "A callable value. Its generic body is checked when specialized by a call."
-                    : "A lexical Scope. Select its declared members with `::`.",
+                    : "A lexical Object. Select its declared members with `::`.",
                 SemanticRole: role ?? (type == "Function" ? "function" : "variable"));
         }
     }

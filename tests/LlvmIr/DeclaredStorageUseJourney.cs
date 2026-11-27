@@ -11,7 +11,7 @@ internal static class DeclaredStorageUseJourney
 {
     internal static async Task<int> RunAsync()
     {
-        const string source = "fn read(row: Scope) { row::first }; read(scope { first: scope { value: 7 } })::value";
+        const string source = "fn read(row: Object) { row::first }; read(object { first: object { value: 7 } })::value";
         var graph = LlvmHirLowerer.Lower(Compiler.Analyze(source, "declared-storage-use.msync"));
         var read = graph.Module.Functions.Single(function => function.Name == "read");
         LlvmPromoteMemoryToRegister.Run(read, new LlvmDominatorTree(read));
@@ -37,7 +37,7 @@ internal static class DeclaredStorageUseJourney
         List<CompilationObservation> records = [];
         var program = LlvmNativeLowerer.Lower(graph, new(records.Add, includeOptimizerPasses: true));
         Program.Require(records.Sum(record => (long)(record.Metrics?.GetValueOrDefault("addresses.memory_storage.physical_use") ?? 0)) > 0,
-            "A folded pointer-valued field must select its recorded physical storage, not infer it from an abstract Scope.");
+            "A folded pointer-valued field must select its recorded physical storage, not infer it from an abstract Object.");
         string work = Path.GetFullPath(".temp/llvm-ir/declared-storage-use");
         Directory.CreateDirectory(work);
         await Execute(program, work);
@@ -50,7 +50,7 @@ internal static class DeclaredStorageUseJourney
 
     private static async Task<int> AggregateLoads()
     {
-        const string source = "fn read(row: Scope) { row::run }; read(scope { run: fn { 7 } })()";
+        const string source = "fn read(row: Object) { row::run }; read(object { run: fn { 7 } })()";
         foreach (bool foldFirst in new[] { false, true })
         {
             var graph = LlvmHirLowerer.Lower(Compiler.Analyze(source, "declared-function-storage.msync"));

@@ -42,7 +42,7 @@ def journey(binary: Path, route: str, level: int, trace: bool = False, stream: b
     source: Path = work/'case.msync'
     source.write_text(
         f'let python: Path = {json.dumps(sys.executable)};\n'
-        'let state = scope { child: python("-c", "pass") };\n'
+        'let state = object { child: python("-c", "pass") };\n'
         'let first = $std::ranges::transform([./input], fn(path) {\n'
         '  let signal? = $std::io::read_line(); if signal is not null {\n'
         f'    state::child = release python({json.dumps(str(worker))});\n'

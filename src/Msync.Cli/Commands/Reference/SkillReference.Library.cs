@@ -68,7 +68,7 @@ internal static partial class SkillReference
         {
             LibraryEntry? entry = statement switch
             {
-                ScopeDeclaration scope => new(scope.Name, $"scope {scope.Name}", scope.Span, ScopeEntries(source, scope.Scope)),
+                ScopeDeclaration scope => new(scope.Name, $"object {scope.Name}", scope.Span, ScopeEntries(source, scope.Scope)),
                 FunctionDeclaration function => new(function.Name,
                     Signature(source, function.Span.Start, function.Function.Body.Span.Start), function.Span),
                 NativeDeclaration native => new(native.Name, Signature(source, native.Span.Start, native.Span.End), native.Span),
@@ -87,7 +87,7 @@ internal static partial class SkillReference
         {
             FunctionExpr function => new LibraryEntry(member.Name,
                 Signature(source, member.Span.Start, function.Body.Span.Start), member.Span),
-            ScopeExpr nested => new(member.Name, $"{member.Name}: scope", member.Span, ScopeEntries(source, nested)),
+            ScopeExpr nested => new(member.Name, $"{member.Name}: object", member.Span, ScopeEntries(source, nested)),
             _ => new(member.Name, member.Name, member.Span)
         }).ToArray();
 

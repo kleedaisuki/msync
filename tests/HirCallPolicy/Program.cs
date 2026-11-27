@@ -24,10 +24,10 @@ await Source("""
     first(pending)
     """, "after");
 await Source("""
-    let effects = scope { count: 0 };
+    let effects = object { count: 0 };
     fn touch() -> String { effects::count = effects::count + 1; "seen" };
     fn construct(value: String) {
-        let result = scope { value: value };
+        let result = object { value: value };
         loop { break result; }
     };
     let inspected = decltype(construct(touch()));
@@ -35,11 +35,11 @@ await Source("""
     if effects::count == 1 { result::value } else { "bad count" }
     """, "seen");
 await Source("native fn first(values: Range) -> String; let flag = true; let delayed = [if flag { \"yes\" } else { \"no\" }]; flag = false; first(delayed)", "no");
-await Source("native fn first(values: Range) -> String; let state = scope { flag: true }; let delayed = [if state::flag { \"yes\" } else { \"no\" }]; state::flag = false; first(delayed)", "no");
-await Source("native fn first(values: Range) -> String; let state = scope { flag: true }; fn build() { if state::flag { [\"yes\"] } else { [\"no\"] } }; let delayed = build(); state::flag = false; first(delayed)", "no");
+await Source("native fn first(values: Range) -> String; let state = object { flag: true }; let delayed = [if state::flag { \"yes\" } else { \"no\" }]; state::flag = false; first(delayed)", "no");
+await Source("native fn first(values: Range) -> String; let state = object { flag: true }; fn build() { if state::flag { [\"yes\"] } else { [\"no\"] } }; let delayed = build(); state::flag = false; first(delayed)", "no");
 await Source("native fn first(values: Range) -> String; let value?: String = \"before\"; let delayed = [if value is not null { value } else { \"fallback\" }]; value = null; first(delayed)", "fallback");
 Reject("native fn first(values: Range) -> String; let input: Range or String = [\"before\"]; fn identity(value) { value }; let delayed = identity(input); input = \"after\"; first(delayed)");
-HirModule callbacks = Compiler.Analyze("fn use(operations) { operations::get() }; let first = scope { get: fn { 1 } }; let second = scope { get: fn { 2 } }; use(first) * 10 + use(second)", "callable-shape.msync");
+HirModule callbacks = Compiler.Analyze("fn use(operations) { operations::get() }; let first = object { get: fn { 1 } }; let second = object { get: fn { 2 } }; use(first) * 10 + use(second)", "callable-shape.msync");
 Check(await Interpreter.ExecuteAsync(HirLowerer.Lower(callbacks, new(0)).Module) is NumberValue { Data: 12 },
     "A pure unknown scheme cannot erase a specialized callable's result type.");
 string root = Path.Combine(Environment.CurrentDirectory, ".temp", "hir-call-input-" + Guid.NewGuid().ToString("N"));

@@ -42,7 +42,7 @@ internal static class HpirVectorQuantifierChecks
         let members = $std::meta::members_of({
             reflected = reflected + 1;
             "unexpected" -> operand-ran.txt;
-            scope { label: "item", file?: ./input }
+            object { label: "item", file?: ./input }
         });
         let ok = ranges::all_of(signature::parameters, fn(type: Type) {
             visits = visits + 1;

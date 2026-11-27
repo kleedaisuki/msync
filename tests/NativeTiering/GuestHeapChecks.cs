@@ -189,8 +189,8 @@ internal static class GuestHeapChecks
     private static async Task<NativeValue> ExportAsync()
     {
         NativeProgram program = Compiler.Compile("""
-            let node = scope { count: 7 };
-            scope { left: node, right: node }
+            let node = object { count: 7 };
+            object { left: node, right: node }
             """, "embedded-guest-heap.msync");
         RuntimeProfile profile = new();
         await using NativeInterpreter interpreter = new(program, new() { Profile = profile });

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise spatial Scope storage through real source and source-free artifacts."""
+"""Exercise spatial Object storage through real source and source-free artifacts."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ PROGRAM: str = r"""
 let seed = $std::io::read_text(./seed.txt) as Number;
 fn make(index: Number) {
     let x = seed + index;
-    scope {
+    object {
         x: x, y: x * 2, z: x * 3, weight: x + 4,
         tag: index as String, path: ./seed.txt,
     }
@@ -41,32 +41,32 @@ if $std::ranges::size(view) == 64
     "snapshot-keeps-instances" -> ./snapshot.txt;
 };
 fn captured(initial: Number) {
-    scope {
+    object {
         x: initial, y: initial + 1, z: initial + 2, weight: initial + 3,
         read: fn { x },
         write: fn(value: Number) { x = value; },
     }
 };
-let object = captured(seed);
-let alias = object;
+let record = captured(seed);
+let alias = record;
 alias::write(19);
-object::x = 23;
+record::x = 23;
 if alias::read() == 23 { "shared-location" -> ./capture.txt; };
 fn observe(initial: Number) {
-    let local = scope {
+    let local = object {
         x: initial, y: initial + 1, z: initial + 2,
         read: fn { x }, write: fn(value: Number) { x = value; },
     };
     local::write(19);
     local::x = 23;
-    scope { direct: local::x, captured: local::read() }
+    object { direct: local::x, captured: local::read() }
 };
 let observed = observe(seed);
 if observed::direct == 23 and observed::captured == 23 {
     "active-frame-location" -> ./capture-frame.txt;
 };
 let wide_rows = $std::ranges::materialize([
-    scope {
+    object {
         x: seed + 1, y: seed + 2,
         a: "a", b: "b", c: "c", d: "d", e: "e", f: "f",
         g: "g", h: "h", i: "i", j: "j", k: "k", l: "l",
@@ -77,12 +77,12 @@ let wide = $std::ranges::at(wide_rows, 0);
 if wide::x == 8 and wide::y == 9 and wide::p == "p" {
     "numeric-prefix-reference-tail" -> ./mixed-depth.txt;
 };
-let optional = scope { value?: seed, y: seed + 1, z: seed + 2 };
+let optional = object { value?: seed, y: seed + 1, z: seed + 2 };
 optional::value = null;
 if optional::value is null { "null" -> ./nullable.txt; };
 optional::value = 13;
 if optional::value is not null { (optional::value as String) -> ./restored.txt; };
-let mixed = scope {
+let mixed = object {
     value: if exists ./number-branch { seed } else { "text" },
     y: seed + 1, z: seed + 2,
 };
@@ -91,7 +91,7 @@ mixed::value = seed + 2;
 (mixed::value as String) -> ./union.txt;
 let zero = seed - seed;
 let nan = zero / zero;
-let bits = scope { zero: -zero, nan: nan, y: seed, z: seed + 1 };
+let bits = object { zero: -zero, nan: nan, y: seed, z: seed + 1 };
 if $std::math::signbit(bits::zero) and bits::nan != bits::nan {
     "ieee" -> ./ieee.txt;
 };
@@ -108,7 +108,7 @@ fn initialize(value: Number) {
     value
 };
 fn named(value: Number) {
-    scope Named { x: initialize(value), y: value + 1, z: value + 2 };
+    object Named { x: initialize(value), y: value + 1, z: value + 2 };
     Named
 };
 let before_initialization = initializations;

@@ -13,8 +13,8 @@ internal static class ShapeRegressionChecks
         (string Name, string Source, double Expected)[] cases =
         [
             ("alias-untouched-Type-frame", """
-                let row = scope { n: 1, Item: Number };
-                let other = scope { n: 3, Item: Number };
+                let row = object { n: 1, Item: Number };
+                let other = object { n: 3, Item: Number };
                 let values = [row, other];
                 let view? = $std::ranges::first(values);
                 if view is null { 0 } else {
@@ -26,16 +26,16 @@ internal static class ShapeRegressionChecks
                 """, 7),
             ("nested-captured-scope-write", """
                 fn make(seed: Number) {
-                    let outer = scope { inner: scope { n: seed } };
+                    let outer = object { inner: object { n: seed } };
                     fn() { outer::inner::n = outer::inner::n + 1; outer::inner::n }
                 };
                 let next = make(4);
                 next() * 10 + next()
                 """, 56),
             ("alias-disjoint-Type-frame", """
-                let row = scope { n: 1, Item: Number };
-                let other = scope { n: 3, Item: Number };
-                let untouched = scope { n: 4, Item: Number };
+                let row = object { n: 1, Item: Number };
+                let other = object { n: 3, Item: Number };
+                let untouched = object { n: 4, Item: Number };
                 fn alter(view, original) {
                     view::Item = String;
                     let Item = original::Item;
@@ -47,8 +47,8 @@ internal static class ShapeRegressionChecks
                 if view is null { 0 } else { forward(view, untouched) }
                 """, 7),
             ("returned-alias-view-write", """
-                let a = scope { n?: 1 };
-                let b = scope { n?: 2 };
+                let a = object { n?: 1 };
+                let b = object { n?: 2 };
                 fn select(values) { $std::ranges::first(values) };
                 let selected? = select([a, b]);
                 if selected is not null { selected::n = null };
@@ -57,8 +57,8 @@ internal static class ShapeRegressionChecks
                 if first is null { if second is null { 0 } else { second + 5 } } else { 0 }
                 """, 7),
             ("escaped-alias-view-write", """
-                let a = scope { n?: 1 };
-                let b = scope { n?: 2 };
+                let a = object { n?: 1 };
+                let b = object { n?: 2 };
                 fn make(values) {
                     let selected? = $std::ranges::first(values);
                     fn() { if selected is not null { selected::n = null }; 0 }
@@ -72,7 +72,7 @@ internal static class ShapeRegressionChecks
             ("nullable-storage-flow", """
                 fn next(value?: Number or Null) { if value is null { 0 } else { value + 1 } };
                 let initial?: Number = null;
-                let node = scope { key?: initial };
+                let node = object { key?: initial };
                 fn from_node(node) {
                     let key? = node::key;
                     if key is null { 0 } else { key + 1 }
@@ -83,16 +83,16 @@ internal static class ShapeRegressionChecks
                 """, 12),
             ("associated-scope-sample", """
                 let Tree = $std::containers::BTree;
-                let records = Tree::with_policy(scope { group: "", id: 0 }, 0, scope {
-                    sample: scope { group: "", id: 0 },
-                    less: fn(left: Scope, right: Scope) {
+                let records = Tree::with_policy(object { group: "", id: 0 }, 0, object {
+                    sample: object { group: "", id: 0 },
+                    less: fn(left: Object, right: Object) {
                         if left::group == right::group { left::id < right::id }
                         else { left::group < right::group }
                     }
                 });
-                Tree::insert(records, scope { group: "a", id: 1 }, 11);
-                Tree::insert(records, scope { group: "a", id: 2 }, 22);
-                let selected? = Tree::get(records, scope { group: "a", id: 1 });
+                Tree::insert(records, object { group: "a", id: 1 }, 11);
+                Tree::insert(records, object { group: "a", id: 2 }, 22);
+                let selected? = Tree::get(records, object { group: "a", id: 1 });
                 if selected is null { 0 } else { selected::value }
                 """, 11),
             ("nested-captured-family", """
@@ -117,9 +117,9 @@ internal static class ShapeRegressionChecks
                 """, 20),
             ("distinct-live-captures", """
                 fn factory(value) { fn() { value::number } };
-                let target = factory(scope { number: 10 });
+                let target = factory(object { number: 10 });
                 let first = target;
-                target = factory(scope { number: 20 });
+                target = factory(object { number: 20 });
                 first() * 100 + target()
                 """, 1020)
         ];
@@ -167,18 +167,18 @@ internal static class ShapeRegressionChecks
         {
             """
             fn check(order: $std::concepts::StrictOrder) { true };
-            check(scope { sample: scope { group: "" }, less: fn(left: Scope, right: Scope) { left::missing < right::missing } })
+            check(object { sample: object { group: "" }, less: fn(left: Object, right: Object) { left::missing < right::missing } })
             """,
             """
             fn check(order: $std::concepts::StrictOrder) { true };
-            check(scope { sample: scope { group: "" }, less: fn(left: Scope, right: Scope) { left::group } })
+            check(object { sample: object { group: "" }, less: fn(left: Object, right: Object) { left::group } })
             """
         })
         {
             bool rejected = false;
             try { _ = SourceCompiler.Analyze(source, "invalid-associated-scope-policy.msync"); }
             catch (CompileException error) { rejected = error.Diagnostic.Code == "E0214"; }
-            if (!rejected) throw new InvalidOperationException("An invalid associated Scope policy escaped concept checking");
+            if (!rejected) throw new InvalidOperationException("An invalid associated Object policy escaped concept checking");
             checks++;
         }
         bool incompatibleCapture = false;
@@ -186,9 +186,9 @@ internal static class ShapeRegressionChecks
         {
             _ = SourceCompiler.Analyze("""
                 fn factory(value) { fn() { value::number } };
-                let operation = factory(scope { number: 10 });
+                let operation = factory(object { number: 10 });
                 let pending = $std::ranges::transform([true], fn(_) -> Number { operation() });
-                operation = factory(scope { number: "wrong" });
+                operation = factory(object { number: "wrong" });
                 $std::ranges::first(pending)
                 """, "incompatible-future-capture.msync");
         }

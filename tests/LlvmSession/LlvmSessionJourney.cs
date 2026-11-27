@@ -32,14 +32,14 @@ internal static class LlvmSessionJourney
                     fn set(value: Number) { state = value; };
                     fn make(value: Number) { fn { value + state } };
                     let escaped = make(7);
-                    let object = scope { value: 2, read: fn { value } };
-                    let shared = object;
+                    let record = object { value: 2, read: fn { value } };
+                    let shared = record;
                     let operation = fn(value: Number) { value + state };
                     let delayed = $std::ranges::transform([1, 2], fn(item) { operation(item) });
                     null
                     """);
                 await session.Submit("state = 3; shared::value = 4; operation = fn(value: Number) { value * 10 + state }; null");
-                await session.Number("read() + object::read()", 7);
+                await session.Number("read() + record::read()", 7);
                 await session.Number("$std::ranges::front(delayed)", 13);
                 await session.Number("escaped()", 10);
                 await session.Submit("let state = 100; null");
@@ -48,7 +48,7 @@ internal static class LlvmSessionJourney
                 await session.Number("escaped() + operation(2) + state", 137);
                 await session.Submit("fn identity(value) { value }; let id = identity; null");
                 await session.Number("if id(true) { identity(42) } else { 0 }", 42);
-                await session.Number("shared::value = 9; object::read()", 9);
+                await session.Number("shared::value = 9; record::read()", 9);
 
                 await session.Submit("""
                     let child = release /bin/sh("-c", "while [ ! -f ./release-future ]; do sleep 0.01; done; printf pending-value");

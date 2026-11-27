@@ -35,7 +35,7 @@ try
             let filtered = Directory::matching(folder, fn(path: Path) {
                 $std::path::extension(path) == ".txt"
             });
-            scope {
+            object {
                 text: initial,
                 moved: File::name(alias) == "moved.txt",
                 separate: File::read_text(separate),
@@ -52,7 +52,7 @@ try
         {
             if (Directory.Exists(Path.Combine(root, "work"))) Directory.Delete(Path.Combine(root, "work"), true);
             Value result = await Interpreter.ExecuteAsync(image, new(WorkingDirectory: root));
-            if (result is not ScopeValue scope) throw new InvalidOperationException("Service result is not Scope");
+            if (result is not ScopeValue scope) throw new InvalidOperationException("Service result is not Object");
             Require(scope.Members["text"] is StringValue { Data: "hello 星 second" }, "File read/append content: " + scope.Members["text"]);
             Require(scope.Members["moved"] is BoolValue { Data: true }, "Move did not update the aliased record location");
             Require(scope.Members["separate"] is StringValue { Data: "independent" }, "Independent file records share location");

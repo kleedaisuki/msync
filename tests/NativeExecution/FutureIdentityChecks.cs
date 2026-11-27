@@ -17,7 +17,7 @@ internal static class FutureIdentityChecks
             ("binary", "let saved = child::exit_code; let a = saved + 1; let b = saved + 1;", "[a, b]", "2\n8\n"),
             ("unary", "let saved = child::exit_code; let a = -saved; let b = -saved;", "[a, b]", "2\n-7\n"),
             ("comparison", "let saved = child::exit_code; let a = saved > 3; let b = saved > 3;", "[a, b]", "2\ntrue\n"),
-            ("field", "let row = scope { n: 0 }; row::n = child::exit_code; let a = row::n + 1; let b = row::n + 1;",
+            ("field", "let row = object { n: 0 }; row::n = child::exit_code; let a = row::n + 1; let b = row::n + 1;",
                 "[a,b]", "2\n8\n"),
             ("capture", "let saved = child::exit_code; fn twice() { let a = saved + 1; let b = saved + 1; [a,b] };",
                 "twice()", "2\n8\n"),

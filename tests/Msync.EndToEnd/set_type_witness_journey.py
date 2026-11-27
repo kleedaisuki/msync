@@ -47,7 +47,7 @@ expect(Set::size(from_default_range) == 2, "default deferred members are retaine
 let visits = 0;
 let calls = 0;
 let compared_early = false;
-let order = scope {
+let order = object {
     Self: String,
     sample: "",
     less: fn(left: String, right: String) {
@@ -106,7 +106,7 @@ expect(Heap::size(from_empty_range) == 1, "empty Range retains its carrier");
 let visits = 0;
 let comparisons = 0;
 let compared_early = false;
-let order = scope {
+let order = object {
     Self: Number,
     sample: 0,
     less: fn(left: Number, right: Number) {

@@ -40,8 +40,8 @@ internal static class HpirZipChecks
         """;
 
     private const string Alias = """
-        let original = scope { value: 2 };
-        let other = scope { value: 5 };
+        let original = object { value: 2 };
+        let other = object { value: 5 };
         let pair = $std::ranges::front($std::ranges::zip([original], [other]));
         pair::first::value = 19;
         $std::io::println(original::value as String);

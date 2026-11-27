@@ -50,11 +50,11 @@ internal static class TypeOperationJourney
             if value is null { 9 } else { 0 }
             """, 9),
         new("nullable-field", """
-            let object = scope { value?: 1 };
-            object::value = null;
-            let cleared = object::value is null;
-            object::value = 4;
-            if cleared { object::value } else { 0 }
+            let record = object { value?: 1 };
+            record::value = null;
+            let cleared = record::value is null;
+            record::value = 4;
+            if cleared { record::value } else { 0 }
             """, 4),
         new("type-denotation-match", """
             let target = if 1 < 2 { Number } else { String };
@@ -80,16 +80,16 @@ internal static class TypeOperationJourney
             if value is not null { if value != value { negative + 1 } else { 0 } } else { 0 }
             """, 11),
         new("structural-physical-layouts", """
-            fn touch(row: Scope) { row::value = row::value + 1; row::value };
+            fn touch(row: Object) { row::value = row::value + 1; row::value };
             fn select(flag: Bool) {
-                let row = if flag { scope { padding: 99, value: 3 } }
-                    else { scope { value: 4, padding: 88 } };
+                let row = if flag { object { padding: 99, value: 3 } }
+                    else { object { value: 4, padding: 88 } };
                 touch(row)
             };
             select(true) * 10 + select(false)
             """, 45, true),
         new("static-scope-identity", """
-            fn named(value: Number) { scope State { stored: value }; State };
+            fn named(value: Number) { object State { stored: value }; State };
             let first = named(1);
             first::stored = 9;
             let later = named(2);

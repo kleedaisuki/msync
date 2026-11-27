@@ -185,20 +185,20 @@ def _inventory(_directory: Path, size: int, seed: int) -> Fixture:
 
 
 SCHEDULER: str = """let Heap = $std::containers::Heap;
-let Item = decltype(scope {
+let Item = decltype(object {
     ticket: 0,
-    request: scope { lane: 0, rate: 0, units: 0 }
+    request: object { lane: 0, rate: 0, units: 0 }
 });
-let pending = Heap::with_policy(Item, scope {
+let pending = Heap::with_policy(Item, object {
     Self: Item,
     sample?: null,
     less: fn(left, right) { left::ticket < right::ticket }
 });
-let stats = scope {
+let stats = object {
     consumed: 0,
     sequence: 0,
-    work: $std::ranges::materialize([scope { value: 0 }, scope { value: 0 }, scope { value: 0 }, scope { value: 0 },
-        scope { value: 0 }, scope { value: 0 }, scope { value: 0 }, scope { value: 0 }])
+    work: $std::ranges::materialize([object { value: 0 }, object { value: 0 }, object { value: 0 }, object { value: 0 },
+        object { value: 0 }, object { value: 0 }, object { value: 0 }, object { value: 0 }])
 };
 
 fn account(stats, entry, stride: Number) {
@@ -235,9 +235,9 @@ loop {
         let rate = rng % 251 + 1;
         rng = rng * 48271 % 2147483647;
         let units = rng % 83 + 1;
-        Heap::push(pending, scope {
+        Heap::push(pending, object {
             ticket: priority * stride + arrived,
-            request: scope { lane: lane, rate: rate, units: units }
+            request: object { lane: lane, rate: rate, units: units }
         });
         arrived = arrived + 1;
     };
@@ -455,7 +455,7 @@ def cases() -> tuple[Case, ...]:
         Case(
             "heap-scheduler",
             "collections",
-            "Bursty arrivals, stable priority dispatch, and nested Scope accounting",
+            "Bursty arrivals, stable priority dispatch, and nested Object accounting",
             4_096,
             _scheduler,
         ),

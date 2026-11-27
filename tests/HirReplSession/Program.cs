@@ -56,8 +56,8 @@ try
 
         await Submit("""
             fn Counter() {
-                let state = scope { value: 0 };
-                scope {
+                let state = object { value: 0 };
+                object {
                     get: fn { state::value },
                     inc: fn { state::value = state::value + 1; },
                 }
@@ -92,15 +92,15 @@ try
         Check(!compiler.BindingNames.Contains("unfinished"),
             "an unfinished editor declaration does not reserve a session name");
         Check(await Submit("let alias = counter; alias::inc(); counter::get()") == NativeValue.FromNumber(1),
-            "accepted feedback preserves Scope and captured-cell identity");
+            "accepted feedback preserves Object and captured-cell identity");
 
-        await Submit("let watched = scope { text: \"before\" };");
+        await Submit("let watched = object { text: \"before\" };");
         NativeAddress watched = (await Submit("watched")).AsAddress();
         watched.Field(0).Store(NativeValue.FromString("native update"));
         const string watchedPrefix = "watched::";
         EditorAnalysis live = compiler.AnalyzeEditor(watchedPrefix, execution.GetLocalValue);
         Check(live.At(watchedPrefix.Length).Receiver?.Members?.Single(member => member.Name == "text")
-            .KnownText == "native update", "editor feedback reads the latest actual Scope fields");
+            .KnownText == "native update", "editor feedback reads the latest actual Object fields");
         Check(compiler.DescribeBindings().Single(member => member.Name == "watched").Members?
             .Single(member => member.Name == "text").KnownText == "before",
             "an editor feedback overlay does not publish facts into the accepted generation");
@@ -162,20 +162,20 @@ try
         Check(await Submit("retained") == NativeValue.FromString("accepted prefix"),
             "the accepted prefix remains usable after a failed submission");
 
-        await Submit("scope FirstSite { value: 1 };");
-        await Submit("scope SecondSite { value: \"second\" };");
+        await Submit("object FirstSite { value: 1 };");
+        await Submit("object SecondSite { value: \"second\" };");
         Check(await Submit("FirstSite::value") == NativeValue.FromNumber(1),
-            "a prior named Scope retains its own singleton allocation site");
+            "a prior named Object retains its own singleton allocation site");
         Check(await Submit("SecondSite::value") == NativeValue.FromString("second"),
-            "a later named Scope does not reuse another generation's compacted constructor index");
+            "a later named Object does not reuse another generation's compacted constructor index");
         await Submit("let retained_site = FirstSite; fn read_site(seed) { retained_site::value + seed };");
-        await Submit("let different_layout = scope { tag: true, text: \"layout\" }; FirstSite::value = 22;");
+        await Submit("let different_layout = object { tag: true, text: \"layout\" }; FirstSite::value = 22;");
         Check(await Submit("read_site(3)") == NativeValue.FromNumber(25),
             "a later specialization retains the escaped static identity and the original capture contract");
 
         await Submit("let saved = ./value;");
         execution.ChangeWorkingDirectory(next);
-        NativeAddress paths = (await Submit("scope { saved: saved, current: ./value }")).AsAddress();
+        NativeAddress paths = (await Submit("object { saved: saved, current: ./value }")).AsAddress();
         Check(paths.Field(0).Load().AsPath().WorkingDirectory == origin,
             "existing Path values retain their origin");
         Check(paths.Field(1).Load().AsPath().WorkingDirectory == next,

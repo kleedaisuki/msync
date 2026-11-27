@@ -1,5 +1,5 @@
 fn get_pool {
-    scope Pool {
+    object Pool {
         id: 1
     }
 }
@@ -13,7 +13,7 @@ println(second::id as String);
 println(get_pool()::id as String);
 
 fn declaration_only -> Null {
-    scope Hidden {
+    object Hidden {
         id: {
             $std::io::println("discarded init");
             0
@@ -23,13 +23,13 @@ fn declaration_only -> Null {
 println((declaration_only() is null) as String);
 
 fn non_tail {
-    scope Local { id: 2 }
+    object Local { id: 2 }
     Local::id
 };
 println(non_tail() as String);
 
 fn lazy_pool {
-    scope Lazy {
+    object Lazy {
         id: {
             $std::io::println("init");
             11

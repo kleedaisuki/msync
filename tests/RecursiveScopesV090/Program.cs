@@ -82,8 +82,8 @@ int checks = 0;
 foreach (string source in new[]
 {
     """
-    let row = scope { n: 1, Item: Number };
-    let other = scope { n: 3, Item: Number };
+    let row = object { n: 1, Item: Number };
+    let other = object { n: 3, Item: Number };
     let view? = $std::ranges::first([row, other]);
     if view is null { 0 } else {
         view::Item = String;
@@ -93,8 +93,8 @@ foreach (string source in new[]
     }
     """,
     """
-    let row = scope { n: 1, Item: Number };
-    let other = scope { n: 3, Item: Number };
+    let row = object { n: 1, Item: Number };
+    let other = object { n: 3, Item: Number };
     fn alter(view, original) {
         view::Item = String;
         let Item = original::Item;
@@ -111,13 +111,13 @@ foreach (string source in new[]
         let value: Item = 7;
         value
     };
-    let a = scope { n: 1, Item: Number };
-    let b = scope { n: 2, Item: Number };
-    let separate = scope { n: 3, Item: Number };
+    let a = object { n: 1, Item: Number };
+    let b = object { n: 2, Item: Number };
+    let separate = object { n: 3, Item: Number };
     let first? = $std::ranges::first([a, b]);
     if first is not null { alter(first, separate) };
-    let c = scope { n: 4, Item: Number };
-    let d = scope { n: 5, Item: Number };
+    let c = object { n: 4, Item: Number };
+    let d = object { n: 5, Item: Number };
     let second? = $std::ranges::first([c, d]);
     if second is null { 0 } else { alter(second, c) }
     """
@@ -189,7 +189,7 @@ Check(builder.Types.Count == typeCount && builder.ScopeLayouts.Count == layoutCo
 foreach (string source in new[]
 {
     """
-    fn make(value: Number) { scope { payload: value, next?: null } };
+    fn make(value: Number) { object { payload: value, next?: null } };
     let first = make(1);
     let second = make(2);
     first::next = second;
@@ -206,7 +206,7 @@ foreach (string source in new[]
     };
     """,
     """
-    fn make(value: String) { scope { payload: value, next?: null } };
+    fn make(value: String) { object { payload: value, next?: null } };
     let first = make("one");
     let second = make("two");
     first::next = second;
@@ -238,7 +238,7 @@ foreach (string source in new[]
     foreach (HirFunction function in module.Functions) Visit(function.Body);
     HirNode[] reads = executable.Select(module.Node).Where(item => item.Kind == HirKind.MemberRead && item.Text == "payload").ToArray();
     Check(reads.Length != 0 && reads.All(item => module.RuntimeType(item.Type) == expected),
-        $"Recursive Scope reads retain {expected} in finalized HIR, found [{string.Join(", ", reads.Select(item => module.RuntimeType(item.Type)))}]");
+        $"Recursive Object reads retain {expected} in finalized HIR, found [{string.Join(", ", reads.Select(item => module.RuntimeType(item.Type)))}]");
 }
 
 {
@@ -247,9 +247,9 @@ foreach (string source in new[]
     fn child(node) { let link? = node::left; if link is null { node } else { link } };
     fn make(Item: Type) {
         let key?: Item = null;
-        let nil = scope { key?: key, left?: null, parent?: null, red: false, nil: true };
+        let nil = object { key?: key, left?: null, parent?: null, red: false, nil: true };
         nil::left = nil; nil::parent = nil;
-        scope { root: nil, nil: nil }
+        object { root: nil, nil: nil }
     };
     fn repair(inserted) {
         let index = inserted;
@@ -262,7 +262,7 @@ foreach (string source in new[]
         };
     };
     let tree = make(Number);
-    let node = scope { key?: 2, left?: tree::nil, parent?: tree::nil, red: true, nil: false };
+    let node = object { key?: 2, left?: tree::nil, parent?: tree::nil, red: true, nil: false };
     tree::root = node;
     repair(node);
     """;
@@ -272,11 +272,11 @@ foreach (string source in new[]
 
 foreach (string source in new[]
 {
-    "let row = scope { old: 1 }; row = scope { fresh: 2 }; row::fresh;",
-    "let row? = null; row = scope { old: 1 }; row = scope { fresh: 2 }; if row is not null { row::fresh; };",
+    "let row = object { old: 1 }; row = object { fresh: 2 }; row::fresh;",
+    "let row? = null; row = object { old: 1 }; row = object { fresh: 2 }; if row is not null { row::fresh; };",
     "let Item = Number; let value?: Item = null; value = 7; value;",
     "let Item = Number?; let value: Item = null; value = 7; value;",
-    "fn typed(Item: Type, value?) { let result?: Item = value; scope { value?: result } }; let a = typed(Number, null); a::value = 7; a::value;",
+    "fn typed(Item: Type, value?) { let result?: Item = value; object { value?: result } }; let a = typed(Number, null); a::value = 7; a::value;",
     "fn typed(Item: Type, value?) { let result: Item = value; result }; typed(String, \"ok\"); typed(Number, 7);",
     "let Item = Number; fn typed(value) { let result: Item = value; result }; typed(7);"
 })
@@ -287,7 +287,7 @@ foreach (string source in new[]
 foreach (string source in new[]
 {
     "let Item = Number; let value: Item = 7; value = \"bad\";",
-    "let Item = Number; let value?: Item = null; let row = scope { value?: value }; row::value = \"bad\";",
+    "let Item = Number; let value?: Item = null; let row = object { value?: value }; row::value = \"bad\";",
     "let Item = 7; let value: Item = 7;"
 })
 {
@@ -299,20 +299,20 @@ foreach (string source in new[]
 
 {
     HirModule cast = SourceCompiler.Analyze("""
-        fn project(Layout: Type, value: Scope) { value as Layout };
-        let row = scope { payload: 7 };
+        fn project(Layout: Type, value: Object) { value as Layout };
+        let row = object { payload: 7 };
         let typed = project(decltype(row), row);
         typed::payload
         """, "scope-layout-witness-cast.msync");
     HirNode[] conversions = cast.Nodes.Where(node => node.Kind == HirKind.Convert).ToArray();
     Check(conversions.Any(node => cast.Types[node.Type.Value].Shape >= 0),
-        "A lexical Type witness cast retains the target Scope schema in HIR");
+        "A lexical Type witness cast retains the target Object schema in HIR");
 }
 
 {
     _ = SourceCompiler.Analyze("""
         fn make(seed: Number) {
-            let outer = scope { inner: scope { n: seed } };
+            let outer = object { inner: object { n: seed } };
             fn() { outer::inner::n = outer::inner::n + 1; outer::inner::n }
         };
         let next = make(4);
@@ -332,24 +332,24 @@ foreach (string source in new[]
 
 {
     string policy = """
-        let Item = decltype(scope { ticket: 0, request: scope { units: 0 } });
+        let Item = decltype(object { ticket: 0, request: object { units: 0 } });
         fn accept(order: $std::concepts::StrictOrder) { true };
-        accept(scope { Self: Item, sample?: null, less: fn(left, right) { left::ticket < right::ticket } })
+        accept(object { Self: Item, sample?: null, less: fn(left, right) { left::ticket < right::ticket } })
         """;
     _ = SourceCompiler.Analyze(policy, "nullable-structural-concept-sample.msync");
-    Check(true, "A nullable associated Scope witness admits an actual Null without fabricating a record");
+    Check(true, "A nullable associated Object witness admits an actual Null without fabricating a record");
     bool rejected = false;
     try
     {
         _ = SourceCompiler.Analyze("""
-            let Item = decltype(scope { ticket: 0 });
+            let Item = decltype(object { ticket: 0 });
             let wrong?: String = null;
             fn accept(order: $std::concepts::StrictOrder) { true };
-            accept(scope { Self: Item, sample?: wrong, less: fn(left, right) { left::ticket < right::ticket } })
+            accept(object { Self: Item, sample?: wrong, less: fn(left, right) { left::ticket < right::ticket } })
             """, "incompatible-nullable-concept-carrier.msync");
     }
     catch (CompileException) { rejected = true; }
-    Check(rejected, "A Null observation does not disguise an incompatible fixed String carrier as a Scope witness");
+    Check(rejected, "A Null observation does not disguise an incompatible fixed String carrier as an Object witness");
 }
 
 checks += await ShapeRegressionChecks.RunAsync();

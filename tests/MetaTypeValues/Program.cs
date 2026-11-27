@@ -22,7 +22,7 @@ var categories = new (string Name, TypeRef Type)[]
 {
     ("null", TypeRef.Null), ("bool", TypeRef.Bool), ("number", TypeRef.Number),
     ("string", TypeRef.String), ("path", TypeRef.Path), ("range", new TypeRef(TypeKind.Range)),
-    ("function", TypeRef.Function), ("scope", TypeRef.Scope), ("process", TypeRef.Process),
+    ("function", TypeRef.Function), ("object", TypeRef.Scope), ("process", TypeRef.Process),
     ("connection", TypeRef.Connection), ("type", TypeRef.Type), ("never", new TypeRef(TypeKind.Never))
 };
 foreach (var (name, type) in categories)
@@ -93,7 +93,7 @@ const string source = """
     [
         meta::is_null(Null), meta::is_bool(Bool), meta::is_number(Number),
         meta::is_string(String), meta::is_path(Path), meta::is_range(Range),
-        meta::is_function(Function), meta::is_scope(Scope),
+        meta::is_function(Function), meta::is_object(Object),
         meta::is_process(Process), meta::is_connection(Connection),
         meta::is_type(Type), meta::is_never(meta::remove_null(Null)),
         meta::is_union(Number or Null), meta::is_scalar(Path or String),
@@ -160,8 +160,8 @@ const string finiteMatch = """
     let tag = if input is null { Number } else { String };
     io::println(render(tag));
     let pair = match input is null {
-        true => { scope { Item: Number, value: 19 } },
-        false => { scope { Item: String, value: "stored" } }
+        true => { object { Item: Number, value: 19 } },
+        false => { object { Item: String, value: "stored" } }
     };
     io::println(match pair::Item {
         Number => { render_pair(pair) },
@@ -169,8 +169,8 @@ const string finiteMatch = """
     });
     io::println(render_pair(pair));
     io::println(render_pair(match input is null {
-        true => { scope { Item: Number, value: 23 } },
-        false => { scope { Item: String, value: "inline" } }
+        true => { object { Item: Number, value: 23 } },
+        false => { object { Item: String, value: "inline" } }
     }));
     """;
 foreach (int level in new[] { 0, 2 })
@@ -209,8 +209,8 @@ const string forwardedWitness = """
         let n: Item = 7;
         n
     };
-    let a = scope { Item: Number };
-    let b = scope { Item: Number };
+    let a = object { Item: Number };
+    let b = object { Item: Number };
     let view? = $std::ranges::first([a, b]);
     if view is null { 0 } else { transform(view, a) }
     """;
@@ -230,7 +230,7 @@ catch (CompileException error)
 }
 
 const string recursivePath = """
-    fn make() { scope { Item: Number, next?: null } };
+    fn make() { object { Item: Number, next?: null } };
     fn write(node) {
         let next? = node::next;
         if next is not null {
@@ -269,8 +269,8 @@ const string writeBeforeFieldDemand = """
             n
         } else { 0 }
     };
-    let a = scope { Item: Number };
-    let b = scope { Item: Number };
+    let a = object { Item: Number };
+    let b = object { Item: Number };
     alter(a, b)
     """;
 try

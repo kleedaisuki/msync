@@ -17,7 +17,7 @@ SOURCE: str = """
 "published" -> ./result.txt;
 ./payload.dat -> ./copied.dat;
 fn make(seed: Number) {
-    let row = scope { count: seed, marker: "kept", factor: 2 };
+    let row = object { count: seed, marker: "kept", factor: 2 };
     let alias = row;
     fn step(delta: Number) {
         let before = row::count;
@@ -25,18 +25,18 @@ fn make(seed: Number) {
         row::count
     };
     fn read() { row::count };
-    scope { step: step, read: read }
+    object { step: step, read: read }
 };
 fn counter(seed: Number) {
     let value = seed;
     fn bump(delta: Number) { value = value + delta; value };
     fn peek() { value };
-    scope { bump: bump, peek: peek }
+    object { bump: bump, peek: peek }
 };
 fn local(seed: Number) {
-    let left = scope { count: seed, marker: "local", factor: 2 };
+    let left = object { count: seed, marker: "local", factor: 2 };
     let alias = left;
-    let right = scope { count: seed, marker: "other", factor: 3 };
+    let right = object { count: seed, marker: "other", factor: 3 };
     alias::count = alias::count + 1;
     right::count = right::count + 2;
     left::count * left::factor + right::count * right::factor

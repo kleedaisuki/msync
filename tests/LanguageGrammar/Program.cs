@@ -26,9 +26,9 @@ Check(E("remote @ file -> ./") is BinaryExpr {Operator:"->",Left:BinaryExpr {Ope
 Check(E("connection() @ file") is BinaryExpr {Operator:"@",Left:CallExpr}, "endpoint expression call");
 Check(E("ssh://user@host") is NameExpr {Name:"ssh://user@host"}, "SSH authority user");
 Check(E("1 as String") is CastExpr {Type.Name:"String",Value:NumberExpr}, "cast");
-var namedScope = (ScopeExpr)((LetStatement)Parser.Parse("let object = scope Named { value: 1 };").Statements.Single()).Value;
-Check(namedScope.Name == "Named" && namedScope.NameSpan == new SourceSpan(19, 5), "named scope expression retains identity and source span");
-Check(E("scope { value: 1 }") is ScopeExpr {Name:null}, "anonymous scope expression has no identity name");
+var namedScope = (ScopeExpr)((LetStatement)Parser.Parse("let record = object Named { value: 1 };").Statements.Single()).Value;
+Check(namedScope.Name == "Named" && namedScope.NameSpan == new SourceSpan(20, 5), "named scope expression retains identity and source span");
+Check(E("object { value: 1 }") is ScopeExpr {Name:null}, "anonymous scope expression has no identity name");
 Check(NameSyntax.SpanAt("-value", 6) == new SourceSpan(1, 5), "unary minus is outside completion replacement");
 Check(NameSyntax.SpanAt("copy-config", 11) == new SourceSpan(0, 11), "hyphenated lexical binding stays whole");
 Check(NameSyntax.SpanAt("./-filename", 11) == new SourceSpan(2, 9), "path filename preserves leading minus");

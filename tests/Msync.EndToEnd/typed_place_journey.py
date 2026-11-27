@@ -13,7 +13,7 @@ WORK: Path = ROOT / ".temp" / "portable-place-journey"
 FIXTURES: dict[str, tuple[str, bytes, tuple[str, ...], tuple[str, ...]]] = {
     "static": (
         """
-scope State { value: 7, mark: false };
+object State { value: 7, mark: false };
 State::value = 41;
 if not State::mark { $std::io::println(State::value as String); };
 """,
@@ -23,7 +23,7 @@ if not State::mark { $std::io::println(State::value as String); };
     ),
     "identity": (
         """
-scope State { value: 7, mark: false };
+object State { value: 7, mark: false };
 let shared = State;
 shared::value = 42;
 $std::io::println(State::value as String);
@@ -37,8 +37,8 @@ $std::io::println(shared::value as String);
     "distinct-ordinals": (
         """
 fn read(choose: Bool) -> Number {
-    let value = if choose { scope { other: 0, item: 11 } }
-        else { scope { item: 22, other: 0 } };
+    let value = if choose { object { other: 0, item: 11 } }
+        else { object { item: 22, other: 0 } };
     value::item
 };
 $std::io::println(read(true) as String);
@@ -57,7 +57,7 @@ fn tick(value: Number) -> Number {
     value
 };
 fn start(value: Number) {
-    scope State { count: tick(value), kind: "counter" };
+    object State { count: tick(value), kind: "counter" };
     State
 };
 let first = start(9);
@@ -77,7 +77,7 @@ def process_fixture() -> tuple[str, bytes, tuple[str, ...], tuple[str, ...]]:
     executable: str = json.dumps(Path(sys.executable).as_posix())
     text: str = f"""
 fn child_at(visible: Bool) -> Process? {{
-    scope Selected {{
+    object Selected {{
         child: $std::process::spawn({executable}, [
             "-c", "import sys; sys.stdout.write(sys.stdin.read())",
         ]),

@@ -120,7 +120,7 @@ internal static class OrdinaryInitializationChecks
         const string source = """
             fn make(seed: Number) { fn(value: Number) { seed = seed + value; seed } };
             let add = make(1);
-            let row = scope { total: 0 };
+            let row = object { total: 0 };
             for item in [1, 2, 3, 4] { row::total = row::total + add(item); };
             row::total
             """;
@@ -134,7 +134,7 @@ internal static class OrdinaryInitializationChecks
                 RuntimeProfile profile = new();
                 await using NativeInterpreter interpreter = new(executable, new() { Profile = profile });
                 if ((await interpreter.ExecuteAsync()).AsNumber() != 24)
-                    throw new InvalidOperationException("Source capture mutation, Function calls and Scope stores must preserve the result 24.");
+                    throw new InvalidOperationException("Source capture mutation, Function calls and Object stores must preserve the result 24.");
                 if (!profile.Drain().Any(sample => sample.Name == "vm.storage.initialization"
                     && sample.Metrics["flags_avoided_vs_full_extent"] > 0))
                     throw new InvalidOperationException("The real source journey must exercise compiled start-bit storage.");

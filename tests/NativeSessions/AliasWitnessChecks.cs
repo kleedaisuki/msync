@@ -28,8 +28,8 @@ internal static class AliasWitnessChecks
             try
             {
                 await Submit("""
-                    let alias_a = scope { Item: Number };
-                    let alias_b = scope { Item: Number };
+                    let alias_a = object { Item: Number };
+                    let alias_b = object { Item: Number };
                     let alias_view? = $std::ranges::first([alias_a, alias_b]);
                     if alias_view is null { 0 } else { alter(alias_view, alias_a) }
                     """);
@@ -41,8 +41,8 @@ internal static class AliasWitnessChecks
             if (!rejected) throw new InvalidOperationException("An aliased call reused a disjoint static Type witness.");
             await Legal();
             var snapshot = await Submit("""
-                let snapshot_a = scope { Item: Number };
-                let snapshot_b = scope { Item: Number };
+                let snapshot_a = object { Item: Number };
+                let snapshot_b = object { Item: Number };
                 let snapshot_view? = $std::ranges::first([snapshot_a, snapshot_b]);
                 if snapshot_view is null { 0 } else { snapshot(snapshot_view, snapshot_a) }
                 """);
@@ -52,9 +52,9 @@ internal static class AliasWitnessChecks
             async Task Legal()
             {
                 var value = await Submit("""
-                    let distinct_a = scope { Item: Number };
-                    let distinct_b = scope { Item: Number };
-                    let distinct_original = scope { Item: Number };
+                    let distinct_a = object { Item: Number };
+                    let distinct_b = object { Item: Number };
+                    let distinct_original = object { Item: Number };
                     let distinct_view? = $std::ranges::first([distinct_a, distinct_b]);
                     if distinct_view is null { 0 } else { alter(distinct_view, distinct_original) }
                     """);

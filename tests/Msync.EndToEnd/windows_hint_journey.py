@@ -58,7 +58,7 @@ def run(binary: Path, directory: Path, log: Path) -> list[str]:
         assert not typed.exists()
         phases.append("RightArrow accepts the ghost as source")
         terminal.evaluate(
-            'scope Current { get: fn(a) { a } }; "SCOPE_READY"', "SCOPE_READY"
+            'object Current { get: fn(a) { a } }; "SCOPE_READY"', "SCOPE_READY"
         )
         start = len(terminal.plain)
         terminal.key("Current::g")
@@ -70,7 +70,7 @@ def run(binary: Path, directory: Path, log: Path) -> list[str]:
         phases.append("inferred scope callable member completion")
 
         start = len(terminal.plain)
-        terminal.key("fn draft() { let local = scope { field: true }; local::f")
+        terminal.key("fn draft() { let local = object { field: true }; local::f")
         terminal.key("\t")
         terminal.key("\t")
         terminal.key(" }; draft()")

@@ -50,7 +50,7 @@ JOURNEYS: tuple[Journey, ...] = (
         concept Entry<T: Named> : Cell<T> { source: Path, };
         concept Wrapped<T> { cell: Cell<T>, };
         concept Input<T: Path or String> { value: T, };
-        scope Addition {
+        object Addition {
             identity: 0,
             combine: fn(left: Number, right: Number) -> Number { left + right },
         };
@@ -63,9 +63,9 @@ JOURNEYS: tuple[Journey, ...] = (
         fn payload(input: Input<String>) { input::value };
         (sum(Addition) as String) -> sum.txt;
         (inferred(Addition) as String) -> identity.txt;
-        name(scope { value: scope { label: fn() { "Klee" }, extra: true }, source: ./input }) -> name.txt;
-        unwrap(scope { cell: scope { value: "nested" } }) -> nested.txt;
-        payload(scope { value: "explicit" }) -> payload.txt;
+        name(object { value: object { label: fn() { "Klee" }, extra: true }, source: ./input }) -> name.txt;
+        unwrap(object { cell: object { value: "nested" } }) -> nested.txt;
+        payload(object { value: "explicit" }) -> payload.txt;
         """,
         {
             "sum.txt": b"7",
@@ -92,7 +92,7 @@ JOURNEYS: tuple[Journey, ...] = (
         concept Named { name: String, };
         concept Entry<T: Named> { item: T, };
         fn use(entry: Entry) { entry::item };
-        use(scope { item: scope { other: "missing" } });
+        use(object { item: object { other: "missing" } });
         """,
         {},
         accepted=False,
@@ -103,7 +103,7 @@ JOURNEYS: tuple[Journey, ...] = (
         """
         concept Cell<T> { value: T, };
         fn overwrite(cell: Cell<Number or String>) { cell::value = "different"; };
-        overwrite(scope { value: 1 });
+        overwrite(object { value: 1 });
         """,
         {},
         accepted=False,
@@ -239,23 +239,23 @@ JOURNEYS: tuple[Journey, ...] = (
     ),
     Journey(
         "scope_branch_member_union",
-        "let chosen = if exists ./input.txt { scope { value: ./input.txt, } } "
-        'else { scope { value: "fallback", } }; chosen::value -> result.txt;',
+        "let chosen = if exists ./input.txt { object { value: ./input.txt, } } "
+        'else { object { value: "fallback", } }; chosen::value -> result.txt;',
         {"result.txt": b"scope bytes"},
         {"input.txt": b"scope bytes"},
         artifacts=True,
     ),
     Journey(
         "scope_branch_member_union_absent",
-        "let chosen = if exists ./input.txt { scope { value: ./input.txt, } } "
-        'else { scope { value: "fallback", } }; chosen::value -> result.txt;',
+        "let chosen = if exists ./input.txt { object { value: ./input.txt, } } "
+        'else { object { value: "fallback", } }; chosen::value -> result.txt;',
         {"result.txt": b"fallback"},
         artifacts=True,
     ),
     Journey(
         "scope_range_member_projection",
-        "let boxes = [scope { source: ./input.txt, target: ./copied.txt, }, "
-        'scope { source: "literal", target: ./literal.txt, }]; '
+        "let boxes = [object { source: ./input.txt, target: ./copied.txt, }, "
+        'object { source: "literal", target: ./literal.txt, }]; '
         "for box in boxes { box::source -> box::target; };",
         {"copied.txt": b"scope bytes", "literal.txt": b"literal"},
         {"input.txt": b"scope bytes"},
@@ -565,7 +565,7 @@ JOURNEYS: tuple[Journey, ...] = (
     ),
     Journey(
         "anonymous_scope_and_function",
-        "let library = scope { root: ./input.txt, echo: fn(value) { value }, }; "
+        "let library = object { root: ./input.txt, echo: fn(value) { value }, }; "
         "library::echo(library::root) -> result.txt;",
         {"result.txt": b"input"},
         {"input.txt": b"input"},

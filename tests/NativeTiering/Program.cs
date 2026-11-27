@@ -131,7 +131,7 @@ const string NumericLoop = "let x=0; let total=0; loop { if x>=100 {break;}; tot
 foreach (string source in new[]
 {
     NumericLoop,
-    "let row=scope { count: 1, text: \"原生𐀀\", file: ./x, endpoint: $local }; let alias=row; alias::count=8; row::count",
+    "let row=object { count: 1, text: \"原生𐀀\", file: ./x, endpoint: $local }; let alias=row; alias::count=8; row::count",
     "fn make(n: Number) { let x=n; fn() { x=x+1; x } }; let f=make(3); f()*10+f()",
     "let x?=null; if x is null { true } else { false }",
     "$std::ranges::size($std::ranges::materialize($std::ranges::transform([1,2,3], fn(n:Number) {n+1})))"

@@ -58,7 +58,7 @@ test('let bindings, nullable tests and types have independent scopes', () => {
     hasScope('let file? = null;', 'file', 'variable.other.readwrite.msync');
     hasScope('let file? = null;', '?', 'keyword.control.msync');
     hasScope('let file? = null;', 'null', 'constant.language.null.msync');
-    for (const type of ['Range', 'String', 'Function', 'Scope', 'Path', 'Process', 'Connection', 'Null', 'Bool']) {
+    for (const type of ['Range', 'String', 'Function', 'Object', 'Path', 'Process', 'Connection', 'Null', 'Bool']) {
         hasScope(`let value: ${type} = input;`, type, 'entity.name.type.msync');
     }
     hasScope('if file is not null { file -> target };', 'is', 'keyword.other.msync');
@@ -101,9 +101,9 @@ test('blocks and match arms remain expressions independent of indentation', () =
     hasScope(line, ';', 'punctuation.separator.msync');
     hasScope('match file { <.+> => {}, _ => {} };', '<.+>', 'string.regexp.msync');
     hasScope('match decltype(file) { Path => {}, _ => {} };', 'Path', 'entity.name.type.msync');
-    hasScope('scope hello { item: true, };', 'scope', 'keyword.declaration.scope.msync');
-    hasScope('scope hello { item: true, };', 'hello', 'entity.name.type.msync');
-    hasScope('let hello = scope { item: true };', 'scope', 'keyword.declaration.scope.msync');
+    hasScope('object hello { item: true, };', 'object', 'keyword.declaration.scope.msync');
+    hasScope('object hello { item: true, };', 'hello', 'entity.name.type.msync');
+    hasScope('let hello = object { item: true };', 'object', 'keyword.declaration.scope.msync');
 });
 
 test('paths preserve namespace, lookup, composition and callback roles', () => {
@@ -223,7 +223,7 @@ test('manifest, brace editing, snippets and semantic fallback remain consistent'
     assert.equal(configuration.comments.lineComment, '//');
     assert.equal(configuration.folding.offSide, false);
     const indentation = new RegExp(configuration.indentationRules.increaseIndentPattern);
-    for (const line of ['scope hello {', 'fn ready(x) {', 'if true {', '} else {', 'for x in items {', 'let result = match value {']) {
+    for (const line of ['object hello {', 'fn ready(x) {', 'if true {', '} else {', 'for x in items {', 'let result = match value {']) {
         assert.ok(indentation.test(line), line);
     }
     for (const line of ['// if true {', '# fn no() {', 'file -> result;', 'let root = path;', 'if true:']) {
@@ -246,15 +246,15 @@ test('manifest, brace editing, snippets and semantic fallback remain consistent'
 });
 
 
-test('direct function and Scope values have semantic-compatible lexical fallbacks', () => {
+test('direct function and Object values have semantic-compatible lexical fallbacks', () => {
     for (const line of ['let callback = fn (item) { item };', 'callback: fn (item) { item },']) {
         hasScope(line, 'callback', 'entity.name.function.msync');
     }
-    hasScope('scope MyClass {', 'MyClass', 'entity.name.type.msync');
-    for (const line of ['let my_instance = scope {', 'my_instance: scope {']) {
+    hasScope('object MyClass {', 'MyClass', 'entity.name.type.msync');
+    for (const line of ['let my_instance = object {', 'my_instance: object {']) {
         hasScope(line, 'my_instance', 'variable.other.readwrite.msync');
     }
-    hasScope('new: fn() { scope { x: ~/.codex } },', 'new', 'entity.name.function.msync');
+    hasScope('new: fn() { object { x: ~/.codex } },', 'new', 'entity.name.function.msync');
     hasScope('let callback = fn (item) { item };', 'item', 'variable.parameter.msync');
     const manifest = require('../package.json');
     assert.equal(manifest.contributes.configurationDefaults['[msync]']['editor.semanticHighlighting.enabled'], true);
@@ -269,11 +269,11 @@ test('declaration keywords stay keywords while names retain inferred roles', () 
     for (const line of ['fn named() {', 'let callback = fn () {', 'entry: fn named() {', 'entry: fn () {']) {
         hasScope(line, 'fn', 'keyword.declaration.function.msync');
     }
-    hasScope('scope SomeClass { remote: ssh://forge, };', 'scope', 'keyword.declaration.scope.msync');
-    hasScope('scope SomeClass { remote: ssh://forge, };', 'SomeClass', 'entity.name.type.msync');
-    hasScope('let value: Scope = SomeClass;', 'Scope', 'entity.name.type.msync');
-    hasScope('let value = scope { remote: ssh://forge, };', 'scope', 'keyword.declaration.scope.msync');
-    hasScope('let value = scope { remote: ssh://forge, };', 'remote', 'variable.other.readwrite.msync');
+    hasScope('object SomeClass { remote: ssh://forge, };', 'object', 'keyword.declaration.scope.msync');
+    hasScope('object SomeClass { remote: ssh://forge, };', 'SomeClass', 'entity.name.type.msync');
+    hasScope('let value: Object = SomeClass;', 'Object', 'entity.name.type.msync');
+    hasScope('let value = object { remote: ssh://forge, };', 'object', 'keyword.declaration.scope.msync');
+    hasScope('let value = object { remote: ssh://forge, };', 'remote', 'variable.other.readwrite.msync');
     for (const word of ['if', 'else', 'match', 'release', 'acquire', 'acqrel']) {
         hasScope(`${word} value {}`, word, 'keyword.control.msync');
     }

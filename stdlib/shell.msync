@@ -3,7 +3,7 @@
 native fn tail_lines(values: Range<String>, count: Number) -> Range<String>;
 native fn unique_lines(values: Range<String>) -> Range<String>;
 native fn which(name: String) -> Path?;
-native fn process_table() -> Range<Scope>;
+native fn process_table() -> Range<Object>;
 
 # Session context is local. Physical remote work uses explicit Connection @ Path.
 fn pwd() {
@@ -68,7 +68,7 @@ fn realpath(path: Path or String) {
 };
 
 fn stat(path: Path or String) {
-    scope {
+    object {
         path: path as Path,
         kind: $std::fs::symlink_status(path),
     }
@@ -177,7 +177,7 @@ fn wc(input: Path or String) {
     } else {
         $std::string::utf8_size(text)
     };
-    scope {
+    object {
         lines: $std::string::line_feed_count(text),
         words: $std::string::word_count(text),
         characters: $std::string::length(text),

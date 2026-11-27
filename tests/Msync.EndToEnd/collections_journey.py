@@ -54,15 +54,15 @@ EqualitySet::except_with(set, [1]);
 EqualitySet::intersect_with(set, [3, 4]);
 let map = Map::new(
     [
-        scope {
+        object {
             key: "a",
             value: 1
         },
-        scope {
+        object {
             key: "b",
             value: 2
         },
-        scope {
+        object {
             key: "a",
             value: 3
         }
@@ -80,34 +80,34 @@ let insensitive = fn(left: String, right: String) {
 
 let words = EqualitySet::with_equality(
     ["alpha", "ALPHA", "beta"],
-    scope {
+    object {
         Self: String,
         equal: insensitive
     }
 );
 let names = Map::with_equality(
     [
-        scope {
+        object {
             key: "alpha",
             value: 1
         },
-        scope {
+        object {
             key: "ALPHA",
             value: 2
         }
     ],
-    scope {
+    object {
         Self: String,
         equal: insensitive
     }
 );
 let nullable = Map::new(
     [
-        scope {
+        object {
             key: "a",
             value?: 1
         },
-        scope {
+        object {
             key: "b",
             value?: null
         }
@@ -159,7 +159,7 @@ NEGATIVE: tuple[str, ...] = (
     'let values = $std::containers::List::new([1]); $std::containers::List::push(values, "wrong");',
     'let values = $std::containers::EqualitySet::new([1]); $std::containers::EqualitySet::insert(values, "wrong");',
     (
-        'let values = $std::containers::Map::new([scope { key: "a", value: 1 }]); '
+        'let values = $std::containers::Map::new([object { key: "a", value: 1 }]); '
         "$std::containers::Map::insert(values, 3, 2);"
     ),
 )

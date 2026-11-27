@@ -13,7 +13,7 @@ internal static class MutableStateChecks
             NativeProgram capture = Compile("let value = \"before\"; let read = fn() { value }; value = \"after\"; read()", level);
             foreach (NativeProgram image in new[] { Reload(capture), Reload(Bind(capture, Root)) })
                 Check((await Run(image)).AsString() == "after", "Source-free closure lost live captured location");
-            NativeProgram fresh = Reload(Compile("scope { nested: scope { value: \"before\" } }", level));
+            NativeProgram fresh = Reload(Compile("object { nested: object { value: \"before\" } }", level));
             foreach (NativeProgram image in new[] { fresh, Reload(Bind(fresh, Root)) })
             {
                 NativeAddress first = (await Run(image)).AsAddress();

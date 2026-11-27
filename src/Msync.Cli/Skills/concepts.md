@@ -18,12 +18,12 @@ Read `msync skill library concepts` for supplied product, sum and capability
 contracts, and `msync skill library data` for optional, product and sum values.
 Concept names belong in type constraints and concept bases, not runtime value
 expressions. `$std::concepts::Option` has no object to construct or register.
-An absent Option is the language's `null`; a present value is an ordinary Scope.
+An absent Option is the language's `null`; a present value is an ordinary Object.
 `some(null)` is therefore present, not the same value as absence.
 
 A `concept` describes the members and operation signatures required from an
 existing value. It does not add a runtime type, registration table or `impl`
-block. A Scope satisfies the requirement through its actual structure.
+block. An Object satisfies the requirement through its actual structure.
 
 ```msync
 concept HasName {
@@ -36,7 +36,7 @@ concept NamedAction {
 fn apply(action: NamedAction, value: String) -> String {
     action::run(value)
 };
-scope Echo {
+object Echo {
     name: "echo",
     run: fn(value: String) -> String { value },
 };
@@ -67,7 +67,7 @@ concept Sequence {
 The standard `$std::concepts::Product` already supplies the first contract;
 the declaration above explains its syntax rather than requiring a local copy.
 `typename` introduces an associated name, not a new runtime type. Ordinary `fn`
-and `scope` specialize data operations and policies using the concrete shapes.
+and `object` specialize data operations and policies using the concrete shapes.
 For a custom requirement, include a standard concept as a base and add only the
 capabilities specific to your domain.
 

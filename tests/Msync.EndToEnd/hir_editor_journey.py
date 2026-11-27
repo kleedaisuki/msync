@@ -43,7 +43,7 @@ def standard_projection(client: Client, uri: str) -> dict[str, bool]:
         client, "textDocument/completion", uri, source, offset
     )
     sibling = next(item for item in choices if item["label"] == "List")
-    assert sibling["kind"] == 7 and sibling["detail"] == "scope List", sibling
+    assert sibling["kind"] == 7 and sibling["detail"] == "object List", sibling
     resolved, _ = client.request("completionItem/resolve", sibling)
     assert resolved["documentation"]["value"], resolved
     assert apply_edit(source, sibling["textEdit"]) == source.replace("Set", "List")
@@ -53,7 +53,7 @@ def standard_projection(client: Client, uri: str) -> dict[str, bool]:
     target = definitions[0] if isinstance(definitions, list) else definitions
     assert target["uri"].startswith("msync-stdlib:"), target
     content, _ = client.request("msync/stdlibSource", {"uri": target["uri"]})
-    assert "scope Set {" in content
+    assert "object Set {" in content
 
     native = "$std::ranges::single(1);"
     notify(client, uri, 11, native)
@@ -78,13 +78,13 @@ def standard_projection(client: Client, uri: str) -> dict[str, bool]:
         assert {"List", "Set"} <= labels(client, uri, draft, len(draft.rstrip(";")))
 
     shadow = (
-        "let std = scope { containers: scope { Only: true } }; $std::containers::Only;"
+        "let std = object { containers: object { Only: true } }; $std::containers::Only;"
     )
     notify(client, uri, 15, shadow)
     assert diagnostics(client, uri, 15)["diagnostics"] == []
     assert labels(client, uri, shadow, shadow.rindex("Only")) == {"Only"}
 
-    storage: str = """let owner = scope { value: 0 };
+    storage: str = """let owner = object { value: 0 };
 let frozen = $std::ranges::materialize([owner::value]);
 owner::value;
 owner::value = 7;
@@ -116,11 +116,11 @@ def protocol(binary: Path, directory: Path) -> dict[str, object]:
     uri = (directory / "语义 generations.msync").as_uri()
     marker = directory / "analysis-must-not-write.txt"
     source = """concept Named { item: typename Item, };
-scope Factory {
-    make: fn(value) { scope { item: value } },
+object Factory {
+    make: fn(value) { object { item: value } },
 };
 fn declared_but_not_called(value) {
-    let local = scope { path: ./marker.txt };
+    let local = object { path: ./marker.txt };
     local::path
 };
 let first = Factory::make(42);
@@ -164,7 +164,7 @@ second::item;
         roles = token_roles(source, tokens["data"], legend)
         assert set(roles["Factory"]) == {"type"}, roles
         assert set(roles["fn"]) == {"keyword"}, roles
-        assert set(roles["scope"]) == {"keyword"}, roles
+        assert set(roles["object"]) == {"keyword"}, roles
         assert set(roles["typename"]) == {"keyword"}, roles
         symbols, _ = client.request(
             "textDocument/documentSymbol", {"textDocument": {"uri": uri}}
@@ -174,7 +174,7 @@ second::item;
         assert any(item["name"] == "make" for item in factory["children"]), factory
 
         partial = """fn unfinished(argument) {
-    let local = scope { item: 7 };
+    let local = object { item: 7 };
 
     local::"""
         notify(client, uri, 2, partial)
@@ -194,7 +194,7 @@ second::item;
         value::item
     }
 };
-let candidate? = scope { item: 3 };
+let candidate? = object { item: 3 };
 read(candidate);
 """
         notify(client, uri, 5, nullable)

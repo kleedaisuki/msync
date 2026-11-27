@@ -37,7 +37,7 @@ def run(binary: Path, root: Path, mode: str) -> None:
     args: str = ", ".join(json.dumps(str(path)) for path in (child, anchor))
     source.write_text(
         f"let python: Path = {json.dumps(sys.executable)};\n"
-        'let state = scope { child: python("-c", "pass") };\n'
+        'let state = object { child: python("-c", "pass") };\n'
         f'let prior = release python({args}, "prior");\n'
         """\
 let calls = 0;
@@ -141,7 +141,7 @@ $std::io::println(calls as String);
         anchor / "captured"
     ).read_bytes() != b"late":
         raise AssertionError(
-            "Caller did not join the late child escaped through the captured Scope"
+            "Caller did not join the late child escaped through the captured Object"
         )
     if list(detached.iterdir()) != [executable]:
         raise AssertionError("Effect executed at launch directory, not its anchor")

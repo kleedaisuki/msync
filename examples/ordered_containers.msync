@@ -1,4 +1,4 @@
-# All four families are source Scope declarations with explicit instance operands.
+# All four families are source Object declarations with explicit instance operands.
 let by_name = $std::containers::BTree::new("", 0);
 $std::containers::BTree::insert(by_name, "Klee", 9);
 $std::containers::BTree::insert(by_name, "Ada", 3);
@@ -30,7 +30,7 @@ $std::string::join(
 ) -> ./bplus-range.txt;
 
 # Comparator policy supplies equivalence; the Set implementation stays unchanged.
-scope FoldCase {
+object FoldCase {
     sample: "",
     less: fn(left: String, right: String) -> Bool {
         $std::string::to_lowercase(left) < $std::string::to_lowercase(right)
@@ -45,8 +45,8 @@ $std::string::join($std::containers::Set::snapshot(names), ",")
     -> ./set-names.txt;
 
 # Record metadata is inferred through the policy's structural exemplar.
-scope ByPriority {
-    sample: scope {
+object ByPriority {
+    sample: object {
         priority: 0,
         name: ""
     },
@@ -57,15 +57,15 @@ scope ByPriority {
 
 let jobs = $std::containers::Heap::with_policy(
     [
-        scope {
+        object {
             priority: 7,
             name: "archive"
         },
-        scope {
+        object {
             priority: 1,
             name: "config"
         },
-        scope {
+        object {
             priority: 3,
             name: "notes"
         }

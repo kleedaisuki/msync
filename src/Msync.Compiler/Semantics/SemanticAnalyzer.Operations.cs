@@ -243,7 +243,7 @@ internal sealed partial class SemanticAnalyzer
         if (Runtime(receiver) == TypeRef.Connection)
             throw Error(node.Source, "Write 'connection @ path' to qualify a path; '::' selects lexical members.", "E0206");
         if (Runtime(receiver) != TypeRef.Scope)
-            throw Error(node.Source, $"Cannot select '{node.Text}' from {Runtime(receiver)}; '::' requires Scope or Process.", "E0206");
+            throw Error(node.Source, $"Cannot select '{node.Text}' from {Runtime(receiver)}; '::' requires Object or Process.", "E0206");
         HirTypeId receiverType = SchemaType(receiver);
         if (receiver.CheckedType is { } checkedReceiver)
         {
@@ -331,12 +331,12 @@ internal sealed partial class SemanticAnalyzer
     {
         receiver = receiver with { Type = SchemaType(receiver) };
         if (Runtime(receiver).Nullable || Runtime(receiver) != TypeRef.Scope)
-            throw Error(node.Source, "Member assignment requires a non-null Scope.", "E0206");
+            throw Error(node.Source, "Member assignment requires a non-null Object.", "E0206");
         if (receiver.CheckedType is { } checkedType)
             receiver = receiver with { Type = ViewOf(new HirFlowTypeAlgebra(hir).Narrow(checkedType, Runtime(receiver), true), receiver.Type) };
         if (receiver.Scope is null) receiver = receiver with { Scope = ValueForType(receiver.Type).Scope };
         if (receiver.Scope is not { } scope)
-            throw Error(node.Source, "Member assignment requires a non-null Scope.", "E0206");
+            throw Error(node.Source, "Member assignment requires a non-null Object.", "E0206");
         if (scope.Region >= 0 && context.Objects.TryGetValue(scope.Region, out var latest)) scope = latest;
         if (FieldOffset(scope.Layout, node.Text!) < 0
             && ValueForType(receiver.Type).Scope is { } schema && schema.Fields.ContainsKey(node.Text!))

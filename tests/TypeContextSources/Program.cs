@@ -7,22 +7,22 @@ foreach (int level in new[] { 0, 2, 3 })
     const string sourceName = "source-context.msync";
     string declaration = prefix + """
         concept Named { item: Number, };
-        let stored: Named = scope { item: 1 };
+        let stored: Named = object { item: 1 };
         fn preserve(value: Named) -> Named { value };
         """;
     CompilerSession session = new(sourceName, level);
     session.Compile(declaration);
     session.AcceptSubmission();
-    var analysis = session.AnalyzeEditor("preserve(scope { item: 2 })");
+    var analysis = session.AnalyzeEditor("preserve(object { item: 2 })");
     Check(analysis.Diagnostic is null, analysis.Diagnostic?.Message ?? "A declaration-owned annotation lost its source.");
-    const string assignment = "stored = scope { wrong: true };";
+    const string assignment = "stored = object { wrong: true };";
     var failure = Reject(session, assignment, "E0214");
     Check(failure.Diagnostic.Source == assignment, "Stored contract failure did not point at the new assignment source.");
-    Check(failure.Diagnostic.Source[failure.Span.Start..failure.Span.End] == "scope { wrong: true }", "Stored contract failure lost the actual assigned expression.");
+    Check(failure.Diagnostic.Source[failure.Span.Start..failure.Span.End] == "object { wrong: true }", "Stored contract failure lost the actual assigned expression.");
     Check(failure.Diagnostic.Related.Any(location => location.Source == declaration), "The original contract source was not retained.");
     Check(failure.Diagnostic.Related.All(location => location.Span.Start >= 0 && location.Span.End <= location.Source.Length),
         "A related diagnostic paired a source with another document's span.");
-    session.Compile("stored = scope { item: 3 };");
+    session.Compile("stored = object { item: 3 };");
     checks++;
 
     foreach (string function in new[]

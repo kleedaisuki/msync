@@ -99,7 +99,7 @@ try
             }
             catch (MsyncException error) when (selected)
             {
-                Require(error.Message == "Scope has no member 'missing'" && error.Span == new SourceSpan("field-trap", 0, 7),
+                Require(error.Message == "Object has no member 'missing'" && error.Span == new SourceSpan("field-trap", 0, 7),
                     "Loop optimization changed the selected projection's diagnostic");
             }
         }

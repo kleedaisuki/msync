@@ -174,7 +174,7 @@ def run_builtins(binary: Path, directory: Path) -> dict[str, int]:
             ("pw", "pwd", "Connection"),
             ("fi", "file", "Connection"),
             ("pa", "path", "Connection"),
-            ("st", "std", "Scope"),
+            ("st", "std", "Object"),
         ]:
             start = complete(terminal, "decltype($" + prefix)
             terminal.key(b")")
@@ -260,7 +260,7 @@ def run_keywords(binary: Path, directory: Path) -> dict[str, int]:
     try:
         terminal.until(lambda: "> " in terminal.plain, "keyword detail prompt")
         raw = len(terminal.raw)
-        terminal.key(b"scope Named { construct: fn() { scope { value: true } } };")
+        terminal.key(b"object Named { construct: fn() { object { value: true } } };")
         rendered = bytes(terminal.raw[raw:])
         assert re.search(rb"\x1b\[[0-9;]*36mscope", rendered), rendered
         assert re.search(rb"\x1b\[[0-9;]*36mfn", rendered), rendered

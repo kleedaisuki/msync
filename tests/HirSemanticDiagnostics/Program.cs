@@ -18,13 +18,13 @@ foreach (var (name, source, code, help) in new[]
 {
     ("nullable", "let value? = if exists ./input { ./file } else { null }; value -> ./out;", "E0203", "Null"),
     ("fixed-storage", "let value = 1; value = true;", "E0203", "Number"),
-    ("fixed-field", "let object = scope { item: 1 }; object::item = true;", "E0203", "Number"),
-    ("missing-member", "let value = scope { present: 1 }; value::missing;", "E0205", "present"),
+    ("fixed-field", "let record = object { item: 1 }; record::item = true;", "E0203", "Number"),
+    ("missing-member", "let value = object { present: 1 }; value::missing;", "E0205", "present"),
     ("unknown-type", "let value: Missing = 1;", "E0202", "concept"),
-    ("shadowed-standard", "let std = scope {}; fn inspect(value: $std::concepts::Monoid) { value };", "E0202", "Rename"),
+    ("shadowed-standard", "let std = object {}; fn inspect(value: $std::concepts::Monoid) { value };", "E0202", "Rename"),
     ("arity", "fn pair(first, second) { first }; pair(1);", "E0204", "first, second"),
     ("match", "match exists ./input { true => { ./a } };", "E0209", "_ =>"),
-    ("concept", "concept Named { value: String }; fn take(value: Named) { value }; take(scope { other: 1 });", "E0214", "return types")
+    ("concept", "concept Named { value: String }; fn take(value: Named) { value }; take(object { other: 1 });", "E0214", "return types")
 })
 {
     SourceDiagnostic diagnostic = Diagnose(source, name + ".msync");

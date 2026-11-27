@@ -7,9 +7,9 @@ using Msync.Runtime.Hpir;
 internal static class HpirGlobalChecks
 {
     private const string Source = """
-        scope Cache { item: scope { value: 1 } };
+        object Cache { item: object { value: 1 } };
         fn next(seed: Number) -> Number {
-            scope Counter { n: seed };
+            object Counter { n: seed };
             Counter::n = Counter::n + 1;
             Counter::n
         };
@@ -17,11 +17,11 @@ internal static class HpirGlobalChecks
             let i = 0;
             loop {
                 if i >= limit { break i; };
-                let cell = scope { value: i };
+                let cell = object { value: i };
                 i = cell::value + 1;
             }
         };
-        Cache::item = scope { value: 37 };
+        Cache::item = object { value: 37 };
         let one = next(10);
         let two = next(89);
         let count = churn(20000);
@@ -48,7 +48,7 @@ internal static class HpirGlobalChecks
     private static void CheckSharedGeometry(int level)
     {
         const string source = """
-            let record = scope { value: "object" };
+            let record = object { value: "object" };
             fn make(message: String) { fn { message } };
             let action = make("closure");
             $std::io::println(record::value);
@@ -58,14 +58,14 @@ internal static class HpirGlobalChecks
         var trace = new CompilationTrace(observations.Add, includeOptimizerPasses: true);
         HpirProgram portable = Compiler.LowerHpir(Compiler.Analyze(source, "shared-layout.msync"), level, trace);
         if (!observations.Any(item => item.Metrics?.GetValueOrDefault("layout.reused_structs") > 0))
-            throw new InvalidOperationException("An equal Scope and capture-cell geometry should reuse one concrete LLVM layout.");
+            throw new InvalidOperationException("An equal Object and capture-cell geometry should reuse one concrete LLVM layout.");
         string directory = Environment.CurrentDirectory;
         HpirProgram bound = Roundtrip(HpirBinding.Prepare(Roundtrip(portable), new(directory, directory)));
         using var output = new StringWriter { NewLine = "\n" };
         var options = new ExecutionOptions(Output: output);
         _ = HpirExecutor.Run(bound, options);
         if (output.ToString() != "object\nclosure\n")
-            throw new InvalidOperationException("Interning a layout must keep independent Scope and closure identities.");
+            throw new InvalidOperationException("Interning a layout must keep independent Object and closure identities.");
         if (!HpirMachineImage.IsSupported) return;
         output.GetStringBuilder().Clear();
         using var machine = HpirMachineImage.Compile(bound);

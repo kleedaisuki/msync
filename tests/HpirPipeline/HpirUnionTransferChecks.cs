@@ -10,8 +10,8 @@ internal static class HpirUnionTransferChecks
     private const string Name = "union-transfer.msync";
     private const string Source = """
         fn publish(mode: Number, target: Path, receipt: Path) {
-            let selected = if mode == 1 { scope { value?: ./input.txt } }
-                else { if mode == 2 { scope { value?: "fallback" } } else { scope { value?: null } } };
+            let selected = if mode == 1 { object { value?: ./input.txt } }
+                else { if mode == 2 { object { value?: "fallback" } } else { object { value?: null } } };
             let item? = selected::value;
             if item is null { return; };
             let copied = item -> target;

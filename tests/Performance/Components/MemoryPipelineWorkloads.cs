@@ -35,7 +35,7 @@ internal static class MemoryPipelineWorkloads
     {
         StringBuilder source = new("let selected = exists ./.temp/memory-performance/selected.flag;\n");
         for (int index = 0; index < size; index++)
-            source.AppendLine($"let box_{index} = scope {{ file: ./before_{index}, marker: 0 }}; if selected {{ box_{index}::file = ./input_{index}; }} else {{ box_{index}::file = ./other_{index}; }};");
+            source.AppendLine($"let box_{index} = object {{ file: ./before_{index}, marker: 0 }}; if selected {{ box_{index}::file = ./input_{index}; }} else {{ box_{index}::file = ./other_{index}; }};");
         source.Append("if ");
         source.AppendJoin(" and ", Enumerable.Range(0, size).Select(index => $"box_{index}::file == ./input_{index}"));
         return source.Append($" {{ ./input_{size - 1} }} else {{ ./incorrect }}").ToString();
@@ -43,7 +43,7 @@ internal static class MemoryPipelineWorkloads
 
     private static string Loop(int size)
     {
-        StringBuilder source = new("let box = scope { value: 0, total: 0 }; for item in [");
+        StringBuilder source = new("let box = object { value: 0, total: 0 }; for item in [");
         source.AppendJoin(", ", Enumerable.Range(1, size));
         source.Append("] { if item > 0 { box::value = item; } else { box::value = 0; }; box::total = box::total + box::value; };\n");
         double expected = (double)size * (size + 1) / 2;
@@ -53,7 +53,7 @@ internal static class MemoryPipelineWorkloads
 
     private static string Factory(int size)
     {
-        StringBuilder source = new("fn make(file: Path) { scope { file: file, marker: 0, optional?: null } };\n[");
+        StringBuilder source = new("fn make(file: Path) { object { file: file, marker: 0, optional?: null } };\n[");
         source.AppendJoin(", ", Enumerable.Range(0, size).Select(index => $"make(./input_{index})"));
         return source.Append(']').ToString();
     }
@@ -99,7 +99,7 @@ internal static class MemoryPipelineWorkloads
         object observed = Execute(module, runtime, size, name);
         NativeValue result = observed is ObservedScopes scopes && scopes.Count == size ? scopes.Last
             : observed is NativeValue value ? value
-            : throw new InvalidOperationException($"{name}: expected {size} fresh Scope instances, got {observed}");
+            : throw new InvalidOperationException($"{name}: expected {size} fresh Object instances, got {observed}");
         if (result.Kind != NativeKind.Path || !result.AsPath().Raw.EndsWith($"input_{size - 1}", StringComparison.Ordinal))
             throw new InvalidOperationException($"{name}: expected input_{size - 1}, got {result}");
     }

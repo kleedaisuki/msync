@@ -31,7 +31,7 @@ internal static class LiteralScopeWitnessChecks
         var first = template.Create();
         first.SetMember("x", new NumberValue(29));
         Require(template.TryGetNumber(0, "x", out x) && BitConverter.DoubleToInt64Bits(x) == long.MinValue
-            && !ReferenceEquals(first, template.Create()), "An escaped Scope write must not mutate the producer witness.");
+            && !ReferenceEquals(first, template.Create()), "An escaped Object write must not mutate the producer witness.");
     }
 
     private static async Task CheckTokens(string root)

@@ -16,7 +16,7 @@ SOURCES: tuple[tuple[str, str], ...] = (
     ("captured-cell", EXACT_SOURCE),
     (
         "scope-field",
-        'let service = scope { action: fn(value: Bool) { "A" } }; let replacement = fn(value: Bool) { "B" }; fn change() { service::action = replacement; true }; let first = service::action(change()); let second = service::action(false); $std::string::concat(first, second)',
+        'let service = object { action: fn(value: Bool) { "A" } }; let replacement = fn(value: Bool) { "B" }; fn change() { service::action = replacement; true }; let first = service::action(change()); let second = service::action(false); $std::string::concat(first, second)',
     ),
     (
         "copied-callee",

@@ -1,6 +1,6 @@
 # Source-backed standard library
 
-`$std` is a Scope. Runtime modules contain ordinary source functions and explicit
+`$std` is an Object. Runtime modules contain ordinary source functions and explicit
 host-native declarations. The compile-time `concepts` namespace supplies named
 constraints without introducing runtime values. Module topic pages index the
 same embedded declarations used by the compiler. Drill into a family or a
@@ -53,7 +53,7 @@ let selected? = preserve($std::data::Option::some("Klee"));
 
 ## Named families and policies
 
-State belongs to plain Scope records. Named Scopes group constructors and
+State belongs to plain Object records. Named Objects group constructors and
 associated operations; pass the instance explicitly, as with Rust associated
 functions:
 
@@ -66,11 +66,11 @@ let report = $std::files::File::new(./report.txt);
 
 Select a policy through a concept-constrained constructor, such as
 `EqualitySet::with_equality(initial, equality)` or `File::with_policy(path, io)`.
-The compiler specializes ordinary `fn` bodies using the supplied Scope and
+The compiler specializes ordinary `fn` bodies using the supplied Object and
 callable identities. It does not use a runtime registration table or allocate
 a separate collection of method closures for each instance.
 
-Classes and named Scopes use PascalCase; functions use lowercase words joined
+Classes and named Objects use PascalCase; functions use lowercase words joined
 with underscores. Families expose constructors and explicit instance parameters;
 instances contain data rather than per-object method tables.
 
@@ -104,14 +104,14 @@ let meta = $std::meta;
 fn label(value: Number) -> String { value as String };
 let signature = meta::signature_of(label);
 let result = meta::try_invoke_result(label, Number);
-let fields = meta::members_of(scope { label: "report", file?: ./report.txt });
+let fields = meta::members_of(object { label: "report", file?: ./report.txt });
 ```
 
 Member descriptors distinguish `type` from fixed `storage_type`; reflection
 does not evaluate the inspected operands or call the inspected function.
 
 Concepts check fields, signatures and associated types without adding runtime
-type kinds. Ordinary Scope records and generic functions supply the values and
+type kinds. Ordinary Object records and generic functions supply the values and
 operations. Mathematical laws remain semantic contracts rather than compiler
 proofs inferred from an operation's name.
 
@@ -132,7 +132,7 @@ let first = $std::ranges::take(selected, 1);
 
 Adapters are lazy; terminals consume their source. Buffered operations such as
 sorting need finite input. Materialization preserves object references rather
-than cloning Scope instances. String positions count Unicode scalar values,
+than cloning Object instances. String positions count Unicode scalar values,
 not UTF-16 code units or displayed grapheme clusters.
 
 Use `for` and lazy adapters for one-pass inputs. When you need to pause, seek or

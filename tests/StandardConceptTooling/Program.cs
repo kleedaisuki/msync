@@ -67,7 +67,7 @@ Require(option.DefinitionsAt(optionType).Any(location => location.SourceName.End
 Require(option.At(optional.LastIndexOf("value", StringComparison.Ordinal)).Bindings.Single(member => member.Name == "value")
     .Members?.Any(member => member.Name == "value") == true, "Uncalled Option-constrained function lost its payload field.");
 
-const string shadowed = "let std = scope { }; fn inspect(value: Number) { value };";
+const string shadowed = "let std = object { }; fn inspect(value: Number) { value };";
 EditorAnalysis lexical = EditorCompiler.Analyze(shadowed, "shadowed-standard.msync");
 Require(!lexical.At(shadowed.IndexOf("Number", StringComparison.Ordinal)).Bindings.Any(member => member.Name.StartsWith("$std::", StringComparison.Ordinal)),
     "Standard concept completion ignored lexical std shadowing.");

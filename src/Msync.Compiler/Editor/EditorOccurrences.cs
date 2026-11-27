@@ -33,7 +33,7 @@ internal sealed class EditorOccurrences : IReadOnlyList<SemanticOccurrence>
     {
         Dictionary<SourceSpan, string> roles = [];
         foreach (var item in syntax.Occurrences)
-            if (item.SemanticRole is "function" or "type" || item.Type is "Scope" or "Scope?")
+            if (item.SemanticRole is "function" or "type" || item.Type is "Object" or "Object?")
                 roles[item.Span] = item.SemanticRole;
         foreach (var (span, role) in contexts.TokenRoles())
             if (role is null) roles.Remove(span);

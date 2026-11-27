@@ -59,13 +59,13 @@ fn apply(operation: Function, value: Number) { operation(value) };
 (apply(fn(first: Number) {
     apply(fn(second: Number) { first + second }, 2)
 }, 3) as String) -> ./higher-order.txt;
-fn count(state: Scope) {
+fn count(state: Object) {
     if state::remaining <= 0 { 0 }
-    else { count(scope { remaining: state::remaining - 1 }) + 1 }
+    else { count(object { remaining: state::remaining - 1 }) + 1 }
 };
-(count(scope { remaining: 8 }) as String) -> ./recursive.txt;
+(count(object { remaining: 8 }) as String) -> ./recursive.txt;
 
-let original = scope { text: "before" };
+let original = object { text: "before" };
 let objects = $std::ranges::materialize([original]);
 let alias = $std::ranges::at(objects, 0);
 alias::text = "shared";
@@ -81,26 +81,26 @@ if $std::data::Option::is_some(present_null) and present_null::value is null {
 };
 
 fn named(value: String) {
-    scope State { text: value };
+    object State { text: value };
     State
 };
 let first = named("first");
 first::text = "singleton";
 named("ignored")::text -> ./singleton.txt;
-fn fresh(value: String) { scope { text: value } };
+fn fresh(value: String) { object { text: value } };
 let changed = fresh("first");
 changed::text = "changed";
 fresh("fresh")::text -> ./fresh.txt;
 
-fn wrap(value: Scope) { scope { value: value } };
-let left = scope { text: "left" };
-let right = scope { text: "right" };
+fn wrap(value: Object) { object { value: value } };
+let left = object { text: "left" };
+let right = object { text: "right" };
 let wrapped_left = wrap(left);
 let wrapped_right = wrap(right);
 wrapped_right::value::text = "right-changed";
 wrapped_left::value::text -> ./projected-left.txt;
 right::text -> ./projected-right.txt;
-fn accessor(value: Scope) { fn { value::text } };
+fn accessor(value: Object) { fn { value::text } };
 let get_left = accessor(left);
 let get_right = accessor(right);
 right::text = "right-again";
@@ -119,7 +119,7 @@ fn effectful() {
 (query_effects as String) -> ./query-effects.txt;
 concept Numeric { operation: fn(value: Number) -> Number, };
 fn require_numeric(value: Numeric) { 0 };
-let mutable = scope { operation: fn(value: Number) { value + 1 } };
+let mutable = object { operation: fn(value: Number) { value + 1 } };
 let invalid = fn {
     require_numeric(mutable);
     mutable::operation = fn(value: Number) { true };
@@ -178,12 +178,12 @@ type DiagnosticFragment = str | tuple[str, ...]
 NEGATIVE: tuple[tuple[str, str, tuple[DiagnosticFragment, ...]], ...] = (
     ("fixed-kind", 'let value = 1; value = "wrong";', ("Number", "String")),
     ("unhandled-null", "let value? = null; value -> ./wrong;", ("Null",)),
-    ("field-null-admission", "scope Invalid { item: null };", ("?",)),
+    ("field-null-admission", "object Invalid { item: null };", ("?",)),
     (
         "invalidated-member-proof",
         """
 let values = $std::ranges::materialize([
-    scope { child?: scope { text: "ok" } }
+    object { child?: object { text: "ok" } }
 ]);
 let first = $std::ranges::at(values, 0);
 let alias = $std::ranges::at(values, 0);
@@ -192,7 +192,7 @@ if first::child is not null {
     first::child::text;
 };
 """,
-        (("Null", "Scope?"),),
+        (("Null", "Object?"),),
     ),
     (
         "called-invalid-generic",

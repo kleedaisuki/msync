@@ -10,11 +10,11 @@ internal static class SingletonChecks
     {
         (string Source, string? ExpectedPath)[] cases =
         [
-            ("let path?:Path=./one; fn make(){scope Saved{item:{path=null;1}}}; make(); path=./again; make(); let result:Path=path; result", "./again"),
-            ("let path?:Path=./one; fn make(){scope Saved{item:{path=null;1}}}; if exists ./singleton_probe {make()}; make(); let result?:Null=path; result is null", null),
-            ("let path?:Path=./one; fn make(){scope Saved{item:{path=null;1}}}; decltype(make()); make(); let result?:Null=path; result is null", null),
-            ("let path?:Path=./one; fn make(){path=./before; scope Saved{item:{path=null;1}}}; make(); path=./again; make(); let result:Path=path; result", "./before"),
-            ("let path?:Path=./one; fn make(){scope Saved{item:{path=null;1}}; path=./after}; make(); path=./again; make(); let result:Path=path; result", "./after")
+            ("let path?:Path=./one; fn make(){object Saved{item:{path=null;1}}}; make(); path=./again; make(); let result:Path=path; result", "./again"),
+            ("let path?:Path=./one; fn make(){object Saved{item:{path=null;1}}}; if exists ./singleton_probe {make()}; make(); let result?:Null=path; result is null", null),
+            ("let path?:Path=./one; fn make(){object Saved{item:{path=null;1}}}; decltype(make()); make(); let result?:Null=path; result is null", null),
+            ("let path?:Path=./one; fn make(){path=./before; object Saved{item:{path=null;1}}}; make(); path=./again; make(); let result:Path=path; result", "./before"),
+            ("let path?:Path=./one; fn make(){object Saved{item:{path=null;1}}; path=./after}; make(); path=./again; make(); let result:Path=path; result", "./after")
         ];
         int checks = 0;
         foreach (int level in new[] { 0, 2, 3 })

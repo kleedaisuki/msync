@@ -23,10 +23,10 @@ internal static class SpatialVmChecks
                     fn build(values: Range<Number>) {
                         let rows = $std::storage::vector_empty(decltype({
                             let value = 0;
-                            scope { {{fields}} }
+                            object { {{fields}} }
                         }));
                         for value in values {
-                            $std::storage::vector_push(rows, scope { {{fields}} });
+                            $std::storage::vector_push(rows, object { {{fields}} });
                         };
                         $std::storage::vector_take(rows)
                     };

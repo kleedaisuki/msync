@@ -38,7 +38,7 @@ public sealed record EditorAnalysis(IReadOnlyList<SemanticOccurrence> Occurrence
     public IReadOnlyList<EditorTokenRole> TokenRoles()
     {
         var roles = LocalOccurrences is EditorOccurrences deferred ? deferred.TokenRoles()
-            : LocalOccurrences.Where(item => item.SemanticRole is "function" or "type" || item.Type is "Scope" or "Scope?")
+            : LocalOccurrences.Where(item => item.SemanticRole is "function" or "type" || item.Type is "Object" or "Object?")
                 .Select(item => new EditorTokenRole(item.Span, item.SemanticRole)).ToArray();
         return preceding is { } prefix ? [.. prefix.Projection.TokenRoles(), .. roles] : roles;
     }

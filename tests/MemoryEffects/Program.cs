@@ -115,7 +115,7 @@ summary = Summaries(Program(opaqueCapture))[0]; Check(Flag(summary, "UnknownWrit
 var io = Function("io", 1, Bool,
     [new(OpCode.LoadLocal, 0), new(OpCode.NativeCall, 1, Text: "fs.exists"), new(OpCode.Return)], types: [PathType]);
 summary = Summaries(Program(io))[0];
-Has(summary, "Writes"); Check(!Flag(summary, "UnknownWrites") && !Flag(summary, "UnknownReads"), "Filesystem observation incorrectly clobbers Scope memory");
+Has(summary, "Writes"); Check(!Flag(summary, "UnknownWrites") && !Flag(summary, "UnknownReads"), "Filesystem observation incorrectly clobbers Object memory");
 var copy = Function("copy", 2, Bool,
     [new(OpCode.LoadLocal, 0), new(OpCode.LoadLocal, 1), new(OpCode.Transfer), new(OpCode.Return)], types: [PathType, PathType]);
 summary = Summaries(Program(copy))[0]; Has(summary, "Enumerates"); Check(!Flag(summary, "UnknownWrites"), "Scalar Path transfer invoked deferred memory");
@@ -200,7 +200,7 @@ var retainThroughIdentity = Function("retain-through-identity", 2, Null,
     [new(OpCode.MakeClosure, 1), new(OpCode.LoadCell, 1, BoolScope + 1), new(OpCode.MakeClosure, 2, 1), new(OpCode.Call, 1, 2),
      new(OpCode.StoreLocal, 0), new(OpCode.Null), new(OpCode.Return)], captures: [new(Callable, true)], types: [BoolScope]);
 summary = Summaries(Program(retainThroughIdentity, identityFn, capturedSet))[0];
-Check(Accesses(summary, "Escapes").Contains("Parameter[0]::*", StringComparer.Ordinal), "Returning an actual closure lost its captured Scope escape");
+Check(Accesses(summary, "Escapes").Contains("Parameter[0]::*", StringComparer.Ordinal), "Returning an actual closure lost its captured Object escape");
 
 var afterUnknown = Function("after-unknown", 2, NumberScope,
     [new(OpCode.LoadLocal, 1), new(OpCode.Call), new(OpCode.Pop), new(OpCode.LoadLocal, 0), new(OpCode.LoadField, Child), new(OpCode.Return)], types: [NumberScope, Callable]);
@@ -223,7 +223,7 @@ foreach (Module image in Images(missing))
     }
     catch (MsyncException error)
     {
-        Check(error.Message == "Scope has no member 'missing'", $"Unexpected opaque field error: {error.Message}");
+        Check(error.Message == "Object has no member 'missing'", $"Unexpected opaque field error: {error.Message}");
     }
 }
 
@@ -246,8 +246,8 @@ Check(Flag(summary, "ReturnsCallbackFreeRange") && !Flag(summary, "HasDeferredIn
 
 foreach ((string name, string source, bool unknownWrite, bool latent) in new[]
 {
-    ("lazy-creation", "fn make(object) { $std::ranges::transform([1], fn(item) { object::x = item; item }) }; let object = scope { x: 0 }; make(object); object::x", false, true),
-    ("callback-execution", "fn change(object) { $std::ranges::any([true], fn(item) { object::x = item; item }) }; let object = scope { x: false }; change(object); object::x", false, false)
+    ("lazy-creation", "fn make(record) { $std::ranges::transform([1], fn(item) { record::x = item; item }) }; let record = object { x: 0 }; make(record); record::x", false, true),
+    ("callback-execution", "fn change(record) { $std::ranges::any([true], fn(item) { record::x = item; item }) }; let record = object { x: false }; change(record); record::x", false, false)
 })
 {
     Module module = SourceCompiler.Compile(source, name, 0);
@@ -301,7 +301,7 @@ var emptyTerminal = repeated with { Instructions = [new(OpCode.MakeRange, 0), ..
 summary = Summaries(Program(emptyTerminal, redirectingPredicate))[0];
 Has(summary, "Writes");
 Check(!Flag(summary, "UnknownWrites"), "Empty terminal invoked its predicate");
-const string redirectedSource = "fn change(first, second) { let selected = first; $std::ranges::any([false, false, false], fn(item) { selected::x = true; selected = second; item }); }; let first = scope { x: false }; let second = scope { x: false }; change(first, second); second::x";
+const string redirectedSource = "fn change(first, second) { let selected = first; $std::ranges::any([false, false, false], fn(item) { selected::x = true; selected = second; item }); }; let first = object { x: false }; let second = object { x: false }; change(first, second); second::x";
 Module redirected = SourceCompiler.Compile(redirectedSource, "repeated-callback-rebinding", 0);
 foreach (int level in new[] { 0, 2, 3 })
 {
@@ -324,7 +324,7 @@ Directory.CreateDirectory(root);
 try
 {
     await File.WriteAllBytesAsync(Path.Combine(root, "input"), [0, 1, 2, 255]);
-    const string source = "fn write(other) { other::flag = true; exists ./marker; }; let left = scope { file: ./input }; let other = scope { flag: false }; let before = left::file; if exists ./choose { write(other); } else { write(other); }; let after = left::file; after -> ./result; left";
+    const string source = "fn write(other) { other::flag = true; exists ./marker; }; let left = object { file: ./input }; let other = object { flag: false }; let before = left::file; if exists ./choose { write(other); } else { write(other); }; let after = left::file; after -> ./result; left";
     Module raw = SourceCompiler.Compile(source, "memory-field-io", 0);
     var footprints = Summaries(raw);
     int[] writers = raw.Functions.SelectMany(function => function.Instructions)
@@ -347,7 +347,7 @@ try
         foreach (Module program in new[] { optimized, loaded, Artifact.Read(executableBytes) })
         {
             Value result = await Interpreter.ExecuteAsync(program, new(WorkingDirectory: root, Output: TextWriter.Null));
-            Check(result is ScopeValue { Members.Count: 1 }, $"O{level} escaped Scope changed shape");
+            Check(result is ScopeValue { Members.Count: 1 }, $"O{level} escaped Object changed shape");
             Check((await File.ReadAllBytesAsync(Path.Combine(root, "result"))).AsSpan().SequenceEqual(new byte[] { 0, 1, 2, 255 }), $"O{level} field/call/branch I/O bytes differ");
         }
     }

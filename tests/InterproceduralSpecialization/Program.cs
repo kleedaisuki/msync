@@ -165,7 +165,7 @@ async Task NativeIdentity()
 
 async Task ScopeMutation()
 {
-    var source = Source("let box = scope { choose: fn(mode: Bool) { if mode { \"old\" } else { \"old false\" } } }; let update = fn { box::choose = fn(mode: Bool) { if mode { \"new\" } else { \"new false\" } }; }; update(); box::choose(true)");
+    var source = Source("let box = object { choose: fn(mode: Bool) { if mode { \"old\" } else { \"old false\" } } }; let update = fn { box::choose = fn(mode: Bool) { if mode { \"new\" } else { \"new false\" } }; }; update(); box::choose(true)");
     Require(await Check("scope-mutation", source, Specialize(source)) == "String:new|", "Unknown call invalidates mutable scope member identity");
 }
 

@@ -87,7 +87,7 @@ internal static class ScopeStorageChecks
         {
             RuntimeProfile profile = new(instructionSites: true);
             var result = (ScopeValue)await Interpreter.ExecuteAsync(image, new(WorkingDirectory: root) { Profile = profile });
-            Bits(((ScopeValue)result["single"])["zero"], long.MinValue, "singleton stays on ordinary Scope construction");
+            Bits(((ScopeValue)result["single"])["zero"], long.MinValue, "singleton stays on ordinary Object construction");
             Bits(((ScopeValue)result["packed"])["nan"], Fixtures.NegativeNaN, "two-field constructor remains eligible");
             CheckSites(image, profile, metrics, rawLoads: 1, storageVisits: 2);
         }
@@ -109,7 +109,7 @@ internal static class ScopeStorageChecks
             CheckSites(image, profile, metrics, rawLoads: 5, storageVisits: 5);
         }
 
-        Console.WriteLine("PASS Scope storage transport: suspended snapshot, Cell aliases, duplicated CFG merge, generic return fallback, direct suffix and loop rows");
+        Console.WriteLine("PASS Object storage transport: suspended snapshot, Cell aliases, duplicated CFG merge, generic return fallback, direct suffix and loop rows");
     }
 
     private static Module SuspendedSnapshot() => Image([
@@ -239,7 +239,7 @@ internal static class ScopeStorageChecks
         var function = samples.Single(sample => sample.Name == "vm.function").Metrics;
         Require(function.GetValueOrDefault("raw_local_writes") >= 4, "The fixture did not use private Number locals.");
         Require(function.GetValueOrDefault("raw_scope_storage_loads") == rawLoads,
-            $"Expected {rawLoads} raw Scope storage loads, saw {function.GetValueOrDefault("raw_scope_storage_loads")}.");
+            $"Expected {rawLoads} raw Object storage loads, saw {function.GetValueOrDefault("raw_scope_storage_loads")}.");
     }
 
     private static void Bits(Value value, long bits, string label) =>

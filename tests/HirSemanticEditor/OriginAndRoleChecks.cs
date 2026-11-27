@@ -5,30 +5,30 @@ internal static class OriginAndRoleChecks
     public static void Run(Action<bool, string> require)
     {
         const string header = """
-            scope SomeClass {
-                new: fn -> Scope { scope { item: ~/.codex/AGENTS.md } },
-                copy: fn(where: Connection, object: Scope) { where @ object::item -> ./ }
+            object SomeClass {
+                new: fn -> Object { object { item: ~/.codex/AGENTS.md } },
+                copy: fn(where: Connection, record: Object) { where @ record::item -> ./ }
             };
             """;
         foreach (bool rebuilt in new[] { false, true })
         {
-            string tail = rebuilt ? "scope { item: some::item }" : "some";
-            string source = header + "let object? = { let some = SomeClass::new(); if exists some::item { "
+            string tail = rebuilt ? "object { item: some::item }" : "some";
+            string source = header + "let record? = { let some = SomeClass::new(); if exists some::item { "
                 + tail + " } }; if not object? { SomeClass::copy($wsl, object) };";
             EditorAnalysis analysis = EditorCompiler.Analyze(source, "nullable-origins.msync");
             require(analysis.Diagnostic is null, analysis.Diagnostic?.Message ?? "Nullable origin analysis failed");
-            int use = source.IndexOf("object::item", StringComparison.Ordinal) + "object::".Length;
+            int use = source.IndexOf("record::item", StringComparison.Ordinal) + "record::".Length;
             int definition = rebuilt ? source.LastIndexOf("item:", StringComparison.Ordinal)
                 : source.IndexOf("item:", StringComparison.Ordinal);
             require(analysis.DefinitionsAt(use).Any(target => target.SourceName == "nullable-origins.msync"
                 && target.Span.Start == definition && target.Source[target.Span.Start..target.Span.End] == "item"),
-                "A nullable constructed Scope retains the actual field declaration through formal inputs");
+                "A nullable constructed Object retains the actual field declaration through formal inputs");
         }
 
         const string distinct = """
-            fn identity(object: Scope) -> Scope { object };
-            let first = scope { item: ./first };
-            let second = scope { item: ./second };
+            fn identity(record: Object) -> Object { record };
+            let first = object { item: ./first };
+            let second = object { item: ./second };
             let left = identity(first);
             let right = identity(second);
             left::item;

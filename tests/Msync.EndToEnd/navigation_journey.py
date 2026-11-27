@@ -29,8 +29,8 @@ def definition_cases(binary: Path, directory: Path) -> int:
     cases: list[tuple[str, str | None]] = [
         ("let value = true; fn f(value: Path) { val§ue }; f(./);", "value: Path"),
         ("let .codex = true; fn f() { .co§dex }; f();", ".codex ="),
-        ("scope Settings { file: ./ }; let alias = Settings; alias::fi§le;", "file:"),
-        ("scope Settings { file: ./ }; let alias = Settings; ali§as::file;", "alias ="),
+        ("object Settings { file: ./ }; let alias = Settings; alias::fi§le;", "file:"),
+        ("object Settings { file: ./ }; let alias = Settings; ali§as::file;", "alias ="),
         ("let x = true; fn f() { x§ }; let x = false; f();", "x = true"),
         ("fn before() { la§ter }; let later = true; before();", None),
         ('let text = "😀"; fn f(.值: Path) { .§值 }; f(./);', ".值: Path"),
@@ -77,8 +77,8 @@ def outline_cases(binary: Path, directory: Path, hierarchical: bool) -> int:
     client = Client(binary)
     uri = (directory / "outline.msync").as_uri()
     source = (
-        'let text = "fn phantom() { true };"; # scope Ghost { };\n'
-        "scope Actual { new: fn(file: Path) { let .codex = file; scope { leaf: .codex } } };"
+        'let text = "fn phantom() { true };"; # object Ghost { };\n'
+        "object Actual { new: fn(file: Path) { let .codex = file; object { leaf: .codex } } };"
     )
     try:
         client.request(

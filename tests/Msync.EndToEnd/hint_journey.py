@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def semantic_prompt_cases(terminal: Terminal) -> dict[str, int]:
     start = len(terminal.plain)
-    terminal.key(b"scope Current { get: fn(a) { a }, item: true }; Current::g")
+    terminal.key(b"object Current { get: fn(a) { a }, item: true }; Current::g")
     terminal.key(b"\t")
     terminal.key(b"\t")
     terminal.key(b"(true)")
@@ -25,7 +25,7 @@ def semantic_prompt_cases(terminal: Terminal) -> dict[str, int]:
     terminal.prompt(terminal.line("true", start))
 
     start = len(terminal.plain)
-    terminal.key(b"fn draft() { let local = scope { field: true }; local::f")
+    terminal.key(b"fn draft() { let local = object { field: true }; local::f")
     terminal.key(b"\t")
     terminal.key(b"\t")
     terminal.key(b" }; draft()")
@@ -61,7 +61,7 @@ def captured_path_cases(binary: Path, directory: Path) -> dict[str, int]:
     try:
         terminal.until(lambda: "> " in terminal.plain, "original context prompt")
         terminal.evaluate(
-            'let captured = ./base; let holder = scope { dir: captured }; fn saved() { captured }; "READY"',
+            'let captured = ./base; let holder = object { dir: captured }; fn saved() { captured }; "READY"',
             "READY",
         )
         start = len(terminal.plain)

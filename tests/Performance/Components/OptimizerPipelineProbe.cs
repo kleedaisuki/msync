@@ -249,14 +249,14 @@ internal static class OptimizerPipelineProbe
         }
         if (workload == "mutable_scopes")
         {
-            text.AppendLine("scope Factory { create: fn { scope { filename?: null } } };");
+            text.AppendLine("object Factory { create: fn { object { filename?: null } } };");
             for (int index = 0; index < size; index++)
                 text.AppendLine($"let object_{index} = Factory::create(); object_{index}::filename = ./input_{index};");
             return text.Append($"object_{size - 1}::filename").ToString();
         }
         if (workload == "scope_calls")
         {
-            text.AppendLine("scope Factory { create: fn(file: Path) { scope { get: fn { file } } } };");
+            text.AppendLine("object Factory { create: fn(file: Path) { object { get: fn { file } } } };");
             for (int index = 0; index < size; index++) text.AppendLine($"let object_{index} = Factory::create(./input_{index});");
             return text.Append($"object_{size - 1}::get()").ToString();
         }

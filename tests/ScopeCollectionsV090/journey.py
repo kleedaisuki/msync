@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise ordinary Scope collections through real source and artifact routes."""
+"""Exercise ordinary Object collections through real source and artifact routes."""
 
 from __future__ import annotations
 
@@ -276,9 +276,9 @@ def with_policy_and_identity(case: Case, family: str) -> Case:
     expected: str
     if family in ("Set", "Heap"):
         source = """
-let record_key = scope { rank: 1, label: "before" };
-let record_other = scope { rank: 2, label: "other" };
-let record_order = scope {
+let record_key = object { rank: 1, label: "before" };
+let record_other = object { rank: 2, label: "other" };
+let record_order = object {
     Self: decltype(record_key), sample: record_key,
     less: fn(left, right) -> Bool { left::rank < right::rank },
 };
@@ -294,9 +294,9 @@ line(Family::is_empty(records));
         expected = "identity\nafter\nother\ntrue\n"
     else:
         source = """
-let record_key = scope { rank: 1, label: "before" };
-let record_other = scope { rank: 2, label: "other" };
-let record_order = scope {
+let record_key = object { rank: 1, label: "before" };
+let record_other = object { rank: 2, label: "other" };
+let record_order = object {
     Self: String, sample: "",
     less: fn(left: String, right: String) -> Bool {
         $std::string::to_lowercase(left) < $std::string::to_lowercase(right)
@@ -323,7 +323,7 @@ line(Family::is_empty(records));
         expected = "identity\nafter\nother\nafter\ntrue\n"
     if family == "Set":
         source += """
-let folded_order = scope {
+let folded_order = object {
     Self: String, sample: "",
     less: fn(left: String, right: String) -> Bool {
         $std::string::to_lowercase(left) < $std::string::to_lowercase(right)
@@ -366,7 +366,7 @@ line(calls > 0);
                 index = child
             rows[index] = last
         source += """
-let live_order = scope {
+let live_order = object {
     Self: Number, sample?: null,
     less: fn(left: Number, right: Number) -> Bool { left < right },
 };

@@ -20,8 +20,8 @@ fn revise(n: Number, node) {
         let j=0;
         loop {
             if j>=6000 { break; };
-            let p=scope { value:j, next?:null };
-            let q=scope { value:j+1, next?:null };
+            let p=object { value:j, next?:null };
+            let q=object { value:j+1, next?:null };
             p::next=q;
             q::next=p;
             node::value=node::value+p::next::value;
@@ -36,7 +36,7 @@ let i=0;
 let score=0;
 loop {
     if i>=4096 { break; };
-    score=score+revise(i+2, scope { value:i });
+    score=score+revise(i+2, object { value:i });
     i=i+1;
 };
 $std::io::println(score as String);
@@ -93,7 +93,7 @@ def exercise(binary: Path, work: Path) -> None:
     live_source: bytes = ready_source.replace(b"revise(i+2,", b"revise(i+1,")
     live: str = bind(cli, work, "live", live_source, "-O2")
     live_expected: bytes = f"{int(EXPECTED) - CALLS}\n".encode()
-    captured_source: bytes = b"let bias=scope { value:0 };\n" + live_source.replace(
+    captured_source: bytes = b"let bias=object { value:0 };\n" + live_source.replace(
         b"node::value=node::value+n;", b"node::value=node::value+n+bias::value; bias::value=bias::value+1;"
     ) + b"$std::io::println(bias::value as String);\n"
     captured: str = bind(cli, work, "captured", captured_source, "-O2")

@@ -50,7 +50,7 @@ async function run() {
         '    map_first: fn(value: First) -> First,',
         '};',
         'fn preserve(value: $std::concepts::Option?) -> $std::concepts::Option? { value };',
-        'scope SameNumber {',
+        'object SameNumber {',
         '    Self: Number,',
         '    equal: fn(a: Number, b: Number) -> Bool { a == b },',
         '};',
@@ -101,9 +101,9 @@ async function run() {
     for (const [spelling, expected] of [
         ['Option?)', /Option/],
         ['with_equality(', /Equality/],
-        ['EqualitySet::with_equality', /Scope/],
-        ['numbers =', /Scope/],
-        ['tree =', /Scope/],
+        ['EqualitySet::with_equality', /Object/],
+        ['numbers =', /Object/],
+        ['tree =', /Object/],
         ['typename First', /First/],
     ]) {
         const text = hoverText(await bounded(`hover ${spelling}`, vscode.commands.executeCommand('vscode.executeHoverProvider', document.uri,
@@ -148,7 +148,7 @@ async function run() {
     const containers = await bounded('open embedded containers',
         vscode.workspace.openTextDocument(vscode.Uri.parse('msync-stdlib:///0.8.0/containers.msync')));
     const library = containers.getText();
-    const tree = library.indexOf('scope BPlusTree {');
+    const tree = library.indexOf('object BPlusTree {');
     const clear = library.indexOf('clear: fn(self)', tree);
     const call = library.indexOf('BPlusTree::node(', clear);
     assert.ok(tree >= 0 && clear > tree && call > clear, 'BPlusTree::clear self call');

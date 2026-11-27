@@ -6,7 +6,7 @@ internal static class DeclarationMetadataChecks
     {
         const string source = """
             let with_equality = $std::containers::EqualitySet::with_equality;
-            scope Handlers {
+            object Handlers {
                 # Preserve this explicitly chosen equivalence policy.
                 preserve: fn(policy: $std::concepts::Equality?) -> $std::concepts::Equality? { policy },
             };

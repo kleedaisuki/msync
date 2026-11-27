@@ -14,7 +14,7 @@ internal static class SroaSourceJourney
         {
             (Name: "captured-location", Source: File.ReadAllText("tests/LlvmIr/Fixtures/CapturedOperandPhi.msync"), Expected: 79.0),
             (Name: "callable-select", Source: File.ReadAllText("tests/LlvmIr/Fixtures/DynamicchooseFns.msync"), Expected: 56.0),
-            (Name: "range-object", Source: "let object=scope {value:1}; let items=[object,object]; for item in items {item::value=item::value+1;}; let read=fn {object::value}; read()", Expected: 3.0)
+            (Name: "range-object", Source: "let record=object {value:1}; let items=[record,record]; for item in items {item::value=item::value+1;}; let read=fn {record::value}; read()", Expected: 3.0)
         })
         {
             var graph = LlvmHirLowerer.Lower(Compiler.Analyze(test.Source, "sroa-" + test.Name + ".msync"));

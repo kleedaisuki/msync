@@ -102,8 +102,8 @@ foreach (string invalid in new[] { "global missing;", "fn bad() { global missing
     catch (CompileException error) { Check(error.Diagnostic.Code == "E0214", "Global failure has a source-owned diagnostic"); }
 }
 
-var scopes = Bind("scope Family { read: fn { Family::later }, later: 4 }; let local = scope { value: 1 }; let other = scope Named { value: 2 };", true);
-Check(scopes.Hir.Scopes.Count == 3, "Each source Scope has its own construction descriptor");
+var scopes = Bind("object Family { read: fn { Family::later }, later: 4 }; let local = object { value: 1 }; let other = object Named { value: 2 };", true);
+Check(scopes.Hir.Scopes.Count == 3, "Each source Object has its own construction descriptor");
 Check(scopes.Hir.Scopes[0].Self is not null && scopes.Hir.Scopes[0].Singleton >= 0,
     "A named declaration reserves self and singleton identity");
 Check(scopes.Hir.Scopes[1].Singleton < 0 && scopes.Hir.Scopes[2].Singleton >= 0,
@@ -150,7 +150,7 @@ var inline = Bind("concept Product { first?: typename First, second?: typename S
 Check(inline.Hir.Concepts.Count == 1, "An inline associated-type concept is retained as semantic metadata");
 Check(inline.Concepts[0].AssociatedTypes.Count == 2 && inline.TypeUses.Count >= 2,
     "Associated type uses have stable type identities and source spans");
-var incomplete = Bind("fn unfinished(argument) { let local = scope { item: 7 }; local::", true);
+var incomplete = Bind("fn unfinished(argument) { let local = object { item: 7 }; local::", true);
 Check(incomplete.Declarations.Any(item => item is { Name: "argument", Kind: DeclarationKind.Parameter }),
     "An incomplete generic body retains its parameter rather than treating it as Path");
 Check(incomplete.Visibility.Any(item => item.Bindings.ContainsKey("local") && item.IncludesEnd),

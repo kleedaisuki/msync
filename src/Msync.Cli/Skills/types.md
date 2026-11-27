@@ -2,7 +2,7 @@
 
 Types are inferred once for each storage location, not changed by assignment.
 Optional annotations express requirements: Bool, String,
-Path, Function, Scope, Connection, Process, Null, Number, Type and Range<T>.
+Path, Function, Object, Connection, Process, Null, Number, Type and Range<T>.
 Use `Path or String` for a union and `?` to admit Null explicitly.
 `Any` admits any supported value type, including Null; use a narrower
 constraint when an operation needs specific capabilities.
@@ -41,7 +41,7 @@ let is_path = if kind is Path { true } else { false };
 `decltype(expression)` infers a Type value without executing the expression.
 It can select type-dependent branches during generic specialization. An
 annotation does not grant unrelated capabilities: Path/String conversion is
-supported, while Scope and Connection remain distinct semantic types.
+supported, while Object and Connection remain distinct semantic types.
 
 Use `value as Type` for other explicit conversions. Named concepts can constrain
 structural members and callable signatures without opening the runtime type

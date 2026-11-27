@@ -38,12 +38,12 @@ try
         if (!condition) throw new InvalidOperationException(message);
     }
     Check((await Submit("$std::io::read_line()")).AsString() == "stdin-value", "Native session stdin did not use the configured reader.");
-    await Submit("let value = 1; fn read() { value }; let alias = scope { value: 2, read: fn { value } }; let shared = alias;");
+    await Submit("let value = 1; fn read() { value }; let alias = object { value: 2, read: fn { value } }; let shared = alias;");
     await Submit("value = 3; shared::value = 4;");
     Check((await Submit("read() + alias::read()")).AsNumber() == 7, "Native shared captures lost accepted mutations.");
     await Submit("let value = 100;");
     Check((await Submit("read() + value")).AsNumber() == 103, "Shadowing reanchored a captured location.");
-    await Submit("let endpoint = ssh://session-host; let config = scope { remote: endpoint };");
+    await Submit("let endpoint = ssh://session-host; let config = object { remote: endpoint };");
     const string endpointExpression = "config::";
     Check(compiler.AnalyzeEditor(endpointExpression, execution.GetLocalValue).At(endpointExpression.Length)
         .Receiver?.Members?.Single(member => member.Name == "remote").Endpoint?.Address == "session-host",
@@ -52,9 +52,9 @@ try
     Check((await Submit("identity(true)")).AsBool(), "Bool specialization failed.");
     Check((await Submit("identity(42)")).AsNumber() == 42, "Number specialization failed.");
     Check((await Submit("number_type == Number")).AsBool(), "Type witness was not retained.");
-    await Submit("scope FirstSite { value: 1 }; scope SecondSite { value: \"second\" };");
+    await Submit("object FirstSite { value: 1 }; object SecondSite { value: \"second\" };");
     await Submit("FirstSite::value = 22; let retained_site = FirstSite; fn read_site(seed) { retained_site::value + seed };");
-    await Submit("let different_layout = scope { tag: true, text: \"layout\" };");
+    await Submit("let different_layout = object { tag: true, text: \"layout\" };");
     Check((await Submit("read_site(3)")).AsNumber() == 25, "Named static scope or escaped static capture changed identity.");
     Check((await Submit("SecondSite::value")).AsString() == "second", "Static declarations reused another allocation.");
     await Submit("let folder = ./folder; fn captured() { folder }; fn literal() { ./folder }; fn make(value) { fn() { value } }; let returned = make(folder);");
@@ -85,7 +85,7 @@ try
         "Deferred range callback literal was rebound after cd.");
     Check(Path.GetFullPath((await Submit("./folder")).AsPath().LocalPath(after)) == Path.Combine(after, "folder"),
         "New literal reused an unrelated definition context.");
-    await Submit("let optional? = null; fn read_optional() { optional }; let holder = scope { field?: null, read: fn { field } };");
+    await Submit("let optional? = null; fn read_optional() { optional }; let holder = object { field?: null, read: fn { field } };");
     await Submit("optional = 42; holder::field = 43;");
     Check((await Submit("read_optional() + holder::read()")).AsNumber() == 85,
         "First non-null writes reinterpreted existing physical capture storage.");

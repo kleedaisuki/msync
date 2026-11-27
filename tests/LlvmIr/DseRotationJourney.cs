@@ -17,7 +17,7 @@ internal static class DseRotationJourney
 {
     private const string Overwrite = """
         fn overwrite(flag: Bool) {
-            let row = scope { left: 0, right: 2 };
+            let row = object { left: 0, right: 2 };
             if flag { row::left = 1; } else { row::left = 3; };
             row::left = 5;
             row::left + row::right
@@ -25,9 +25,9 @@ internal static class DseRotationJourney
         overwrite(true) + overwrite(false)
         """;
     private const string Clobber = """
-        fn observe(row: Scope) { row::left };
+        fn observe(row: Object) { row::left };
         fn keep(flag: Bool) {
-            let row = scope { left: 0, right: 2 };
+            let row = object { left: 0, right: 2 };
             if flag { row::left = 1; } else { row::left = 3; };
             let seen = observe(row);
             row::left = 5;
@@ -37,7 +37,7 @@ internal static class DseRotationJourney
         """;
     private const string Escaped = """
         fn make(value: Number) {
-            let row = scope { left: value, right: 2 };
+            let row = object { left: value, right: 2 };
             row::left = value + 1;
             row
         };

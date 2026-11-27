@@ -223,7 +223,7 @@ internal static class Program
             await using NativeInterpreter interpreter = new(optimized);
             Check((await interpreter.InvokeAsync(NativeValue.FromFunction(new(0)),
                 [NativeValue.FromAddress(first.Address), NativeValue.FromAddress(second.Address)])).AsNumber() == 11,
-                "A store through FrameAddress was disconnected from a direct Scope register read");
+                "A store through FrameAddress was disconnected from a direct Object register read");
         }
     }
 
@@ -248,7 +248,7 @@ internal static class Program
             NativeProgram optimized = Detached(NativeOptimizer.Optimize(input, level));
             NativeInstruction[] environments = optimized.Functions[0].Instructions.Where(item => item.Op == NativeOp.EnvironmentAddress).ToArray();
             Check(environments[0].Result != environments[1].Result,
-                "Disjoint Scope lifetimes with different allocation proofs shared one proof register");
+                "Disjoint Object lifetimes with different allocation proofs shared one proof register");
             if (level > 0)
             {
                 NativeInstruction[] pointers = optimized.Functions[0].Instructions.Where(item => item.Op == NativeOp.AddressOffset).ToArray();
@@ -353,12 +353,12 @@ internal static class Program
         (string Name, string Source, double Result)[] cases = [
             ("value-capture", "let offset = 3; fn add(value: Number) { value + offset }; add(4)", 7),
             ("location-capture", "let state = 1; fn next(value: Number) { state = state + value; state }; let a = next(3); state = 10; a + next(2)", 16),
-            ("scope-result", "fn make(value: Number) { scope { n: value, text: \"record\", path: ./file, endpoint: $local } }; let first = make(3); let second = make(7); first::n = 11; first::n + second::n", 18),
+            ("scope-result", "fn make(value: Number) { object { n: value, text: \"record\", path: ./file, endpoint: $local } }; let first = make(3); let second = make(7); first::n = 11; first::n + second::n", 18),
             ("branch-results", "fn choose(flag: Bool, value: Number) { if flag { return value + 1; }; value + 2 }; choose(true, 3) + choose(false, 5)", 11),
             ("captured-parameter-lifetime", "fn make(start: Number) { fn() { start = start + 1; start } }; let a = make(3); let b = make(10); a() + b() + a()", 20),
-            ("rebound-scope-capture", "let current = scope { n: 1 }; fn replace() { current = scope { n: 2 }; null }; replace(); current::n", 2),
-            ("nullable-scope-frame", "fn next(value?: Number or Null) { if value is null { 0 } else { value + 1 } }; let initial?: Number = null; let node = scope { key?: initial }; fn from_node(node) { let key? = node::key; if key is null { 0 } else { key + 1 } }; let empty = from_node(node); node::key = 7; next(null) + next(3) + empty + from_node(node)", 12),
-            ("scope-capture", "let shared = scope { n: 1 }; fn change() { shared::n = shared::n + 2; shared::n }; change() + change()", 8),
+            ("rebound-scope-capture", "let current = object { n: 1 }; fn replace() { current = object { n: 2 }; null }; replace(); current::n", 2),
+            ("nullable-scope-frame", "fn next(value?: Number or Null) { if value is null { 0 } else { value + 1 } }; let initial?: Number = null; let node = object { key?: initial }; fn from_node(node) { let key? = node::key; if key is null { 0 } else { key + 1 } }; let empty = from_node(node); node::key = 7; next(null) + next(3) + empty + from_node(node)", 12),
+            ("scope-capture", "let shared = object { n: 1 }; fn change() { shared::n = shared::n + 2; shared::n }; change() + change()", 8),
             ("loop-call", "fn increment(value: Number) { value + 1 }; let sum = 0; for value in $std::ranges::iota(0, 20) { sum = sum + increment(value); }; sum", 210),
             ("changed-function", "let pick = fn(value: Number) { value + 1 }; let before = pick(2); pick = fn(value: Number) { value + 10 }; before + pick(2)", 15),
             ("callee-before-argument", "let pick = fn(value: Number) { value + 1 }; fn mutate() { pick = fn(value: Number) { value + 100 }; 4 }; pick(mutate())", 5)

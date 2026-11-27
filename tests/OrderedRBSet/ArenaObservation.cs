@@ -24,7 +24,7 @@ internal static class ArenaObservation
                 prior = index;
                 index = next;
             };
-            scope { indices: $std::storage::vector_take(output), finished: index == 0 }
+            object { indices: $std::storage::vector_take(output), finished: index == 0 }
         };
         """;
 }

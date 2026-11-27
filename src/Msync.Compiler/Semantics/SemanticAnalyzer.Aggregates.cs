@@ -94,7 +94,7 @@ internal sealed partial class SemanticAnalyzer
             {
                 var field = established[index];
                 if (!populated.TryGetValue(field.Name, out var value))
-                    throw Error(node.Source, $"Named Scope is missing its established field '{field.Name}'.", "E0203");
+                    throw Error(node.Source, $"Named Object is missing its established field '{field.Name}'.", "E0203");
                 Require(value, field.StorageType, node.Source, allowImplicit: true, context: context);
                 var converted = Convert(value, field.StorageType, node.Source, context);
                 populated = populated.SetItem(field.Name, converted);

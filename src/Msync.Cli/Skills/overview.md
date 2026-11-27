@@ -6,7 +6,7 @@ description: Write, inspect and run typed cross-endpoint file workflows in msync
 # msync 0.8 skill
 
 Use msync for local, native SSH and Windows/WSL file workflows. Programs are
-`.msync` source; they compose typed Paths, Connections, Scopes and functions.
+`.msync` source; they compose typed Paths, Connections, Objects and functions.
 This reference is embedded in the executable and matches its language version.
 
 ## Working method
@@ -25,13 +25,13 @@ let copied = copy(./input.txt, ./backup.txt);
 ## Semantics to retain
 
 - `{ expression }` returns a value; `;` discards it and yields Null.
-- Assignment changes binding and Scope field values, never their inferred types.
+- Assignment changes binding and Object field values, never their inferred types.
 - Later `let` declarations shadow earlier locations; closures retain locations.
 - A Path reads file content in `->`; a String writes its literal text.
-- `Scope::member` selects a lexical value; `connection @ path` selects an endpoint.
+- `Object::member` selects a lexical value; `connection @ path` selects an endpoint.
 - Admit Null explicitly, then handle it. `value?` means **is null**.
 - Functions are generic by default; parameters specialize from each call.
-- Named Scopes are shared singletons; anonymous Scopes construct fresh values.
+- Named Objects are shared singletons; anonymous Objects construct fresh values.
 - Concepts constrain structure without adding runtime types; `as` converts.
 - Checking, formatting and reading this skill never execute the program.
 

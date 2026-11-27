@@ -41,7 +41,7 @@ for value in $std::ranges::sort(saved) { $std::io::println(value as String); };
 LIVE_SOURCE: str = """
 let Heap = $std::containers::Heap;
 let io = $std::io;
-let order = scope {
+let order = object {
     Self: Number,
     sample?: null,
     less: $std::containers::NaturalOrder::less,

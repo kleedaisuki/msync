@@ -54,7 +54,7 @@ internal static class SpatialLayoutChecks
         ScopeValue independent = item.MapFields(value => value);
         independent.SetField(0, new NumberValue(37));
         Check(cell.Data is StringValue { Data: "captured reference" }, "Visible-value cloning retained the old shared Cell.");
-        Check(!ReferenceEquals(item, independent) && !item.Equals(independent), "Layout sharing merged independent Scope instances.");
+        Check(!ReferenceEquals(item, independent) && !item.Equals(independent), "Layout sharing merged independent Object instances.");
         Check(ReferenceEquals(item.Layout, independent.Layout), "Visible-value cloning did not retain the logical shape.");
 
         ScopeLayout numeric = new(["a", "b", "c", "d"]);
@@ -143,7 +143,7 @@ internal static class SpatialLayoutChecks
         }
         var retained = MakeRows(create, layout, numeric);
         Collect();
-        Check(retained.DeadRows.All(weak => !weak.TryGetTarget(out _)), "An allocator retained unrelated Scope handles.");
+        Check(retained.DeadRows.All(weak => !weak.TryGetTarget(out _)), "An allocator retained unrelated Object handles.");
         Check(retained.DeadPayloads.All(weak => !weak.TryGetTarget(out _)), "A live numeric row retained unrelated managed payloads.");
         Check(retained.Live["payload"] is StringValue { Data: "live payload" }, "The retained row lost its own reference payload.");
         Check(retained.Live.GetField(3) is NumberValue { Data: 43 }, "Collection invalidated retained numeric storage.");
@@ -198,10 +198,10 @@ internal static class SpatialLayoutChecks
     private static Func<ScopeLayout, Value[], ScopeValue> PackedFactory()
     {
         Type allocatorType = typeof(ScopeValue).Assembly.GetType("Msync.Core.ScopeAllocator")
-            ?? throw new InvalidOperationException("This image has no packed Scope allocator.");
+            ?? throw new InvalidOperationException("This image has no packed Object allocator.");
         object allocator = Activator.CreateInstance(allocatorType)!;
         MethodInfo method = allocatorType.GetMethod("Create", [typeof(ScopeLayout), typeof(Value[])])
-            ?? throw new InvalidOperationException("This image has no array-based packed Scope construction API.");
+            ?? throw new InvalidOperationException("This image has no array-based packed Object construction API.");
         return method.CreateDelegate<Func<ScopeLayout, Value[], ScopeValue>>(allocator);
     }
 

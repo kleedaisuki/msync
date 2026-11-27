@@ -8,7 +8,7 @@ public static class LanguageTypes
     private static readonly (string Name, TypeRef Type)[] entries =
     [
         ("Bool", TypeRef.Bool), ("String", TypeRef.String), ("Path", TypeRef.Path),
-        ("Function", TypeRef.Function), ("Scope", TypeRef.Scope), ("Connection", TypeRef.Connection),
+        ("Function", TypeRef.Function), ("Object", TypeRef.Scope), ("Connection", TypeRef.Connection),
         ("Process", TypeRef.Process), ("Null", TypeRef.Null), ("Number", TypeRef.Number),
         ("Type", TypeRef.Type), ("Range", new(TypeKind.Range)), ("Any", TypeRef.Any)
     ];

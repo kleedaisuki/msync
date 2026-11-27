@@ -144,7 +144,7 @@ NEGATIVE: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "not-a-boxed-option",
-        '$std::data::Option::is_some(scope { other: "missing payload" });',
+        '$std::data::Option::is_some(object { other: "missing payload" });',
         "value",
     ),
 )

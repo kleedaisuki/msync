@@ -337,7 +337,7 @@ public static partial class LlvmHirLowerer
         {
             owner.trace?.Detail?.Metric("member.checked_view_rejects", 1);
             // Bare LLVM unreachable lets the optimizer discard the incoming edge.
-            OperationCall(new(LlvmRuntimeValueOperation.FailMember, Symbol: $"Scope member '{node.Text}' is outside its structural view."),
+            OperationCall(new(LlvmRuntimeValueOperation.FailMember, Symbol: $"Object member '{node.Text}' is outside its structural view."),
                 LlvmType.GetVoidTy(owner.context), -1, []);
             Add(new LlvmUnreachableInstruction(owner.context));
             return owner.Null;

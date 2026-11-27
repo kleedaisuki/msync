@@ -26,8 +26,8 @@ internal static class HpirSessionPresentation
         TypeKind.Function => value.Text ?? $"fn #{value.Bits - 1}",
         TypeKind.Range => value.Type?.ToString() ?? "Range",
         TypeKind.Process => FormatProcess(value.Process!.Value),
-        TypeKind.Scope when value.Scope!.Cycle => "scope { ...cycle... }",
-        TypeKind.Scope => "scope { " + string.Join(", ", value.Scope!.Members.Select(member =>
+        TypeKind.Scope when value.Scope!.Cycle => "object { ...cycle... }",
+        TypeKind.Scope => "object { " + string.Join(", ", value.Scope!.Members.Select(member =>
             member.Name + ": " + (member.Value.Kind == TypeKind.String
                 ? "\"" + member.Value.Text!.Replace("\"", "\"\"", StringComparison.Ordinal) + "\""
                 : Format(member.Value)))) + " }",

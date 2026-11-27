@@ -86,7 +86,7 @@ def check_transfer(cli: list[str], work: Path, optimization: int) -> None:
             "$std::io::read_text(./text.txt) -> ./forwarded.txt",
             "let text = $std::io::read_text(./text.txt);",
             "text",
-            "scope { items: [1, 2], caption: $std::io::read_text(./text.txt) }",
+            "object { items: [1, 2], caption: $std::io::read_text(./text.txt) }",
             "let stable = 9;",
             'let stable = "bad number" as Number;',
             "stable",
@@ -105,7 +105,7 @@ def check_transfer(cli: list[str], work: Path, optimization: int) -> None:
         str(len(PAYLOAD)),
         "true",
         "forwarded",
-        'scope { items: Range<Number>, caption: "forwarded',
+        'object { items: Range<Number>, caption: "forwarded',
         '" }',
         "9",
     ], result

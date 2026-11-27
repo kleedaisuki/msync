@@ -14,7 +14,7 @@ internal static class InstCombineGepJourney
         [
             ("captured-mixed-layout", """
                 fn update(flag: Bool) {
-                    let item = scope { prefix: true, value: 2, suffix: "tail" };
+                    let item = object { prefix: true, value: 2, suffix: "tail" };
                     let alias = item;
                     let reader = fn { alias::value };
                     if flag { item::value = 11; } else { alias::value = 7; };
@@ -23,19 +23,19 @@ internal static class InstCombineGepJourney
                 update(true) + update(false)
                 """, 18),
             ("first-function-field", """
-                let item = scope { callback: fn (x: Number) { x + 3 }, value: 4 };
+                let item = object { callback: fn (x: Number) { x + 3 }, value: 4 };
                 item::callback(item::value)
                 """, 7),
             ("nested-shared-fields", """
-                let item = scope { prefix: false, inner: scope { value: 2 }, tail: 3 };
+                let item = object { prefix: false, inner: object { value: 2 }, tail: 3 };
                 let alias = item::inner;
                 let reader = fn { item::inner::value };
                 alias::value = 12;
                 reader() + item::tail
                 """, 15),
             ("range-shared-field-loop", """
-                let first = scope { value: 2 };
-                let second = scope { value: 5 };
+                let first = object { value: 2 };
+                let second = object { value: 5 };
                 for item in [first, second] { item::value = item::value + 1; };
                 first::value + second::value
                 """, 9)

@@ -21,16 +21,16 @@ Family::remove(nullable, null);
 Family::size(tree)
 """
 INVALID_WRITES: dict[str, str] = {
-    "wrong-scalar": """let Model = decltype(scope { count: 0 });
-let checked = scope { count: 1 } as Model;
+    "wrong-scalar": """let Model = decltype(object { count: 0 });
+let checked = object { count: 1 } as Model;
 checked::count = "wrong";
 """,
-    "missing-member": """let Model = decltype(scope { count: 0 });
-let checked = scope { count: 1 } as Model;
+    "missing-member": """let Model = decltype(object { count: 0 });
+let checked = object { count: 1 } as Model;
 checked::missing = 7;
 """,
-    "nullable-view": """let Model = decltype(scope { count: 0 });
-let checked? = if $std::fs::exists(./not-observed) { scope { count: 1 } as Model } else { null };
+    "nullable-view": """let Model = decltype(object { count: 0 });
+let checked? = if $std::fs::exists(./not-observed) { object { count: 1 } as Model } else { null };
 checked::count = 7;
 """,
 }

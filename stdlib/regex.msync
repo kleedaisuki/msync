@@ -1,15 +1,15 @@
 # .NET regular expressions; record offsets and lengths count Unicode scalars.
 # Inline options such as (?im) select case and multiline behavior.
 native fn is_match(text: String, pattern: String) -> Bool;
-native fn find(text: String, pattern: String) -> Scope?;
-native fn matches(text: String, pattern: String) -> Range<Scope>;
+native fn find(text: String, pattern: String) -> Object?;
+native fn matches(text: String, pattern: String) -> Range<Object>;
 native fn replace(text: String, pattern: String, replacement: String) -> String;
 native fn split(text: String, pattern: String) -> Range<String>;
 native fn escape(text: String) -> String;
 
 # A pattern is a specification record; matching remains a selected operation.
-scope Pattern {
-    new: fn(expression: String) { scope { expression: expression } },
+object Pattern {
+    new: fn(expression: String) { object { expression: expression } },
     is_match: fn(self: $std::concepts::PatternSpec, text: String) -> Bool {
         is_match(text, self::expression)
     },

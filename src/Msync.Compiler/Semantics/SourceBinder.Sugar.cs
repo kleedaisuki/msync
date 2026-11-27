@@ -30,7 +30,7 @@ internal sealed partial class SourceBinder
         if (syntax.Left is NameExpr name) return AssignWhenNull(name);
         if (syntax.Left is BinaryExpr { Operator: "::" } member)
             return WithSugarValue(member.Left, syntax.Span, value => AssignWhenNull(member with { Left = value }));
-        throw Error("Assign to a binding or Scope field.", syntax.Left.Span, "E0204");
+        throw Error("Assign to a binding or Object field.", syntax.Left.Span, "E0204");
 
         HirNodeId AssignWhenNull(Expr target) =>
             NullChoice(Expression(target), Assignment(new(target, syntax.Right, syntax.Span)),

@@ -51,7 +51,7 @@ const string counter = """
     concept Readable { read: fn() -> Number, };
     concept Counter { Readable, next: fn() -> Number, };
     fn factory(initial: Number) -> Counter {
-        scope Shared {
+        object Shared {
             value: initial,
             read: fn() -> Number { value },
             next: fn() -> Number { value = value + 1; value },
@@ -72,7 +72,7 @@ foreach ((string source, string diagnostic) in new[]
     ("let value: Number = true;", "Number"),
     ("fn value(item: Number) { item }; value(\"12\");", "Number"),
     ("fn value() -> String { 12 }; value();", "String"),
-    ("scope {} as Number", "cast"),
+    ("object {} as Number", "cast"),
     ("[1] as String", "cast"),
     ("true as Path", "cast"),
     ("ssh://forge as Number", "cast"),
@@ -84,7 +84,7 @@ foreach ((string source, string diagnostic) in new[]
     ("./leaf @ $local", "Write 'connection @ path'"),
     ("$local @ true", "Path"),
     ("let value = 1; value = \"1\";", "Number"),
-    ("let value = scope { number: 1 }; value::number = true;", "Number"),
+    ("let value = object { number: 1 }; value::number = true;", "Number"),
 })
     Reject(source, diagnostic);
 

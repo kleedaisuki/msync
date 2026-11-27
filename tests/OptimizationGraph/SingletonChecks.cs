@@ -9,10 +9,10 @@ internal static class SingletonChecks
     {
         (string Name, string Source, double Expected)[] cases =
         [
-            ("named-shared", "fn make() { scope Shared { value: 1 }; Shared }; let first = make(); let second = make(); first::value = 7; second::value", 7),
-            ("anonymous-fresh", "fn make() { scope { value: 1 } }; let first = make(); let second = make(); first::value = 7; second::value", 1),
-            ("named-initializes-once", "let count = 0; fn make() { scope Shared { value: { count = count + 1; count } }; Shared }; make(); make(); count", 1),
-            ("named-cross-call-memory", "fn make() { scope Shared { value: 1 }; Shared }; let first = make(); first::value = 3; let second = make(); second::value = second::value + 4; first::value", 7)
+            ("named-shared", "fn make() { object Shared { value: 1 }; Shared }; let first = make(); let second = make(); first::value = 7; second::value", 7),
+            ("anonymous-fresh", "fn make() { object { value: 1 } }; let first = make(); let second = make(); first::value = 7; second::value", 1),
+            ("named-initializes-once", "let count = 0; fn make() { object Shared { value: { count = count + 1; count } }; Shared }; make(); make(); count", 1),
+            ("named-cross-call-memory", "fn make() { object Shared { value: 1 }; Shared }; let first = make(); first::value = 3; let second = make(); second::value = second::value + 4; first::value", 7)
         ];
         int checks = 0;
         foreach (var (name, source, expected) in cases)

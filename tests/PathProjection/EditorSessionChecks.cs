@@ -53,7 +53,7 @@ internal static class EditorSessionChecks
             await Submit("""
                 let folder = ./folder;
                 let home = ~/dotfiles;
-                scope Config { location: folder, remote: ssh://forge };
+                object Config { location: folder, remote: ssh://forge };
                 fn captured() { folder };
                 fn make(value) { fn() { value } };
                 let returned = make(folder);
@@ -80,7 +80,7 @@ internal static class EditorSessionChecks
             const string editing = "identity(\"probe only\"); fn draft(parameter: Path) { Config::";
             EditorAnalysis snapshot = compiler.AnalyzeEditor(editing, execution.GetLocalValue);
             var context = snapshot.At(editing.Length);
-            Check(context.Receiver?.Members?.Single(item => item.Name == "remote").Endpoint?.Address == "forge", "accepted Scope Connection member disappeared");
+            Check(context.Receiver?.Members?.Single(item => item.Name == "remote").Endpoint?.Address == "forge", "accepted Object Connection member disappeared");
             string signature = context.Bindings.Single(item => item.Name == "identity").Signature;
             Check(compiler.BindingNames.Order(StringComparer.Ordinal).SequenceEqual(bindings), "editing changed accepted bindings");
             Check((await Submit("identity(true)")).AsBool(), "a new real Bool specialization failed after an editor-only String probe");

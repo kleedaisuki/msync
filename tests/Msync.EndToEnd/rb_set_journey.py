@@ -64,7 +64,7 @@ def operations() -> list[Operation]:
 
 def program(commands: list[Operation]) -> str:
     literal: str = ",".join(
-        f"scope {{ insert: {str(insert).lower()}, value: {value} }}"
+        f"object {{ insert: {str(insert).lower()}, value: {value} }}"
         for insert, value in commands
     )
     return (
@@ -152,7 +152,7 @@ if set_type::is_empty(tree) and set_type::pop_first(tree) is null
     and set_type::pop_last(tree) is null {
     "empty" -> ./empty.txt;
 };
-let names = set_type::with_policy(["Klee", "albedo", "KLEE"], scope {
+let names = set_type::with_policy(["Klee", "albedo", "KLEE"], object {
     Self: String,
     sample: "",
     less: fn(left: String, right: String) -> Bool {
@@ -181,9 +181,9 @@ set_type::clear(recycled);
 if recycled::root::nil and not recycled::nil::red {
     numbers(set_type::snapshot(recycled)) -> ./cleared.txt;
 };
-let key = scope { rank: 1, label: "before" };
-let another = scope { rank: 2, label: "other" };
-let records = set_type::with_policy([key, another], scope {
+let key = object { rank: 1, label: "before" };
+let another = object { rank: 2, label: "other" };
+let records = set_type::with_policy([key, another], object {
     Self: decltype(key),
     sample: key,
     less: fn(left, right) -> Bool { left::rank < right::rank },

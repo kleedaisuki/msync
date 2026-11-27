@@ -15,7 +15,7 @@ try
     await ConcurrentFirstWrites();
     await RetainedSession();
     await LiteralScopeWitnessChecks.Run(root);
-    Console.WriteLine($"PASS: {checks} literal Scope producer contracts.");
+    Console.WriteLine($"PASS: {checks} literal Object producer contracts.");
 }
 finally { Directory.Delete(root, recursive: true); }
 
@@ -150,7 +150,7 @@ async Task OpaqueFailureRemainsDeferred()
         }
         catch (MsyncException error) when (demanded)
         {
-            Check(error.Span == fieldSpan && error.Message == "Scope has no member 'missing'",
+            Check(error.Span == fieldSpan && error.Message == "Object has no member 'missing'",
                 "a selected opaque projection retains its original diagnostic and span");
         }
         Check(Hits(profile.Drain()) == 0, "the opaque factory is never mistaken for a literal recipe");
@@ -163,7 +163,7 @@ async Task ConcurrentFirstWrites()
     const int extra = 3;
     string source = $$"""
         let r = $std::ranges;
-        let seed = [scope { first: 0, second: 0, label: "constant" }];
+        let seed = [object { first: 0, second: 0, label: "constant" }];
         r::materialize(r::transform(r::iota(0, {{count + extra}}), fn(_index: Number) { r::front(seed) }))
         """;
     RuntimeProfile profile = new();
@@ -192,7 +192,7 @@ async Task ConcurrentFirstWrites()
     Check(cellRow.TryGetFieldCell(firstOffset, out CellValue installed) && ReferenceEquals(cell, installed)
         && cell.Data is NumberValue { Data: 11 }, "first detach preserves the installed Cell and later writes reach it");
     cell.Data = new NumberValue(12);
-    Check(cellRow["first"] is NumberValue { Data: 12 }, "later captured writes remain visible through the Scope");
+    Check(cellRow["first"] is NumberValue { Data: 12 }, "later captured writes remain visible through the Object");
 
     ScopeValue original = rows[^2];
     ScopeValue copy = original with { AllocationSite = original.AllocationSite + 1 };
@@ -233,13 +233,13 @@ async Task RetainedSession()
     await using ExecutionSession execution = new(new(WorkingDirectory: root) { Profile = profile });
     await Submit("""
         let live = 1;
-        let old = [scope { x: 7, label: "old" }, scope { x: live, label: "live" }];
+        let old = [object { x: 7, label: "old" }, object { x: live, label: "live" }];
         """);
     ScopeValue first = (ScopeValue)await Submit("$std::ranges::front(old)");
     first.SetMember("x", new NumberValue(9));
     await Submit("""
         live = 42;
-        let later = [scope { x: 99, label: "later" }];
+        let later = [object { x: 99, label: "later" }];
         """);
     ScopeValue fresh = (ScopeValue)await Submit("$std::ranges::front(old)");
     ScopeValue later = (ScopeValue)await Submit("$std::ranges::front(later)");

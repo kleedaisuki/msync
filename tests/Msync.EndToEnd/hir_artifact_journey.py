@@ -42,7 +42,7 @@ let destination = choose(./selected.txt, true);
         "captured_locations",
         """fn counter(initial: Number) {
     let value = initial;
-    scope {
+    object {
         get: fn { value },
         set: fn(next: Number) { value = next; },
     }
@@ -59,7 +59,7 @@ first::set(9);
         "concept_and_metadata",
         """concept Named { name: String, };
 fn accept(value: Named) -> Named { value };
-accept(scope { name: "HIR" })::name -> ./concept.txt;
+accept(object { name: "HIR" })::name -> ./concept.txt;
 let callable = fn(value: Number) { value + 1 };
 ($std::meta::is_invocable(callable, 2) as String) -> ./query.txt;
 """,
@@ -71,18 +71,18 @@ let callable = fn(value: Number) { value + 1 };
 concept Cell<T> { value: T, };
 concept Entry<T: Named> : Cell<T> {};
 fn name(entry: Entry) { entry::value::name };
-name(scope { value: scope { name: "Klee" } }) -> ./generic-concept.txt;
+name(object { value: object { name: "Klee" } }) -> ./generic-concept.txt;
 """,
         {"generic-concept.txt": b"Klee"},
     ),
     Case(
         "static_and_fresh_places",
-        """scope Shared { count: 1 };
+        """object Shared { count: 1 };
 let alias = Shared;
 Shared::count = 2;
 (alias::count as String) -> ./shared.txt;
-let left = scope { count: 3 };
-let right = scope { count: 4 };
+let left = object { count: 3 };
+let right = object { count: 4 };
 left::count = 5;
 (left::count as String) -> ./left.txt;
 (right::count as String) -> ./right.txt;

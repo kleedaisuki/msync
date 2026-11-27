@@ -81,7 +81,7 @@ internal static class FieldPlaceChecks
         var dynamic = Image([new(OpCode.MakeClosure, 1), new(OpCode.Constant, 2), new(OpCode.Call, 1, 2), new(OpCode.Return)]);
         dynamic = dynamic with { Functions = [dynamic.Functions[0], opaque] };
         Require(await Execute(RoundTrip(dynamic)) is NumberValue { Data: 30 },
-            "An opaque Scope receiver must read its field without assuming a physical ordinal.");
+            "An opaque Object receiver must read its field without assuming a physical ordinal.");
 
         var captured = Image([
             new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0),
@@ -112,12 +112,12 @@ internal static class FieldPlaceChecks
         const string source = """
             let initialized = 0;
             fn seed(n: Number) { global initialized; initialized = initialized + 1; n };
-            fn get(n: Number) { scope Named { x: seed(n) }; Named };
+            fn get(n: Number) { object Named { x: seed(n) }; Named };
             let before = initialized;
             let first = get(13);
             first::x = 41;
             let second = get(22);
-            scope { before: before, count: initialized, value: second::x }
+            object { before: before, count: initialized, value: second::x }
             """;
         var portable = Compiler.Compile(source, "named-field-place", 0);
         foreach (var image in new[] { portable, RoundTrip(portable), RoundTrip(Binding.Bind(portable, Context)) })

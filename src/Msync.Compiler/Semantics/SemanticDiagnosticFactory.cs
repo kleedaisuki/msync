@@ -43,7 +43,7 @@ internal static class SemanticDiagnosticFactory
         if (expected == TypeRef.Bool)
             return "Conditions and boolean operators require Bool. Use 'exists path' for a filesystem test, or 'value is null' for a Null test.";
         if (expected == TypeRef.Function)
-            return "Call an fn value. A Scope groups members; select its function with 'scope::operation(...)'.";
+            return "Call an fn value. An Object groups members; select its function with 'value::operation(...)'.";
         if (expected.Kind == TypeKind.Range)
             return "Iterate a Range, such as '[first, second]' or 'directory/<pattern>'. A single Path is not a collection.";
         if (actual == TypeRef.Connection && TypeRef.Union(TypeRef.Path, TypeRef.String).Accepts(expected))
@@ -57,10 +57,10 @@ internal static class SemanticDiagnosticFactory
         IEnumerable<string> members)
     {
         string[] names = members.Order(StringComparer.Ordinal).ToArray();
-        string help = names.Length == 0 ? "This Scope has no declared members. Add the field to its scope declaration."
+        string help = names.Length == 0 ? "This Object has no declared members. Add the field to its object declaration."
             : "Select a declared member: " + string.Join(", ", names.Select(item => $"'{item}'")) + ".";
-        return new($"Scope has no member '{name}'.", source.Text ?? "", source.Name, span,
-            label: $"'{name}' is not declared in this Scope", help: help, code: "E0205");
+        return new($"Object has no member '{name}'.", source.Text ?? "", source.Name, span,
+            label: $"'{name}' is not declared in this Object", help: help, code: "E0205");
     }
 
     public static CompileException ShadowedStandardType(HirSource source, SourceSpan span, string message,

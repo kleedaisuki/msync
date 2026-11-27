@@ -1,4 +1,4 @@
-"""Exercise native call placement with Scope aliases and an unresolved argument."""
+"""Exercise native call placement with Object aliases and an unresolved argument."""
 from __future__ import annotations
 
 import argparse

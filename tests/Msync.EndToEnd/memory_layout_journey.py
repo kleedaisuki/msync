@@ -29,33 +29,33 @@ class Example:
 
 
 def examples() -> tuple[Example, ...]:
-    branch = """scope Factory { new: fn(file: Path) { scope { file: file, marker: 0 } } };
-let object = Factory::new(./left.bin); let alias = object;
+    branch = """object Factory { new: fn(file: Path) { object { file: file, marker: 0 } } };
+let record = Factory::new(./left.bin); let alias = record;
 if exists ./selected.flag { alias::file = ./right.bin; } else { alias::file = ./left.bin; };
-object::file -> ./result.bin;
+record::file -> ./result.bin;
 """
-    method = """let object = scope { file: ./left.bin, read: fn { file }, write: fn(value: Path) { file = value; } };
-if exists ./selected.flag { object::write(./right.bin); } else { object::file = ./left.bin; };
-object::read() -> ./result.bin;
+    method = """let record = object { file: ./left.bin, read: fn { file }, write: fn(value: Path) { file = value; } };
+if exists ./selected.flag { record::write(./right.bin); } else { record::file = ./left.bin; };
+record::read() -> ./result.bin;
 """
     return (
         Example("branch-true", branch, {"result.bin": PAYLOADS["right.bin"]}, True),
         Example("branch-false", branch, {"result.bin": PAYLOADS["left.bin"]}),
         Example(
             "loop-carried-fields",
-            """let object = scope { file: ./left.bin, total: 0 };
+            """let record = object { file: ./left.bin, total: 0 };
 for item in [1, 2, 3, 4] {
-    if item > 2 { object::file = ./right.bin; } else { object::file = ./left.bin; };
-    object::total = object::total + item;
+    if item > 2 { record::file = ./right.bin; } else { record::file = ./left.bin; };
+    record::total = record::total + item;
 };
-if object::total == 10 { object::file -> ./result.bin; } else { "wrong sum" -> ./result.bin; };
+if record::total == 10 { record::file -> ./result.bin; } else { "wrong sum" -> ./result.bin; };
 """,
             {"result.bin": PAYLOADS["right.bin"]},
         ),
         Example(
             "disjoint-callee-fields",
-            """fn update(object) { object::file = ./right.bin; };
-let first = scope { file: ./left.bin }; let second = scope { file: ./left.bin };
+            """fn update(record) { record::file = ./right.bin; };
+let first = object { file: ./left.bin }; let second = object { file: ./left.bin };
 let before = second::file; update(first);
 before -> ./before.bin; second::file -> ./result.bin; first::file -> ./other.bin;
 """,
@@ -71,7 +71,7 @@ before -> ./before.bin; second::file -> ./result.bin; first::file -> ./other.bin
         Example("captured-field-false", method, {"result.bin": PAYLOADS["left.bin"]}),
         Example(
             "loop-site-generativity",
-            """let objects = $std::ranges::transform([./left.bin, ./right.bin], fn(path: Path) { scope { file: path, read: fn { file } } });
+            """let objects = $std::ranges::transform([./left.bin, ./right.bin], fn(path: Path) { object { file: path, read: fn { file } } });
 let first = $std::ranges::first(objects); let second = $std::ranges::last(objects);
 first::file = ./third.bin;
 first::read() -> ./first.bin; second::read() -> ./second.bin;
@@ -82,8 +82,8 @@ first::read() -> ./first.bin; second::read() -> ./second.bin;
             "nullable-loop-site-generativity",
             """let first? = null; let second? = null;
 for path in [./left.bin, ./right.bin] {
-    let object = scope { file: path, read: fn { file } };
-    if path == ./left.bin { first = object; } else { second = object; };
+    let record = object { file: path, read: fn { file } };
+    if path == ./left.bin { first = record; } else { second = record; };
 };
 if first is not null { if second is not null {
     first::file = ./third.bin;
@@ -96,13 +96,13 @@ if first is not null { if second is not null {
         Example(
             "loop-rebound-methods",
             """let objects = $std::ranges::transform([./left.bin, ./right.bin], fn(path: Path) {
-    scope { file: path, read: fn { file } }
+    object { file: path, read: fn { file } }
 });
-let saved = scope { file: ./left.bin, read: fn { file } }; let position = 0;
-for object in objects {
-    if position == 0 { saved = object; } else {
+let saved = object { file: ./left.bin, read: fn { file } }; let position = 0;
+for record in objects {
+    if position == 0 { saved = record; } else {
         saved::file = ./third.bin;
-        saved::read() -> ./first.bin; object::read() -> ./second.bin;
+        saved::read() -> ./first.bin; record::read() -> ./second.bin;
     };
     position = position + 1;
 };
@@ -112,28 +112,28 @@ for object in objects {
         ),
         Example(
             "deferred-callback-mutation",
-            """let object = scope { file: ./left.bin };
-let work = $std::ranges::transform([1], fn(item) { object::file = ./right.bin; item });
+            """let record = object { file: ./left.bin };
+let work = $std::ranges::transform([1], fn(item) { record::file = ./right.bin; item });
 if exists ./selected.flag { let _ = $std::ranges::first(work); };
-object::file -> ./result.bin;
+record::file -> ./result.bin;
 """,
             {"result.bin": PAYLOADS["right.bin"]},
             True,
         ),
         Example(
             "deferred-callback-unselected",
-            """let object = scope { file: ./left.bin };
-let work = $std::ranges::transform([1], fn(item) { object::file = ./right.bin; item });
+            """let record = object { file: ./left.bin };
+let work = $std::ranges::transform([1], fn(item) { record::file = ./right.bin; item });
 if exists ./selected.flag { let _ = $std::ranges::first(work); };
-object::file -> ./result.bin;
+record::file -> ./result.bin;
 """,
             {"result.bin": PAYLOADS["left.bin"]},
         ),
         Example(
             "selected-error",
-            """let object = scope { file: ./left.bin };
-if exists ./selected.flag { object::file = ./right.bin; let _ = $std::string::replace("text", "", "x"); };
-object::file -> ./result.bin;
+            """let record = object { file: ./left.bin };
+if exists ./selected.flag { record::file = ./right.bin; let _ = $std::string::replace("text", "", "x"); };
+record::file -> ./result.bin;
 """,
             {},
             True,

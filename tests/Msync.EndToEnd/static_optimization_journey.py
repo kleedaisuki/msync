@@ -15,7 +15,7 @@ from stdlib_experience_journey import accept, invoke
 
 ROOT: Path = Path(__file__).resolve().parents[2]
 PROGRAM: str = """
-let items = scope { first: 10, second: 20, count: 2 };
+let items = object { first: 10, second: 20, count: 2 };
 let before = items::first;
 items::second = 99;
 let after = items::first;
@@ -24,7 +24,7 @@ let first_size = items::count;
 items::second = 77;
 let second_size = items::count;
 ((first_size + second_size) as String) -> ./sizes.txt;
-let nodes = $std::ranges::materialize([scope { value: 1 }]);
+let nodes = $std::ranges::materialize([object { value: 1 }]);
 let node = $std::ranges::at(nodes, 0);
 node::value = 2;
 ($std::ranges::at(nodes, 0)::value as String) -> ./alias.txt;

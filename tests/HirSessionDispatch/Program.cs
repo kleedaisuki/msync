@@ -36,7 +36,7 @@ foreach (int level in new[] { 0, 2, 3 })
         $"O{level}: a prior deferred call reads a future definition");
     if (args.Contains("--basic", StringComparer.Ordinal)) continue;
 
-    await Submit("let captured = scope { value: 17 }; op = fn { [captured::value] };");
+    await Submit("let captured = object { value: 17 }; op = fn { [captured::value] };");
     await Submit("let captured_pending = op(); captured::value = 23;");
     Require(await Submit("$std::ranges::first(captured_pending)") is NumberValue { Data: 23 },
         $"O{level}: future definitions retain their actual captured locations");
@@ -48,7 +48,7 @@ foreach (int level in new[] { 0, 2, 3 })
     Require(await Submit("$std::ranges::first(texts)") is StringValue { Data: "seven" },
         $"O{level}: a second signature does not reuse the Number specialization");
 
-    await Submit("let holder = scope { operation: fn { [1] } }; let alias = holder; let from_field = holder::operation();");
+    await Submit("let holder = object { operation: fn { [1] } }; let alias = holder; let from_field = holder::operation();");
     await Submit("alias::operation = fn { [4] };");
     Require(await Submit("$std::ranges::first(from_field)") is NumberValue { Data: 4 },
         $"O{level}: member aliases update an existing deferred call");
@@ -61,7 +61,7 @@ foreach (int level in new[] { 0, 2, 3 })
         $"O{level}: failed compilation does not publish a registry generation");
     if (args.Contains("--before-effects", StringComparer.Ordinal)) continue;
 
-    await Submit("let state = scope { changed: false }; let update = fn { [1] }; let work = update();");
+    await Submit("let state = object { changed: false }; let update = fn { [1] }; let work = update();");
     await Submit("update = fn { state::changed = true; [2] };");
     Require(await Submit("$std::ranges::first(work); if state::changed { 7 } else { 9 }") is NumberValue { Data: 7 },
         $"O{level}: consumption observes the new target's memory effects");
@@ -84,8 +84,8 @@ foreach (int level in new[] { 0, 2, 3 })
 Factories:
     await Submit("""
         fn Factory(seed: Number) {
-            let item = scope { operation: fn { [seed] } };
-            scope { item: item, values: item::operation() }
+            let item = object { operation: fn { [seed] } };
+            object { item: item, values: item::operation() }
         };
         let first = Factory(1);
         let second = Factory(9);
@@ -99,7 +99,7 @@ Factories:
     await Submit("""
         fn PrivateFactory() {
             let operation = fn { [1] };
-            scope {
+            object {
                 values: operation(),
                 replace: fn(value) { operation = value; },
             }
@@ -109,8 +109,8 @@ Factories:
     await Submit("private::replace(fn { [5] });");
     Require(await Submit("$std::ranges::first(private::values)") is NumberValue { Data: 5 },
         $"O{level}: captured setters carry obligations to the actual private cell");
-    await Submit("let replacement = scope { operation: fn { [1] } }; let relocated = replacement::operation();");
-    await Submit("replacement = scope { operation: fn { [8] } };");
+    await Submit("let replacement = object { operation: fn { [1] } }; let relocated = replacement::operation();");
+    await Submit("replacement = object { operation: fn { [8] } };");
     Require(await Submit("$std::ranges::first(relocated)") is NumberValue { Data: 8 },
         $"O{level}: a deferred member path follows replacement of its root location");
     await Submit("let hidden = fn { [4] }; let before_shadow = hidden();");

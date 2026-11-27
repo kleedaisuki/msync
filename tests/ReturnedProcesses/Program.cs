@@ -68,7 +68,7 @@ try
                 $std::process::stdout($std::process::wait(child))
                 """,
             prelude + """
-                fn box() { scope { child: start() } };
+                fn box() { object { child: start() } };
                 let boxed = box();
                 $std::process::write_stdin(boxed::child, "scope");
                 $std::process::close_stdin(boxed::child);
@@ -165,8 +165,8 @@ try
                 }
                 """,
             prelude + """
-                let state = scope { child?: null };
-                fn launch(state: Scope) { state::child = start(); };
+                let state = object { child?: null };
+                fn launch(state: Object) { state::child = start(); };
                 launch(state);
                 if state::child is null {
                     "missing"
@@ -177,10 +177,10 @@ try
                 }
                 """,
             prelude + """
-                let state = scope { child?: null };
-                fn launch(state: Scope) {
+                let state = object { child?: null };
+                fn launch(state: Object) {
                     state::child = start();
-                    state = scope { child?: null };
+                    state = object { child?: null };
                 };
                 launch(state);
                 if state::child is null {
@@ -311,9 +311,9 @@ async Task CheckSession(int level)
     string privateRelease = Path.Combine(root, $"private-release-{level}").Replace('\\', '/');
     string privateFinished = Path.Combine(root, $"private-finished-{level}").Replace('\\', '/');
     await Submit($$"""
-        let outside = scope { child?: null };
-        fn private_spawn(state: Scope) {
-            state = scope { child?: null };
+        let outside = object { child?: null };
+        fn private_spawn(state: Object) {
+            state = object { child?: null };
             state::child = $std::process::spawn("{{executable}}",
                 ["--file-child", "{{privateReady}}", "{{privateRelease}}", "{{privateFinished}}"]);
         };

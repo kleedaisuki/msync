@@ -5,9 +5,9 @@ expression, related call site, then help or a suggested edit. In VS Code,
 hover shows inferred types and function signatures; a quick fix is offered
 when a specific insertion or replacement is known.
 
-## A Path was used as a Scope or Connection
+## A Path was used as an Object or Connection
 
-An unbound bare name is a Path. For `value::member`, pass the lexical Scope
+An unbound bare name is a Path. For `value::member`, pass the lexical Object
 instance that owns `member`; for `endpoint @ path`, use a Connection on the
 left and a Path or String on the left.
 A constructor's `::x` member may already be a Path, not the original instance.
@@ -32,7 +32,7 @@ when converting a String is intentional.
 
 ## A declaration does not parse
 
-Terminate declarations with `;`, and separate Scope members or match arms with
+Terminate declarations with `;`, and separate Object members or match arms with
 commas. Braces, not indentation, delimit blocks. Strings double embedded quotes
 and preserve literal backslashes; do not assume C-style escapes.
 

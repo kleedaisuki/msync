@@ -74,7 +74,7 @@ let equal = fn(left: String, right: String) {
 
 let set = $std::containers::EqualitySet::with_equality(
     ["Alpha", "ALPHA", "Beta"],
-    scope {
+    object {
         Self: String,
         equal: equal
     }
@@ -85,16 +85,16 @@ $std::string::join($std::containers::EqualitySet::snapshot(set), "|")
     -> ./set.txt;
 let map = $std::containers::Map::with_equality(
     [
-        scope {
+        object {
             key: "alpha",
             value: 1
         },
-        scope {
+        object {
             key: "beta",
             value: 2
         }
     ],
-    scope {
+    object {
         Self: String,
         equal: equal
     }

@@ -49,11 +49,11 @@ internal static class MixedCallableChecks
             new("closed builtin and namespace results", """
                 let pick = if exists ./condition { fn(values) { $std::ranges::first(values) } }
                     else { $std::ranges::first };
-                let item = scope {
+                let item = object {
                     number: pick([7]), text: pick(["native"]), flag: pick([true]), optional?: pick([null]),
                     path: pick([./entry]), endpoint: pick([$local]), type: pick([Number]),
                     operation: pick([fn(value) { value + 1 }]),
-                    nested: pick([scope { number: 8 }]),
+                    nested: pick([object { number: 8 }]),
                     values: pick([[1, 2]]),
                 };
                 if item::number == 7 and item::text == "native" and item::flag and item::optional is null
@@ -69,7 +69,7 @@ internal static class MixedCallableChecks
                 $std::ranges::first(action([2], fn(value) { value + 1 })) as String
                 """, "3", "3"),
             new("native callback captured writes", """
-                let state = scope { number: 0 };
+                let state = object { number: 0 };
                 let action = if exists ./condition { $std::ranges::for_each }
                     else { fn(values, operation) { $std::ranges::for_each(values, operation) } };
                 action([1, 2], fn(value) { state::number = state::number + value; });

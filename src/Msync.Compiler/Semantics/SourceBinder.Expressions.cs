@@ -218,7 +218,7 @@ internal sealed partial class SourceBinder
             return Node(HirKind.MemberAssign, hir.Type(TypeRef.Null), assignment.Span,
                 [receiver, value], text: selected, effects: HirEffects.WriteMemory);
         }
-        throw Error("Assign to a binding or Scope field.", assignment.Target.Span, "E0204");
+        throw Error("Assign to a binding or Object field.", assignment.Target.Span, "E0204");
     }
 
     private HirNodeId Cast(CastExpr cast)

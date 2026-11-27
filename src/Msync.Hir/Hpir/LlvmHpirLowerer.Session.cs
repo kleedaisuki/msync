@@ -73,7 +73,7 @@ public static partial class LlvmHpirLowerer
             trace?.Metric("session.result.pending", graph.FutureResults.Contains(graph.Entry) ? 1 : 0);
             if (scopeBoundary is not null)
             {
-                throw new MsyncException($"Cannot retain this Scope with pending fields: {scopeBoundary}.",
+                throw new MsyncException($"Cannot retain this Object with pending fields: {scopeBoundary}.",
                     SessionResultSource()) { DiagnosticCode = "E0400" };
             }
             TypeKind kind = resultType.Kind;

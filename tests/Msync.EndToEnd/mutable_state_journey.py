@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Observe mutable lexical storage and Scope aliases through actual CLI artifacts."""
+"""Observe mutable lexical storage and Object aliases through actual CLI artifacts."""
 
 from __future__ import annotations
 
@@ -48,32 +48,32 @@ EXAMPLES: tuple[Example, ...] = (
     ),
     Example(
         "scope-alias",
-        'let object = scope { filename: "before" }; let alias = object; alias::filename = "after"; object::filename -> ./result;',
+        'let record = object { filename: "before" }; let alias = record; alias::filename = "after"; record::filename -> ./result;',
         b"after",
     ),
     Example(
         "nested-scope",
-        'let object = scope { nested: scope { filename: "before" } }; let nested = object::nested; nested::filename = "after"; object::nested::filename -> ./result;',
+        'let record = object { nested: object { filename: "before" } }; let nested = record::nested; nested::filename = "after"; record::nested::filename -> ./result;',
         b"after",
     ),
     Example(
         "field-captured-read",
-        'let object = scope { field: "before", read: fn { field }, write: fn { field = "after"; } }; object::field = "middle"; object::read() -> ./result;',
+        'let record = object { field: "before", read: fn { field }, write: fn { field = "after"; } }; record::field = "middle"; record::read() -> ./result;',
         b"middle",
     ),
     Example(
         "field-captured-write",
-        'let object = scope { field: "before", read: fn { field }, write: fn { field = "after"; } }; object::write(); object::field -> ./result;',
+        'let record = object { field: "before", read: fn { field }, write: fn { field = "after"; } }; record::write(); record::field -> ./result;',
         b"after",
     ),
     Example(
         "nullable-field",
-        "scope SomeType { remote: ssh://forge, new: fn { scope { filename?: null } } }; let object = SomeType::new(); object::filename = ./input; object::filename -> ./result;",
+        "object SomeType { remote: ssh://forge, new: fn { object { filename?: null } } }; let record = SomeType::new(); record::filename = ./input; record::filename -> ./result;",
         b"FILE\x00\xff\r\n",
     ),
     Example(
         "nullable-field-clear",
-        'let object = scope { filename?: ./input }; object::filename = null; if object::filename is null { "cleared" -> ./result };',
+        'let record = object { filename?: ./input }; record::filename = null; if record::filename is null { "cleared" -> ./result };',
         b"cleared",
     ),
     Example(
@@ -83,23 +83,23 @@ EXAMPLES: tuple[Example, ...] = (
     ),
     Example(
         "nullable-scope-conditional",
-        'let object? = if exists ./missing { null } else { scope { file: "conditional" } }; if object is not null { object::file -> ./result; };',
+        'let record? = if exists ./missing { null } else { object { file: "conditional" } }; if record is not null { record::file -> ./result; };',
         b"conditional",
     ),
     Example(
         "nullable-scope-null-branch",
-        'let prior? = if exists ./input { scope { old: "old" } } else { null }; let object? = if prior is null { prior } else { scope { file: "new" } }; if object is not null { object::file -> ./result; };',
+        'let prior? = if exists ./input { object { old: "old" } } else { null }; let record? = if prior is null { prior } else { object { file: "new" } }; if record is not null { record::file -> ./result; };',
         b"new",
     ),
     Example(
         "nullable-scope-loop-lifetime",
-        'let first? = null; let second? = null; let position = 0; for item in ["first", "second"] { let object = scope { file: item, read: fn { file } }; if position == 0 { first = object; } else { second = object; }; position = position + 1; }; if first is not null { if second is not null { first::file = "after"; first::read() -> ./result; second::read() -> ./retained-second; }; };',
+        'let first? = null; let second? = null; let position = 0; for item in ["first", "second"] { let record = object { file: item, read: fn { file } }; if position == 0 { first = record; } else { second = record; }; position = position + 1; }; if first is not null { if second is not null { first::file = "after"; first::read() -> ./result; second::read() -> ./retained-second; }; };',
         b"after",
         secondary_outputs=(("retained-second", b"second"),),
     ),
     Example(
         "nullable-scope-return",
-        'fn make(present: Bool) { if present { scope { file: "returned" } } else { null } }; let object? = make(exists ./input); if object is not null { object::file -> ./result; };',
+        'fn make(present: Bool) { if present { object { file: "returned" } } else { null } }; let record? = make(exists ./input); if record is not null { record::file -> ./result; };',
         b"returned",
     ),
     Example(
@@ -149,17 +149,17 @@ EXAMPLES: tuple[Example, ...] = (
     ),
     Example(
         "argument-alias",
-        'fn write(object) { object::filename = "after"; }; let object = scope { filename: "before" }; write(object); object::filename -> ./result;',
+        'fn write(record) { record::filename = "after"; }; let record = object { filename: "before" }; write(record); record::filename -> ./result;',
         b"after",
     ),
     Example(
         "instances",
-        'fn make() { scope { filename?: null } }; let first = make(); let second = make(); first::filename = true; second::filename = ./input; if first::filename { "first" -> ./result };',
+        'fn make() { object { filename?: null } }; let first = make(); let second = make(); first::filename = true; second::filename = ./input; if first::filename { "first" -> ./result };',
         b"first",
     ),
     Example(
         "constructor-captured-holes",
-        'fn make() { scope { value?: null, set: fn(payload) { value = payload; }, get: fn { value } } }; let first = make(); let second = make(); first::set(true); second::set("text"); if first::get() { "first" -> ./result };',
+        'fn make() { object { value?: null, set: fn(payload) { value = payload; }, get: fn { value } } }; let first = make(); let second = make(); first::set(true); second::set("text"); if first::get() { "first" -> ./result };',
         b"first",
     ),
     Example(
@@ -169,7 +169,7 @@ EXAMPLES: tuple[Example, ...] = (
     ),
     Example(
         "named-scope",
-        'scope Object { filename: "before" }; Object = scope { filename: "after" }; Object::filename -> ./result;',
+        'object SharedRecord { filename: "before" }; SharedRecord = object { filename: "after" }; SharedRecord::filename -> ./result;',
         b"after",
     ),
     Example(
@@ -274,7 +274,7 @@ EXAMPLES: tuple[Example, ...] = (
     ),
     Example(
         "deferred-field-callable",
-        'let object = scope { operation: fn { "before" } }; let deferred = $std::ranges::transform([1], fn(item) { object::operation() }); object::operation = fn { "after" }; for item in deferred { item -> ./result; };',
+        'let record = object { operation: fn { "before" } }; let deferred = $std::ranges::transform([1], fn(item) { record::operation() }); record::operation = fn { "after" }; for item in deferred { item -> ./result; };',
         b"after",
     ),
     Example(
@@ -284,7 +284,7 @@ EXAMPLES: tuple[Example, ...] = (
     ),
     Example(
         "deferred-null-captures",
-        'let value? = "before"; let object = scope { field?: "before" }; let deferred = $std::ranges::transform([1], fn(item) { if value is null { if object::field is null { "after" } else { "wrong-field" } } else { "wrong-slot" } }); value = null; object::field = null; for item in deferred { item -> ./result; };',
+        'let value? = "before"; let record = object { field?: "before" }; let deferred = $std::ranges::transform([1], fn(item) { if value is null { if record::field is null { "after" } else { "wrong-field" } } else { "wrong-slot" } }); value = null; record::field = null; for item in deferred { item -> ./result; };',
         b"after",
     ),
     Example(
@@ -330,8 +330,8 @@ EXAMPLES: tuple[Example, ...] = (
 INVALID: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "nullable-scope-write-needs-guard",
-        'let object? = if exists ./input { scope { file: "before" } } else { null }; object::file = "after";',
-        ("Scope", "Null", "Handle"),
+        'let record? = if exists ./input { object { file: "before" } } else { null }; record::file = "after";',
+        ("Object", "Null", "Handle"),
     ),
     (
         "nullable-function-call-needs-guard",
@@ -340,7 +340,7 @@ INVALID: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ),
     (
         "nullable-scope-field-type",
-        'let first? = null; for item in [1] { first = scope { file: item }; }; if first is not null { first::file = "wrong type"; };',
+        'let first? = null; for item in [1] { first = object { file: item }; }; if first is not null { first::file = "wrong type"; };',
         ("Number", "String"),
     ),
     (
@@ -362,7 +362,7 @@ INVALID: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ),
     (
         "inferred-field-type",
-        'let object = scope { value: true }; object::value = "text";',
+        'let record = object { value: true }; record::value = "text";',
         ("Bool", "String"),
     ),
     (
@@ -382,7 +382,7 @@ INVALID: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ),
     (
         "nullable-field-branch-type",
-        "let object = scope { filename?: null }; if exists ./input { object::filename = true; } else { object::filename = ./input; };",
+        "let record = object { filename?: null }; if exists ./input { record::filename = true; } else { record::filename = ./input; };",
         ("Bool", "Path"),
     ),
     (
@@ -392,17 +392,17 @@ INVALID: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ),
     (
         "stale-field-refinement",
-        "let object = scope { value?: ./input }; let alias = object; if object::value is not null { alias::value = null; object::value -> ./result; };",
+        "let record = object { value?: ./input }; let alias = record; if record::value is not null { alias::value = null; record::value -> ./result; };",
         ("Null",),
     ),
     (
         "field-null-initializer",
-        "let object = scope { filename: null };",
+        "let record = object { filename: null };",
         ("filename?", "Null"),
     ),
     (
         "field-null-store",
-        "let object = scope { filename: ./input }; object::filename = null;",
+        "let record = object { filename: ./input }; record::filename = null;",
         ("filename", "'?'", "Null"),
     ),
     (
@@ -428,7 +428,7 @@ INVALID: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "physical-endpoint-store",
         '($local @ ./input) = "not a lexical field";',
-        ("E0211", "not writable", "Scope member"),
+        ("E0211", "not writable", "Object member"),
     ),
 )
 
@@ -440,8 +440,8 @@ def alias_properties(count: int) -> tuple[Example, ...]:
         values: list[str] = ["first-initial", "second-initial"]
         selected = 0
         statements: list[str] = [
-            'let first = scope { filename: "first-initial" };',
-            'let second = scope { filename: "second-initial" };',
+            'let first = object { filename: "first-initial" };',
+            'let second = object { filename: "second-initial" };',
             "let alias = first;",
             "let read = fn { alias::filename };",
         ]
@@ -526,9 +526,9 @@ def run_repl(binary: Path, directory: Path) -> int:
         'let value = "before"; let read = fn { value };',
         'value = "after";',
         "read() -> ./repl-read;",
-        "let object = scope { filename?: null };",
-        "object::filename = ./input;",
-        "object::filename -> ./repl-field;",
+        "let record = object { filename?: null };",
+        "record::filename = ./input;",
+        "record::filename -> ./repl-field;",
         'let operation = fn { "before" }; let invoke = fn { operation() };',
         'operation = fn { "after" };',
         "invoke() -> ./repl-callable;",

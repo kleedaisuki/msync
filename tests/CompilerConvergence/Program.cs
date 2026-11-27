@@ -15,9 +15,9 @@ foreach (int level in new[] { 0, 2, 3 })
             fn Map(initial: Range) {
                 let empty = $std::ranges::transform(
                     $std::ranges::take(initial, 0),
-                    fn(entry) { scope { key: entry::key, value: entry::value } }
+                    fn(entry) { object { key: entry::key, value: entry::value } }
                 );
-                let state = scope { items: $std::ranges::materialize(empty) };
+                let state = object { items: $std::ranges::materialize(empty) };
                 let contains = fn(key: String) {
                     $std::ranges::any(state::items,
                         fn(entry) { entry::key == key })
@@ -28,25 +28,25 @@ foreach (int level in new[] { 0, 2, 3 })
                         state::items = $std::ranges::materialize(
                             $std::ranges::transform(state::items, fn(entry) {
                                 if entry::key == key {
-                                    scope { key: entry::key, value: value }
+                                    object { key: entry::key, value: value }
                                 } else { entry }
                             })
                         );
                     } else {
                         state::items = $std::ranges::materialize(
                             $std::ranges::concat(state::items,
-                                [scope { key: key, value: value }])
+                                [object { key: key, value: value }])
                         );
                     };
                     not present
                 };
                 for entry in initial { put(entry::key, entry::value); };
-                scope { put: put, entries: fn { state::items } }
+                object { put: put, entries: fn { state::items } }
             };
             let map = Map([
-                scope { key: "first", value: 1 },
-                scope { key: "second", value: 2 },
-                scope { key: "first", value: 3 }
+                object { key: "first", value: 1 },
+                object { key: "second", value: 2 },
+                object { key: "first", value: 3 }
             ]);
             map::put("second", 4);
             let entries = $std::ranges::materialize(map::entries());
@@ -57,24 +57,24 @@ foreach (int level in new[] { 0, 2, 3 })
                 and $std::ranges::size(entries) == 2
             """, "true"),
         ("fresh-range-item", """
-            let items = [scope { value: 1 }];
+            let items = [object { value: 1 }];
             for increment in [1, 2] {
                 items = $std::ranges::materialize(
                     $std::ranges::transform(items, fn(item) {
-                        scope { value: item::value + increment }
+                        object { value: item::value + increment }
                     })
                 );
             };
             $std::ranges::first(items)::value
             """, "4"),
         ("nested-range-item", """
-            let buckets = [[scope { value: 1 }]];
+            let buckets = [[object { value: 1 }]];
             for increment in [1, 2] {
                 buckets = $std::ranges::materialize(
                     $std::ranges::transform(buckets, fn(bucket) {
                         $std::ranges::materialize(
                             $std::ranges::transform(bucket, fn(item) {
-                                scope { value: item::value + increment }
+                                object { value: item::value + increment }
                             })
                         )
                     })
@@ -83,11 +83,11 @@ foreach (int level in new[] { 0, 2, 3 })
             $std::ranges::first($std::ranges::first(buckets))::value
             """, "4"),
         ("nullable-range-member", """
-            let items = [scope { value?: 1 }];
+            let items = [object { value?: 1 }];
             for clear in [false, true] {
                 items = $std::ranges::materialize(
                     $std::ranges::transform(items, fn(item) {
-                        scope { value?: if clear { null } else { item::value } }
+                        object { value?: if clear { null } else { item::value } }
                     })
                 );
             };
@@ -101,7 +101,7 @@ foreach (int level in new[] { 0, 2, 3 })
             operation(40)
             """, "42"),
         ("independent-instances", """
-            fn make(value: Number) { scope { value: value } };
+            fn make(value: Number) { object { value: value } };
             let left = make(1);
             let right = make(2);
             left::value = 3;

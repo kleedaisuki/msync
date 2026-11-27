@@ -28,7 +28,7 @@ fn run(count: Number, seed: Number) {
             $std::io::println(changes as String);
             $std::io::println(exposure as String);
         };
-        scope { ingest: ingest, report: report }
+        object { ingest: ingest, report: report }
     };
     let detector_0 = detector(4, 1240, 1040);
     let detector_1 = detector(8, 1540, 1170);

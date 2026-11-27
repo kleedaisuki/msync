@@ -140,19 +140,19 @@ internal static class SemanticChecks
             try { action(); Console.WriteLine($"branch semantic ok: {name}"); }
             catch (Exception error) { failures.Add($"{name}: {error.Message}"); }
         }
-        Check("structural Scope if joins", () =>
+        Check("structural Object if joins", () =>
         {
-            const string definitions = "let selected = if exists ./condition { scope { item: ~/left, flag: true, nested: scope { value: \"left\", }, leftOnly: true, } } else { scope { item: ~/right, flag: false, nested: scope { value: \"right\", }, rightOnly: false, } }; ";
+            const string definitions = "let selected = if exists ./condition { object { item: ~/left, flag: true, nested: object { value: \"left\", }, leftOnly: true, } } else { object { item: ~/right, flag: false, nested: object { value: \"right\", }, rightOnly: false, } }; ";
             AssertType(Accept(definitions + "selected::nested::value"), TypeRef.String);
             AssertType(Accept(definitions + "selected::item"), TypeRef.Path);
             AssertType(Accept(definitions + "selected::flag"), TypeRef.Bool);
             Reject(definitions + "selected::leftOnly");
             Reject(definitions + "selected::rightOnly");
-            AssertType(Accept("let selected = if exists ./condition { scope { item: ~/left, } } else { scope { item: \"right\", } }; selected::item"), TypeRef.Union(TypeRef.Path, TypeRef.String));
+            AssertType(Accept("let selected = if exists ./condition { object { item: ~/left, } } else { object { item: \"right\", } }; selected::item"), TypeRef.Union(TypeRef.Path, TypeRef.String));
         });
-        Check("structural Scope match joins", () =>
+        Check("structural Object match joins", () =>
         {
-            const string definitions = "let selected = match exists ./condition { true => { scope { item: ~/left, leftOnly: true, } }, false => { scope { item: ~/right, rightOnly: false, } } }; ";
+            const string definitions = "let selected = match exists ./condition { true => { object { item: ~/left, leftOnly: true, } }, false => { object { item: ~/right, rightOnly: false, } } }; ";
             AssertType(Accept(definitions + "selected::item"), TypeRef.Path);
             Reject(definitions + "selected::leftOnly");
             Reject(definitions + "selected::rightOnly");
@@ -186,11 +186,11 @@ internal static class SemanticChecks
             Require(Dispatches(module, NativeOp.Call).Single().Count == 2, "Match function alternatives need typed dispatch.");
             Reject("let action = if exists ./condition { fn(value) { value } } else { fn() { true } }; action(true)");
         });
-        Check("Scope function members retain callable alternatives", () =>
+        Check("Object function members retain callable alternatives", () =>
         {
-            var module = Accept("let selected = if exists ./condition { scope { action: fn(value) { value }, } } else { scope { action: fn(value) { value }, } }; selected::action(\"text\"); selected::action(~/document)");
+            var module = Accept("let selected = if exists ./condition { object { action: fn(value) { value }, } } else { object { action: fn(value) { value }, } }; selected::action(\"text\"); selected::action(~/document)");
             AssertType(module, TypeRef.Path);
-            Require(Dispatches(module, NativeOp.Call).Count() == 2, "Structural Scope function members lost their callable dispatch.");
+            Require(Dispatches(module, NativeOp.Call).Count() == 2, "Structural Object function members lost their callable dispatch.");
         });
         Check("generic source function receives action alternatives", () =>
         {
@@ -220,7 +220,7 @@ internal static class SemanticChecks
             AssertType(different, TypeRef.String);
             Require(HasNative(different, "string.to_lowercase") && HasNative(different, "string.to_uppercase"), "Native branch identities missing from the binary value table.");
             Require(different.Functions.SelectMany(function => function.Instructions).All(instruction => instruction.Op != NativeOp.ProcessCall), "A native function alias became a callable Path.");
-            AssertType(Accept("let selected = if exists ./condition { scope { action: $std::string::to_lowercase, } } else { scope { action: $std::string::to_uppercase, } }; selected::action(\"Text\")"), TypeRef.String);
+            AssertType(Accept("let selected = if exists ./condition { object { action: $std::string::to_lowercase, } } else { object { action: $std::string::to_uppercase, } }; selected::action(\"Text\")"), TypeRef.String);
             AssertType(Accept("let action = match exists ./condition { true => { $std::string::to_lowercase }, false => { $std::string::to_uppercase } }; action(\"Text\")"), TypeRef.String);
             AssertType(Accept("let action = if exists ./condition { $std::string::to_lowercase } else { $std::string::to_uppercase }; $std::ranges::transform([\"Text\"], action)"), new(TypeKind.Range, TypeRef.String));
             var mixed = Accept("let action = if exists ./condition { fn(value) { value } } else { $std::string::to_uppercase }; action(\"Text\")");

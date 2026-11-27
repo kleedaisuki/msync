@@ -241,7 +241,7 @@ def journeys(
     callback_child: str = "import pathlib,time; time.sleep(0.2); pathlib.Path('child.finished').write_text('finished')"
     case(
         "returned-callback-owner",
-        'let state = scope { child: python("-c", "pass") };\n'
+        'let state = object { child: python("-c", "pass") };\n'
         "let items = $std::ranges::transform([./input], fn(path) { "
         f'state::child = release python("-c", {literal(callback_child)}); path }});\n'
         "fn submit() { items -> ./out }; let result = submit(); acquire;\n"

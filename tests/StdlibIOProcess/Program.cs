@@ -150,7 +150,7 @@ try
             $std::process::write_stdin(process, "remote 星");
             $std::process::close_stdin(process);
             let completed = $std::process::wait(process);
-            let result = scope { pid: identity, text: $std::process::stdout(completed) };
+            let result = object { pid: identity, text: $std::process::stdout(completed) };
             result::pid > 0 and result::text == $std::string::concat(result::pid as String, ":remote 星")
             """;
         foreach (int level in new[] { 0, 2, 3 })

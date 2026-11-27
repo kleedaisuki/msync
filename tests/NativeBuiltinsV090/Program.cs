@@ -298,7 +298,7 @@ internal static class Program
         allocation.Field(1).Store(deferred);
         Equal(await Call("text.format_fields", "{selected}", allocation.Address), "7", "selected formatting does not inspect an unrelated producer");
         Check(calls == 0, "formatting has no hidden enumeration");
-        await Reject("text.format_fields", ["{missing}", allocation.Address], "Scope has no member 'missing'");
+        await Reject("text.format_fields", ["{missing}", allocation.Address], "Object has no member 'missing'");
         TaskCompletionSource<NativeProcess> pending = new(TaskCreationOptions.RunContinuationsAsynchronously);
         NativeProcess process = new(-1, "", "") { Completion = pending.Task };
         Equal(await Call("text.format", "{}", process), "Process(deferred)", "display does not wait for process completion");

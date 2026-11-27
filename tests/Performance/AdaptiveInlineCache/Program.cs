@@ -76,19 +76,19 @@ internal static class Program
         string second = "item: \"right\", other: \"padding\"";
         string items = string.Join(", ", Enumerable.Range(0, count));
         string source = $$"""
-            fn pick(left: Scope, right: Scope, choose: Bool) -> Scope {
+            fn pick(left: Object, right: Object, choose: Bool) -> Object {
                 if choose { left } else { right }
             };
-            fn read(left: Scope, right: Scope, items: Range<Number>) -> String {
+            fn read(left: Object, right: Object, items: Range<Number>) -> String {
                 let result = "";
                 for index in items {
-                    let object = pick(left, right, index < {{Math.Max(1, count / 2)}});
-                    result = object::item;
+                    let record = pick(left, right, index < {{Math.Max(1, count / 2)}});
+                    result = record::item;
                 };
                 result
             };
-            let left = scope { {{first}} };
-            let right = scope { {{second}} };
+            let left = object { {{first}} };
+            let right = object { {{second}} };
             read(left, right, [{{items}}])
             """;
         Module module = Compiler.Compile(source, "adaptive-" + name, 2);
@@ -137,7 +137,7 @@ internal static class Program
     private static async Task MutationAndFallback()
     {
         const string source = """
-            fn inspect(box: Scope, items: Range<Number>) -> String {
+            fn inspect(box: Object, items: Range<Number>) -> String {
                 let result = "";
                 for index in items {
                     result = box::item;
@@ -145,7 +145,7 @@ internal static class Program
                 };
                 result
             };
-            scope Box { item: "before", change: fn { item = "after"; } };
+            object Box { item: "before", change: fn { item = "after"; } };
             inspect(Box, [0, 1, 2])
             """;
         foreach (int level in new[] { 0, 2 })
@@ -189,14 +189,14 @@ internal static class Program
             return value;
         }
         await Submit("""
-            let record = scope { item: "old", other: "new" };
-            let query = fn(box: Scope) -> String { box::item };
-            fn build() { $std::ranges::transform([record], fn(row: Scope) -> String { query(row) }) };
+            let record = object { item: "old", other: "new" };
+            let query = fn(box: Object) -> String { box::item };
+            fn build() { $std::ranges::transform([record], fn(row: Object) -> String { query(row) }) };
             let first = build();
             let second = build();
             $std::ranges::front(first)
             """);
-        Equal("new", await Submit("query = fn(box: Scope) -> String { box::other }; $std::ranges::front(second)"), "session image/capture update");
+        Equal("new", await Submit("query = fn(box: Object) -> String { box::other }; $std::ranges::front(second)"), "session image/capture update");
         Console.WriteLine("PASS deferred callback after session code generation change");
     }
 

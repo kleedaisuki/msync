@@ -13,7 +13,7 @@ const string contracts = """
         type Self;
         identity: Self,
     };
-    scope Addition {
+    object Addition {
         identity: 0,
         combine: fn(left: Number, right: Number) -> Number { left + right },
     };
@@ -36,26 +36,26 @@ foreach (int level in new[] { 0, 2, 3 })
     {
         Require(await Interpreter.ExecuteAsync(image) is NumberValue { Data: 5 }, "Composed algebra did not execute");
     }
-    Reject(contracts + "apply(scope { identity: 0 })", "combine", level);
-    Reject(contracts + "apply(scope { identity: 0, combine: fn(a: Number,b: Number) { true } })", "return", level);
-    Reject(contracts + "let constrained: Monoid = Addition; constrained = scope { identity: 0 };", "combine", level);
+    Reject(contracts + "apply(object { identity: 0 })", "combine", level);
+    Reject(contracts + "apply(object { identity: 0, combine: fn(a: Number,b: Number) { true } })", "return", level);
+    Reject(contracts + "let constrained: Monoid = Addition; constrained = object { identity: 0 };", "combine", level);
     Reject(contracts + "let constrained: Monoid = Addition; Addition::combine = fn(a:Number,b:Number) { true };", "return", level);
-    Reject("""concept C { type Self; identity: Self, combine: fn(a: Self,b: Self) -> Self }; fn use(x:C){x}; use(scope { Self: Scope, identity: scope { nested: scope { x: "" } }, combine: fn(a:Scope,b:Scope) { scope { nested: scope { wrong: true } } } });""", "associated field", level);
+    Reject("""concept C { type Self; identity: Self, combine: fn(a: Self,b: Self) -> Self }; fn use(x:C){x}; use(object { Self: Object, identity: object { nested: object { x: "" } }, combine: fn(a:Object,b:Object) { object { nested: object { wrong: true } } } });""", "associated field", level);
     var nullable = Compiler.Compile("concept C { item: Number }; fn use(value?: C) -> C? { value }; use(null)", "nullable-concept.msync", level);
     Require(await Interpreter.ExecuteAsync(nullable) is NullValue, "Nullable concept parameter/return");
-    var generic = Compiler.Compile("concept Semigroup { type Self; combine: fn(a: Self,b: Self) -> Self }; concept Monoid { Semigroup, identity: Self }; fn use(value:Monoid) { value::combine(value::identity, 2) }; use(scope { identity: 0, combine: fn(a,b) { a+b } })", "associated-composition.msync", level);
+    var generic = Compiler.Compile("concept Semigroup { type Self; combine: fn(a: Self,b: Self) -> Self }; concept Monoid { Semigroup, identity: Self }; fn use(value:Monoid) { value::combine(value::identity, 2) }; use(object { identity: 0, combine: fn(a,b) { a+b } })", "associated-composition.msync", level);
     Require(await Interpreter.ExecuteAsync(generic) is NumberValue { Data: 2 }, "Inherited associated type and generic callable");
-    Reject("concept C { type Self; identity: Self, combine: fn(a: Self,b: Self) -> Self }; fn use(x:C){x}; use(scope { Self: String, identity: 0, combine: fn(a,b) { a+b } });", "identity", level);
-    var optionalBinding = Compiler.Compile("concept C { item: Number }; let value?: C = scope {item: 3}; value = null; value", "nullable-binding.msync", level);
+    Reject("concept C { type Self; identity: Self, combine: fn(a: Self,b: Self) -> Self }; fn use(x:C){x}; use(object { Self: String, identity: 0, combine: fn(a,b) { a+b } });", "identity", level);
+    var optionalBinding = Compiler.Compile("concept C { item: Number }; let value?: C = object {item: 3}; value = null; value", "nullable-binding.msync", level);
     Require(await Interpreter.ExecuteAsync(optionalBinding) is NullValue, "Nullable concept binding mutation");
-    var either = Compiler.Compile("concept Text { item: String }; concept Numeric { item: Number }; fn use(value: Text | Numeric) { value::item }; use(scope {item: 3})", "concept-union.msync", level);
+    var either = Compiler.Compile("concept Text { item: String }; concept Numeric { item: Number }; fn use(value: Text | Numeric) { value::item }; use(object {item: 3})", "concept-union.msync", level);
     Require(await Interpreter.ExecuteAsync(either) is NumberValue { Data: 3 }, "Alternative structural concepts");
-    var ranged = Compiler.Compile("concept C { item: Number }; fn use(values: Range<C>) { $std::ranges::size(values) }; use([scope {item: 1}, scope {item: 2}])", "range-concept.msync", level);
+    var ranged = Compiler.Compile("concept C { item: Number }; fn use(values: Range<C>) { $std::ranges::size(values) }; use([object {item: 1}, object {item: 2}])", "range-concept.msync", level);
     Require(await Interpreter.ExecuteAsync(ranged) is NumberValue { Data: 2 }, "Range element structural concepts");
-    Reject("concept C { item: Path }; { concept Local { value: Bool }; }; fn use(x: Local) { x }; use(scope {value:true});", "Unknown type", level);
+    Reject("concept C { item: Path }; { concept Local { value: Bool }; }; fn use(x: Local) { x }; use(object {value:true});", "Unknown type", level);
 
     const string standard = """
-        scope Operations {
+        object Operations {
             Self: Number,
             equal: fn(left: Number, right: Number) -> Bool { left == right },
         };
@@ -81,17 +81,17 @@ foreach (int level in new[] { 0, 2, 3 })
     Require(await Interpreter.ExecuteAsync(conceptRange) is NumberValue { Data: 1 }, "Qualified Range element concept");
     var conceptUnion = Compiler.Compile(standard + "fn either(value: $std::concepts::Equality | String) { true }; either(Operations)", "qualified-union.msync", level);
     Require(await Interpreter.ExecuteAsync(conceptUnion) is BoolValue { Data: true }, "Qualified concept union");
-    var lexical = Compiler.Compile(standard + "let std = scope { other: true }; checked(Operations)::equal(2, 2)", "qualified-lexical.msync", level);
+    var lexical = Compiler.Compile(standard + "let std = object { other: true }; checked(Operations)::equal(2, 2)", "qualified-lexical.msync", level);
     Require(await Interpreter.ExecuteAsync(lexical) is BoolValue { Data: true }, "Qualified function return resolved at definition, not caller");
     var parameterNames = Compiler.Compile(standard + "fn named(std: Number, value?: $std::concepts::Equality) -> $std::concepts::Equality? { return value; }; named(1, Operations)::equal(2, 2)", "qualified-parameter-names.msync", level);
     Require(await Interpreter.ExecuteAsync(parameterNames) is BoolValue { Data: true }, "Parameter names did not shadow the signature type environment");
-    var fixedContract = Compiler.Compile(standard + "let target: $std::concepts::Equality = Operations; let std = scope {}; target = Operations; true", "qualified-storage.msync", level);
+    var fixedContract = Compiler.Compile(standard + "let target: $std::concepts::Equality = Operations; let std = object {}; target = Operations; true", "qualified-storage.msync", level);
     Require(await Interpreter.ExecuteAsync(fixedContract) is BoolValue { Data: true }, "Stored concept contract retained lexical namespace");
-    Reject(standard + "checked(scope { Self: Number, equal: fn(a: Number,b: Number) { 1 } })", "return", level);
-    Reject("let std = scope {}; let value: $std::concepts::Equality = scope {};", "Unknown type", level);
+    Reject(standard + "checked(object { Self: Number, equal: fn(a: Number,b: Number) { 1 } })", "return", level);
+    Reject("let std = object {}; let value: $std::concepts::Equality = object {};", "Unknown type", level);
     const string nullableResult = """
         concept Optional { type Item; value?: Item, };
-        fn some(value?) { scope { Item: decltype(value), value?: value } };
+        fn some(value?) { object { Item: decltype(value), value?: value } };
         fn absent() -> Optional? { null };
         fn returned_absent() -> Optional? { return null; };
         fn present(value: Number) -> Optional? { some(value) };
@@ -122,7 +122,7 @@ foreach (int level in new[] { 0, 2, 3 })
     }
     Reject("fn invalid() -> Number { ./path }; invalid()", "return type Number", level);
     Reject("fn invalid() -> Number { return ./path; }; invalid()", "return type Number", level);
-    Reject("concept C { item: Number }; let value?: C = null; value = 3;", "Expected Scope?", level);
+    Reject("concept C { item: Number }; let value?: C = null; value = 3;", "Expected Object?", level);
     Reject("fn invalid(values: Range<String>) { values }; invalid([1])", "Expected Range<String>", level);
     Reject("fn invalid() -> Range<String> { [1] }; invalid()", "return type Range<String>", level);
     Reject("let invalid: Range<String> = [1];", "Expected Range<String>", level);
@@ -135,10 +135,10 @@ foreach (int level in new[] { 0, 2, 3 })
         fn checked(value: Equal) { value::equal(2, 2) };
         fn sequence(value: Sequence) { $std::ranges::size(value::items) };
         fn made(value: Factory) { value::make() };
-        checked(scope {
+        checked(object {
             equal: fn(left: Number, right: Number) { left == right },
-        }) and sequence(scope { items: [1, 2] }) == 2
-            and made(scope { make: fn { 3 } }) == 3
+        }) and sequence(object { items: [1, 2] }) == 2
+            and made(object { make: fn { 3 } }) == 3
         """;
     var inlineConcept = Compiler.Compile(inline, "inline-associated-types.msync", level);
     using MemoryStream inlineBytes = new();
@@ -151,17 +151,17 @@ foreach (int level in new[] { 0, 2, 3 })
 CompilerSession session = new();
 session.Compile("concept Named { item: Number, };");
 session.AcceptSubmission();
-session.Compile("fn use(value: Named) { value::item }; use(scope { item: 4 })");
+session.Compile("fn use(value: Named) { value::item }; use(object { item: 4 })");
 Require(true, "Session concept declaration");
-session.Compile("let checked: Named = scope { item: 3 };");
+session.Compile("let checked: Named = object { item: 3 };");
 session.AcceptSubmission();
 try
 {
-    session.Compile("checked = scope { other: true };");
+    session.Compile("checked = object { other: true };");
     throw new InvalidOperationException("Session lost concept storage constraint");
 }
 catch (CompileException error) { Require(error.Diagnostic.Code == "E0214", "Session concept diagnostic"); }
-session.Compile("checked = scope { item: 4 }; checked::item");
+session.Compile("checked = object { item: 4 }; checked::item");
 Require(true, "Successful submission after concept failure");
 Console.WriteLine($"PASS {checks} concept contracts");
 
@@ -173,7 +173,7 @@ async Task VerifyMetadataOnly(int level)
     {
         Require(!image.Functions.SelectMany(function => function.Instructions)
             .Any(instruction => instruction.Op is OpCode.NewScope or OpCode.PublishStatic),
-            "A concept annotation allocated a Scope or initialized a static standard module");
+            "A concept annotation allocated an Object or initialized a static standard module");
         Require(await Interpreter.ExecuteAsync(image) is NullValue,
             "Metadata-only concept source must remain effect-free after encoding or binding");
     }

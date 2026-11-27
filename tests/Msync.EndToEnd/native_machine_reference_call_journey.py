@@ -13,8 +13,8 @@ from tempfile import TemporaryDirectory
 ROOT: Path = Path(__file__).resolve().parents[2]
 SOURCE: str = """
 fn relay(node) { BODY };
-let node=scope { value: 0 };
-let parent=scope { child: node };
+let node=object { value: 0 };
+let parent=object { child: node };
 let i=0;
 loop {
     if i>=8192 { break; };

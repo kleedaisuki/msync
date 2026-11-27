@@ -26,8 +26,8 @@ internal static class ProductionSessionJourney
                     let value = 7;
                     fn read() { value };
                     fn set(next: Number) { value = next; };
-                    let object = scope { value: 1 };
-                    let alias = object;
+                    let record = object { value: 1 };
+                    let alias = record;
                     null
                     """);
                 await session.RuntimeFailure("""
@@ -39,12 +39,12 @@ internal static class ProductionSessionJourney
                     """);
                 session.BindingsPresent("before", "value", "alias");
                 session.BindingsAbsent("failed", "after");
-                await session.Number("before + object::value + read()", 22);
+                await session.Number("before + record::value + read()", 22);
 
                 await session.RuntimeFailure("let value = \"not-a-number\" as Number; null");
                 session.BindingsPresent("value");
                 await session.Number("value + read()", 14);
-                await session.Number("value = 9; alias::value = 5; read() + object::value", 14);
+                await session.Number("value = 9; alias::value = 5; read() + record::value", 14);
 
                 await session.Submit("""
                     let child = release /bin/sh("-c", "while [ ! -f ./release-future ]; do sleep 0.01; done; printf pending-value");
@@ -70,7 +70,7 @@ internal static class ProductionSessionJourney
                     .SequenceEqual(Encoding.UTF8.GetBytes("pending-value")),
                     "Production reconciliation lost an initialized pending root or demanded it during acceptance.");
                 await session.Number("let value = 100; read() + value", 109);
-                await session.Number("set(6); read() + value + object::value", 111);
+                await session.Number("set(6); read() + value + record::value", 111);
                 session.CheckPrimaryPath();
                 receipts.Add(new { optimization, session.Submissions, session.Accepted, session.ReconciledFailures,
                     session.ExpectedNumbers, pendingRootsObserved = 3, checkedFiles = 1 });

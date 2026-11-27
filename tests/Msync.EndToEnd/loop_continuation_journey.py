@@ -20,7 +20,7 @@ BUILD: str = """
 let count = $std::io::read_text(./count.txt) as Number;
 fn record(index: Number) {
     let path = $std::string::concat("./item-", index as String) as Path;
-    scope { index: index, path: path, label: "kept", flag: true }
+    object { index: index, path: path, label: "kept", flag: true }
 };
 fn build(length: Number) {
     $std::ranges::materialize($std::ranges::transform(

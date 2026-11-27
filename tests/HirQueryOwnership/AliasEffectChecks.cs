@@ -14,8 +14,8 @@ internal static class AliasEffectChecks
     private static int AliasFamilies(int calls)
     {
         string source = """
-            let a = scope { n: 1 };
-            let b = scope { n: 2 };
+            let a = object { n: 1 };
+            let b = object { n: 2 };
             fn inspect(view, original) { original::n };
             let view? = $std::ranges::first([a, b]);
             if view is not null {

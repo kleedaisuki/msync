@@ -10,8 +10,8 @@ internal static class Program
 {
     private const string Source = """
         fn update(flag: Bool, seed: Number) {
-            let row = if flag { scope { n: seed, text: "left" } }
-                else { scope { text: "right", n: seed + 1 } };
+            let row = if flag { object { n: seed, text: "left" } }
+                else { object { text: "right", n: seed + 1 } };
             let alias = row;
             alias::n = row::n + 2;
             row::n
@@ -115,7 +115,7 @@ internal static class Program
         CompilationTrace trace = new(rows.Add, includeOptimizerPasses: true);
         CompilerSession compiler = new("<repl>", 2, trace);
         await using NativeExecutionSession execution = new();
-        foreach (string source in new[] { "let row = scope { n: 1 };", "row::n = row::n + 6; row::n" })
+        foreach (string source in new[] { "let row = object { n: 1 };", "row::n = row::n + 6; row::n" })
         {
             NativeValue result = await execution.ExecuteAsync(compiler.Compile(source));
             compiler.AcceptSubmission(execution.GetLocalValue);

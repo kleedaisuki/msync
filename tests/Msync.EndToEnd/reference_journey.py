@@ -47,7 +47,7 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
         "String",
         "Path",
         "Function",
-        "Scope",
+        "Object",
         "Connection",
         "Process",
         "Null",

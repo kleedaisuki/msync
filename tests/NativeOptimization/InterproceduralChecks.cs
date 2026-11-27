@@ -175,7 +175,7 @@ internal static class InterproceduralChecks
             new([7], 9, []), ParameterCount: 1, IteratorCount: 1);
         NativeAddressAnalysis unknown = Facts(Program(external));
         Check(unknown.At(2, 1).MayAliasCurrentFrame && unknown.ProvenLayoutsAt(2, 1) is null,
-            "An external Range's declared Scope element domain is not allocation evidence");
+            "An external Range's declared Object element domain is not allocation evidence");
         NativeFunctionCode thunk = new("function-item", [new(2)], [new(NativeOp.Allocate, 0, 0), new(NativeOp.Return, A: 0)], new([], 2, []));
         NativeFunctionCode literal = new("literal-function", [new(5), new(11), new(5), new(9)],
             [new(NativeOp.MakeFunction, 0, 1, C: 0, Inputs: []), new(NativeOp.MakeRange, 1, Type: 11, Inputs: [0]),

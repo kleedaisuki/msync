@@ -55,7 +55,7 @@ internal static class HpirTransformChecks
             state = (state * 48271) % 2147483647;
             let low = state % 4096;
             let high = low + state % 31;
-            scope { low: low, high: high, keep: i % 7 != 0 }
+            object { low: low, high: high, keep: i % 7 != 0 }
         };
         let rows = $std::ranges::materialize($std::ranges::transform($std::ranges::iota(0, count), row));
         let seen = 0;

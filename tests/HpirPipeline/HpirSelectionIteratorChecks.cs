@@ -14,7 +14,7 @@ internal static class HpirSelectionIteratorChecks
             let i = 0;
             loop {
                 if i >= limit { break i; };
-                let element = scope { value: i };
+                let element = object { value: i };
                 i = element::value + 1;
             }
         };

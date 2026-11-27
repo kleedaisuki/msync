@@ -14,7 +14,7 @@ fn accumulate(count: Number, initial: Number) {
         };
         i = i + 1;
     };
-    scope {
+    object {
         value: value,
         wraps: wraps
     }

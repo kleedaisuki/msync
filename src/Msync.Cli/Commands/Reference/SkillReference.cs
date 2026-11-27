@@ -13,7 +13,7 @@ internal static partial class SkillReference
         new("", "Use msync 0.8", "overview"),
         new("language", "Bindings, values and expression syntax", "language"),
         new("language/functions", "Generic functions, callbacks and recursion", "functions"),
-        new("language/scopes", "Lexical scopes and member access", "scopes"),
+        new("language/scopes", "Objects and member access", "scopes"),
         new("language/types", "Types, Null admission and branch refinement", "types"),
         new("language/numbers", "Number literals, arithmetic and discrete counts", "numbers"),
         new("language/conversions", "Explicit conversion with as", "conversions"),

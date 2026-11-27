@@ -73,7 +73,7 @@ internal static class CallableObjectJourney
             atConstruction * 10 + total
             """, 1236),
         new("range-scope-alias", """
-            let original = scope { value: 1 };
+            let original = object { value: 1 };
             let items = [original, original];
             for item in items { item::value = item::value + 1; };
             original::value

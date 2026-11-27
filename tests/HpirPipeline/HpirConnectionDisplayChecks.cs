@@ -12,7 +12,7 @@ internal static class HpirConnectionDisplayChecks
             if remote { ssh://forge } else { $wsl }
         };
         let line? = $std::io::read_line();
-        let selected = scope { endpoint: select(line?) };
+        let selected = object { endpoint: select(line?) };
         fn use(endpoint: Connection, name: String) -> Path {
             (endpoint @ name) / "leaf"
         };
@@ -39,7 +39,7 @@ internal static class HpirConnectionDisplayChecks
             }
         }
         finally { Directory.Delete(root, recursive: true); }
-        Console.WriteLine("PASS HPIR Connection: selected endpoint across Scope and guest ABI, native pathname projection and source-attributed diagnostics");
+        Console.WriteLine("PASS HPIR Connection: selected endpoint across Object and guest ABI, native pathname projection and source-attributed diagnostics");
     }
 
     private static HpirProgram Prepare(string root, int level)

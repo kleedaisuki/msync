@@ -59,7 +59,7 @@ internal static class MemberDispatchChecks
         }
         catch (MsyncException error)
         {
-            Require(error.Span == MemberSpan && error.Message == "Scope has no member 'missing'",
+            Require(error.Span == MemberSpan && error.Message == "Object has no member 'missing'",
                 "An opaque fused lookup retains the LoadField span and selected error.");
         }
 
@@ -91,7 +91,7 @@ internal static class MemberDispatchChecks
             "let child = ./msync-never-executed(); child::stdout", "process-field.msync", 0));
         Require(lowered.Functions.SelectMany(function => function.Instructions)
             .Any(instruction => instruction is { Op: OpCode.NativeCall, A: 1, Text: "process.stdout" }),
-            "Source Process member access must lower to the named native, not a Scope field projection.");
+            "Source Process member access must lower to the named native, not an Object field projection.");
 
         TaskCompletionSource<ProcessValue> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         Value[] values = [new ProcessValue(0, "", "") { Completion = completion.Task }, new StringValue("ready")];

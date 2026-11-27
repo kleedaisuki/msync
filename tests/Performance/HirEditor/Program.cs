@@ -10,7 +10,7 @@ int samples = args.Length > 1 ? int.Parse(args[1], CultureInfo.InvariantCulture)
 StringBuilder input = new();
 for (int index = 0; index < count; index++)
     input.Append("let item_").Append(index).Append(" = ./item_").Append(index).AppendLine(";");
-input.Append("fn select(value) { let local = scope { item: value }; local::");
+input.Append("fn select(value) { let local = object { item: value }; local::");
 string source = input.ToString();
 const string sourceName = "editor-scaling.msync";
 

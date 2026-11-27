@@ -27,8 +27,8 @@ internal static class HpirNumberEffectChecks
         };
         let child = release /bin/sh("-c", "while [ ! -f go ]; do sleep 0.01; done; cat seed.txt");
         let seed = child::stdout as Number;
-        let rows = $std::ranges::materialize([scope { x: seed, y: seed + 1 },
-            scope { x: seed + 2, y: seed + 3 }]);
+        let rows = $std::ranges::materialize([object { x: seed, y: seed + 1 },
+            object { x: seed + 2, y: seed + 3 }]);
         let total = 0;
         for row in rows { total = total + row::x + row::y; };
         let receipt = (total as String) -> ./fold.txt;

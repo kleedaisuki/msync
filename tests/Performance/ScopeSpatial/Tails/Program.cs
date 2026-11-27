@@ -32,7 +32,7 @@ if (emittedArtifact.Length != 0) File.WriteAllBytes(emittedArtifact, encoded.ToA
 string artifactSha256 = Hash(inputArtifact.Length == 0 ? encoded.ToArray() : File.ReadAllBytes(inputArtifact));
 int fieldReads = module.Functions.Sum(function => function.Instructions.Count(instruction => instruction.Op == OpCode.LoadField));
 int constructors = module.Functions.Sum(function => function.Instructions.Count(instruction => instruction.Op == OpCode.NewScope));
-if (fieldReads == 0 || constructors == 0) throw new InvalidOperationException("The workload lost its physical Scope sites.");
+if (fieldReads == 0 || constructors == 0) throw new InvalidOperationException("The workload lost its physical Object sites.");
 ExecutionOptions options = new(WorkingDirectory: root, Output: TextWriter.Null, Error: TextWriter.Null);
 double expected = scenario switch
 {
@@ -116,10 +116,10 @@ static string Workload(string scenario, int rows, int passes)
         fn build(values: Range) {
             let records = $std::storage::vector_empty(decltype({
                 let value = 0;
-                scope { {{fields}} }
+                object { {{fields}} }
             }));
             for value in values {
-                $std::storage::vector_push(records, scope { {{fields}} });
+                $std::storage::vector_push(records, object { {{fields}} });
             };
             $std::storage::vector_take(records)
         };

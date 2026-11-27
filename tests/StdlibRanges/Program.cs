@@ -115,12 +115,12 @@ try
         ("short-prefix", "$std::ranges::starts_with([1], [1, 2])", "false"),
         ("suffix", "$std::ranges::ends_with([1, 2, 3], [2, 3])", "true"),
         ("lexical", "$std::ranges::lexicographical_compare([1, 2], [1, 3])", "true"),
-        ("sort-scope", "let first = scope { rank: 1, name: \"first\" }; let second = scope { rank: 1, name: \"second\" }; let ordered = $std::ranges::sort_with([second, first], fn(left, right) { left::rank < right::rank }); [$std::ranges::first(ordered)::name, $std::ranges::last(ordered)::name]", "[second,first]"),
-        ("scope-identity", "let first = scope { name: \"same\" }; let second = scope { name: \"same\" }; $std::ranges::count([first, second], first)", "1"),
-        ("repeat-alias", "let object = scope { name: \"before\" }; let values = $std::ranges::repeat(object, 2); $std::ranges::first(values)::name = \"after\"; $std::ranges::last(values)::name", "after"),
+        ("sort-scope", "let first = object { rank: 1, name: \"first\" }; let second = object { rank: 1, name: \"second\" }; let ordered = $std::ranges::sort_with([second, first], fn(left, right) { left::rank < right::rank }); [$std::ranges::first(ordered)::name, $std::ranges::last(ordered)::name]", "[second,first]"),
+        ("scope-identity", "let first = object { name: \"same\" }; let second = object { name: \"same\" }; $std::ranges::count([first, second], first)", "1"),
+        ("repeat-alias", "let record = object { name: \"before\" }; let values = $std::ranges::repeat(record, 2); $std::ranges::first(values)::name = \"after\"; $std::ranges::last(values)::name", "after"),
         ("lazy", "let count = 0; let values = $std::ranges::generate(3, fn(index) { count = count + 1; index }); let before = count; let zero = $std::ranges::size($std::ranges::take(values, 0)); let after_zero = count; let length = $std::ranges::size(values); [before, zero, after_zero, length, count]", "[0,0,0,3,3]"),
         ("cached", "let count = 0; let values = $std::ranges::cache($std::ranges::generate(3, fn(index) { count = count + 1; index })); let first = $std::ranges::size(values); let second = $std::ranges::size(values); [first, second, count]", "[3,3,3]"),
-        ("live-cell", "let object = scope { name: \"before\" }; let values = $std::ranges::materialize([object]); $std::ranges::size(values); object::name = \"after\"; $std::ranges::first(values)::name", "after")
+        ("live-cell", "let record = object { name: \"before\" }; let values = $std::ranges::materialize([record]); $std::ranges::size(values); record::name = \"after\"; $std::ranges::first(values)::name", "after")
     })
     {
         if (adaptors && name is not ("sort" or "sort-with" or "sort-scope" or "filter" or "transform" or "take" or "reverse" or "at"))

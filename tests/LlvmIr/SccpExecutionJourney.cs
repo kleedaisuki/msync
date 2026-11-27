@@ -34,7 +34,7 @@ internal static class SccpExecutionJourney
             if value is null { 0 } else { value }
             """, 7),
         new("scope-store", """
-            let item = scope { value: 1 };
+            let item = object { value: 1 };
             let choice = 3;
             if choice == 3 { item::value = 9; } else { item::value = 22; };
             item::value

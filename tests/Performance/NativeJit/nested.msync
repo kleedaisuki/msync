@@ -24,7 +24,7 @@ fn sweep(rounds: Number, width: Number, initial: Number) {
         };
         outer = outer + 1;
     };
-    scope {
+    object {
         value: value,
         wraps: wraps,
         updates: updates

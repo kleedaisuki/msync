@@ -9,7 +9,7 @@ using Msync.Runtime.Native;
 internal static class HpirCooperativeChecks
 {
     private const string InputSource = """
-        let record = scope { value: 37 };
+        let record = object { value: 37 };
         fn read(n: Number) -> Number {
             let line? = $std::io::read_line();
             if line? { record::value + n } else { 1 }
@@ -18,7 +18,7 @@ internal static class HpirCooperativeChecks
             let i = 0;
             loop {
                 if i >= limit { break i; };
-                let item = scope { value: i };
+                let item = object { value: i };
                 i = item::value + 1;
             }
         };

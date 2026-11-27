@@ -67,7 +67,7 @@ async Task PortableScopeJoin()
     var incoming = region.Blocks.SelectMany(block => block.Successors).Where(edge => edge.TargetPc == merge.StartPc).ToArray();
     Require(merge.Parameters.Length == 1 && field.Inputs.SequenceEqual(merge.Parameters)
         && incoming.Select(edge => Expand(region, edge.Arguments).Single()).Distinct().Count() == 2,
-        "A portable field place consumes the selected Scope value from the branch join");
+        "A portable field place consumes the selected Object value from the branch join");
     Require(image.FieldProjections[field.Instruction.A].Cases.SequenceEqual([new(0, 0), new(1, 1)]),
         "Region import retains both actual layout ordinals on the canonical field instruction");
     Require(await Interpret(image, "selected\n") == 11 && await Interpret(image) == 22,

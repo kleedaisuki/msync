@@ -15,7 +15,7 @@ ROOT: Path = Path(__file__).resolve().parents[2]
 
 PROGRAM: str = r"""
 let calls = 0;
-let storage = scope {
+let storage = object {
     snapshot: fn(values: Range) -> Range {
         calls = calls + 1;
         $std::ranges::materialize(values)
@@ -38,7 +38,7 @@ $std::string::join($std::ranges::map(before,
 let separate = $std::containers::List::empty(0);
 $std::containers::List::push(separate, 44);
 ($std::containers::List::get_or(separate, 0, 0) as String) -> ./fresh.txt;
-scope FoldCase {
+object FoldCase {
     Self: String,
     equal: fn(a: String, b: String) -> Bool {
         $std::string::to_lowercase(a) == $std::string::to_lowercase(b)
@@ -51,9 +51,9 @@ $std::containers::EqualitySet::insert(names, "Bob");
 $std::containers::EqualitySet::remove(names, "aLiCe");
 $std::string::join($std::containers::EqualitySet::snapshot(names), ",") -> ./set.txt;
 let records = $std::containers::Map::with_equality([
-    scope { key: "Klee", value: 1 },
-    scope { key: "Alice", value: 2 },
-    scope { key: "KLEE", value: 3 },
+    object { key: "Klee", value: 1 },
+    object { key: "Alice", value: 2 },
+    object { key: "KLEE", value: 3 },
 ], FoldCase);
 $std::containers::Map::insert(records, "bob", 4);
 ($std::containers::Map::get_or(records, "klee", 0) as String) -> ./map.txt;
@@ -106,7 +106,7 @@ NEGATIVE: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "storage-return",
         (
-            "let policy = scope { snapshot: fn(values: Range) { true } }; "
+            "let policy = object { snapshot: fn(values: Range) { true } }; "
             "$std::containers::List::with_storage([1], policy);"
         ),
         ("snapshot", "Range"),
@@ -114,7 +114,7 @@ NEGATIVE: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "equality-return",
         (
-            "let policy = scope { Self: String, "
+            "let policy = object { Self: String, "
             "equal: fn(a: String, b: String) { 1 } }; "
             '$std::containers::EqualitySet::with_equality(["x"], policy);'
         ),

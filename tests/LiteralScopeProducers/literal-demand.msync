@@ -3,9 +3,9 @@ let invocations = 0;
 fn make_tail() {
     global invocations;
     invocations = invocations + 1;
-    scope { x: invocations, label: "tail" }
+    object { x: invocations, label: "tail" }
 };
-let rows = [scope { x: 1, label: "literal" }, make_tail()];
+let rows = [object { x: 1, label: "literal" }, make_tail()];
 let first = r::front(rows);
 let alias = first;
 first::x = 9;
@@ -22,7 +22,7 @@ $std::io::println(tail::x as String);
 $std::io::println(after_tail as String);
 $std::io::println(next_tail::x as String);
 $std::io::println(invocations as String);
-scope {
+object {
     first: first, alias: alias, fresh: fresh, tail: tail, next_tail: next_tail,
     before_tail: before_tail, after_tail: after_tail, calls: invocations
 }

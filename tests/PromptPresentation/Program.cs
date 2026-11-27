@@ -24,11 +24,11 @@ void Color(string source, string token, AnsiColor? expected, IReadOnlyDictionary
     }
 }
 
-const string declaration = "fn copy(file: Path) -> Path { file }; scope Settings { root: ~/.codex };";
+const string declaration = "fn copy(file: Path) -> Path { file }; object Settings { root: ~/.codex };";
 Color(declaration, "fn", AnsiColor.Cyan);
 Color("global root, .codex;", "global", AnsiColor.Cyan);
 Color(declaration, "copy", AnsiColor.Yellow);
-Color(declaration, "scope", AnsiColor.Cyan);
+Color(declaration, "object", AnsiColor.Cyan);
 Color(declaration, "Settings", AnsiColor.Magenta);
 Color(declaration, "Path", AnsiColor.Magenta);
 Color(declaration, "file", null);
@@ -36,7 +36,7 @@ Color(declaration, "{", null);
 Color(declaration, "~/.codex", null);
 Color("let .codex = ~/.codex; .codex", ".codex", null);
 Color("let file-name = true; file-name", "file-name", null);
-Color("let anonymous = scope { field: true };", "anonymous", null);
+Color("let anonymous = object { field: true };", "anonymous", null);
 Color("if exists file { file -> destination } else { null }; file?", "if", AnsiColor.Magenta);
 Color("if exists file { file -> destination } else { null }; file?", "?", AnsiColor.Magenta);
 Color("file -> destination", "->", AnsiColor.Cyan);
@@ -60,7 +60,7 @@ Color("./-filename", "-filename", null);
 Color("./123/0xff", "123", null);
 Color("./123/0xff", "0xff", null);
 Color(".5notes", ".5notes", null);
-Color("value as Number", "as", AnsiColor.Magenta);
+Color("value as Number", "as", AnsiColor.Cyan);
 Color("$local @ ./file", "@", AnsiColor.Cyan);
 Color("concept Numeric { value: Number };", "concept", AnsiColor.Cyan);
 Color("concept Numeric { value: Number };", "Numeric", AnsiColor.Magenta);
@@ -87,8 +87,8 @@ if (PromptSyntax.Hint("atlas", 5, new Dictionary<string, SemanticMember>()) is n
 Dictionary<string, SemanticMember> bindings = new(StringComparer.Ordinal)
 {
     ["operation"] = new("operation", "Function", "fn operation(value) -> Bool", "", SemanticRole: "function"),
-    ["Named"] = new("Named", "Scope", "Named: Scope", "", SemanticRole: "type"),
-    ["instance"] = new("instance", "Scope", "instance: Scope", "", SemanticRole: "variable"),
+    ["Named"] = new("Named", "Object", "Named: Object", "", SemanticRole: "type"),
+    ["instance"] = new("instance", "Object", "instance: Object", "", SemanticRole: "variable"),
     ["item"] = new("item", "Path", "item: Path", ""),
     [".codex"] = new(".codex", "Path", ".codex: Path", ""),
     ["Named::get-path"] = new("get-path", "Function", "fn get-path() -> Path", "", SemanticRole: "function")

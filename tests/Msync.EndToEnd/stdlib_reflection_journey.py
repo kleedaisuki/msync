@@ -47,13 +47,13 @@ let combined = meta::common_type_of(Number, Path, Null);
 let members = meta::members_of({
     calls = calls + 1;
     "unexpected" -> ./operand-ran.txt;
-    scope { label: "item", file?: ./input }
+    object { label: "item", file?: ./input }
 });
 $std::string::join(ranges::map(members, fn(member) {
     $std::string::join([member::name, ":", meta::type_name(member::type),
         "/", meta::type_name(member::storage_type), ":", member::admits_null as String], "")
 }), "|") -> ./members.txt;
-((ranges::size(meta::members_of(scope {})) == 0
+((ranges::size(meta::members_of(object {})) == 0
     and ranges::size(meta::members_of(0)) == 0) as String) -> ./empty.txt;
 
 let other = meta::signature_of(checked);

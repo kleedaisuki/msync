@@ -126,7 +126,7 @@ internal static class HpirMachineBlockChecks
                 cell::n = cell::n + 1;
                 below + 1
             };
-            let counter = scope { n: 2 };
+            let counter = object { n: 2 };
             let answer = visit(2048, counter);
             answer * 10000 + counter::n
             """;

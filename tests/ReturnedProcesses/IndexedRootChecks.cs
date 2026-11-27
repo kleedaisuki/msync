@@ -15,7 +15,7 @@ internal static class IndexedRootChecks
                     $std::io::println("enumerated");
                     value
                 });
-                scope {
+                object {
                     inputs: $std::storage::vector_new([pending]),
                     children: $std::storage::vector_new([child]),
                 }
@@ -53,7 +53,7 @@ internal static class IndexedRootChecks
             let Set = $std::containers::Set;
             fn make() {
                 let child = $std::process::spawn("{{childExecutable}}", ["--child"]);
-                let set = Set::with_policy(Process, scope {
+                let set = Set::with_policy(Process, object {
                     Self: Process,
                     sample?: null,
                     less: fn(left: Process, right: Process) { false },

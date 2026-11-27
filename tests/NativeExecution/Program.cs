@@ -55,7 +55,7 @@ void Number(NativeValue actual, double expected)
 }
 
 Number(await Run("native-fields", """
-    let row = scope { n: 1, text: "data", path: ./item, endpoint: $local, flag: true, type: Number, none?: null };
+    let row = object { n: 1, text: "data", path: ./item, endpoint: $local, flag: true, type: Number, none?: null };
     let alias = row;
     alias::n = 42;
     row::n
@@ -64,7 +64,7 @@ Number(await Run("native-fields", """
 Number(await Run("captured-locations", """
     fn counter(seed: Number) {
         let n = seed;
-        scope { next: fn() { n = n + 1; n } }
+        object { next: fn() { n = n + 1; n } }
     };
     let first = counter(0);
     let second = counter(10);
@@ -83,17 +83,17 @@ Number(await Run("recursive-call", """
     """), 5040);
 
 Number(await Run("scope-rebind", """
-    let original = scope { number: 4 };
+    let original = object { number: 4 };
     let selected = original;
     let alias = selected;
-    selected = scope { number: 8 };
+    selected = object { number: 8 };
     alias::number = 6;
     original::number * 10 + selected::number
     """), 68);
 
 await Run("all-kinds-call-return", """
     fn identity(value?) { value };
-    let result = scope {
+    let result = object {
         number: identity(4), text: identity("hello"), flag: identity(true),
         path: identity(./bound), endpoint: identity($local), type: identity(Number),
         values: identity([1, 2, 3]), function: identity(fn(value) { value }), none?: identity(null)
@@ -128,7 +128,7 @@ if (!OperatingSystem.IsWindows())
         fn launch() {
             let child = $std::process::spawn(/bin/sh, ["-c", "IFS= read -r value; printf 'reply:%s' $value"]);
             let ignored = child::exit_code;
-            scope { child: child }
+            object { child: child }
         };
         let owner = launch();
         $std::process::write_stdin(owner::child, "hello");
@@ -330,7 +330,7 @@ async Task ProfileJourney()
 {
     RuntimeProfile profile = new(instructionSites: true);
     NativeProgram program = Compiler.CompileNative("""
-        fn step(value: Number) { scope { n: value + 1 } };
+        fn step(value: Number) { object { n: value + 1 } };
         let result = step(4);
         $std::io::println(result::n as String);
         result::n

@@ -91,7 +91,7 @@ internal static class NamespaceLayoutChecks
         encoded.Position = 0;
         await using NativeInterpreter nullValue = new(NativeArtifact.Read(encoded));
         if ((await nullValue.ExecuteAsync()).Kind != NativeKind.Null)
-            throw new Exception("Finite empty Scope alternatives removed the independent Null alternative");
+            throw new Exception("Finite empty Object alternatives removed the independent Null alternative");
         checks++;
         NativeCodeType[] domains = [new(TypeKind.Scope), new(TypeKind.Scope, Layouts: [])];
         if (!NativeTypeRelations.Accepts(domains, 0, 1) || NativeTypeRelations.Accepts(domains, 1, 0))

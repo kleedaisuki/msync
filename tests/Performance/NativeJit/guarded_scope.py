@@ -1,4 +1,4 @@
-"""Check the guarded Scope AOT region on a real corpus fixture."""
+"""Check the guarded Object AOT region on a real corpus fixture."""
 
 from __future__ import annotations
 

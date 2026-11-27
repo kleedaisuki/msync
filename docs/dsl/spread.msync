@@ -1,4 +1,4 @@
-# Physical endpoints use @; lexical Scope members use ::.
+# Physical endpoints use @; lexical Object members use ::.
 let remote = $wsl;
 let config = ~/.codex/config.toml;
 config @ remote -> config;
@@ -15,5 +15,5 @@ let .codex = ~/.codex;
 .codex/agents/<.+\.toml> -> ~/.codex/agents/ @ remote;
 
 # Paths are values; explicit conversion produces their textual spelling.
-let settings = scope { config: config, remote: remote };
+let settings = object { config: config, remote: remote };
 let description = settings::config as String;

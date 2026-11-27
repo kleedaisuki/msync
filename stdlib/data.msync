@@ -1,10 +1,10 @@
-# Named data families own operations; anonymous Scope values own payloads.
+# Named data families own operations; anonymous Object values own payloads.
 
-scope Pair {
+object Pair {
     # Products retain payloads as data. Operations take the record explicitly;
     # there is no per-instance closure table or hidden receiver.
     new: fn(first?, second?) -> $std::concepts::Product {
-        scope {
+        object {
             First: decltype(first),
             Second: decltype(second),
             first?: first,
@@ -65,11 +65,11 @@ scope Pair {
     },
 };
 
-scope Option {
+object Option {
     # Absence is the language's Null. some boxes its payload so some(null) remains
     # distinct from none; objects store data rather than a bag of method closures.
     some: fn(value?) -> $std::concepts::Option {
-        scope {
+        object {
             Item: decltype(value),
             value?: value
         }
@@ -188,7 +188,7 @@ scope Option {
                 null
             } else {
                 Option::some(
-                    scope {
+                    object {
                         first?: left::value,
                         second?: right::value
                     }
@@ -214,12 +214,12 @@ scope Option {
     },
 };
 
-scope Result {
-    # A closed runtime Scope cannot express a correlated tagged union. One generic
+object Result {
+    # A closed runtime Object cannot express a correlated tagged union. One generic
     # eliminator retains each variant's payload type and requires both callbacks;
-    # all other operations belong to this named module Scope, not to the instance.
+    # all other operations belong to this named module Object, not to the instance.
     ok: fn(value?) -> $std::concepts::Result {
-        scope {
+        object {
             fold: fn(on_ok: Function, on_error: Function) {
                 on_ok(value)
             },
@@ -227,7 +227,7 @@ scope Result {
     },
 
     err: fn(error?) -> $std::concepts::Result {
-        scope {
+        object {
             fold: fn(on_ok: Function, on_error: Function) {
                 on_error(error)
             },
@@ -402,7 +402,7 @@ scope Result {
     },
 };
 
-scope Either {
+object Either {
     # Either and Result share the same binary-sum eliminator representation. This
     # family names neutral alternatives rather than imposing success/error meaning.
     left: fn(value?) -> $std::concepts::Either {

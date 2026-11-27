@@ -18,10 +18,10 @@ internal static class Program
         LayoutComposition();
         string source = """
             fn probe(flag: Bool) {
-                let first = scope { n: 1, text: "roots", path: ./bound, endpoint: $local, flag: true,
+                let first = object { n: 1, text: "roots", path: ./bound, endpoint: $local, flag: true,
                     type: Number, values: [1, 2], function: fn(n: Number) { n + 1 }, none?: null };
                 let alias = first;
-                let second = scope { n: 10 };
+                let second = object { n: 10 };
                 if flag { alias::n = 7; second::n = 20; } else { alias::n = 9; };
                 if first::flag { first::n + second::n } else { 0 }
             };
@@ -29,20 +29,20 @@ internal static class Program
             """;
         NativeProgram optimized = await Journey("mixed-alias", source, 27);
         Check(optimized.Allocations.Any(plan => plan.Placement == NativeAllocationPlacement.Frame),
-            "A real compiled mixed/alias Scope must retain a frame-placement plan");
+            "A real compiled mixed/alias Object must retain a frame-placement plan");
         await ProfilePlacement(optimized);
         await Journey("finite-layout-projection", """
             fn select(flag: Bool) {
-                let row = if flag { scope { text: "left", n: 11 } } else { scope { n: 17, flag: false } };
+                let row = if flag { object { text: "left", n: 11 } } else { object { n: 17, flag: false } };
                 row::n
             };
             select(true) + select(false)
             """, 28);
         NativeProgram cyclic = await Journey("loop-freshness", """
-            let current = scope { n: 0 };
+            let current = object { n: 0 };
             let original = current;
             let previous = current;
-            for n in [1, 2, 3] { previous = current; current = scope { n: n }; };
+            for n in [1, 2, 3] { previous = current; current = object { n: n }; };
             original::n * 100 + previous::n * 10 + current::n
             """, 23);
         await UntrustedHints(cyclic, 23);
@@ -53,7 +53,7 @@ internal static class Program
         await AllBuiltinJourney();
         NativeProgram escaping = await Journey("returned-nested-closure", """
             fn make(seed: Number) {
-                let outer = scope { inner: scope { n: seed } };
+                let outer = object { inner: object { n: seed } };
                 fn() { outer::inner::n = outer::inner::n + 1; outer::inner::n }
             };
             let next = make(4);
@@ -71,7 +71,7 @@ internal static class Program
         NativeLayout nil = new(NativeType.Of(NativeKind.Null));
         NativeLayout[] parts = [empty, empty, nil, new NativeLayout(Enum.GetValues<NativeKind>().Select(NativeType.Of).ToArray()), nil];
         NativeLayout combined = NativeLayout.Compose(parts, out IReadOnlyList<NativeOffset> offsets);
-        Check(offsets.Distinct().Count() == parts.Length, "Empty/nil Scope regions preserve freshness");
+        Check(offsets.Distinct().Count() == parts.Length, "Empty/nil Object regions preserve freshness");
         NativeAllocation storage = new(combined);
         NativeValue[] samples = [NativeValue.Null, NativeValue.True, NativeValue.FromNumber(-0d),
             NativeValue.FromString("根𐐀"), NativeValue.FromPath(new("./raw", "/origin", new(ConnectionKind.Ssh, "alias"))),
@@ -141,8 +141,8 @@ internal static class Program
         foreach (string metric in new[] { "logical_allocations", "logical_elements", "logical_storage_bytes" })
             Check(functions.Aggregate(0UL, (sum, sample) => sum + sample.Metrics[metric])
                 == controls.Aggregate(0UL, (sum, sample) => sum + sample.Metrics[metric]),
-                $"Placement preserves {metric} accounting; physical owner bytes are not logical Scope bytes");
-        Console.WriteLine($"Actual frame-placed Scope allocations: {placed}");
+                $"Placement preserves {metric} accounting; physical owner bytes are not logical Object bytes");
+        Console.WriteLine($"Actual frame-placed Object allocations: {placed}");
     }
 
     private static async Task UntrustedHints(NativeProgram program, double expected)
@@ -261,7 +261,7 @@ internal static class Program
     {
         const string source = """
             fn export(flag: Bool) {
-                let row = scope { done: "payload" -> ./destination, n: 1 };
+                let row = object { done: "payload" -> ./destination, n: 1 };
                 if flag { row::n = 2; } else { row::n = 3; };
                 if row::n > 0 { [row::done] } else { [] }
             };
@@ -303,12 +303,12 @@ internal static class Program
                 }
                 finally { release.TrySetResult(); }
                 Check(await first.WaitAsync(timeout.Token) && iterator.Current.AsBool(),
-                    "A pending field future survives Scope/frame retirement");
+                    "A pending field future survives Object/frame retirement");
                 Check(!await iterator.MoveNextAsync() && await File.ReadAllTextAsync(Path.Combine(directory, "destination"), timeout.Token) == "payload",
-                    "Pending Scope future has checked membership and an independent file-byte oracle");
+                    "Pending Object future has checked membership and an independent file-byte oracle");
                 ulong placed = profile.Drain().Where(sample => sample.Name == "vm.function").Aggregate(0UL,
                     (sum, sample) => sum + sample.Metrics["frame_placed_allocations"]);
-                Check(level == 0 ? placed == 0 : placed > 0, "Only optimized pending Scope storage is actually frame placed");
+                Check(level == 0 ? placed == 0 : placed > 0, "Only optimized pending Object storage is actually frame placed");
             }
         }
     }
@@ -317,9 +317,9 @@ internal static class Program
     {
         string source = """
             fn probe(flag: Bool) {
-                let row = scope { n: 1, text: "roots", path: ./bound, endpoint: $local, flag: true,
+                let row = object { n: 1, text: "roots", path: ./bound, endpoint: $local, flag: true,
                     type: Number, values: [1, 2], function: fn(n: Number) { n + 1 }, none?: null,
-                    nested: scope { n: 3 } };
+                    nested: object { n: 3 } };
                 if flag { row::n = 7; } else { row::n = 9; };
                 let total = row::n + $std::ranges::size(row::values) + row::function(2) + row::nested::n;
                 if row::flag and row::text == "roots" and (row::path as String) == "./bound"
@@ -335,7 +335,7 @@ internal static class Program
         if (OperatingSystem.IsWindows()) return;
         NativeProgram process = await Journey("process-field", """
             fn probe(flag: Bool) {
-                let row = scope { child: $std::process::spawn(/bin/sh, ["-c", "printf rooted"]), n: 1 };
+                let row = object { child: $std::process::spawn(/bin/sh, ["-c", "printf rooted"]), n: 1 };
                 if flag { row::n = 9; } else { row::n = 5; };
                 if $std::process::stdout(row::child) == "rooted" { row::n } else { -1 }
             };

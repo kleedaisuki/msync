@@ -349,7 +349,7 @@ def main() -> None:
             named_scope_tail(binary, Path(directory))
             transfer_destination(binary, Path(directory))
     print("PASS production CLI: detached compiler checkpoints" +
-          ("" if args.checkpoint_only else ", HPIR artifacts, contextual decisions, native admission, and named Scope results"))
+          ("" if args.checkpoint_only else ", HPIR artifacts, contextual decisions, native admission, and named Object results"))
 
 
 if __name__ == "__main__":

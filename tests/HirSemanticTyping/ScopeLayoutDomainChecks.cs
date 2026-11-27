@@ -11,14 +11,14 @@ internal static class ScopeLayoutDomainChecks
     {
         const string divergent = """
             let flag = $std::io::read_line() is null;
-            let selected = if flag { scope { alpha: 0, key: 11 } } else { scope { key: 22, zed: 0 } };
+            let selected = if flag { object { alpha: 0, key: 11 } } else { object { key: 22, zed: 0 } };
             selected::key
             """;
         await Verify(divergent, [0, 1]);
         await Verify(divergent.Replace("alpha: 0, key: 11", "key: 11, yellow: 0", StringComparison.Ordinal), [0, 0]);
         const string returned = """
             fn choose(flag: Bool) {
-                if flag { scope { alpha: 0, key: 11 } } else { scope { key: 22, zed: 0 } }
+                if flag { object { alpha: 0, key: 11 } } else { object { key: 22, zed: 0 } }
             };
             let flag = $std::io::read_line() is null;
             let selected = choose(flag);
@@ -27,21 +27,21 @@ internal static class ScopeLayoutDomainChecks
         await Verify(returned, [0, 1]);
         const string fromRange = """
             let flag = $std::io::read_line() is null;
-            let item = if flag { scope { alpha: 0, key: 11 } } else { scope { key: 22, zed: 0 } };
+            let item = if flag { object { alpha: 0, key: 11 } } else { object { key: 22, zed: 0 } };
             let selected = $std::ranges::front([item]);
             selected::key
             """;
         await Verify(fromRange, [0, 1]);
         const string captured = """
             let flag = $std::io::read_line() is null;
-            let selected = if flag { scope { alpha: 0, key: 11 } } else { scope { key: 22, zed: 0 } };
+            let selected = if flag { object { alpha: 0, key: 11 } } else { object { key: 22, zed: 0 } };
             fn read { selected::key };
             read()
             """;
         await Verify(captured, [0, 1]);
         await VerifyStructuralStorage();
         VerifyOpaqueSource();
-        Console.WriteLine("PASS actual Scope layout domains across joins, returns, Range elements, captures, structural writes and source-free execution");
+        Console.WriteLine("PASS actual Object layout domains across joins, returns, Range elements, captures, structural writes and source-free execution");
     }
 
     private static async Task Verify(string source, int[] expectedOrdinals)
@@ -84,8 +84,8 @@ internal static class ScopeLayoutDomainChecks
     private static async Task VerifyStructuralStorage()
     {
         const string source = """
-            let selected = scope { key: 11 };
-            selected = scope { alpha: 0, key: 22 };
+            let selected = object { key: 11 };
+            selected = object { alpha: 0, key: 22 };
             selected::key
             """;
         HirModule hir = Compiler.Analyze(source, "scope-layout-structural-write");
@@ -105,7 +105,7 @@ internal static class ScopeLayoutDomainChecks
     {
         const string source = """
             let flag = $std::io::read_line() is null;
-            let selected = if flag { scope { name: "manual", value: "chosen" } }
+            let selected = if flag { object { name: "manual", value: "chosen" } }
                 else { $std::ranges::front($std::environment::variables()) };
             selected::value
             """;

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT: Path = Path(__file__).resolve().parents[2]
-SOURCE: str = """let row = scope { total: 0, text: "原生𐀀", file: ./origin, endpoint: $local };
+SOURCE: str = """let row = object { total: 0, text: "原生𐀀", file: ./origin, endpoint: $local };
 for n in $std::ranges::iota(1, 257) { row::total = row::total + n; };
 $std::io::println(row::total as String);
 """

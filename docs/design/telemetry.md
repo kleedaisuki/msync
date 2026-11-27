@@ -668,7 +668,7 @@ recorder. Diagnostics uses the existing lossless writer admission policy.
 
 | Work | Observations and evidence |
 | --- | --- |
-| Source parsing | `compiler.parse` owns `compiler.lex` and `compiler.syntax`; source identity/UTF-16 length, token and top-level statement counts. Supplied parsed documents emit `compiler.parse.reused`, not a fabricated parse interval. |
+| Source parsing | `compiler.parse` owns `compiler.lex` and `compiler.syntax`; source identity/UTF-16 length, token and top-level statement counts. Detail mode counts explicit `object` declarations, anonymous expressions and named expressions when their syntax branch is entered, including attempts before a syntax error. Supplied parsed documents emit `compiler.parse.reused`, not a fabricated parse interval. |
 | Binding | `compiler.bind`, `compiler.bind.standard_demand`, `compiler.bind.standard_module`; declarations, locations, types, templates and modules, available/selected standard declarations, module exports, declaration-ordered layout field count and projection decisions. |
 | Named Scope tail result | `compiler.bind.named_scope_result` identifies the source, enclosing function and Scope declaration; `scope.tail_result` counts a declaration lowered with a read of the same singleton. Statement-position declarations use the ordinary binding path. |
 | Standard-source cache | `compiler.standard.document` identifies the module and whether its lazy document was cold or warm. A warm access is not another parse. |

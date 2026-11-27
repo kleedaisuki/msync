@@ -7,7 +7,7 @@ internal static class IndexedObservationChecks
         const string source = """
             let items = $std::storage::vector_empty(Number);
             let alias = items;
-            let holder = scope { items: alias };
+            let holder = object { items: alias };
             let frozen = $std::storage::vector_snapshot(items);
             items;
             $std::storage::vector_push(alias, 42);
@@ -28,7 +28,7 @@ internal static class IndexedObservationChecks
         require(analysis.Resolve(after, "alias")?.Type == "Storage<Number>",
             "An owner alias retains the resource carrier");
         require(analysis.Resolve(after, "holder")?.Members?.Single(member => member.Name == "items").Type == "Storage<Number>",
-            "A vector nested in a Scope retains its carrier");
+            "A vector nested in an Object retains its carrier");
         require(original == "Storage<Number>",
             $"An empty vector has its carrier before its first write, found '{original}'");
         require(analysis.Resolve(source.Length, "frozen")?.Type == "Range<Number>",

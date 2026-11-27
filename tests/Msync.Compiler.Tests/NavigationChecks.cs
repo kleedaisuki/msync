@@ -8,9 +8,9 @@ internal static class NavigationChecks
         Target("let value = true; fn f(value: Path) { val§ue }; f(./);", "value: Path");
         Target("let .codex = true; fn f() { .co§dex }; f();", ".codex =");
         Target("let value = true; fn f() { val§ue }; let value = false; f();", "value = true");
-        Target("scope Config { root: ./ }; let alias = Config; alias::ro§ot;", "root:");
-        Target("scope Config { root: ./ }; let alias = Config; ali§as::root;", "alias =");
-        Target("fn f() { let local = scope { leaf: true }; local::le§af }; f();", "leaf:");
+        Target("object Config { root: ./ }; let alias = Config; alias::ro§ot;", "root:");
+        Target("object Config { root: ./ }; let alias = Config; ali§as::root;", "alias =");
+        Target("fn f() { let local = object { leaf: true }; local::le§af }; f();", "leaf:");
         string future = "fn before() { lat§er }; let later = true; before();";
         Check(Definitions(future).Count == 0, "an unbound Path was linked to a future declaration");
         string library = "let fs = $std::fs; fs::ex§ists(./);";
@@ -38,14 +38,14 @@ internal static class NavigationChecks
 
     private static void Outline()
     {
-        const string source = "let text = \"fn phantom() { true };\"; # scope Ghost { };\n"
-            + "scope Actual { new: fn(file: Path) { let .codex = file; scope { leaf: .codex } } };";
+        const string source = "let text = \"fn phantom() { true };\"; # object Ghost { };\n"
+            + "object Actual { new: fn(file: Path) { let .codex = file; object { leaf: .codex } } };";
         var analysis = EditorCompiler.Analyze(source, "file:///outline.msync");
         Check(analysis.Symbols.Select(symbol => symbol.Name).SequenceEqual(["text", "Actual"]), "outline indexed String/comment text as declarations");
         var actual = analysis.Symbols[1];
-        Check(actual.Children.Select(symbol => symbol.Name).SequenceEqual(["new"]), "Scope fields missing from outline");
+        Check(actual.Children.Select(symbol => symbol.Name).SequenceEqual(["new"]), "Object fields missing from outline");
         var operation = actual.Children[0];
-        Check(operation.Children.Select(symbol => symbol.Name).SequenceEqual(["file", ".codex", "leaf"]), "nested parameters, bindings or Scope fields missing from outline");
+        Check(operation.Children.Select(symbol => symbol.Name).SequenceEqual(["file", ".codex", "leaf"]), "nested parameters, bindings or Object fields missing from outline");
         Check(actual.Span.Start < actual.SelectionSpan.Start && actual.Span.End >= operation.Span.End
             && operation.Span.End > operation.SelectionSpan.End, "outline range is not the complete declaration");
         var unfinished = EditorCompiler.Analyze(source[..source.LastIndexOf('}')], "file:///outline.msync");

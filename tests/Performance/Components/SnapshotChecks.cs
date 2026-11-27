@@ -26,7 +26,7 @@ internal static class SnapshotChecks
         Check(CaptureSource, "definition-z");
         Check("fn make(value) { fn() { value } }; let first = make(\"first\"); let second = make(\"second\"); $std::string::concat(first(), second())", "firstsecond");
         Check("let value = \"definition\"; fn recur(done) { if done { value } else { recur(true) } }; let value = \"shadow\"; recur(false)", "definition");
-        Check("let external = \"captured\"; let object = scope { read: fn() { external }, item: \"member\", }; { let external = \"inner\"; object::read() }", "captured");
+        Check("let external = \"captured\"; let record = object { read: fn() { external }, item: \"member\", }; { let external = \"inner\"; record::read() }", "captured");
         Check("fn values(value) { [value] }; let value = \"before\"; let delayed = values(value); let value = \"after\"; $std::ranges::front(delayed)", "before");
         foreach (string selected in new[] { "true", "false" })
             Check($"fn choose(present: Bool) {{ if present {{ \"present\" }} else {{ null }} }}; let item? = choose({selected}); if item? {{ \"missing\" }} else {{ item }}", selected == "true" ? "present" : "missing");

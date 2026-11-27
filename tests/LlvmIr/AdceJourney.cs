@@ -40,7 +40,7 @@ internal static class AdceJourney
         __llvm_profile_instrument_target(1);
         fn note(value: Number) { effects = effects * 10 + value; value };
         let values = [note(1), note(2)];
-        let row = scope { count: 0 };
+        let row = object { count: 0 };
         fn bump() { row::count = row::count + 1; note(3); };
         bump();
         [note(4)];

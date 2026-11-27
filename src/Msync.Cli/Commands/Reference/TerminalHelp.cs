@@ -156,12 +156,12 @@ internal static class TerminalHelp
         Code("};", color);
         Code("let identity = fn(file: Path) -> Path { file };", color);
         Code("fn update() { global source; source = ~/another-source; };", color);
-        Code("scope Settings { home: ~/.codex, copy: fn(a, b) { a -> b } };", color);
+        Code("object Settings { home: ~/.codex, copy: fn(a, b) { a -> b } };", color);
         Code("Settings::copy(Settings::home, ~/backup);", color);
         Console.WriteLine("\nUnannotated parameters are generic and inferred at each call. Functions and");
-        Console.WriteLine("Scopes are values and may be anonymous. Scope::member selects a lexical");
+        Console.WriteLine("Objects are values and may be anonymous. value::member selects a lexical");
         Console.WriteLine("member; connection @ path selects a physical endpoint. These are distinct types.");
-        Console.WriteLine("Named Scopes are shared singletons; anonymous scope expressions create fresh");
+        Console.WriteLine("Named Objects are shared singletons; anonymous object expressions create fresh");
         Console.WriteLine("instances. Both permit mutable values with fixed field types.");
         Console.WriteLine("Inside fn, 'global source;' explicitly imports a prior ancestor location.");
         Console.WriteLine("It shares assignments, not a snapshot; callers and later declarations are");
@@ -210,7 +210,7 @@ internal static class TerminalHelp
             Code(string.Join("  ", names.Select(name => name == "Range" ? "Range<T>" : name)), color);
         Console.WriteLine("\nFor an explicit constraint: let file: Path = ~;");
         Console.WriteLine("Path and String convert implicitly; an annotation cannot turn a Path into");
-        Console.WriteLine("a lexical Scope or physical Connection. String quotes escape by doubling:");
+        Console.WriteLine("a lexical Object or physical Connection. String quotes escape by doubling:");
         Code("let message = \"say \"\"hello\"\"\";", color);
         Console.WriteLine("\nComments start with # or // at a whitespace boundary. Newlines inside");
         Console.WriteLine("Strings remain data. Use 'msync fmt FILE' to format without changing literals.");

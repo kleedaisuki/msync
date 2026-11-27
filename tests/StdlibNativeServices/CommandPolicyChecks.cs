@@ -16,8 +16,8 @@ internal static class CommandPolicyChecks
             foreach (int level in new[] { 0, 2, 3 })
             {
                 string source = $$"""
-                    let counts = scope { runs: 0, inputs: 0, spawns: 0 };
-                    scope TrackedRunner {
+                    let counts = object { runs: 0, inputs: 0, spawns: 0 };
+                    object TrackedRunner {
                         spawn: fn(program: Path, arguments: Range) -> Process {
                             counts::spawns = counts::spawns + 1;
                             $std::commands::NativeProcess::spawn(program, arguments)
@@ -33,7 +33,7 @@ internal static class CommandPolicyChecks
                                 program, arguments, input)
                         },
                     };
-                    scope AcceptSeven {
+                    object AcceptSeven {
                         accept: fn(result: $std::concepts::CompletedProcess)
                             -> Bool {
                             result::code == 7
@@ -63,7 +63,7 @@ internal static class CommandPolicyChecks
                         fn(value) { value }, fn(error) { error });
                     let accepted_record = result::get_or(accepted, fail_record);
                     let success_record = result::get_or(succeeded, fail_record);
-                    scope {
+                    object {
                         ready: ready,
                         output: $std::process::stdout(echo),
                         spawned: $std::process::stdout(spawned),
@@ -100,10 +100,10 @@ internal static class CommandPolicyChecks
                     Require(record.Count == 3 && record.Members.Values.All(member => member is not FunctionValue), "Command stores per-instance operations");
                 }
                 Reject("$std::commands::Command::with_runner(./program, [], true)", "ProcessRunner", level);
-                Reject("$std::commands::Command::with_runner(./program, [], scope { run: fn(p:Path,a:Range) -> Process { $std::process::run(p,a) } })", "spawn", level);
-                Reject("$std::commands::Checked::with_policy($std::commands::Command::new(./p, []), scope { accept: fn(value:$std::concepts::CompletedProcess) { 1 } })", "accept", level);
-                Reject("$std::commands::Checked::with_policy($std::commands::Command::new(./p, []), scope { wrong: true })", "accept", level);
-                Reject("$std::commands::Command::run(scope { executable: ./p, arguments: [] })", "runner", level);
+                Reject("$std::commands::Command::with_runner(./program, [], object { run: fn(p:Path,a:Range) -> Process { $std::process::run(p,a) } })", "spawn", level);
+                Reject("$std::commands::Checked::with_policy($std::commands::Command::new(./p, []), object { accept: fn(value:$std::concepts::CompletedProcess) { 1 } })", "accept", level);
+                Reject("$std::commands::Checked::with_policy($std::commands::Command::new(./p, []), object { wrong: true })", "accept", level);
+                Reject("$std::commands::Command::run(object { executable: ./p, arguments: [] })", "runner", level);
             }
             Console.WriteLine($"PASS {checks} process/exit policy contracts");
         }

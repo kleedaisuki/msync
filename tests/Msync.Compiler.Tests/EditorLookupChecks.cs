@@ -8,10 +8,10 @@ internal static class EditorLookupChecks
         [
             "let ready = true; §",
             "let source = ./first; { let source = ./second; § }; source;",
-            "scope Config { file: ./input, remote: ssh://forge, run: fn(x) { x } }; Config::§",
-            "fn create() { scope { item: ./input } }; create()::§",
-            "fn inspect(file: Path) { let local = scope { useful: true }; §",
-            "fn inspect(value) { value::§ }; inspect(scope { common: true, onlyA: ./ }); inspect(scope { common: false, onlyB: ./ });",
+            "object Config { file: ./input, remote: ssh://forge, run: fn(x) { x } }; Config::§",
+            "fn create() { object { item: ./input } }; create()::§",
+            "fn inspect(file: Path) { let local = object { useful: true }; §",
+            "fn inspect(value) { value::§ }; inspect(object { common: true, onlyA: ./ }); inspect(object { common: false, onlyB: ./ });",
             "fn inspect(file: Path) { file/§",
             "fn inspect(process: Process) { process::§"
         ];
@@ -44,7 +44,7 @@ internal static class EditorLookupChecks
             throw new InvalidOperationException($"Selected lookup differs for '{expected.Name}'.");
         var expectedMembers = expected.Members ?? [];
         var actualMembers = actual.Members ?? [];
-        if (expectedMembers.Count != actualMembers.Count) throw new InvalidOperationException("Selected lookup changed Scope members.");
+        if (expectedMembers.Count != actualMembers.Count) throw new InvalidOperationException("Selected lookup changed Object members.");
         foreach (var member in expectedMembers)
             Compare(member, actualMembers.Single(candidate => candidate.Name == member.Name));
     }

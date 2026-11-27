@@ -53,7 +53,7 @@ string Snapshot(Value value) => value switch
     NumberValue number => "Number:" + number.Data.ToString("R", CultureInfo.InvariantCulture),
     StringValue text => "String:" + text.Data,
     PathValue path => $"Path:{path.Raw}:{path.NativeText}:{path.Connection}",
-    ScopeValue scope => "Scope:" + string.Join(";", scope.Members.OrderBy(p => p.Key, StringComparer.Ordinal).Select(p => p.Key + "=" + Snapshot(p.Value))),
+    ScopeValue scope => "Object:" + string.Join(";", scope.Members.OrderBy(p => p.Key, StringComparer.Ordinal).Select(p => p.Key + "=" + Snapshot(p.Value))),
     _ => value.Type + ":" + value
 };
 
@@ -107,7 +107,7 @@ async Task SemanticChecks()
     {
         ("branch-value", "let condition = true; let value = if condition { 37 } else { 9 }; value + 5"),
         ("nested-branch", "let left = 2; if left == 2 { if false { 11 } else { 17 } } else { 23 }"),
-        ("scope-field", "let box = scope { item: 19, other: true }; box::item + 3"),
+        ("scope-field", "let box = object { item: 19, other: true }; box::item + 3"),
         ("closure", "let offset = 7; let add = fn(value) { offset + value }; add(13)"),
         ("returned-closure", "fn outer(value) { fn (other) { value + other } }; let add = outer(9); add(14)"),
         ("recursive", "fn count(value) { if value == 0 { 31 } else { count(value - 1) } }; count(8)"),
@@ -149,8 +149,8 @@ async Task SemanticChecks()
     RejectMismatchedCaptureAbi();
     await Differential("invalid-regex", Program([new StringValue("text")], new(OpCode.Constant, 0), new(OpCode.RegexMatch, Text: "["), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)));
     await Differential("ieee-signed-zero", Compiler.Compile(
-        "scope { positive: 1 / 0, negative: 1 / (- 0) }", "ieee-signed-zero", 0),
-        expectedValue: "Scope:negative=Number:-Infinity;positive=Number:Infinity");
+        "object { positive: 1 / 0, negative: 1 / (- 0) }", "ieee-signed-zero", 0),
+        expectedValue: "Object:negative=Number:-Infinity;positive=Number:Infinity");
     await Differential("raw-cell-alias", new Module([], [new FunctionCode("alias", 0, 2,
         [new(OpCode.True), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0, 1), new(OpCode.InitializeLocal, 1),
          new(OpCode.LoadLocal, 0), new(OpCode.JumpIfFalse, 10), new(OpCode.False), new(OpCode.StoreLocal, 1),
@@ -207,8 +207,8 @@ async Task EliminationChecks()
     foreach ((string name, string source) in new[]
     {
         ("dead-scalar", "let first = 3; let second = first + 5;"),
-        ("dead-scope", "let item = scope { field: 3, remote: ssh://unused };"),
-        ("dead-constructor", "scope SomeType { remote: ssh://unused, new: fn { scope { filename: ./unused } } }; let object = SomeType::new();"),
+        ("dead-scope", "let item = object { field: 3, remote: ssh://unused };"),
+        ("dead-constructor", "object SomeType { remote: ssh://unused, new: fn { object { filename: ./unused } } }; let record = SomeType::new();"),
         ("dead-function", "fn unused(value) { value + 1 }; let value = 12;")
     })
     {
@@ -226,15 +226,15 @@ async Task MutableChecks()
     foreach ((string name, string source) in new[]
     {
         ("mutable-branch", "let value = 2; if true { value = 9; }; value"),
-        ("mutable-alias", "let object = scope { filename?: null }; let alias = object; alias::filename = ./chosen; object::filename"),
+        ("mutable-alias", "let record = object { filename?: null }; let alias = record; alias::filename = ./chosen; record::filename"),
         ("mutable-capture", "let value = 2; let read = fn { value }; value = 9; read()"),
-        ("mutable-callee-alias", "fn set(object) { object::filename = ./chosen; }; let object = scope { filename?: null }; set(object); object::filename"),
+        ("mutable-callee-alias", "fn set(record) { record::filename = ./chosen; }; let record = object { filename?: null }; set(record); record::filename"),
         ("mutable-closure-write", "let value = 2; let set = fn { value = 9; }; set(); value"),
         ("mutable-callee-argument-order", "let action = fn(value: Bool) { \"A\" }; let replacement = fn(value: Bool) { \"B\" }; fn change() { action = replacement; true }; let first = action(change()); let second = action(false); $std::string::concat(first, second)"),
-        ("mutable-scope-escape", "fn make() { let object = scope { field: 1 }; object::field = 7; object }; make()::field"),
-        ("mutable-escaped-field-storage", "let getter = fn { 0 }; let object = scope { value: 1, hook: { getter = fn { value }; true } }; object::value = 2; getter()"),
+        ("mutable-scope-escape", "fn make() { let record = object { field: 1 }; record::field = 7; record }; make()::field"),
+        ("mutable-escaped-field-storage", "let getter = fn { 0 }; let record = object { value: 1, hook: { getter = fn { value }; true } }; record::value = 2; getter()"),
         ("mutable-loop", "let value = 0; for item in [1, 2, 3] { value = value + item; }; value"),
-        ("nullable-constructor", "scope SomeType { remote: ssh://unused, new: fn { scope { filename?: null } } }; let object = SomeType::new(); object::filename = ~/.codex; object::filename")
+        ("nullable-constructor", "object SomeType { remote: ssh://unused, new: fn { object { filename?: null } } }; let record = SomeType::new(); record::filename = ~/.codex; record::filename")
     }) await Differential(name, Compiler.Compile(source, name, 0), expectedValue: name switch
     {
         "mutable-branch" or "mutable-capture" or "mutable-closure-write" => "Number:9",
@@ -258,7 +258,7 @@ async Task MutableChecks()
     Require(direct.Functions.Count == 1 && direct.Functions[0].Instructions.All(instruction => instruction.Op is OpCode.Constant or OpCode.Return),
         "Ordinary unaliased call target lost its inlining proof");
 
-    const string dead = "scope SomeType { remote: ssh://unused, new: fn { scope { filename?: null } } }; let object = SomeType::new(); object::filename = ~/.codex;";
+    const string dead = "object SomeType { remote: ssh://unused, new: fn { object { filename?: null } } }; let record = SomeType::new(); record::filename = ~/.codex;";
     Module executable = Binding.Bind(Optimizer.Optimize(Compiler.Compile(dead, "dead-object", 0), 3), new(root, root));
     Require(executable.Functions.Count == 1 && executable.Functions[0].Instructions.All(i => i.Op is OpCode.Null or OpCode.Return), "Nonescaping mutated object survives executable optimization: " + string.Join(" | ", executable.Functions.Select(f => f.Name + ": " + string.Join(",", f.Instructions.Select(i => $"{i.Op}({i.A},{i.B},{i.Text})")))));
 }
@@ -273,9 +273,9 @@ async Task ValueNumberingChecks()
     {
         foreach ((string name, string source, OpCode operation, string expected) in new[]
         {
-            ("cse-bool", "let value = exists ./absent; scope { first: not value, second: not value }", OpCode.Not, "Scope:first=Bool:True;second=Bool:True"),
-            ("cse-number", "let value = if exists ./absent { 3 } else { 5 }; scope { first: - value, second: - value }", OpCode.Negate, "Scope:first=Number:-5;second=Number:-5"),
-            ("cse-string", "native fn string.concat(left: String, right: String) -> String; let value: String = $env @ MSYNC_OPT_GRAPH_INPUT; scope { first: string.concat(value, \"x\"), second: string.concat(value, \"x\") }", OpCode.NativeCall, "Scope:first=String:runtime textx;second=String:runtime textx")
+            ("cse-bool", "let value = exists ./absent; object { first: not value, second: not value }", OpCode.Not, "Object:first=Bool:True;second=Bool:True"),
+            ("cse-number", "let value = if exists ./absent { 3 } else { 5 }; object { first: - value, second: - value }", OpCode.Negate, "Object:first=Number:-5;second=Number:-5"),
+            ("cse-string", "native fn string.concat(left: String, right: String) -> String; let value: String = $env @ MSYNC_OPT_GRAPH_INPUT; object { first: string.concat(value, \"x\"), second: string.concat(value, \"x\") }", OpCode.NativeCall, "Object:first=String:runtime textx;second=String:runtime textx")
         })
         {
             Module original = Compiler.Compile(source, name, 0);
@@ -291,15 +291,15 @@ async Task ValueNumberingChecks()
     finally { Environment.SetEnvironmentVariable(environmentName, previous); }
 
     await Differential("cse-observation", Compiler.Compile(
-        "let first = exists ./flag; \"bytes\" -> ./flag; let second = exists ./flag; scope { first: first, second: second }", "cse-observation", 0), writes: true,
-        expectedValue: "Scope:first=Bool:False;second=Bool:True");
+        "let first = exists ./flag; \"bytes\" -> ./flag; let second = exists ./flag; object { first: first, second: second }", "cse-observation", 0), writes: true,
+        expectedValue: "Object:first=Bool:False;second=Bool:True");
 
     await Differential("cse-scope-write", Compiler.Compile(
-        "let object = scope { value: exists ./absent }; let first = not object::value; object::value = true; let second = not object::value; scope { first: first, second: second }", "cse-scope-write", 0),
-        expectedValue: "Scope:first=Bool:True;second=Bool:False");
+        "let record = object { value: exists ./absent }; let first = not record::value; record::value = true; let second = not record::value; object { first: first, second: second }", "cse-scope-write", 0),
+        expectedValue: "Object:first=Bool:True;second=Bool:False");
     await Differential("cse-capture-write", Compiler.Compile(
-        "let value = exists ./absent; let read = fn { not value }; let first = read(); value = true; let second = read(); scope { first: first, second: second }", "cse-capture-write", 0),
-        expectedValue: "Scope:first=Bool:True;second=Bool:False");
+        "let value = exists ./absent; let read = fn { not value }; let first = read(); value = true; let second = read(); object { first: first, second: second }", "cse-capture-write", 0),
+        expectedValue: "Object:first=Bool:True;second=Bool:False");
 
     // An empty operand stack at Return supplies Null. A stack
     // splice must materialize Null rather than stealing a caller operand.

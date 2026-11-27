@@ -203,7 +203,7 @@ internal static class Program
             return text.ToString();
         }
         bool scoped = workload == "scope_values";
-        text.AppendLine(scoped ? "scope routes { route: fn(file: Path) { ./root / file }, };" : "fn route(file: Path) { ./root / file };");
+        text.AppendLine(scoped ? "object routes { route: fn(file: Path) { ./root / file }, };" : "fn route(file: Path) { ./root / file };");
         string function = scoped ? "routes::route" : "route";
         for (int i = 0; i < size; i++) text.AppendLine($"let value_{i} = {function}(./input_{i});");
         text.Append($"value_{size - 1}");

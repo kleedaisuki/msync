@@ -60,7 +60,7 @@ public static class TextFormat
             ReadOnlySpan<char> field = rest.Slice(1, close);
             int colon = field.IndexOf(':');
             ReadOnlySpan<char> selector = colon < 0 ? field : field[..colon];
-            if (named && selector.IsEmpty) throw Error(template, start, "a named field requires a Scope member name");
+            if (named && selector.IsEmpty) throw Error(template, start, "a named field requires an Object member name");
             int argument = named ? -1 : Argument(selector, start);
             part = new(start, selector.Length, true, argument,
                 ParseSpec(template, start, colon < 0 ? [] : field[(colon + 1)..]));

@@ -41,7 +41,7 @@ def formatted(binary: Path, directory: Path, name: str, source: str) -> str:
 
 def run(binary: Path, directory: Path) -> None:
     screenshot = (
-        "scope MyClass { new: fn() { scope { x: ~/.codex } }, "
+        "object MyClass { new: fn() { object { x: ~/.codex } }, "
         "get: fn(some) { some::x } }; let my_instance = MyClass::new(); "
         "let c = $std::bool::both(MyClass::get(my_instance) == ~/.codex, "
         "MyClass::get(my_instance) != ./);\n"
@@ -53,21 +53,21 @@ def run(binary: Path, directory: Path) -> None:
     declarations = (
         "concept Cell<T>{value:T,};\n"
         "concept Text<T:String>:Cell<T>{};\n"
-        "scope Named { value: \"ok\" }\n"
+        "object Named { value: \"ok\" }\n"
         "fn get(value:Text<String>) { value::value }\n"
         "let apply = fn(f) { f(Named) };\n"
         "apply(fn(cell) { get(cell) }) -> result.txt;\n"
     )
     result = formatted(binary, directory, "declarations", declarations)
     assert "concept Text<T: String> : Cell<T> {" in result, result
-    assert "scope Named {\n    value: \"ok\"\n};" in result, result
+    assert "object Named {\n    value: \"ok\"\n};" in result, result
     assert "fn get(value: Text<String>) {\n    value::value\n};" in result, result
     assert "\n}) -> result.txt;" in result, result
     invoke(binary, ["run", str(directory / "declarations.msync")], directory)
     assert (directory / "result.txt").read_bytes() == b"ok"
 
     for depth in (0, 3, 8, 12):
-        nested = "scope { child: " * depth
+        nested = "object { child: " * depth
         source = (
             "let value = "
             + nested
@@ -107,7 +107,7 @@ def run(binary: Path, directory: Path) -> None:
     long_name = "x" * 110
     result = formatted(binary, directory, "indivisible", f"let {long_name} = true;")
     assert long_name in result, "Long names must remain intact"
-    deep = "let value = " + "scope { child: " * 22 + "true" + " }" * 22 + ";"
+    deep = "let value = " + "object { child: " * 22 + "true" + " }" * 22 + ";"
     result = formatted(binary, directory, "deep", deep)
     assert max(map(len, result.splitlines())) > 80, (
         "Deep structural indentation must not be flattened"

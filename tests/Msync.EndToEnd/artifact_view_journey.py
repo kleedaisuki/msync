@@ -168,9 +168,9 @@ def main() -> None:
         effect_path = str(cwd / "viewer-side-effect").replace('"', '""')
         source.write_text(
             "fn select(file: Path, ready: Bool) -> Path { if ready { file } else { ./unused } };\n"
-            "let local = scope { count: 2 }; local::count = 3;\n"
-            'let alternate = scope { count: 4, label: "other layout" };\n'
-            "scope Counter { expected: 0 }; Counter::expected = 3;\n"
+            "let local = object { count: 2 }; local::count = 3;\n"
+            'let alternate = object { count: 4, label: "other layout" };\n'
+            "object Counter { expected: 0 }; Counter::expected = 3;\n"
             "let view = if exists ./not-present { local } else { alternate };\n"
             "let chosen = select(./input, view::count == Counter::expected);\n"
             f'"MUST NOT EXECUTE <script>alert(""artifact"")</script> command:msync.test.artifactInjection \u0001" -> "{effect_path}";\n'

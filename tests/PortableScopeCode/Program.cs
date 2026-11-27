@@ -72,7 +72,7 @@ var mixed = opaque with
 _ = Artifact.Read(new MemoryStream(Encode(withOpaque with { Functions = [choice.Functions[0], mixed] })));
 checks++;
 Reject(withOpaque with { Functions = [choice.Functions[0], opaque with { Instructions = [new(OpCode.LoadLocal, 0), new(OpCode.LoadField, 1), new(OpCode.Return)] }] },
-    "requires an admitted finite non-null Scope domain");
+    "requires an admitted finite non-null Object domain");
 var admitted = opaque with
 {
     Instructions = [new(OpCode.LoadLocal, 0), new(OpCode.AdmitScope, ScopeA), new(OpCode.LoadField, 1), new(OpCode.Return)]
@@ -81,7 +81,7 @@ _ = Artifact.Read(new MemoryStream(Encode(withOpaque with { Functions = [choice.
 checks++;
 Reject(withOpaque with { Functions = [choice.Functions[0], admitted with { Instructions = [new(OpCode.LoadLocal, 0),
     new(OpCode.AdmitScope, OpaqueScope), new(OpCode.LoadField, 1), new(OpCode.Return)] }] },
-    "requires a finite non-null Scope domain");
+    "requires a finite non-null Object domain");
 
 FunctionCode direct = new("direct", 1, 1,
 [
@@ -137,7 +137,7 @@ var constantCode = Image([new(OpCode.Constant, 0), new(OpCode.LoadField, 1), new
     with { Constants = [constant] };
 var decodedConstant = (ScopeValue)Artifact.Read(new MemoryStream(Encode(constantCode))).Constants[0];
 Check(decodedConstant.Layout.CodeLayoutId == 0 && decodedConstant["x"] is NumberValue { Data: 7 },
-    "Scope constants carry a layout ID instead of field names");
+    "Object constants carry a layout ID instead of field names");
 var symbols = choice with
 {
     Constants = [.. choice.Constants, new FunctionValue(0), new FunctionValue(0, [])]
@@ -152,7 +152,7 @@ byte[] oldWire = Encode(choice);
 oldWire[8] = 5;
 try { _ = Artifact.Read(new MemoryStream(oldWire)); throw new InvalidOperationException("old wire accepted"); }
 catch (MsyncException error) when (error.Message.Contains("Unsupported msync bytecode format 5", StringComparison.Ordinal)) { checks++; }
-Console.WriteLine($"PASS {checks} portable Scope layout/field/static codec and invalid-domain contracts");
+Console.WriteLine($"PASS {checks} portable Object layout/field/static codec and invalid-domain contracts");
 
 Module Image(Instruction[] code, int locals = 0) =>
     new([new NumberValue(1), new StringValue("right")], [new("entry", 0, locals, code, TypeRef.Number)

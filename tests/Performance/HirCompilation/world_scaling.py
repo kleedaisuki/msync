@@ -17,14 +17,14 @@ def generate_source(world_bindings: int, calls: int) -> str:
     lines.extend(
         f"    let unrelated_{index} = {index};" for index in range(world_bindings)
     )
-    lines.append("    fn wrap(value: Scope) { scope { value: value } };")
+    lines.append("    fn wrap(value: Object) { object { value: value } };")
     lines.extend(
-        f"    let result_{index} = wrap(scope {{ item: {index} }});"
+        f"    let result_{index} = wrap(object {{ item: {index} }});"
         for index in range(calls)
     )
     lines.extend(
         [
-            "    scope {",
+            "    object {",
             "        first: result_0::value::item,",
             f"        middle: result_{calls // 2}::value::item,",
             f"        last: result_{calls - 1}::value::item,",

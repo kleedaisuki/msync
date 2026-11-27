@@ -29,7 +29,7 @@ fn scan(count: Number, initial: Number, numerator: Number, denominator: Number) 
         zero = -zero;
         i = i + 1;
     };
-    scope {
+    object {
         zero: zero,
         quotient: quotient,
         score: score

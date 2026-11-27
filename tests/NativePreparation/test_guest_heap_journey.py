@@ -15,8 +15,8 @@ ROOT: Path = Path(__file__).resolve().parents[2]
 
 SETUP: tuple[str, ...] = (
     (
-        "fn pair(seed: Number) { let first = scope { value: seed, next?: null }; "
-        "let second = scope { value: seed + 1, next?: null }; "
+        "fn pair(seed: Number) { let first = object { value: seed, next?: null }; "
+        "let second = object { value: seed + 1, next?: null }; "
         "first::next = second; second::next = first; first };"
     ),
     "let retained = pair(7);",
@@ -99,7 +99,7 @@ def command_journey(binary: Path, work: Path) -> dict[str, object]:
     source.write_text(
         SETUP[0]
         + """
-        fn batch(root: Scope, limit: Number) {
+        fn batch(root: Object, limit: Number) {
             let i = 0;
             let total = 0;
             loop {
@@ -111,11 +111,11 @@ def command_journey(binary: Path, work: Path) -> dict[str, object]:
             total + root::value
         };
         let retained = pair(7);
-        fn captured(root: Scope) { fn { root::next::next::value } };
+        fn captured(root: Object) { fn { root::next::next::value } };
         let read = captured(pair(17));
         let snapshots = [pair(11), pair(13)];
         fn shared(seed: Number) {
-            scope {
+            object {
                 write: fn(delta: Number) { seed = seed + delta; seed },
                 read: fn { seed }
             }

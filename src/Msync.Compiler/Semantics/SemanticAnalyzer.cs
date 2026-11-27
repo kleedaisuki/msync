@@ -134,7 +134,7 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
             value = moduleValue;
         if (value.Scope is { } scope && context.Objects.TryGetValue(scope.Region, out var active))
         {
-            if (active.Initializing) throw Error(node.Source, "A named Scope cannot be read before its initialization completes.", "E0211");
+            if (active.Initializing) throw Error(node.Source, "A named Object cannot be read before its initialization completes.", "E0211");
             value = value with { Scope = active };
         }
         if (value.Callables.IsDefaultOrEmpty && Runtime(value).WithoutNull == TypeRef.Function)

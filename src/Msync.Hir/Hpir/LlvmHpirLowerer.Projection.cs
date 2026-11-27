@@ -80,7 +80,7 @@ public static partial class LlvmHpirLowerer
                 Add(new(HpirOp.Jump), call.Source);
                 code[branch] = code[branch] with { D = code.Count };
             }
-            EmitFailure(call, "Scope allocation is outside its structural view.");
+            EmitFailure(call, "Object allocation is outside its structural view.");
             foreach (int join in joins) code[join] = code[join] with { A = code.Count };
             ++finiteProjectionCount;
         }

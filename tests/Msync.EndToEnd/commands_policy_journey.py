@@ -26,8 +26,8 @@ sys.stdout.write("echo:" + sys.stdin.read())
 """
 
 PROGRAM: str = r"""
-let counts = scope { runs: 0, inputs: 0, spawns: 0 };
-scope TrackedRunner {
+let counts = object { runs: 0, inputs: 0, spawns: 0 };
+object TrackedRunner {
     spawn: fn(program: Path, arguments: Range) -> Process {
         counts::spawns = counts::spawns + 1;
         $std::commands::NativeProcess::spawn(program, arguments)
@@ -41,7 +41,7 @@ scope TrackedRunner {
         $std::commands::NativeProcess::run_input(program, arguments, input)
     },
 };
-scope AcceptSeven {
+object AcceptSeven {
     accept: fn(value: $std::concepts::CompletedProcess) -> Bool {
         value::code == 7
     },
@@ -190,15 +190,15 @@ def reject(binary: Path, directory: Path) -> int:
     programs: tuple[tuple[str, str], ...] = (
         ("$std::commands::Command::with_runner(./p, [], true);", "ProcessRunner"),
         (
-            "$std::commands::Command::with_runner(./p, [], scope { run: fn(p:Path,a:Range)->Process { $std::process::run(p,a) } });",
+            "$std::commands::Command::with_runner(./p, [], object { run: fn(p:Path,a:Range)->Process { $std::process::run(p,a) } });",
             "spawn",
         ),
         (
-            "$std::commands::Checked::with_policy($std::commands::Command::new(./p, []), scope { accept: fn(value:$std::concepts::CompletedProcess) { 1 } });",
+            "$std::commands::Checked::with_policy($std::commands::Command::new(./p, []), object { accept: fn(value:$std::concepts::CompletedProcess) { 1 } });",
             "accept",
         ),
         (
-            "$std::commands::Command::run(scope { executable: ./p, arguments: [] });",
+            "$std::commands::Command::run(object { executable: ./p, arguments: [] });",
             "runner",
         ),
     )

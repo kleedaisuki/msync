@@ -6,16 +6,16 @@ internal static class BoundResultChecks
     {
         foreach (string result in new[]
         {
-            "scope { item: 7 }",
-            "if parameter { scope { item: 7 } } else { scope { item: 8 } }"
+            "object { item: 7 }",
+            "if parameter { object { item: 7 } } else { object { item: 8 } }"
         })
         {
             string source = "fn factory(parameter) { " + result
-                + " }; fn draft(argument) { let object = factory(argument); object::item; object::";
+                + " }; fn draft(argument) { let record = factory(argument); record::item; record::";
             EditorAnalysis analysis = EditorCompiler.Analyze(source, "bound-result.msync");
             SemanticMember? field = analysis.At(source.Length).Receiver?.Members?.SingleOrDefault(item => item.Name == "item");
             require(field?.Type == "Number", "An uncalled return retains field completion: " + result);
-            int selected = source.LastIndexOf("object::item", StringComparison.Ordinal) + "object::".Length;
+            int selected = source.LastIndexOf("record::item", StringComparison.Ordinal) + "record::".Length;
             int[] expected = Enumerable.Range(0, source.Length)
                 .Where(index => source.AsSpan(index).StartsWith("item:", StringComparison.Ordinal)).ToArray();
             int[] actual = analysis.DefinitionsAt(selected).Select(target => target.Span.Start).Order().ToArray();
@@ -26,17 +26,17 @@ internal static class BoundResultChecks
 
         foreach ((string declaration, string callee) in new[]
         {
-            ("fn factory() { scope { item: 7 } };", "factory"),
-            ("let factory = fn { scope { item: 7 } };", "factory"),
-            ("let original = fn { scope { item: 7 } }; let factory = original;", "factory"),
-            ("let Factory = scope { make: fn { scope { item: 7 } } };", "Factory::make")
+            ("fn factory() { object { item: 7 } };", "factory"),
+            ("let factory = fn { object { item: 7 } };", "factory"),
+            ("let original = fn { object { item: 7 } }; let factory = original;", "factory"),
+            ("let Factory = object { make: fn { object { item: 7 } } };", "Factory::make")
         })
         {
-            string source = declaration + " fn draft(argument) { let object = " + callee + "(); object::item; object::";
+            string source = declaration + " fn draft(argument) { let record = " + callee + "(); record::item; record::";
             EditorAnalysis analysis = EditorCompiler.Analyze(source, "bound-callee.msync");
             require(analysis.At(source.Length).Receiver?.Members?.SingleOrDefault(item => item.Name == "item")?.Type == "Number",
                 "Uncalled factory completion follows the actual callee identity: " + declaration);
-            int selected = source.LastIndexOf("object::item", StringComparison.Ordinal) + "object::".Length;
+            int selected = source.LastIndexOf("record::item", StringComparison.Ordinal) + "record::".Length;
             require(analysis.DefinitionsAt(selected).Single().Span.Start == source.IndexOf("item:", StringComparison.Ordinal),
                 "An aliased factory return keeps its original field declaration");
         }
@@ -48,7 +48,7 @@ internal static class BoundResultChecks
             && actuals.Resolve(values.Length, "second")?.KnownText == "second",
             "A cached type scheme cannot replace either actual call's literal payload");
 
-        const string returned = "fn factory() { return scope { item: 7 }; }; fn draft(argument) { factory()::";
+        const string returned = "fn factory() { return object { item: 7 }; }; fn draft(argument) { factory()::";
         require(EditorCompiler.Analyze(returned, "bound-explicit-return.msync").At(returned.Length)
             .Receiver?.Members?.SingleOrDefault(item => item.Name == "item")?.Type == "Number",
             "A terminating body contributes its explicit return rather than an invented fallthrough value");

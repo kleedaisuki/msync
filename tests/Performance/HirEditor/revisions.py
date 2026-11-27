@@ -26,7 +26,7 @@ def document(rows: int, fixture: Fixture = "generic") -> list[str]:
     for index in range(rows):
         lines.extend(
             (
-                f"fn wrap_{index}(value) {{ scope {{ item: value }} }};",
+                f"fn wrap_{index}(value) {{ object {{ item: value }} }};",
                 f"let row_{index} = wrap_{index}({index});",
             )
         )
@@ -114,7 +114,7 @@ def probe(
                 change(
                     index + 3,
                     middle * 2,
-                    f"fn wrap_{middle}(value) {{ scope {{ item: {value} }} }};",
+                    f"fn wrap_{middle}(value) {{ object {{ item: {value} }} }};",
                     type_name,
                 )
             )

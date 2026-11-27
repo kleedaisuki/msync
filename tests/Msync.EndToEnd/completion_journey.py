@@ -91,7 +91,7 @@ def path_expression(raw: str) -> str:
         "false",
         "null",
         "fn",
-        "scope",
+        "object",
         "if",
         "else",
         "match",
@@ -111,7 +111,7 @@ def path_expression(raw: str) -> str:
         "Range",
         "String",
         "Function",
-        "Scope",
+        "Object",
         "Path",
         "Process",
         "Connection",
@@ -394,7 +394,7 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
 def lexical_scope_queries(binary: Path, directory: Path) -> dict[str, int]:
     client = Client(binary, cwd=directory)
     uri = (directory / "scope-editing.msync").as_uri()
-    library = "scope Library { run: fn(value: Path) { value }, ready: true };\n"
+    library = "object Library { run: fn(value: Path) { value }, ready: true };\n"
     cases: list[tuple[str, dict[str, str], set[str] | None]] = [
         ("fn outer(file: Path) { fi" + CARET, {"file": "Path"}, None),
         (
@@ -406,13 +406,13 @@ def lexical_scope_queries(binary: Path, directory: Path) -> dict[str, int]:
         ),
         (library + "fn outer() { let Library = ./; Library::" + CARET, {}, set()),
         (
-            "scope Outer { Inner: scope { run: fn(x) { x }, active: true } };\nOuter::Inner::"
+            "object Outer { Inner: object { run: fn(x) { x }, active: true } };\nOuter::Inner::"
             + CARET,
             {"run": "fn run", "active": "Bool"},
             {"run", "active"},
         ),
         (
-            "fn make() { scope { run: fn(x) { x }, active: true } };\nmake()::" + CARET,
+            "fn make() { object { run: fn(x) { x }, active: true } };\nmake()::" + CARET,
             {"run": "fn run", "active": "Bool"},
             {"run", "active"},
         ),
@@ -466,7 +466,7 @@ def alias_path_queries(binary: Path, directory: Path) -> dict[str, int]:
     uri = (directory / "alias-editing.msync").as_uri()
     cases = [
         ("let folder = ./actual;\nfolder/fi", "folder/"),
-        ("scope Config { root: ./actual };\nConfig::root/fi", "Config::root/"),
+        ("object Config { root: ./actual };\nConfig::root/fi", "Config::root/"),
         ("fn factory() { ./actual };\nfactory()/fi", "factory()/"),
         ('let text = "./actual";\ntext/fi', "text/"),
     ]
@@ -541,13 +541,13 @@ def compressed_scope_queries(binary: Path, directory: Path) -> dict[str, int]:
     uri = (directory / "compact-scope.msync").as_uri()
     cases = [
         (
-            "scope C {remote:ssh://for" + CARET + "};",
+            "object C {remote:ssh://for" + CARET + "};",
             "ssh://forge",
             "remote",
             "Connection",
         ),
         (
-            "scope C {root:./spa" + CARET + "};",
+            "object C {root:./spa" + CARET + "};",
             './"space compact.txt"',
             "root",
             "Path",
@@ -574,11 +574,11 @@ def compressed_scope_queries(binary: Path, directory: Path) -> dict[str, int]:
                 item
                 for item in response
                 if apply_edit(text, item.get("textEdit", {}))
-                == "scope C {" + member + ":" + replacement + "};"
+                == "object C {" + member + ":" + replacement + "};"
             ]
             assert len(matches) == 1, (marked, replacement, response)
             edited = apply_edit(text, matches[0]["textEdit"])
-            assert edited == "scope C {" + member + ":" + replacement + "};", edited
+            assert edited == "object C {" + member + ":" + replacement + "};", edited
             native_run(
                 binary,
                 environment,
@@ -728,7 +728,7 @@ def distinct_endpoint_queries(
         (declaration + "remote @ " + raw + CARET, "REMOTE_ONLY.txt"),
         (declaration + "remote @ (" + raw + CARET + ")", "REMOTE_ONLY.txt"),
         (
-            "scope Endpoints { host: "
+            "object Endpoints { host: "
             + endpoint
             + " };\nEndpoints::host @ ("
             + raw
@@ -808,11 +808,11 @@ def distinct_endpoint_queries(
             }
             assert names == {expected}, (version, marked, expected, names, response)
         invalid_version = len(cases) + 2
-        malformed = "fn inspect(scope) { (scope::endpoint @ /tmp/) }; inspect(scope { endpoint: true });\n"
+        malformed = "fn inspect(scope) { (scope::endpoint @ /tmp/) }; inspect(object { endpoint: true });\n"
         notify(client, uri, invalid_version, malformed)
         problem = diagnostics(client, uri, invalid_version)
         assert problem["diagnostics"], problem
-        corrected = "scope Ready { useful: true };\nReady::"
+        corrected = "object Ready { useful: true };\nReady::"
         notify(client, uri, invalid_version + 1, corrected)
         recovered, _ = client.request(
             "textDocument/completion",

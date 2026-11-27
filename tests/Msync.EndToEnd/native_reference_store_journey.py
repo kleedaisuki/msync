@@ -13,8 +13,8 @@ from native_physical_call_journey import bind
 
 ROOT: Path = Path(__file__).resolve().parents[2]
 SOURCE: bytes = b"""
-fn new_root(seed: Number, initial) { scope {value:seed, child?:initial} };
-let node=scope {value:0};
+fn new_root(seed: Number, initial) { object {value:seed, child?:initial} };
+let node=object {value:0};
 let root=new_root(0, node);
 let i=0;
 let cleared=0;

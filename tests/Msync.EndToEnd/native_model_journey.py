@@ -84,7 +84,7 @@ fn nullable_roundtrip(value?) {
 };
 let line? = $std::io::read_line();
 let input = if line is null { 0 } else { line as Number };
-let bundle = scope {
+let bundle = object {
     number: roundtrip(input),
     flag: roundtrip(true),
     text: roundtrip("initial"),
@@ -113,7 +113,7 @@ if false { remote_path -> ./must-not-exist; };
         ),
         Fixture(
             "fresh-alias-and-rebinding",
-            """fn make(value: Number) { scope { value: value, text: "fresh" } };
+            """fn make(value: Number) { object { value: value, text: "fresh" } };
 let first = make(1);
 let second = make(2);
 let alias = first;
@@ -126,13 +126,13 @@ let selected = make(4);
 fn current() { selected::value };
 selected = make(5);
 $std::io::println(current() as String);
-let empty = scope {};
-let other_empty = scope {};
-$std::io::println((empty is Scope) as String);
-$std::io::println((other_empty is Scope) as String);
+let empty = object {};
+let other_empty = object {};
+$std::io::println((empty is Object) as String);
+$std::io::println((other_empty is Object) as String);
 let order = "";
 fn tick(mark: String) { order = $std::string::concat(order, mark); mark };
-let ordered = scope { z: tick("z"), a: tick("a") };
+let ordered = object { z: tick("z"), a: tick("a") };
 $std::io::println(order);
 """,
             b"9\n3\n2\n5\ntrue\ntrue\nza\n",
@@ -141,7 +141,7 @@ $std::io::println(order);
             "captured-locations-and-return",
             """fn counter(initial: Number) {
     let value = initial;
-    scope {
+    object {
         read: fn { value },
         write: fn(next: Number) { value = next; },
     }
@@ -152,7 +152,7 @@ let second = counter(3);
 alias::write(11);
 $std::io::println(first::read() as String);
 $std::io::println(second::read() as String);
-let retained = scope {
+let retained = object {
     value: 4,
     read: fn { value },
     write: fn(next: Number) { value = next; },
@@ -172,7 +172,7 @@ fn factorial(value: Number) -> Number {
     if value <= 1 { 1 } else { value * factorial(value - 1) }
 };
 $std::io::println(factorial(input) as String);
-let field = scope { value: if input > 0 { input } else { "empty" } };
+let field = object { value: if input > 0 { input } else { "empty" } };
 field::value = "changed";
 $std::io::println(field::value as String);
 field::value = input + 1;
@@ -184,7 +184,7 @@ let one = action(change());
 let two = action(false);
 $std::io::println($std::string::concat(one, two));
 let zero = input - input;
-let bits = scope { negative: -zero, nan: zero / zero };
+let bits = object { negative: -zero, nan: zero / zero };
 $std::io::println($std::math::signbit(bits::negative) as String);
 $std::io::println((bits::nan != bits::nan) as String);
 """,
@@ -193,8 +193,8 @@ $std::io::println((bits::nan != bits::nan) as String);
         ),
         Fixture(
             "recursive-references",
-            """let first = scope { value: 1, next?: null };
-let second = scope { value: 2, next?: null };
+            """let first = object { value: 1, next?: null };
+let second = object { value: 2, next?: null };
 first::next = second;
 second::next = first;
 let selected = first;
@@ -223,7 +223,7 @@ $std::io::println(calls as String);
         ),
         Fixture(
             "path-context-and-publication",
-            """let paths = scope { source: $local @ ./payload.bin, destination: ./result.bin };
+            """let paths = object { source: $local @ ./payload.bin, destination: ./result.bin };
 let alias = paths;
 alias::source -> paths::destination;
 """,
@@ -239,7 +239,7 @@ alias::source -> paths::destination;
 }};
 fn start() {{
     let child = roundtrip($std::process::spawn({python}, ["-c", {child}]));
-    scope {{ child: child, marker: "returned" }}
+    object {{ child: child, marker: "returned" }}
 }};
 let state = start();
 let alias = state;

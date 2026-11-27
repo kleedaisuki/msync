@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 
 ROOT = Path(__file__).resolve().parents[2]
-SETUP = "let state = scope { n: 0 }; 0"
+SETUP = "let state = object { n: 0 }; 0"
 
 
 @dataclass(frozen=True)
@@ -83,7 +83,7 @@ def summarize(samples: list[Sample]) -> dict[str, Any]:
 
 def submission(case: str, index: int) -> str:
     prefix = (
-        f'let r{index} = scope {{ s: "row_{index}", p: ./item, b: true }}; '
+        f'let r{index} = object {{ s: "row_{index}", p: ./item, b: true }}; '
         if case == "growing"
         else ""
     )

@@ -7,25 +7,25 @@ var cases = new (string Name, string Source, string Expected)[]
 {
     ("heap-order-writes", """
         let storage = $std::storage::vector_new([5, 1, 2]);
-        let policy = scope {
+        let policy = object {
             less: fn(a: Number, b: Number) -> Bool {
                 if a == 2 and b == 1 { $std::storage::vector_set(storage, 1, 99); };
                 a < b
             },
         };
-        $std::containers::Heap::sift_down(scope { items: storage, order: policy }, 0);
+        $std::containers::Heap::sift_down(object { items: storage, order: policy }, 0);
         $std::text::format("{} {}", $std::storage::vector_get(storage, 0),
             $std::storage::vector_get(storage, 1))
         """, "5 99"),
     ("distinct", """
-        let nodes = $std::storage::vector_new([scope { red: false }, scope { red: false }]);
+        let nodes = $std::storage::vector_new([object { red: false }, object { red: false }]);
         let a = $std::storage::vector_get(nodes, 0);
         let b = $std::storage::vector_get(nodes, 1);
         a::red = true;
         if b::red { "WRONG" } else { "ok" }
         """, "ok"),
     ("alias", """
-        let nodes = $std::storage::vector_new([scope { red: false }]);
+        let nodes = $std::storage::vector_new([object { red: false }]);
         let a = $std::storage::vector_get(nodes, 0);
         let b = $std::storage::vector_get(nodes, 0);
         a::red = true;
@@ -33,8 +33,8 @@ var cases = new (string Name, string Source, string Expected)[]
         if a::red { "WRONG" } else { "ok" }
         """, "ok"),
     ("external", """
-        let a = scope { red: false };
-        let b = scope { red: false };
+        let a = object { red: false };
+        let b = object { red: false };
         let nodes = $std::storage::vector_new([a, b]);
         let stored = $std::storage::vector_get(nodes, 0);
         stored::red = true;
@@ -51,7 +51,7 @@ var cases = new (string Name, string Source, string Expected)[]
         """, "ok"),
     ("field-callable", """
         let old = fn(value: Number) { value + 1 };
-        let objects = $std::storage::vector_new([scope { operation: old }]);
+        let objects = $std::storage::vector_new([object { operation: old }]);
         let a = $std::storage::vector_get(objects, 0);
         let b = $std::storage::vector_get(objects, 0);
         a::operation = fn(value: Number) { value + 2 };
@@ -65,12 +65,12 @@ var cases = new (string Name, string Source, string Expected)[]
         if $std::ranges::at(snapshot, 0) == 1 and $std::storage::vector_get(values, 0) == 7 { "ok" } else { "WRONG" }
         """, "ok"),
     ("nullable-member", """
-        let nodes = $std::storage::vector_new([scope { child?: scope { text: "ok" } }]);
+        let nodes = $std::storage::vector_new([object { child?: object { text: "ok" } }]);
         let a = $std::storage::vector_get(nodes, 0);
         if a::child is not null { a::child::text } else { "WRONG" }
         """, "ok"),
     ("nullable-branch", """
-        let nodes = $std::storage::vector_new([scope { child?: scope { text: "ok" }, flag: false }]);
+        let nodes = $std::storage::vector_new([object { child?: object { text: "ok" }, flag: false }]);
         let a = $std::storage::vector_get(nodes, 0);
         let b = $std::storage::vector_get(nodes, 0);
         if a::child is not null {
@@ -78,7 +78,7 @@ var cases = new (string Name, string Source, string Expected)[]
         } else { "WRONG" }
         """, "ok"),
     ("nested", """
-        let nodes = $std::storage::vector_new([scope { nested: scope { red: false } }]);
+        let nodes = $std::storage::vector_new([object { nested: object { red: false } }]);
         let a = $std::storage::vector_get(nodes, 0);
         let b = $std::storage::vector_get(nodes, 0);
         a::nested::red = true;
@@ -91,7 +91,7 @@ var cases = new (string Name, string Source, string Expected)[]
         if $std::storage::vector_get(values, 0) == 7 { "ok" } else { "WRONG" }
         """, "ok"),
     ("slot-nested-owner", """
-        let row = scope { keys: $std::storage::vector_empty(String) };
+        let row = object { keys: $std::storage::vector_empty(String) };
         let rows = $std::slots::new(decltype(row));
         let index = $std::slots::allocate(rows, row);
         let alias = $std::slots::get(rows, index);
@@ -101,8 +101,8 @@ var cases = new (string Name, string Source, string Expected)[]
     ("query-alias-isolation", """
         concept Numeric { operation: fn(value: Number) -> Number, };
         fn check(value: Numeric) { 0 };
-        let a = scope { operation: fn(value: Number) { value + 1 } };
-        let b = scope { operation: fn(value: Number) { value + 2 } };
+        let a = object { operation: fn(value: Number) { value + 1 } };
+        let b = object { operation: fn(value: Number) { value + 2 } };
         let nodes = $std::storage::vector_new([a, b]);
         let invalid = fn {
             check($std::storage::vector_get(nodes, 0));
@@ -158,8 +158,8 @@ foreach (var source in new[]
     """
     concept Numeric { operation: fn(value: Number) -> Number, };
     fn check(value: Numeric) { 0 };
-    let a = scope { operation: fn(value: Number) { value + 1 } };
-    let b = scope { operation: fn(value: Number) { value + 2 } };
+    let a = object { operation: fn(value: Number) { value + 1 } };
+    let b = object { operation: fn(value: Number) { value + 2 } };
     let nodes = $std::storage::vector_new([a, b]);
     check($std::storage::vector_get(nodes, 0));
     a::operation = fn(value: Number) { true };
@@ -172,17 +172,17 @@ foreach (var source in new[]
     "let x = $std::storage::vector_new([1]); $std::storage::vector_push(x, true);",
     "$std::storage::vector_get([1], 0);",
     "let x = $std::storage::vector_new([]); $std::storage::vector_push(x, 1);",
-    "let x = $std::storage::vector_new([scope { red: false }]); $std::storage::vector_push(x, scope { red: 1 });",
-    "let x = $std::storage::vector_new([scope { red: false }]); $std::storage::vector_set(x, 0, scope { wrong: false });",
+    "let x = $std::storage::vector_new([object { red: false }]); $std::storage::vector_push(x, object { red: 1 });",
+    "let x = $std::storage::vector_new([object { red: false }]); $std::storage::vector_set(x, 0, object { wrong: false });",
     """
-    let nodes = $std::storage::vector_new([scope { child?: scope { text: "ok" } }]);
+    let nodes = $std::storage::vector_new([object { child?: object { text: "ok" } }]);
     let a = $std::storage::vector_get(nodes, 0);
     let b = $std::storage::vector_get(nodes, 0);
     if a::child is not null { b::child = null; a::child::text } else { "WRONG" }
     """,
     """
     let nodes = $std::storage::vector_new([
-        scope { child?: scope { text: "ok" } }, scope { child?: null }
+        object { child?: object { text: "ok" } }, object { child?: null }
     ]);
     let a = $std::storage::vector_get(nodes, 0);
     let b = $std::storage::vector_get(nodes, 1);
@@ -190,7 +190,7 @@ foreach (var source in new[]
     """,
     """
     fn clear(value) { value::child = null; };
-    let nodes = $std::storage::vector_new([scope { child?: scope { text: "ok" } }]);
+    let nodes = $std::storage::vector_new([object { child?: object { text: "ok" } }]);
     let a = $std::storage::vector_get(nodes, 0);
     let b = $std::storage::vector_get(nodes, 0);
     if a::child is not null { clear(b); a::child::text } else { "WRONG" }

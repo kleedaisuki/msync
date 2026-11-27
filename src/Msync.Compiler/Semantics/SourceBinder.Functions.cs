@@ -209,10 +209,10 @@ internal sealed partial class SourceBinder
             int startContext = Context(expression.Span.Start);
             foreach (var member in expression.Members)
             {
-                if (!names.Add(member.Name)) throw Error($"Scope field '{member.Name}' is declared more than once.",
+                if (!names.Add(member.Name)) throw Error($"Object field '{member.Name}' is declared more than once.",
                     member.NameSpan ?? member.Span, "E0212");
                 if (member.Shorthand && !scope.Values.ContainsKey(member.Name))
-                    throw Error($"No binding '{member.Name}' to use for this Scope field.", member.NameSpan ?? member.Span, "E0202");
+                    throw Error($"No binding '{member.Name}' to use for this Object field.", member.NameSpan ?? member.Span, "E0202");
                 var value = Expression(member.Value);
                 var type = program.Node(value).Type;
                 if (member.Nullable && hir.Types[type.Value].RuntimeType.WithoutNull.Kind == TypeKind.Never)

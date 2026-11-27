@@ -29,7 +29,7 @@ internal static class LexicalLocationChecks
             ("captured-unwritten-local", """
                 fn build() {
                     let values?: Range<Number> = [3, 4];
-                    scope {
+                    object {
                         read: fn {
                             if values is null { ["none"] } else {
                                 $std::ranges::map(values, fn(value: Number) { value as String })
@@ -47,7 +47,7 @@ internal static class LexicalLocationChecks
                     let writer = fn(values?: Range<Number>) { values = null; };
                     writer([5]);
                     for values in [[8]] { values = [9]; };
-                    let state = scope { values?: [6], clear: fn { values = null; } };
+                    let state = object { values?: [6], clear: fn { values = null; } };
                     state::clear();
                     if values is null { ["none"] } else {
                         $std::ranges::map(values, fn(value: Number) { value as String })
@@ -123,7 +123,7 @@ internal static class LexicalLocationChecks
                 $std::ranges::size(bad())
                 """),
             ("public-scope-field", """
-                let record = scope { values?: [1] };
+                let record = object { values?: [1] };
                 if record::values is null { 0 } else {
                     let pending = $std::ranges::map(record::values, fn(value: Number) { value });
                     record::values = null;

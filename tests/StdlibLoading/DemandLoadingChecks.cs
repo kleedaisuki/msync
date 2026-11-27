@@ -27,7 +27,7 @@ internal static class DemandLoadingChecks
                 let list = $std::containers::List::new([1, 2]);
                 let before = read(list);
                 let root = $std;
-                root::containers = scope { List: scope { size: fn(self) { 99 } } };
+                root::containers = object { List: object { size: fn(self) { 99 } } };
                 if before == 2 { read(list) } else { 0 }
                 """, "99"),
             ("late-module-family-replacement", """
@@ -35,14 +35,14 @@ internal static class DemandLoadingChecks
                 let list = $std::containers::List::new([1, 2]);
                 let before = read(list);
                 let module = $std::containers;
-                module::List = scope { size: fn(self) { 77 } };
+                module::List = object { size: fn(self) { 77 } };
                 if before == 2 { read(list) } else { 0 }
                 """, "77"),
             ("retained-family-alias", """
                 let family = $std::containers::List;
                 let list = family::new([1, 2]);
                 let module = $std::containers;
-                module::List = scope { size: fn(self) { 77 } };
+                module::List = object { size: fn(self) { 77 } };
                 family::size(list)
                 """, "2"),
             ("shared-family-method", """

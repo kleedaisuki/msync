@@ -50,7 +50,7 @@ internal static class HpirArtifactRenderer
             if (site.CalledFunction >= 0) calls.Add(site);
             if (program.Functions[site.Function].Instructions[site.Instruction].Op == HpirOp.AddressOfConnection)
                 hovers.Add((JsonNode)new JsonObject { ["range"] = Range(site.Line, site.Column, site.Length),
-                    ["markdown"] = "Use `connection @ path` for qualification. `scope::member` is a Scope member projection." });
+                    ["markdown"] = "Use `connection @ path` for qualification. `value::member` is an Object member projection." });
             if (site.Source is not { } source) return;
             JsonObject reference = new() { ["range"] = Range(site.Line, site.Column, site.Length),
                 ["sourceName"] = source.Source, ["sourceStart"] = source.Start, ["sourceLength"] = source.Length };

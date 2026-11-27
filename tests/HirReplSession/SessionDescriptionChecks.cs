@@ -13,23 +13,23 @@ internal static class SessionDescriptionChecks
         await using NativeExecutionSession execution = new();
         await Submit("""
             concept HasPath { path: Path, };
-            scope Named {
+            object Named {
                 path: ./named,
-                make: fn { scope { field?: null } },
+                make: fn { object { field?: null } },
                 get: fn(item: Path or String) -> Path { item as Path },
             };
-            let object = scope { text: "before", path: ./before, remote: ssh://forge };
+            let record = object { text: "before", path: ./before, remote: ssh://forge };
             let optional?: String = "before";
             fn identity(item) { item };
             let values = $std::containers::List::new([1]);
             let list_alias = values;
             """);
         Compare("initial named/anonymous/callable/concept/indexed descriptions");
-        await Submit("object::text = \"after\"; object::path = ./after; optional = null; $std::containers::List::push(list_alias, 2);");
+        await Submit("record::text = \"after\"; record::path = ./after; optional = null; $std::containers::List::push(list_alias, 2);");
         Check(await Submit("$std::containers::List::size(values)") == NativeValue.FromNumber(2),
             "An accepted List alias mutates the original owner across submissions.");
         Compare("runtime field/path/null/indexed feedback");
-        await Submit("let object = scope { selected: true }; identity(1); identity(\"text\");");
+        await Submit("let record = object { selected: true }; identity(1); identity(\"text\");");
         Compare("shadowed selected exports and generic signatures");
         string before = Fingerprint(compiler.DescribeBindings());
         EditorAnalysis rejected = compiler.AnalyzeEditor("let query_only: Number = true;", execution.GetLocalValue);

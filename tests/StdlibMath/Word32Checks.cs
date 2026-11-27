@@ -17,7 +17,7 @@ internal static class Word32Checks
         let left = next_number();
         let right = next_number();
         let count = next_number();
-        scope {
+        object {
             and_value: $std::bits::bit_and(left, right),
             xor_value: $std::bits::bit_xor(left, right),
             shifted: $std::bits::shift_right(left, count),

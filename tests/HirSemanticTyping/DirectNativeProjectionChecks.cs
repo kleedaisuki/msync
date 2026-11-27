@@ -9,12 +9,12 @@ internal static class DirectNativeProjectionChecks
     internal static async Task Run()
     {
         const string projection = """
-            let wrapper = scope { math: $std::math };
+            let wrapper = object { math: $std::math };
             wrapper::math::abs(-7)
             """;
         const string effects = """
             let math = $std::math;
-            let state = scope { trace: 0 };
+            let state = object { trace: 0 };
             let answer = ({ state::trace = 1; math })::abs({
                 state::trace = state::trace * 10 + 2;
                 -7
@@ -38,7 +38,7 @@ internal static class DirectNativeProjectionChecks
             return value;
         }
         CheckNumber(await Submit("""
-            let math = scope { abs: $std::math::abs };
+            let math = object { abs: $std::math::abs };
             fn use() { math::abs(-7) };
             use()
             """), 7);

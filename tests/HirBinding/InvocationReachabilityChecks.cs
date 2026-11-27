@@ -7,7 +7,7 @@ internal static class InvocationReachabilityChecks
     {
         int checks = 0;
         Check("captured-class", """
-            scope Tools {
+            object Tools {
                 entry: fn(value: Number) { Tools::leaf(value) },
                 leaf: fn(value: Number) { value },
                 unused: fn { Tools::entry(1) },
@@ -16,7 +16,7 @@ internal static class InvocationReachabilityChecks
             """, [false, false, false]);
         Check("direct", "fn recur(value: Number) { if value == 0 { 0 } else { recur(value - 1) } }; recur(2)", [true]);
         Check("mutual", """
-            scope Recursive {
+            object Recursive {
                 first: fn(value: Number) { if value == 0 { 0 } else { Recursive::second(value - 1) } },
                 second: fn(value: Number) { Recursive::first(value) },
             };

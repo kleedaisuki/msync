@@ -7,7 +7,7 @@ int checks = 0;
 
 const string joined = """
     let flag = $std::io::read_line() is null;
-    let selected = if flag { scope { alpha: 0, key: 11 } } else { scope { key: 22, zed: 0 } };
+    let selected = if flag { object { alpha: 0, key: 11 } } else { object { key: 22, zed: 0 } };
     selected::key
     """;
 Module shapeJoin = Lower(joined);
@@ -23,7 +23,7 @@ Require(Ops(shapeJoin).Count(op => op.Op == OpCode.NewScope
 
 const string returned = """
     fn choose(flag: Bool) {
-        if flag { scope { alpha: 0, key: 11 } } else { scope { key: 22, zed: 0 } }
+        if flag { object { alpha: 0, key: 11 } } else { object { key: 22, zed: 0 } }
     };
     let flag = $std::io::read_line() is null;
     let selected = choose(flag);
@@ -39,7 +39,7 @@ Require(!Ops(call).Any(op => op.Op == OpCode.AdmitScope), "a closed call should 
 
 Module iteration = Lower("""
     let selected = 0;
-    for operation in [scope { insert: true, value: 3 }, scope { value: 4, insert: false }] {
+    for operation in [object { insert: true, value: 3 }, object { value: 4, insert: false }] {
         if operation::insert { selected = selected + operation::value; };
     };
     selected
@@ -52,10 +52,10 @@ Module entryDomain = Lower("""
     concept Keyed { key: Number };
     fn update(row: Keyed) {
         let first = row::key;
-        row = scope { key: 29, extra: true };
+        row = object { key: 29, extra: true };
         first + row::key
     };
-    update(scope { alpha: 0, key: 11 })
+    update(object { alpha: 0, key: 11 })
     """);
 var update = entryDomain.Functions.Single(function => function.Name == "update" && function.ReturnType == TypeRef.Number);
 Require(update.CodeSignature is { Parameters.Count: 1 } updateSignature
@@ -83,7 +83,7 @@ Module nestedCapture = Lower("""
         fn get { row::key };
         get
     };
-    let pick = capture(scope { key: 11, extra: true });
+    let pick = capture(object { key: 11, extra: true });
     pick()
     """);
 var nestedPlaces = nestedCapture.Functions.SelectMany(function => function.CodeSignature!.Captures)
@@ -91,11 +91,11 @@ var nestedPlaces = nestedCapture.Functions.SelectMany(function => function.CodeS
     .ToArray();
 Require(nestedPlaces.Length != 0
     && nestedPlaces.All(capture => nestedCapture.CodeTypes[capture.Type].ScopeLayouts is null or { Count: 0 }),
-    "a generic parameter's initial Scope layout must not become its mutable capture storage contract");
+    "a generic parameter's initial Object layout must not become its mutable capture storage contract");
 
 Module opaque = Lower("""
     let flag = $std::io::read_line() is null;
-    let selected = if flag { scope { name: "manual", value: "chosen" } }
+    let selected = if flag { object { name: "manual", value: "chosen" } }
         else { $std::ranges::front($std::environment::variables()) };
     selected::value
     """);
@@ -103,7 +103,7 @@ Require(opaque.FieldProjections.Single(place => place.Name == "value").Cases.Cou
     "a structural view must not supply the opaque producer a construction layout");
 
 Module staticScope = Lower("""
-    scope Counter { previous: 1, value: 2 };
+    object Counter { previous: 1, value: 2 };
     Counter::value = 7;
     Counter::previous + Counter::value
     """);
@@ -118,17 +118,17 @@ Require(staticInstructions.Count(op => op.Op == OpCode.LoadStaticField) == 2
     "a dominating lexical namespace should publish fields without allocating a receiver wrapper");
 
 Module escaped = Lower("""
-    scope Counter { value: 2 };
+    object Counter { value: 2 };
     let alias = Counter;
     alias::value = 7;
     Counter::value
     """);
 Require(Ops(escaped).Any(op => op.Op == OpCode.LoadStaticScope)
     && !Ops(escaped).Any(op => op.Op is OpCode.LoadStaticField or OpCode.StoreStaticField),
-    "a whole-value use must retain the named Scope identity");
+    "a whole-value use must retain the named Object identity");
 
 Module nestedField = Lower("""
-    let owner = scope { sample: scope { group: "", id: 0 }, key: 7 };
+    let owner = object { sample: object { group: "", id: 0 }, key: 7 };
     owner::key
     """);
 Require(Ops(nestedField).Count(op => op.Op == OpCode.NewScope) == 2,
@@ -139,7 +139,7 @@ Module process = Lower("""
     task::stdout
     """);
 Require(Ops(process).Any(op => op is { Op: OpCode.NativeCall, A: 1, Text: "process.stdout" }),
-    "Process member capabilities should not use the Scope place path");
+    "Process member capabilities should not use the Object place path");
 
 foreach (Module module in new[] { shapeJoin, call, iteration, entryDomain, extracted, captured, nestedCapture, opaque,
     staticScope, escaped, nestedField, process })

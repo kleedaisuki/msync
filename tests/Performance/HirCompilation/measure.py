@@ -170,8 +170,8 @@ def main() -> None:
                     "unrelated_private_bindings": case.world_bindings,
                     "calls": case.calls,
                     "source_function_definitions": 1,
-                    "argument_shape": "Scope{item:Number}",
-                    "result_shape": "Scope{value:Scope{item:Number}}",
+                    "argument_shape": "Object{item:Number}",
+                    "result_shape": "Object{value:Object{item:Number}}",
                     "consumed_result_indices": [0, case.calls // 2, case.calls - 1],
                 }
             if accepted is not None:

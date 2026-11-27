@@ -410,12 +410,12 @@ def skills(binary: Path, parent: Path) -> dict[str, int]:
 def target_contract(binary: Path, parent: Path) -> dict[str, int]:
     source = parent / "unsupported structural conversion.msync"
     source.write_bytes(
-        b'let converted = scope { value: "42" } as Number;\n'
+        b'let converted = object { value: "42" } as Number;\n'
         b"converted as String -> ./unexpected;\n"
     )
     result = invoke(binary, parent, "check", str(source))
     assert result.returncode != 0, result
-    assert "Scope" in result.stderr and "Number" in result.stderr, result.stderr
+    assert "Object" in result.stderr and "Number" in result.stderr, result.stderr
     assert "as Number" in result.stderr, result.stderr
     assert not (parent / "unexpected").exists()
     return {"unsupported_conversion_diagnostics": 1}

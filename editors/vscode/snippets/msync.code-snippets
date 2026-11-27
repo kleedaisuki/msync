@@ -12,7 +12,7 @@
   "Typed empty Set": { "prefix": "set", "body": ["let ${1:items} = \\$std::containers::Set::new(${2:Number});"], "description": "Create an empty ordered Set from a type witness" },
   "Formatted output line": { "prefix": "printlnf", "body": ["\\$std::io::println(\\$std::text::format(${1:\"{}\"}, ${2:value}));"], "description": "Format values and write a line to standard output" },
   "Read input line": { "prefix": "readline", "body": ["let ${1:line}? = \\$std::io::read_line();"], "description": "Read a line; null means end of input" },
-  "Namespace": { "prefix": "scope", "body": ["scope ${1:module} {", "    ${2:item}: ${3:value},", "};"], "description": "Declare a lexical namespace" },
+  "Named Object": { "prefix": "object", "body": ["object ${1:module} {", "    ${2:item}: ${3:value},", "};"], "description": "Declare a named singleton object" },
   "Directory predicate": { "prefix": "isdir", "body": ["\\$std::fs::is_directory(${1:path})"], "description": "Inspect a directory at its selected endpoint" },
   "Native function": { "prefix": "native", "body": ["native fn ${1:name}(${2:argument}: ${3:Path}) -> ${4:Bool};"], "description": "Declare a typed host-implemented function" },
   "Connection": { "prefix": "remote", "body": ["let ${1:remote} = ssh://${2:forge};"], "description": "Bind a native SSH connection" },

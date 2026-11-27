@@ -2,7 +2,7 @@
 
 Braces delimit blocks; indentation is presentation rather than grammar. Each
 block returns its final expression. A trailing `;` discards that result.
-Declarations require `;`. Scope members and match arms are comma-separated.
+Declarations require `;`. Object members and match arms are comma-separated.
 
 ```msync
 let input = ~/.codex;
@@ -39,5 +39,5 @@ let text = "say ""hello""";
 let backslashes = "C:\Users\Klee";
 ```
 
-`if`, `for`, `match`, anonymous `fn` and anonymous `scope` are expressions.
+`if`, `for`, `match`, anonymous `fn` and anonymous `object` are expressions.
 Conditions require Bool; empty blocks and declarations produce Null.

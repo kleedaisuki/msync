@@ -91,7 +91,7 @@ static Module RoundTrip(Module module)
 static void CheckMixed(Value value)
 {
     var result = (ScopeValue)value;
-    Require(result["echo"] is StringValue { Data: Fixtures.Echo }, "The Process in the original argument Scope did not survive.");
+    Require(result["echo"] is StringValue { Data: Fixtures.Echo }, "The Process in the original argument Object did not survive.");
     CheckBits(result["zero"], long.MinValue, "caller Number across borrowed detachment");
     CheckBits(result["nan"], Fixtures.NegativeNaN, "NaN payload/sign at LoadStorage");
     CheckBits(result["before"], long.MinValue, "captured Number before mutation");

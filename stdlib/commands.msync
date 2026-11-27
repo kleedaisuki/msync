@@ -1,5 +1,5 @@
 # One shared native runner owns live spawn and completed input/output behavior.
-scope NativeProcess {
+object NativeProcess {
     wait: $std::process::wait,
     stdout: $std::process::stdout,
     stderr: $std::process::stderr,
@@ -11,10 +11,10 @@ scope NativeProcess {
 };
 
 # Completed data retains the actual Process and owns its captured output strings.
-scope Completed {
+object Completed {
     new: fn(process: Process) {
         let value = NativeProcess::wait(process);
-        scope {
+        object {
             process: value,
             output: NativeProcess::stdout(value),
             error: NativeProcess::stderr(value),
@@ -37,7 +37,7 @@ scope Completed {
 };
 
 # Construction snapshots argument data without starting or observing a process.
-scope Command {
+object Command {
     new: fn(executable: Path or String, arguments: Range) {
         Command::with_runner(executable, arguments, NativeProcess)
     },
@@ -46,7 +46,7 @@ scope Command {
         arguments: Range,
         runner: $std::concepts::ProcessRunner
     ) -> $std::concepts::CommandSpec {
-        scope {
+        object {
             executable: executable as Path,
             arguments: $std::ranges::materialize(arguments),
             runner: runner,
@@ -96,13 +96,13 @@ scope Command {
 };
 
 # Exit classification does not alter launch policy or discard completed data.
-scope ExitStatus {
+object ExitStatus {
     accept: fn(result: $std::concepts::CompletedProcess) -> Bool {
         result::success
     },
 };
 
-scope Checked {
+object Checked {
     new: fn(command: $std::concepts::CommandSpec)
         -> $std::concepts::CheckedCommand {
         Checked::with_policy(command, ExitStatus)
@@ -111,7 +111,7 @@ scope Checked {
         command: $std::concepts::CommandSpec,
         exit_policy: $std::concepts::ExitPolicy
     ) -> $std::concepts::CheckedCommand {
-        scope {
+        object {
             command: command,
             exit_policy: exit_policy
         }

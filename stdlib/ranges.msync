@@ -23,18 +23,18 @@ native fn any_of(values: Range, predicate: Function) -> Bool;
 native fn all_of(values: Range, predicate: Function) -> Bool;
 native fn none(values: Range, predicate: Function) -> Bool;
 native fn none_of(values: Range, predicate: Function) -> Bool;
-native fn front(values: Range) -> Bool or String or Path or Range or Function or Scope or Process or Connection or Type or Number or Null;
-native fn back(values: Range) -> Bool or String or Path or Range or Function or Scope or Process or Connection or Type or Number or Null;
-native fn first(values: Range) -> Bool or String or Path or Range or Function or Scope or Process or Connection or Type or Number or Null;
-native fn last(values: Range) -> Bool or String or Path or Range or Function or Scope or Process or Connection or Type or Number or Null;
-native fn find(values: Range, value?) -> Bool or String or Path or Range or Function or Scope or Process or Connection or Type or Number or Null;
-native fn find_if(values: Range, predicate: Function) -> Bool or String or Path or Range or Function or Scope or Process or Connection or Type or Number or Null;
+native fn front(values: Range) -> Bool or String or Path or Range or Function or Object or Process or Connection or Type or Number or Null;
+native fn back(values: Range) -> Bool or String or Path or Range or Function or Object or Process or Connection or Type or Number or Null;
+native fn first(values: Range) -> Bool or String or Path or Range or Function or Object or Process or Connection or Type or Number or Null;
+native fn last(values: Range) -> Bool or String or Path or Range or Function or Object or Process or Connection or Type or Number or Null;
+native fn find(values: Range, value?) -> Bool or String or Path or Range or Function or Object or Process or Connection or Type or Number or Null;
+native fn find_if(values: Range, predicate: Function) -> Bool or String or Path or Range or Function or Object or Process or Connection or Type or Number or Null;
 
 # Iterator capabilities; adapters defer source and callback work until consumption.
 native fn concat(left: Range, right: Range) -> Range;
 native fn flatten(values: Range) -> Range;
-native fn zip(left: Range, right: Range) -> Range<Scope>;
-native fn enumerate_from(values: Range, start: Number) -> Range<Scope>;
+native fn zip(left: Range, right: Range) -> Range<Object>;
+native fn enumerate_from(values: Range, start: Number) -> Range<Object>;
 native fn chunk(values: Range, count: Number) -> Range<Range>;
 native fn slide(values: Range, count: Number) -> Range<Range>;
 native fn materialize(values: Range) -> Range;
@@ -43,7 +43,7 @@ native fn sort_with(values: Range, less: Function) -> Range;
 native fn scan(values: Range, initial?, operation: Function) -> Range;
 native fn sequence(start: Number, stop: Number, step: Number) -> Range<Number>;
 native fn repeat(value?, count: Number) -> Range;
-native fn at(values: Range, index: Number) -> Bool or String or Path or Range or Function or Scope or Process or Connection or Type or Number or Null;
+native fn at(values: Range, index: Number) -> Bool or String or Path or Range or Function or Object or Process or Connection or Type or Number or Null;
 native fn merge(left: Range, right: Range) -> Range;
 native fn merge_with(left: Range, right: Range, compare: Function) -> Range;
 native fn set_union(left: Range, right: Range) -> Range;
@@ -56,13 +56,13 @@ native fn set_symmetric_difference(left: Range, right: Range) -> Range;
 native fn set_symmetric_difference_with(left: Range, right: Range, compare: Function) -> Range;
 
 # A cursor owns a membership snapshot. Its position is independent of Null items.
-scope Cursor {
+object Cursor {
     begin: fn(values: Range) {
         let items = materialize(values);
-        scope { items: items, position: 0, limit: size(items) }
+        object { items: items, position: 0, limit: size(items) }
     },
     clone: fn(self) {
-        scope {
+        object {
             items: self::items,
             position: self::position,
             limit: self::limit,
@@ -147,7 +147,7 @@ fn sorted(values: Range) { sort(values) };
 fn sorted_with(values: Range, less: Function) { sort_with(values, less) };
 fn sort_by(values: Range, projection: Function) {
     let keyed = transform(values, fn(value?) {
-        scope { key: projection(value), value?: value }
+        object { key: projection(value), value?: value }
     });
     let ordered = sort_with(keyed, fn(left, right) { left::key < right::key });
     transform(ordered, fn(item) { item::value })
@@ -175,7 +175,7 @@ fn copy_if(values: Range, destination, predicate: Function) {
     filter(values, predicate) -> destination
 };
 fn fold(values: Range, initial?, operation: Function) {
-    let state = scope { value?: initial };
+    let state = object { value?: initial };
     for value in values { state::value = operation(state::value, value); };
     state::value
 };
@@ -206,7 +206,7 @@ fn first_or(values: Range, fallback?) {
     fallback
 };
 fn last_or(values: Range, fallback?) {
-    let state = scope { value?: fallback };
+    let state = object { value?: fallback };
     for value in values { state::value = value; };
     state::value
 };
@@ -236,7 +236,7 @@ fn max(values: Range) {
 };
 fn min_by(values: Range, projection: Function) {
     let keyed = transform(values, fn(value?) {
-        scope { key: projection(value), value?: value }
+        object { key: projection(value), value?: value }
     });
     let buffered = materialize(keyed);
     let selected = fold(drop(buffered, 1), first(buffered), fn(best, value) {
@@ -246,7 +246,7 @@ fn min_by(values: Range, projection: Function) {
 };
 fn max_by(values: Range, projection: Function) {
     let keyed = transform(values, fn(value?) {
-        scope { key: projection(value), value?: value }
+        object { key: projection(value), value?: value }
     });
     let buffered = materialize(keyed);
     let selected = fold(drop(buffered, 1), first(buffered), fn(best, value) {
@@ -256,7 +256,7 @@ fn max_by(values: Range, projection: Function) {
 };
 fn partition(values: Range, predicate: Function) {
     let buffered = materialize(values);
-    scope {
+    object {
         accepted: filter(buffered, predicate),
         rejected: reject(buffered, predicate)
     }
@@ -306,7 +306,7 @@ fn lower_bound(values: Range, value?) { lower_bound_with(values, value, less) };
 fn upper_bound(values: Range, value?) { upper_bound_with(values, value, less) };
 fn equal_range_with(values: Range, value?, compare: Function) {
     let cursor = Cursor::begin(values);
-    scope {
+    object {
         first: Cursor::lower_bound_with(cursor, value, compare),
         last: Cursor::upper_bound_with(cursor, value, compare),
     }

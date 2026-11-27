@@ -24,10 +24,10 @@ RESOLVE_CAPABILITIES: dict[str, Any] = {
     }
 }
 PROJECT = """# An astral character remains ordinary source text: 😀.
-scope Project {
+object Project {
     root: ./source,
     remote: ssh://not-selected.invalid,
-    new: fn() { scope { root: ./source } },
+    new: fn() { object { root: ./source } },
     copy: fn(file: Path, destination: Path) { file -> destination },
 };
 let make = Project::new;
@@ -180,8 +180,8 @@ def run(
         assert "boolean value" not in documentation(again).lower(), again
 
         receiver_source = (
-            "scope Functions { entry: fn(value: Path) { value } };\n"
-            "scope Paths { entry: ./source };\n"
+            "object Functions { entry: fn(value: Path) { value } };\n"
+            "object Paths { entry: ./source };\n"
             "Functions::entry(./source);\n"
             "Functions::entry;\n"
             "Paths::entry;\n"
@@ -227,7 +227,7 @@ def run(
 
         client.send("textDocument/didClose", {"textDocument": {"uri": uri}})
         assert diagnostics(client, uri, None)["diagnostics"] == []
-        reopened = "let choose = scope { fresh: true };\nchoose::fresh;\n"
+        reopened = "let choose = object { fresh: true };\nchoose::fresh;\n"
         notify(client, uri, 2, reopened, opening=True)
         assert diagnostics(client, uri, 2)["diagnostics"] == []
         expired, _ = resolve(client, original, supported)
@@ -239,7 +239,7 @@ def run(
             client, selected(reopened_items, "choose"), supported
         )
         assert (
-            reopened_item["kind"] == 6 and "choose: Scope" in reopened_item["detail"]
+            reopened_item["kind"] == 6 and "choose: Object" in reopened_item["detail"]
         ), reopened_item
         # Scope documentation describes the type, not its current members.
         members, _ = client.request(

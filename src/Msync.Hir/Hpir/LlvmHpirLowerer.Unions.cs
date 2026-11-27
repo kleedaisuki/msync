@@ -166,7 +166,7 @@ public static partial class LlvmHpirLowerer
                 joins[index] = code.Count;
                 Add(new(HpirOp.Branch, D: code.Count + 1, A: condition), call.Source);
             }
-            EmitFailure(call, "Scope allocation is outside its closed layout domain.");
+            EmitFailure(call, "Object allocation is outside its closed layout domain.");
             foreach (int join in joins) code[join] = code[join] with { B = code.Count };
         }
 

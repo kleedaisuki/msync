@@ -29,13 +29,13 @@ internal static class CompactNumericSlotsChecks
                     Require(stats["raw_arguments"] == (scope ? 3UL : 2UL) && stats["detached_frames"] == 1,
                         "The earlier numeric inputs were not borrowed across a detach.");
                     Require(stats["raw_local_writes"] == 3, "The final borrowed argument did not become a private numeric slot.");
-                    Require(stats["raw_scope_storage_loads"] == (scope ? 2UL : 0UL), "Wrong Scope operand route.");
+                    Require(stats["raw_scope_storage_loads"] == (scope ? 2UL : 0UL), "Wrong Object operand route.");
                     Require(stats["number_sidecar_arrays"] == 1 && stats["number_sidecar_slots"] == (scope ? 3UL : 2UL),
                         "The detached sidecar did not include exactly its live raw prefix and writable suffix.");
                 }
             }
         }
-        Console.WriteLine("PASS compact numeric suffix: borrowed prefix, detachment, generic materialization, raw Scope bits");
+        Console.WriteLine("PASS compact numeric suffix: borrowed prefix, detachment, generic materialization, raw Object bits");
     }
 
     internal static IEnumerable<Module> ExitShapes(int iterations)

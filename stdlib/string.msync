@@ -129,14 +129,14 @@ fn replace_last(text: String, part: String, replacement: String) {
 fn partition(text: String, separator: String) {
     let position? = find(text, separator);
     if position? {
-        scope {
+        object {
             found: false,
             before: text,
             separator: "",
             after: ""
         }
     } else {
-        scope {
+        object {
             found: true,
             before: take(text, position),
             separator: separator,
@@ -147,14 +147,14 @@ fn partition(text: String, separator: String) {
 fn rpartition(text: String, separator: String) {
     let position? = rfind(text, separator);
     if position? {
-        scope {
+        object {
             found: false,
             before: "",
             separator: "",
             after: text
         }
     } else {
-        scope {
+        object {
             found: true,
             before: take(text, position),
             separator: separator,

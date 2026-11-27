@@ -41,7 +41,7 @@ internal static class StaticPathChecks
         const string source = """
             let folder = ~/real;
             let alias = folder;
-            scope Config { root: folder, text: "child", remote: ssh://forge };
+            object Config { root: folder, text: "child", remote: ssh://forge };
             let member = Config::root;
             let joined = folder / "child";
             let textJoined = "base" / "child";
@@ -77,7 +77,7 @@ internal static class StaticPathChecks
         foreach (string name in new[] { "different", "nullable", "contextual" })
             Check(Binding(analysis, source, name).KnownPath is null, "runtime-dependent path was treated as a static location: " + name);
         var config = analysis.Occurrences.Single(item => item.Span.Start == source.IndexOf("Config", StringComparison.Ordinal));
-        Check(config.Members!.Single(member => member.Name == "root").KnownPath == new NativePath("~/real"), "Scope field lost its static Path value");
+        Check(config.Members!.Single(member => member.Name == "root").KnownPath == new NativePath("~/real"), "Object field lost its static Path value");
     }
 
     private static void GenericIsolation()
@@ -92,8 +92,8 @@ internal static class StaticPathChecks
             fn front(values) { $std::ranges::front(values) };
             let firstItem = front([~/first]);
             let secondItem = front([~/second]);
-            scope Left { root: ~/"first" };
-            scope Right { root: ~/"second" };
+            object Left { root: ~/"first" };
+            object Right { root: ~/"second" };
             fn scoped(value) { value::root };
             let leftRoot = scoped(Left);
             let rightRoot = scoped(Right);
@@ -106,7 +106,7 @@ internal static class StaticPathChecks
         Path(analysis, source, "rightRoot", new("~/second"));
         int selected = source.IndexOf("value::root", StringComparison.Ordinal) + "value::".Length;
         Check(analysis.Occurrences.Single(item => item.Span.Start == selected && item.Span.Length == 4).KnownPath is null,
-            "a polymorphic generic source occurrence picked one Scope's Path");
+            "a polymorphic generic source occurrence picked one Object's Path");
     }
 
     private static void ReceiverAndArtifactIsolation()

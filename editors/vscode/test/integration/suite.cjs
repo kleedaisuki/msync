@@ -134,16 +134,16 @@ async function run() {
         await record('restart-and-no-runtime-effects');
 
         const polishSource = [
-            'scope MyClass {',
-            '    new: fn() { scope { x: ~/.codex } },',
+            'object MyClass {',
+            '    new: fn() { object { x: ~/.codex } },',
             '    get: fn(some) { some::x }',
             '};',
             'let my_instance = MyClass::new();',
             'let construct = MyClass::new;',
             'let ClassAlias = MyClass;',
-            'scope SomeClass { remote: ssh://forge, enabled: true, title: "forge", root: ~/.codex, };',
-            'let anonymous = scope { remote: ssh://forge, };',
-            'let first: Scope = anonymous;',
+            'object SomeClass { remote: ssh://forge, enabled: true, title: "forge", root: ~/.codex, };',
+            'let anonymous = object { remote: ssh://forge, };',
+            'let first: Object = anonymous;',
             'let maybe? = if true { anonymous } else { null };',
             'if maybe? {} else {};',
             'let matched = match true { true => { first }, false => { anonymous } };',
@@ -157,9 +157,9 @@ async function run() {
         await vscode.window.showTextDocument(document);
         const flattenHover = items => items.flatMap(item => item.contents.map(content => typeof content === 'string' ? content : content.value)).join('\n');
         const scopePosition = document.positionAt(polishSource.indexOf('MyClass'));
-        const scopeHover = await until('inferred Scope hover with members', async () =>
+        const scopeHover = await until('inferred Object hover with members', async () =>
             flattenHover(await vscode.commands.executeCommand('vscode.executeHoverProvider', document.uri, scopePosition) || []),
-        value => /Scope/.test(value) && /new/.test(value) && /get/.test(value));
+        value => /Object/.test(value) && /new/.test(value) && /get/.test(value));
         const getPosition = document.positionAt(polishSource.lastIndexOf('get(my_instance)') + 1);
         const functionHover = flattenHover(await vscode.commands.executeCommand('vscode.executeHoverProvider', document.uri, getPosition) || []);
         assert.match(functionHover, /fn.*get\(/);
@@ -171,7 +171,7 @@ async function run() {
             ['my_instance', 'variable'], ['construct', 'function'], ['ClassAlias', 'type'],
             ['scope MyClass', 'keyword'], ['fn()', 'keyword'], ['fn(some)', 'keyword'],
             ['SomeClass', 'type'], ['remote: ssh', 'variable'],
-            ['anonymous', 'variable'], ['scope { remote', 'keyword'], ['Scope =', 'type'],
+            ['anonymous', 'variable'], ['object { remote', 'keyword'], ['Object =', 'type'],
             ['if true', 'controlKeyword'], ['else { null', 'controlKeyword'],
             ['? {}', 'controlKeyword'], ['match true', 'controlKeyword'],
         ];
@@ -216,7 +216,7 @@ async function run() {
             values => values.some(value => /Path/.test(value.message)));
         const memberError = typedErrors.find(value => /Path/.test(value.message));
         assert.doesNotMatch(memberError.message, /file:\/\//);
-        assert.match(memberError.message, /Scope/);
+        assert.match(memberError.message, /Object/);
         assert.match(memberError.message, /[Hh]elp/);
         assert.ok(memberError.relatedInformation && memberError.relatedInformation.length);
         await record('contextual-member-diagnostic', { message: memberError.message, related: memberError.relatedInformation.map(item => item.message) });

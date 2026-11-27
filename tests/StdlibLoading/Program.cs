@@ -42,11 +42,11 @@ foreach ((string name, string source, string expected) in new[]
     ("bool", "$std::bool::identity(true)", "true"),
     ("cross-module", "$std::path::filename(./folder/input.txt)", "input.txt"),
     ("explicit-cast", "42 as String", "42"),
-    ("root-module-replacement", "fn read() { $std::bool::identity(false) }; let root = $std; root::bool = scope { identity: fn(value: Bool) { not value } }; read()", "true"),
+    ("root-module-replacement", "fn read() { $std::bool::identity(false) }; let root = $std; root::bool = object { identity: fn(value: Bool) { not value } }; read()", "true"),
     ("module-member-replacement", "let boolean = $std::bool; let root = $std; boolean::identity = fn(value: Bool) { not value }; root::bool::identity(false)", "true"),
-    ("root-before-function", "let root = $std; fn read() { $std::bool::identity(false) }; root::bool = scope { identity: fn(value: Bool) { not value } }; read()", "true"),
-    ("user-shadow", "let std = scope { bool: scope { identity: fn(value: Bool) { not value } } }; $std::bool::identity(false)", "true"),
-    ("shadow-after-definition", "fn read() { $std::bool::identity(true) }; let std = scope { bool: scope { identity: fn(value: Bool) { not value } } }; read()", "true"),
+    ("root-before-function", "let root = $std; fn read() { $std::bool::identity(false) }; root::bool = object { identity: fn(value: Bool) { not value } }; read()", "true"),
+    ("user-shadow", "let std = object { bool: object { identity: fn(value: Bool) { not value } } }; $std::bool::identity(false)", "true"),
+    ("shadow-after-definition", "fn read() { $std::bool::identity(true) }; let std = object { bool: object { identity: fn(value: Bool) { not value } } }; read()", "true"),
     ("functional", "$std::functional::compose(fn(value: Number) { value * 2 }, fn(value: Number) { value + 1 })(20)", "42")
 })
 {

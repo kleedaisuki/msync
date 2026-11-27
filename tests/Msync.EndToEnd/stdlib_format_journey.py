@@ -25,7 +25,7 @@ let wide = 18446744073709551616;
 text::format("{:d}|{:X}|{:b}|{:o}", wide, wide, wide, wide) -> ./wide.txt;
 text::format("{:.2f}|{:.1e}|{:g}|{:f}", 0.125, 12.5, -0, -0) -> ./decimal.txt;
 text::format("{:?}", "a""b\c") -> ./debug.txt;
-let record = scope { owner: "Klee", count: 4 };
+let record = object { owner: "Klee", count: 4 };
 text::format_fields("{owner:<6}/{count:02d}", record) -> ./named.txt;
 record::count = 6;
 text::format_fields("{owner}/{count}", record) -> ./updated.txt;
@@ -57,7 +57,7 @@ INVALID: tuple[tuple[str, str], ...] = (
     ('format("{:.2f}", "not numeric")', "expects Number"),
     ('format("{:x}", 1.25)', "finite integral Number"),
     ('format("😀}", 1)', "template character 2"),
-    ('format_fields("{missing}", scope { present: 1 })', "Scope has no member"),
+    ('format_fields("{missing}", object { present: 1 })', "Object has no member"),
 )
 
 
@@ -71,7 +71,7 @@ def program() -> str:
         + f"let python: Path = {literal(sys.executable)};\n"
         + f'let process = release python({literal(SCRIPT)}, "--child");\n'
         + """
-let output = scope {
+let output = object {
     pending: process::stdout,
     description: text::format("{} {}", lazy, process)
 };

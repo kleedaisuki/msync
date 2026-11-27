@@ -13,7 +13,7 @@ internal static class ExecutionLoweringChecks
         [
             (TypeKind.Null, "null"), (TypeKind.String, "\"held𐀀\""), (TypeKind.Path, "./held"),
             (TypeKind.Connection, "$local"), (TypeKind.Function, "fn() { 17 }"),
-            (TypeKind.Range, "[1,2]"), (TypeKind.Type, "Number"), (TypeKind.Scope, "scope { n: 1 }")
+            (TypeKind.Range, "[1,2]"), (TypeKind.Type, "Number"), (TypeKind.Scope, "object { n: 1 }")
         ];
         foreach ((TypeKind kind, string source) in cases)
         {

@@ -6,7 +6,7 @@ using SourceCompiler = Msync.Compiler.Compiler;
 (string Name, string Source)[] cases =
 [
     ("mixed-namespace", """
-        let item = scope {
+        let item = object {
             name: "payload",
             file: ./relative/file,
             endpoint: $local,
@@ -27,8 +27,8 @@ using SourceCompiler = Msync.Compiler.Compiler;
         """),
     ("finite-branch", """
         fn choose(flag: Bool) {
-            if flag { scope { text: "left", count: 1 } }
-            else { scope { count: 2, text: "right" } }
+            if flag { object { text: "left", count: 1 } }
+            else { object { count: 2, text: "right" } }
         };
         let value = choose(false);
         value::count
@@ -56,7 +56,7 @@ using SourceCompiler = Msync.Compiler.Compiler;
         first + next()
         """),
     ("nullable-branch", """
-        let record = scope { number?: null };
+        let record = object { number?: null };
         record::number = 3;
         let value? = record::number;
         if value is null { 0 } else { value + 1 }

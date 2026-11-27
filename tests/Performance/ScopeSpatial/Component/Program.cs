@@ -106,7 +106,7 @@ static Mechanism VerifyRows(ScopeValue[] rows, bool packed)
     for (int index = 0; index < rows.Length; index++)
     {
         ScopeValue row = rows[index];
-        if (!identities.Add(row)) throw new InvalidOperationException("Scope construction reused an identity.");
+        if (!identities.Add(row)) throw new InvalidOperationException("Object construction reused an identity.");
         if (packedProperty.GetValue(row) is true)
         {
             packedRows++;

@@ -44,13 +44,13 @@ let uncurried = product::uncurry(fn(first: String) {
     fn(second: Number) { $std::string::concat(first, second as String) }
 });
 uncurried(pair) -> ./uncurried.txt;
-scope TextEquality {
+object TextEquality {
     Self: String,
     equal: fn(left: String, right: String) {
         $std::string::to_lowercase(left) == $std::string::to_lowercase(right)
     },
 };
-scope NumberEquality {
+object NumberEquality {
     Self: Number,
     equal: fn(left: Number, right: Number) { left == right },
 };
@@ -208,7 +208,7 @@ result::fold(changed, fn(value: String) {
 """
 
 NEGATIVE: tuple[tuple[str, str, str], ...] = (
-    ("missing-product-field", "$std::data::Pair::swap(scope { first: 1 });", "second"),
+    ("missing-product-field", "$std::data::Pair::swap(object { first: 1 });", "second"),
     (
         "wrong-product-callback",
         '$std::data::Pair::map_first($std::data::Pair::new("text", 1), fn(value: Number) { value + 1 });',
@@ -226,7 +226,7 @@ NEGATIVE: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "invalid-result-shape",
-        "$std::data::Result::is_ok(scope { other: true });",
+        "$std::data::Result::is_ok(object { other: true });",
         "fold",
     ),
     (

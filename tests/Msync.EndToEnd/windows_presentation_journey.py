@@ -70,20 +70,20 @@ def main() -> None:
     temporary = ROOT / ".temp"
     temporary.mkdir(exist_ok=True)
     cases = (
-        ("automatic-syntax", ["help", "syntax"], False, True, "scope"),
+        ("automatic-syntax", ["help", "syntax"], False, True, "object"),
         (
             "disabled-syntax",
             ["--color", "never", "help", "syntax"],
             False,
             False,
-            "scope",
+            "object",
         ),
         (
             "no-color-syntax",
             ["--color", "always", "help", "syntax"],
             True,
             False,
-            "scope",
+            "object",
         ),
         ("automatic-diagnostic", ["check", "invalid.msync"], False, True, "help:"),
         (

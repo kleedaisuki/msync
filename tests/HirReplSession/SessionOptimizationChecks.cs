@@ -65,17 +65,17 @@ internal static class SessionOptimizationChecks
             if (repeatString.Functions.Count != stringCall.Functions.Count) throw new InvalidOperationException("A String specialization was not reused.");
             await execution.ExecuteAsync(repeatString);
             compiler.AcceptSubmission(execution.GetLocalValue);
-            await Submit("fn Counter() { let state = scope { value: 0 }; scope { inc: fn { state::value = state::value + 1; }, get: fn { state::value } } }; let counter = Counter();");
+            await Submit("fn Counter() { let state = object { value: 0 }; object { inc: fn { state::value = state::value + 1; }, get: fn { state::value } } }; let counter = Counter();");
             await Submit("counter::inc();");
             await Submit("counter::inc();");
-            if (await Submit("counter::get()") != NativeValue.FromNumber(2)) throw new InvalidOperationException("Shared specialization lost a captured Scope alias.");
+            if (await Submit("counter::get()") != NativeValue.FromNumber(2)) throw new InvalidOperationException("Shared specialization lost a captured Object alias.");
             await Submit("let second_counter = Counter(); second_counter::inc();");
             if (await Submit("second_counter::get()") != NativeValue.FromNumber(1)
                 || await Submit("counter::get()") != NativeValue.FromNumber(2))
                 throw new InvalidOperationException("A cached factory reused another object's private state.");
-            Console.WriteLine($"O{level} code-cache rollback/new-type/captured Scope PASS");
-            if (await Submit("let object = scope { value: 1 }; let alias = object; alias::value = 2; object::value")
-                != NativeValue.FromNumber(2)) throw new InvalidOperationException("Scope alias broke.");
+            Console.WriteLine($"O{level} code-cache rollback/new-type/captured Object PASS");
+            if (await Submit("let record = object { value: 1 }; let alias = record; alias::value = 2; record::value")
+                != NativeValue.FromNumber(2)) throw new InvalidOperationException("Object alias broke.");
             try { await Submit("let retained = 3; let broken = \"bad\" as Number;"); }
             catch (MsyncException) { }
             if (!compiler.BindingNames.Contains("retained") || compiler.BindingNames.Contains("broken"))

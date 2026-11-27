@@ -5,7 +5,7 @@ internal static class EditorRevisionChecks
     internal static void Run(Action<bool, string> require)
     {
         const string name = "file:///editor-revisions.msync";
-        const string prefix = "fn wrap(value) { scope { item: value } };let item = wrap(7);";
+        const string prefix = "fn wrap(value) { object { item: value } };let item = wrap(7);";
         EditorAnalysisSession session = new(name);
         string text = prefix + "let selected = item::item;";
         _ = session.Analyze(text);
@@ -73,7 +73,7 @@ internal static class EditorRevisionChecks
                 "Revision and full analysis agree on source roles and signatures");
             require(actual.TokenRoles().OrderBy(RoleKey).SequenceEqual(fresh.TokenRoles().OrderBy(RoleKey)),
                 "Revision and full analysis agree on highlighting");
-            var expectedRoles = actual.Occurrences.Where(value => value.SemanticRole is "function" or "type" || value.Type is "Scope" or "Scope?")
+            var expectedRoles = actual.Occurrences.Where(value => value.SemanticRole is "function" or "type" || value.Type is "Object" or "Object?")
                 .Select(value => new EditorTokenRole(value.Span, value.SemanticRole)).OrderBy(RoleKey);
             require(actual.TokenRoles().OrderBy(RoleKey).SequenceEqual(expectedRoles),
                 "Lightweight highlighting agrees with detailed presentation");

@@ -27,7 +27,7 @@ internal static class EditorAnalysisProbe
         {
             "scalars" => string.Concat(Enumerable.Range(0, size).Select(index => $"let item_{index} = {index};\n")),
             "paths" => string.Concat(Enumerable.Range(0, size).Select(index => $"let item_{index} = ./input_{index};\n")),
-            _ => "fn create(file: Path) { scope { file: file, copy: fn(des: Path) { file -> des } } };\n"
+            _ => "fn create(file: Path) { object { file: file, copy: fn(des: Path) { file -> des } } };\n"
                 + string.Concat(Enumerable.Range(0, size).Select(index => $"let item_{index} = create(./input_{index});\n"))
         };
         EditorAnalysis analysis = EditorCompiler.Analyze(source, workload + ".msync");

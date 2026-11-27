@@ -92,7 +92,7 @@ static void CheckOutput(string[] expected, StringWriter output) =>
 
 static void CheckRawResult(Value result)
 {
-    var values = result as ScopeValue ?? throw new InvalidOperationException("Expected raw test output Scope.");
+    var values = result as ScopeValue ?? throw new InvalidOperationException("Expected raw test output Object.");
     var detached = (ScopeValue)values["detached"];
     CheckBits(values["zero"], long.MinValue, "contiguous raw return");
     CheckBits(values["nan"], Fixtures.NegativeNaNPayload, "split raw return");

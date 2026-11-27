@@ -23,7 +23,7 @@ concept Monoid {
     Semigroup,
     identity: Self,
 };
-scope TextConcat {
+object TextConcat {
     Self: String,
     identity: "",
     combine: fn(left: String, right: String) -> String {
@@ -42,13 +42,13 @@ if nan != nan and not (nan < 0) and 1/2 == .5 and -7%4 == -3
     "numeric-ok" -> ./numeric-semantics.txt;
 };
 fn named(value: String) {
-    scope Saved { item: value };
+    object Saved { item: value };
     Saved
 };
 let first = named("before");
 first::item = "shared";
 named("ignored")::item -> ./singleton.txt;
-fn fresh(value: String) { scope { item: value } };
+fn fresh(value: String) { object { item: value } };
 let changed = fresh("before");
 changed::item = "changed";
 fresh("fresh")::item -> ./anonymous.txt;
@@ -81,7 +81,7 @@ NEGATIVE: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "missing-concept-member",
         (
             "concept Named { name: String, }; fn use(value: Named) { value }; "
-            'use(scope { other: "not a name" });'
+            'use(object { other: "not a name" });'
         ),
         ("name",),
     ),

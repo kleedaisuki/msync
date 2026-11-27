@@ -1,7 +1,7 @@
 # msync: 0.8
 let fs = $std::fs;
 let text = $std::string;
-scope package {
+object package {
     input: std-input,
 };
 fn copy_one(source: Path, destination: Path) {

@@ -42,26 +42,26 @@ List<(string Name, string Source, double Expected)> cases =
         total
         """, 7),
     ("independent-structural-summaries", """
-        let first = scope { kind: "marker", value: 0 };
-        let second = scope { kind: "another", value: 0 };
+        let first = object { kind: "marker", value: 0 };
+        let second = object { kind: "another", value: 0 };
         fn head(values: Range) { $std::ranges::front(values) };
         let score = 0;
         for row in [first, second] {
             if row::kind is not null {
-                let entry = head([scope { priority: 7 }, scope { priority: 9 }]);
+                let entry = head([object { priority: 7 }, object { priority: 9 }]);
                 score = score + entry::priority;
             };
         };
         score
         """, 14),
     ("independent-summary-write", """
-        let first = scope { kind: "marker", value: 0 };
-        let second = scope { kind: "another", value: 0 };
+        let first = object { kind: "marker", value: 0 };
+        let second = object { kind: "another", value: 0 };
         fn head(values: Range) { $std::ranges::front(values) };
         let score = 0;
         for row in [first, second] {
             row::kind = "changed";
-            let entry = head([scope { priority: 7 }, scope { priority: 9 }]);
+            let entry = head([object { priority: 7 }, object { priority: 9 }]);
             score = score + entry::priority;
         };
         if first::kind == "changed" and second::kind == "changed" { score } else { 0 }

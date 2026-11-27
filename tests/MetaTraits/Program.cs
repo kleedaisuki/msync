@@ -7,7 +7,7 @@ int checks = 0;
 var programs = new (string Name, string Source, Value Expected)[]
 {
     ("invocable", """let f = fn(x: Number) { x + 1 }; $std::meta::is_invocable(f, Number)""", Value.True),
-    ("not-invocable", """let f = fn(x: Number) { x + 1 }; $std::meta::is_invocable(f, Scope)""", Value.False),
+    ("not-invocable", """let f = fn(x: Number) { x + 1 }; $std::meta::is_invocable(f, Object)""", Value.False),
     ("arity-rejection", """let f = fn(x: Number) { x + 1 }; $std::meta::is_invocable(f)""", Value.False),
     ("result-type", """let f = fn(x: Number) { x + 1 }; $std::meta::invoke_result(f, Number)""", new TypeValue(TypeRef.Number)),
     ("implicit-result", """let f = fn(x: String) { x }; $std::meta::is_invocable_r(Path, f, String)""", Value.True),
@@ -17,12 +17,12 @@ var programs = new (string Name, string Source, Value Expected)[]
     ("variadic", """$std::meta::is_variadic($std::ranges::of)""", Value.True),
     ("native-result", """$std::meta::invoke_result($std::string::concat, String, String)""", new TypeValue(TypeRef.String)),
     ("process-result", """$std::meta::invoke_result(./never-launched, String)""", new TypeValue(TypeRef.Process)),
-    ("has-member", """$std::meta::has_member(scope { value: 3 }, "value")""", Value.True),
-    ("missing-member", """$std::meta::has_member(scope { value: 3 }, "missing")""", Value.False),
-    ("member-type", """$std::meta::member_type(scope { value: 3 }, "value")""", new TypeValue(TypeRef.Number)),
-    ("missing-member-type", """$std::meta::member_type(scope { value: 3 }, "missing")""", Value.Null),
-    ("member-count", """$std::meta::member_count(scope { value: 3, text: "a" })""", new NumberValue(2)),
-    ("member-names", """$std::string::join($std::meta::member_names(scope { z: 3, a: "a" }), ",")""", new StringValue("a,z")),
+    ("has-member", """$std::meta::has_member(object { value: 3 }, "value")""", Value.True),
+    ("missing-member", """$std::meta::has_member(object { value: 3 }, "missing")""", Value.False),
+    ("member-type", """$std::meta::member_type(object { value: 3 }, "value")""", new TypeValue(TypeRef.Number)),
+    ("missing-member-type", """$std::meta::member_type(object { value: 3 }, "missing")""", Value.Null),
+    ("member-count", """$std::meta::member_count(object { value: 3, text: "a" })""", new NumberValue(2)),
+    ("member-names", """$std::string::join($std::meta::member_names(object { z: 3, a: "a" }), ",")""", new StringValue("a,z")),
     ("process-members", """$std::meta::member_type(./never-launched(), "stdout")""", new TypeValue(TypeRef.String)),
     ("parameter-types", """let f = fn(a: String, b?: Number) { a }; $std::ranges::at($std::meta::parameter_types(f), 1)""", new TypeValue(TypeRef.Number.WithNull)),
     ("generic-selection-number", """
@@ -47,13 +47,13 @@ var programs = new (string Name, string Source, Value Expected)[]
         count
         """, new NumberValue(0)),
     ("no-failed-probe-cache", """
-        let f = fn(value: Scope) { value::number + 1 };
-        $std::meta::is_invocable(f, scope { text: "wrong" });
-        f(scope { number: 4 })
+        let f = fn(value: Object) { value::number + 1 };
+        $std::meta::is_invocable(f, object { text: "wrong" });
+        f(object { number: 4 })
         """, new NumberValue(5)),
     ("no-storage-constraint-leak", """
-        let record = scope { value: 1 };
-        let invalid = fn(item: Scope) { item::value = "wrong"; };
+        let record = object { value: 1 };
+        let invalid = fn(item: Object) { item::value = "wrong"; };
         $std::meta::is_invocable(invalid, record);
         record::value = 2;
         record::value
@@ -61,12 +61,12 @@ var programs = new (string Name, string Source, Value Expected)[]
     ("concept-probe", """
         concept Label { name: String, };
         let accept = fn(value: Label) { value::name };
-        $std::meta::is_invocable(accept, scope { name: "Klee" })
+        $std::meta::is_invocable(accept, object { name: "Klee" })
         """, Value.True),
     ("concept-probe-rejection", """
         concept Label { name: String, };
         let accept = fn(value: Label) { value::name };
-        $std::meta::is_invocable(accept, scope { name: 4 })
+        $std::meta::is_invocable(accept, object { name: 4 })
         """, Value.False),
     ("alias-query", """
         let query = $std::meta::is_invocable;
@@ -101,10 +101,10 @@ var programs = new (string Name, string Source, Value Expected)[]
         } else { "probe accepted invalid carrier or mutated owner" }
         """, new StringValue("Klee")),
     ("vector-memory-view-isolation", """
-        let record = scope { flag: true };
+        let record = object { flag: true };
         let inspect = fn { $std::storage::vector_new([record]) };
         $std::meta::invoke_result(inspect);
-        if record::flag { "Klee" } else { scope {}::missing }
+        if record::flag { "Klee" } else { object {}::missing }
         """, new StringValue("Klee")),
 };
 
@@ -122,8 +122,8 @@ foreach (int level in new[] { 0, 2, 3 })
 
 foreach (string source in new[]
 {
-    "$std::meta::invoke_result(fn(value:Number){value}, Scope)",
-    "$std::meta::has_member(scope { item: 1 }, 2)",
+    "$std::meta::invoke_result(fn(value:Number){value}, Object)",
+    "$std::meta::has_member(object { item: 1 }, 2)",
     "$std::meta::is_invocable_r(1, fn{})",
     "$std::meta::is_invocable()"
 })

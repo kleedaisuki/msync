@@ -18,12 +18,12 @@ for (int step = 0; step < 180; step++) operations.Add((random.Next(3) != 0, rand
 for (int value = 79; value >= 0; value--) operations.Add((false, value));
 for (int value = 0; value < 24; value++) operations.Add((true, value));
 
-string commands = string.Join(",", operations.Select(operation => $"scope {{ insert: {operation.Insert.ToString().ToLowerInvariant()}, value: {operation.Value.ToString(CultureInfo.InvariantCulture)} }}"));
+string commands = string.Join(",", operations.Select(operation => $"object {{ insert: {operation.Insert.ToString().ToLowerInvariant()}, value: {operation.Value.ToString(CultureInfo.InvariantCulture)} }}"));
 string source = ArenaObservation.Source + "\n" + """
     let tree_type = $std::containers::Set;
     let tree = tree_type::new(Number);
     fn row(owner, index: Number) {
-        scope {
+        object {
             index: index,
             key?: $std::arena::key(owner, index),
             left: $std::arena::child(owner, index, true),
@@ -40,7 +40,7 @@ string source = ArenaObservation.Source + "\n" + """
         for index in traversal::indices {
             $std::storage::vector_push(nodes, row(owner, index));
         };
-        scope {
+        object {
             result: result,
             root: $std::arena::root(owner),
             count: count,
@@ -59,7 +59,7 @@ string source = ArenaObservation.Source + "\n" + """
         } else { tree_type::remove(tree, operation::value) };
         $std::storage::vector_push(reports, capture(tree, result));
     };
-    scope {
+    object {
         reports: $std::storage::vector_take(reports),
         lower?: tree_type::lower_bound(tree, 9),
         between: tree_type::range(tree, 4, 12),
@@ -129,7 +129,7 @@ foreach (int level in new[] { 0, 2, 3 })
 
 string customSource = """
     let tree_type = $std::containers::Set;
-    let tree = tree_type::with_policy(["Klee", "albedo", "KLEE"], scope {
+    let tree = tree_type::with_policy(["Klee", "albedo", "KLEE"], object {
         Self: String,
         sample: "",
         less: fn(left: String, right: String) {
@@ -140,7 +140,7 @@ string customSource = """
     tree_type::insert(alias, "Sucrose");
     let prior = tree_type::snapshot(tree);
     tree_type::remove(tree, "ALBEDO");
-    scope {
+    object {
         prior: prior,
         current: tree_type::snapshot(alias),
         count: tree_type::size(tree),
@@ -165,7 +165,7 @@ string endpointSource = """
     let added = set_type::extend(tree, [0, 2, 4, 4]);
     let retained = set_type::snapshot(tree);
     set_type::clear(tree);
-    scope {
+    object {
         first?: first,
         last?: last,
         found?: found,

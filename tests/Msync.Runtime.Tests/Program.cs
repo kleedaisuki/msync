@@ -11,7 +11,7 @@ if (args.Contains("--profile", StringComparer.Ordinal)) { await RuntimeProfileCh
 if (args.Contains("--inline-native", StringComparer.Ordinal)) { await InlineNativeChecks.RunAsync(); return; }
 if (args.Contains("--mutable-state", StringComparer.Ordinal)) { await MutableStateChecks.RunCurrentState(); return; }
 
-await Number("let empty = scope {}; $std::meta::member_count(empty)", 0);
+await Number("let empty = object {}; $std::meta::member_count(empty)", 0);
 Check(PathSemantics.Join(new NativePath("left\\", Connection: new(ConnectionKind.Ssh, "host")), "leaf") == "left\\/leaf", "Remote path join erased a POSIX backslash");
 foreach (NativeConstant value in new NativeConstant[] { new(NativeKind.Null), new(NativeKind.Bool, Boolean: true) })
 {

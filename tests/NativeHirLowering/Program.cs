@@ -16,9 +16,9 @@ await CheckSeparatedInitialization();
         if root::bool::identity(false) { 7 } else { 0 }
         """),
     ("input-alias-before-field-replacement", """
-        let namespace = scope { family: scope { read: fn(value) { 2 } } };
+        let namespace = object { family: object { read: fn(value) { 2 } } };
         fn change(value) {
-            namespace::family = scope { read: fn(value) { 99 } };
+            namespace::family = object { read: fn(value) { 99 } };
             value
         };
         let before = namespace::family::read(change(0));
@@ -50,29 +50,29 @@ await CheckSeparatedInitialization();
         if less(3, 4) { 7 } else { 0 }
         """),
     ("lazy-nested-shape", """
-        let Model = decltype(scope { child: scope { count: 1 } });
-        fn check(value: Scope) { let typed = value as Model; 42 };
-        check(scope { child: scope { count: "wrong" } })
+        let Model = decltype(object { child: object { count: 1 } });
+        fn check(value: Object) { let typed = value as Model; 42 };
+        check(object { child: object { count: "wrong" } })
         """),
     ("returned-nested-closure", """
         fn make(seed: Number) {
-            let outer = scope { inner: scope { n: seed } };
+            let outer = object { inner: object { n: seed } };
             fn() { outer::inner::n = outer::inner::n + 1; outer::inner::n }
         };
         let next = make(4);
         next() * 10 + next()
         """),
     ("shape-alias-mutated", """
-        let outer = scope { child: scope { count: 1 } };
+        let outer = object { child: object { count: 1 } };
         let Model = decltype(outer);
-        let erased: Scope = outer;
+        let erased: Object = outer;
         let checked = erased as Model;
-        outer::child = scope { unused: true, count: 7 };
+        outer::child = object { unused: true, count: 7 };
         checked::child::count
         """),
     ("two-node-cycle", """
-        let first = scope { value: 1, next?: null };
-        let second = scope { value: 2, next?: null };
+        let first = object { value: 1, next?: null };
+        let second = object { value: 2, next?: null };
         first::next = second;
         second::next = first;
         let selected = first;
@@ -84,25 +84,25 @@ await CheckSeparatedInitialization();
         total
         """),
     ("cyclic-shape", """
-        let node = scope { value: 3, next?: null };
+        let node = object { value: 3, next?: null };
         node::next = node;
         let Model = decltype(node);
-        let erased: Scope = node;
+        let erased: Object = node;
         let checked = erased as Model;
         let next? = checked::next;
         if next is null { 0 } else { next::value }
         """),
     ("generic-allocation-abis", """
-        fn box(value) { scope { payload: value } };
+        fn box(value) { object { payload: value } };
         let number = box(7);
         let text = box("text");
         let path = box(./input);
         if text::payload == "text" and path::payload is Path { number::payload } else { 0 }
         """),
     ("explicit-scope-shape", """
-        let unrelated = scope { count: "not a Number" };
-        let model = scope { count: 1 };
-        let erased: Scope = scope { count: 7 };
+        let unrelated = object { count: "not a Number" };
+        let model = object { count: 1 };
+        let erased: Object = object { count: 7 };
         let Model = decltype(model);
         let narrowed = erased as Model;
         narrowed::count
@@ -120,7 +120,7 @@ await CheckSeparatedInitialization();
         let kind = keep(Number);
         let operation = keep(fn(x: Number) { x + 2 });
         let items = keep([1, 2]);
-        let record = keep(scope { count: 3, text: "record" });
+        let record = keep(object { count: 3, text: "record" });
         let total = number() + record()::count;
         for item in items() { total = total + item; };
         if text() == "text" and path() is Path and endpoint() is Connection
@@ -129,7 +129,7 @@ await CheckSeparatedInitialization();
     ("generic-shared-environment", """
         fn make(value) {
             let saved = value;
-            scope {
+            object {
                 read: fn() { saved },
                 write: fn(next) { saved = next; },
             }
@@ -146,7 +146,7 @@ await CheckSeparatedInitialization();
         if item is null { 0 } else { item + 1 }
         """),
     ("builtin-storage", """
-        let value = scope {
+        let value = object {
             text: "payload", path: ./input, endpoint: $local,
             number: 7, truth: true, missing?: null, type: Number,
             function: fn(x: Number) { x + 1 }, sequence: [1, 2],
@@ -157,8 +157,8 @@ await CheckSeparatedInitialization();
         """),
     ("heterogeneous-field", """
         fn choose(flag: Bool) {
-            if flag { scope { value: "text" } }
-            else { scope { value: ./path } }
+            if flag { object { value: "text" } }
+            else { object { value: ./path } }
         };
         let selected = $std::fs::exists(./native-hir-never-existing-field-selection);
         choose(selected)::value
@@ -177,10 +177,10 @@ await CheckSeparatedInitialization();
         next()
         """),
     ("rebound-layout", """
-        let value = scope { count: 1, text: "first" };
+        let value = object { count: 1, text: "first" };
         let original = value;
         let read = fn() { value::count };
-        value = scope { text: "second", count: 9 };
+        value = object { text: "second", count: 9 };
         read() + original::count
         """),
     ("control-and-cleanup", """
@@ -207,7 +207,7 @@ await CheckSeparatedInitialization();
         sum
         """),
     ("singleton-alias", """
-        scope State { count: 1, text: "state" };
+        object State { count: 1, text: "state" };
         let alias = State;
         alias::count = 4;
         State::count
@@ -328,7 +328,7 @@ Console.WriteLine($"PASS {checks} native HIR representation and artifact contrac
 
 async Task CheckPhysicalWriteBoundary()
 {
-    const string source = "let actual = scope { value: \"old\" }; actual::value = \"new\"; $std::string::length(actual::value)";
+    const string source = "let actual = object { value: \"old\" }; actual::value = \"new\"; $std::string::length(actual::value)";
     HirModule original = SourceCompiler.Analyze(source, "checked-write.msync");
     foreach (bool valid in new[] { true, false })
     {
@@ -412,7 +412,7 @@ void CheckLiteralBits()
 
 void CheckEmptyFreshness()
 {
-    var hir = SourceCompiler.Analyze("let first = scope {}; let second = scope {}; [first, second]", "empty.msync");
+    var hir = SourceCompiler.Analyze("let first = object {}; let second = object {}; [first, second]", "empty.msync");
     var program = SourceCompiler.LowerNative(hir, 0);
     NativeArtifact.Validate(program);
     Require(program.Functions.SelectMany(function => function.Instructions)
@@ -424,24 +424,24 @@ async Task CheckDependentShapeRejection()
 {
     const string sourceName = "dependent-shape.msync";
     const string source = """
-        let Model = decltype(scope { child: scope { count: 1 } });
-        fn check(value: Scope) { let typed = value as Model; typed::child::count };
-        check(scope { child: scope { count: "wrong" } })
+        let Model = decltype(object { child: object { count: 1 } });
+        fn check(value: Object) { let typed = value as Model; typed::child::count };
+        check(object { child: object { count: "wrong" } })
         """;
     const string mutated = """
-        let original = scope { child: scope { count: 2 } };
+        let original = object { child: object { count: 2 } };
         let Model = decltype(original);
-        let erased: Scope = original;
+        let erased: Object = original;
         let typed = erased as Model;
-        original::child = scope { count: "wrong" };
+        original::child = object { count: "wrong" };
         typed::child::count
         """;
     const string returned = """
-        let original = scope { child: scope { count: 2 } };
+        let original = object { child: object { count: 2 } };
         let Model = decltype(original);
-        fn admit(value: Scope) { value as Model };
+        fn admit(value: Object) { value as Model };
         let typed = admit(original);
-        original::child = scope { count: "wrong" };
+        original::child = object { count: "wrong" };
         fn read(value) { value::child::count };
         read(typed)
         """;
@@ -491,7 +491,7 @@ void CheckScopeAllocationContracts()
         && HirPrinter.Print(decoded).Contains("AllocateScope", StringComparison.Ordinal),
         "Layout-only allocation lost its typed HIR operation or construction reference");
     RejectScope(root with { Nodes = root.Nodes.SetItem(allocation, node with { Kind = HirKind.Scope }) },
-        "An initialized Scope accepted missing field initializers");
+        "An initialized Object accepted missing field initializers");
     RejectScope(root with
     {
         Nodes = root.Nodes.SetItem(allocation, node with { Children = new(root.Edges.Length, 1) }),
@@ -517,7 +517,7 @@ void RejectScope(HirModule module, string reason)
 async Task CheckSeparatedInitialization()
 {
     HirModule original = SourceCompiler.Analyze("""
-        let record = scope { count: 41, advance: fn { count = count + 1; count } };
+        let record = object { count: 41, advance: fn { count = count + 1; count } };
         record::advance()
         """, "separated-namespace-initialization.msync");
     int scopeIndex = Enumerable.Range(0, original.Nodes.Length).Single(index => original.Nodes[index].Kind == HirKind.Scope);

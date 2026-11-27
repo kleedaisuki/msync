@@ -39,7 +39,7 @@ internal static unsafe partial class HpirExecutor
                 var (kind, index) = named ? NamedFormatOperand(schema, part.Name(template))
                     : part.Argument < call.Arguments.Count - 1 ? (schema[part.Argument + 1], part.Argument + 1) : default;
                 if (index == 0)
-                    throw TextFormat.Error(template, part.Offset, named ? $"Scope has no member '{part.Name(template).ToString()}'"
+                    throw TextFormat.Error(template, part.Offset, named ? $"Object has no member '{part.Name(template).ToString()}'"
                         : $"argument {part.Argument} is missing; supplied {call.Arguments.Count - 1}");
                 int argument = call.Arguments[index];
                 if (kind == HpirFormatImports.CompletedText)

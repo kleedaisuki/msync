@@ -5,8 +5,8 @@ internal static class ObservationChecks
     public static void Run(Action<bool, string> require)
     {
         const string aliases = """
-            let inner = scope { value: "before" };
-            let outer = scope { child: inner };
+            let inner = object { value: "before" };
+            let outer = object { child: inner };
             let alias = outer;
             alias;
             inner::value = "after";
@@ -19,7 +19,7 @@ internal static class ObservationChecks
         require(Payload(analysis.Resolve(before, "alias"))?.KnownText == "before",
             "Earlier semantic points retain their nested object value");
         require(Payload(analysis.Resolve(after, "alias"))?.KnownText == "after",
-            "A nested region write refreshes every referencing Scope alias");
+            "A nested region write refreshes every referencing Object alias");
 
         const string shadows = "let value = ./original; { let value = \"nested\"; value; }; value;";
         EditorAnalysis shadow = EditorCompiler.Analyze(shadows, "shadow-points.msync");

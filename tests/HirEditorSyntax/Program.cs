@@ -11,10 +11,10 @@ void Require(bool condition, string message)
 string[] sources =
 [
     "concept Product { first?: typename First, second?: typename Second, copy: fn(value: First) -> First, };",
-    "scope Tools { copy: fn(source: Path, destination: Path) -> Bool { source -> destination }, }; let plain = scope { item: true };",
-    "let named = scope Named { item: ~/.codex }; native fn copy(source: Path or String, destination: Path) -> Bool;",
+    "object Tools { copy: fn(source: Path, destination: Path) -> Bool { source -> destination }, }; let plain = object { item: true };",
+    "let named = object Named { item: ~/.codex }; native fn copy(source: Path or String, destination: Path) -> Bool;",
     "fn preserve(value?: $std::concepts::Option) -> $std::concepts::Option? { value };",
-    "fn unfinished(argument) { let local = scope { item: 7 }; local::"
+    "fn unfinished(argument) { let local = object { item: 7 }; local::"
 ];
 foreach (string source in sources)
 {
@@ -40,8 +40,8 @@ EditorSyntaxIndex product = EditorSyntaxIndex.Create(Parser.Parse(sources[0]), "
 Require(product.Occurrences.Any(item => item.Signature == "typename First" && item.SemanticRole == "type"), "Inline associated binder role");
 Require(product.AssociatedTypes.Single().Types.Count == 2, "Associated names available inside requirements");
 EditorSyntaxIndex tools = EditorSyntaxIndex.Create(Parser.Parse(sources[1]), "tools.msync", sources[1]);
-Require(tools.Occurrences.Any(item => item.Signature == "Tools: Scope" && item.SemanticRole == "type"), "Named Scope role");
-Require(tools.Occurrences.Any(item => item.Signature == "plain: Scope" && item.SemanticRole == "variable"), "Anonymous Scope binding role");
+Require(tools.Occurrences.Any(item => item.Signature == "Tools: Object" && item.SemanticRole == "type"), "Named Object role");
+Require(tools.Occurrences.Any(item => item.Signature == "plain: Object" && item.SemanticRole == "variable"), "Anonymous Object binding role");
 Require(tools.Occurrences.Any(item => item.Signature.StartsWith("fn copy(source: Path, destination: Path)", StringComparison.Ordinal)), "Function parameter names and types");
 EditorSyntaxIndex qualified = EditorSyntaxIndex.Create(Parser.Parse(sources[3]), "qualified.msync", sources[3]);
 foreach (string name in new[] { "std", "concepts", "Option" })

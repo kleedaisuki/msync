@@ -35,7 +35,7 @@ internal static class HpirCountedRangeChecks
         """;
 
     private const string Aliased = """
-        let cell = scope { hits: 0 };
+        let cell = object { hits: 0 };
         let rows = $std::ranges::enumerate($std::ranges::repeat(cell, 2));
         for row in rows { row::value::hits = row::value::hits + 1; };
         $std::io::println(cell::hits as String);
@@ -48,16 +48,16 @@ internal static class HpirCountedRangeChecks
 
     private const string SnapshotWindow = """
         fn owned() {
-            let discarded = scope { n: -1 };
-            let first = scope { n: 17 };
-            let next = scope { n: 25 };
+            let discarded = object { n: -1 };
+            let first = object { n: 17 };
+            let next = object { n: 25 };
             $std::ranges::drop([discarded, first, next], 1)
         };
         fn churn(limit: Number) -> Number {
             let index = 0;
             loop {
                 if index >= limit { break index; };
-                let scratch = scope { n: index };
+                let scratch = object { n: index };
                 index = scratch::n + 1;
             }
         };
@@ -134,8 +134,8 @@ internal static class HpirCountedRangeChecks
     {
         const string empty = """
             fn first(pick: Bool) {
-                let holder = if pick { scope { seed: $std::ranges::empty_of(Number) } }
-                    else { scope { marker: 1, seed: $std::ranges::take([8], 0) } };
+                let holder = if pick { object { seed: $std::ranges::empty_of(Number) } }
+                    else { object { marker: 1, seed: $std::ranges::take([8], 0) } };
                 $std::ranges::front(holder::seed)
             };
             first(false)
@@ -143,8 +143,8 @@ internal static class HpirCountedRangeChecks
         Fails("empty-field-projection", empty, "ranges.front requires a nonempty Range", "");
         const string observe = """
             fn choose(pick: Bool) {
-                if pick { scope { seed: $std::ranges::empty_of(Number) } }
-                else { scope { marker: 1, seed: $std::ranges::take([8], 0) } }
+                if pick { object { seed: $std::ranges::empty_of(Number) } }
+                else { object { marker: 1, seed: $std::ranges::take([8], 0) } }
             };
             let holder = choose(false);
             $std::io::println($std::ranges::size(holder::seed) as String);
@@ -155,7 +155,7 @@ internal static class HpirCountedRangeChecks
         Check("empty-field-size-and-iteration", observe, 2, "0\nempty\n", counted: false);
 
         const string changed = """
-            let holder = scope { seed: $std::ranges::empty_of(Number) };
+            let holder = object { seed: $std::ranges::empty_of(Number) };
             fn replace() { holder::seed = [7]; };
             replace();
             $std::ranges::front(holder::seed)

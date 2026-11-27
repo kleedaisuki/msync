@@ -3,7 +3,7 @@
 native fn get(name: String) -> String or Null;
 native fn set(name: String, value: String) -> Null;
 native fn unset(name: String) -> Null;
-native fn variables() -> Range<Scope>;
+native fn variables() -> Range<Object>;
 native fn working_directory() -> Path;
 native fn set_working_directory(path: Path or String) -> Path;
 native fn home_directory() -> Path;

@@ -26,11 +26,11 @@ string prelude = string.Join('\n', shell.Statements.Select(statement => statemen
     _ => null
 }).OfType<string>().Select(name => $"let {name} = $std::shell::{name};"));
 await Submit(prelude);
-await Submit("let state = scope { n: 0 }; 0");
+await Submit("let state = object { n: 0 }; 0");
 List<Observation> observations = [];
 for (int index = 1; index <= count; index++)
 {
-    string prefix = scenario == "growing" ? $"let r{index} = scope {{ s: \"row_{index}\", p: ./item, b: true }}; " : "";
+    string prefix = scenario == "growing" ? $"let r{index} = object {{ s: \"row_{index}\", p: ./item, b: true }}; " : "";
     string source = prefix + "state::n = state::n + 1; state::n";
     var before = Counter.Read();
     Module module = compiler.Compile(source);

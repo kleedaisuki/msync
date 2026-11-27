@@ -22,13 +22,13 @@ class Case:
 
 
 CASES: tuple[Case, ...] = (
-    Case("precise", "let output = scope { last?: null };", (("", "true\nNull\n"),)),
+    Case("precise", "let output = object { last?: null };", (("", "true\nNull\n"),)),
     Case(
         "broader",
         """
         let input? = $std::io::read_line();
-        let output = scope { last?: if input is null { null }
-            else { if input == "node" { scope { number: 1 } } else { null } } };
+        let output = object { last?: if input is null { null }
+            else { if input == "node" { object { number: 1 } } else { null } } };
         """,
         (("none\n", "true\nScope?\n"), ("node\n", "false\nScope?\n")),
     ),

@@ -19,7 +19,7 @@ if (args.Contains("--type-specialization", StringComparer.Ordinal)) { SemanticCh
 if (args.Contains("--branch-joins", StringComparer.Ordinal)) { SemanticChecks.RunBranches(); return; }
 string[] examples = [
 "fn copy() { ~/.codex -> $wsl @ ~/.codex }; let replace = fn (file, des) { file -> des };",
-"scope ScopeName { item: ~/.codex, ready: true, op: fn SomeOperation { true }, nested: scope { file: ~/.codex, }, }; let ScopeName2 = scope { item: true, };",
+"object ScopeName { item: ~/.codex, ready: true, op: fn SomeOperation { true }, nested: object { file: ~/.codex, }, }; let ScopeName2 = object { item: true, };",
 "let file = match exists ~/.codex { true => { ~/.codex/config.toml }, _ => { ~ }, };",
 "let file = match SomeSymbol { <.+> => {}, _ => {}, };",
 "native fn exists(path: Path or String) -> Bool; let file? = if exists ~/.codex { ~/.codex } else { null }; if file is null {} else { file -> $wsl @ file }; if file? {} else { file -> $wsl @ file };",

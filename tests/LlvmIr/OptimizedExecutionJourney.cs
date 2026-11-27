@@ -24,7 +24,7 @@ internal static class OptimizedExecutionJourney
         result
         """;
     private const string ScopeSource = """
-        let original = scope { left: 1, right: 2 };
+        let original = object { left: 1, right: 2 };
         let alias = original;
         alias::left = 4;
         original::left + original::right

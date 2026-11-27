@@ -17,11 +17,11 @@ internal static class SemanticStandardCatalog
     private static IReadOnlyList<SemanticMember> CreateBuiltins()
     {
         SemanticMember[] modules = StandardSourceCatalog.Read().Keys.Where(name => !name.StartsWith('_'))
-            .Order(StringComparer.Ordinal).Select(name => new SemanticMember(name, "Scope", $"scope {name}",
+            .Order(StringComparer.Ordinal).Select(name => new SemanticMember(name, "Object", $"object {name}",
                 "A source-backed standard-library namespace.", SemanticRole: "type")).ToArray();
         List<SemanticMember> result =
         [
-            new("$std", "Scope", "scope std", "Source-backed standard-library namespaces.", modules, SemanticRole: "type")
+            new("$std", "Object", "object std", "Source-backed standard-library namespaces.", modules, SemanticRole: "type")
         ];
         foreach (string name in new[] { "local", "wsl", "pwd", "file", "env", "path" })
         {
@@ -90,7 +90,7 @@ internal static class SemanticStandardCatalog
                     return new(function.Name, "Function", $"fn {function.Name}({parameters}) -> {result}",
                         Help(statement, "function"), SemanticRole: "function");
                 case ScopeDeclaration scope:
-                    return new(scope.Name, "Scope", $"scope {scope.Name}", Help(statement, "scope"), SemanticRole: "type");
+                    return new(scope.Name, "Object", $"object {scope.Name}", Help(statement, "object"), SemanticRole: "type");
                 case LetStatement { Pattern: NamePattern name } binding:
                     string type = Type(binding.Type, binding.Value switch
                     {

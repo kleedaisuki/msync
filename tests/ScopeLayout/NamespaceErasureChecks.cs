@@ -7,19 +7,19 @@ using Msync.Runtime;
 internal static class NamespaceErasureChecks
 {
     private const string Pure = """
-        scope Ops { step: fn(x: Number) -> Number { x + 1 } };
+        object Ops { step: fn(x: Number) -> Number { x + 1 } };
         Ops::step(7)
         """;
 
     private const string Live = """
-        scope Ops {
+        object Ops {
             step: fn(x: Number) -> Number { x + 1 },
         };
         $std::io::println(Ops::step(7) as String);
         Ops::step = fn(x: Number) -> Number { x + 2 };
         $std::io::println(Ops::step(7) as String);
         fn wrap(seed: Number) {
-            scope { step: fn(x: Number) -> Number { x + seed } }
+            object { step: fn(x: Number) -> Number { x + seed } }
         };
         let one = wrap(3);
         let two = wrap(5);

@@ -1,4 +1,4 @@
-"""Check literal Scope folds and a same-consumer effectful producer."""
+"""Check literal Object folds and a same-consumer effectful producer."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ def with_effect(source: str) -> str:
     first: int = next(
         index
         for index, line in enumerate(lines)
-        if line.lstrip().startswith("scope {") and line.rstrip().endswith(",")
+        if line.lstrip().startswith("object {") and line.rstrip().endswith(",")
     )
     row: str = lines[first].strip().removesuffix(",")
     lines[first] = f'    {{ $std::io::println("row-demand"); {row} }},\n'

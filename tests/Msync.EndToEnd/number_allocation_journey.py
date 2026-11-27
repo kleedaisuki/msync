@@ -33,7 +33,7 @@ if $std::math::signbit(negative_zero)
 };
 fn Accumulator(initial: Number) {
     let stored = initial;
-    scope {
+    object {
         add: fn(amount: Number) {
             stored = stored + amount;
             stored
@@ -46,10 +46,10 @@ let objects = $std::ranges::materialize(
 );
 let accumulated = zero;
 let aliases_valid = true;
-for object in objects {
-    let alias = object;
+for record in objects {
+    let alias = record;
     let changed = alias::add(seed);
-    aliases_valid = aliases_valid and object::read() == changed;
+    aliases_valid = aliases_valid and record::read() == changed;
     accumulated = accumulated + changed;
 };
 (accumulated as String) -> ./objects.txt;

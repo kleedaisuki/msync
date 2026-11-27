@@ -65,7 +65,7 @@ cat(./line_end.txt)
 ls()
 "LS_END"
 [null, 1, "two"]
-scope { name: "Klee", value: 7 }
+object { name: "Klee", value: 7 }
 head(sort(uniq(["b", "a", "a", "c"])), 2)
 let effects = 0;
 $std::ranges::map(["lazy-a", "lazy-b"], fn(value: String) { effects = effects + 1; value })
@@ -119,7 +119,7 @@ live_map = fn(value) { value + 10 };
         "null",
         "1",
         "two",
-        'scope { name: "Klee", value: 7 }',
+        'object { name: "Klee", value: 7 }',
         "a",
         "b",
         "lazy-a",
@@ -127,8 +127,8 @@ live_map = fn(value) { value + 10 };
         "2",
     ], (output, completed.stderr)
     counts = tail[9]
-    assert counts.startswith("scope { ") and counts.endswith(" }"), counts
-    assert sorted(counts.removeprefix("scope { ").removesuffix(" }").split(", ")) == [
+    assert counts.startswith("object { ") and counts.endswith(" }"), counts
+    assert sorted(counts.removeprefix("object { ").removesuffix(" }").split(", ")) == [
         "bytes: 12",
         "characters: 12",
         "lines: 0",

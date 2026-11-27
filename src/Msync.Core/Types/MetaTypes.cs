@@ -26,7 +26,7 @@ public static class MetaTypes
         "is_path" => first.Kind == TypeKind.Path,
         "is_range" => first.Kind == TypeKind.Range,
         "is_function" => first.Kind == TypeKind.Function,
-        "is_scope" => first.Kind == TypeKind.Scope,
+        "is_object" => first.Kind == TypeKind.Scope,
         "is_process" => first.Kind == TypeKind.Process,
         "is_connection" => first.Kind == TypeKind.Connection,
         "is_type" => first.Kind == TypeKind.Type,

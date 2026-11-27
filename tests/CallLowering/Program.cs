@@ -56,7 +56,7 @@ internal static class Program
         const string source = """
             fn leaf(x: Number) { x * 2 + 1 };
             fn middle(x: Number) { leaf(x) + leaf(x + 1) };
-            let row = scope { value: 7 };
+            let row = object { value: 7 };
             fn select(row, x: Number, y: Number) {
                 let a = row::value;
                 let b = a + x;
@@ -80,7 +80,7 @@ internal static class Program
         (string Name, string Source, double Expected)[] cases =
         [
             ("parameter-snapshot", """
-                let row = scope { n: 10 };
+                let row = object { n: 10 };
                 fn consume(n: Number) { row::n = 30; n + row::n };
                 consume(row::n)
                 """, 40),
@@ -96,7 +96,7 @@ internal static class Program
                 first() + second() + first()
                 """, 44),
             ("fresh-objects", """
-                fn make() { scope { n: 1 } };
+                fn make() { object { n: 1 } };
                 let first = make(); let second = make();
                 first::n = 7;
                 first::n + second::n
@@ -123,7 +123,7 @@ internal static class Program
                 first() + second() + first()
                 """, 20),
             ("shared-location", """
-                let row = scope { n: 4 };
+                let row = object { n: 4 };
                 fn change(value) { value::n = value::n + 1; value::n };
                 change(row) + change(row) + row::n
                 """, 17)
@@ -317,7 +317,7 @@ internal static class Program
             return ValueTask.FromResult(NativeValue.FromProcess(new(0, "", "")));
         };
         NativeInterpreter interpreter = new(Compiler.Compile(
-            "scope { job: release ./unused($std::io::read_stdin()) }", "queued-process.msync", 0), context: context);
+            "object { job: release ./unused($std::io::read_stdin()) }", "queued-process.msync", 0), context: context);
         try
         {
             NativeValue result = await interpreter.ExecuteAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10));

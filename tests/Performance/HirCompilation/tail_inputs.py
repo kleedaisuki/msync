@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 def bindings(size: int) -> str:
-    lines = ["scope Routes { route: fn(file: Path) { ./root / file }, };"]
+    lines = ["object Routes { route: fn(file: Path) { ./root / file }, };"]
     lines.extend(f"let value_{index} = Routes::route(./input_{index});" for index in range(size))
     lines.append(f"value_{size - 1}")
     return "\n".join(lines) + "\n"
@@ -21,8 +21,8 @@ def scans(size: int, *, scope: bool) -> str:
     if scope:
         lines.append(
             "let rows = $std::ranges::materialize(["
-            "scope { x: seed, y: seed + 1 },"
-            "scope { x: seed + 2, y: seed + 3 }]);"
+            "object { x: seed, y: seed + 1 },"
+            "object { x: seed + 2, y: seed + 3 }]);"
         )
     else:
         lines.append("let rows = $std::ranges::materialize($std::ranges::iota(seed, seed + 1024));")

@@ -10,12 +10,12 @@ internal static class ManagedLayoutProperties
     private const string Source = """
         let order = 0;
         fn record(value: Number) { order = order * 10 + value; value };
-        let object = scope { value: 1 };
+        let record = object { value: 1 };
         let values = [record(1), record(2)];
-        let aliases = [object, object];
+        let aliases = [record, record];
         let callbacks = [fn { order = 999; 0 }];
         for entry in aliases { entry::value = entry::value + 1; };
-        let read = fn { object::value };
+        let read = fn { record::value };
         order * 10 + read()
         """;
 
@@ -53,7 +53,7 @@ internal static class ManagedLayoutProperties
         Require(pathType.HasNativeRecordStorage && pathType.Elements.Skip(2).All(type => type is LlvmPointerType { AddressSpace: 1 }),
             "Path roots are managed references in a single Native storage record.");
         var union = LlvmHirLowerer.Lower(Compiler.Analyze(
-            "fn choose(flag: Bool) { if flag { scope { value: 1 } } else { \"text\" } }; choose(true)", "managed-union.msync"));
+            "fn choose(flag: Bool) { if flag { object { value: 1 } } else { \"text\" } }; choose(true)", "managed-union.msync"));
         var unions = union.Module.Functions.SelectMany(function => function.FunctionType.Parameters.Append(function.ReturnType))
             .OfType<LlvmStructType>().Where(type => type.HasName && type.Name.StartsWith("msync.union.", StringComparison.Ordinal)).ToArray();
         Require(unions.Length > 0 && unions.All(type => type.HasNativeRecordStorage

@@ -433,7 +433,7 @@
           "name": "keyword.declaration.function.msync"
         },
         {
-          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])scope(?![\\p{L}\\p{N}_./\\\\-])",
+          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])object(?![\\p{L}\\p{N}_./\\\\-])",
           "name": "keyword.declaration.scope.msync"
         },
         {
@@ -499,7 +499,7 @@
       "name": "variable.other.readwrite.msync"
     },
     "scope-declarations": {
-      "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(scope)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)(?=\\s*\\{)",
+      "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(object)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)(?=\\s*\\{)",
       "captures": {
         "1": {
           "name": "keyword.declaration.scope.msync"
@@ -521,7 +521,7 @@
       }
     },
     "types": {
-      "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:Range|String|Function|Scope|Path|Process|Connection|Null|Bool|Type|Number)(?![\\p{L}\\p{N}_./\\\\-])",
+      "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:Range|String|Function|Object|Path|Process|Connection|Null|Bool|Type|Number)(?![\\p{L}\\p{N}_./\\\\-])",
       "name": "entity.name.type.msync"
     },
     "typed-bindings": {

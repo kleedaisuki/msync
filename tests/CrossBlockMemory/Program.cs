@@ -78,31 +78,31 @@ try
     }
     var examples = new (string Name, string Source, bool Eliminate)[]
     {
-        ("branch-phi", "let box = scope { field: \"initial\" }; if exists ./flag { box::field = \"left\"; } else { box::field = \"right\"; }; box::field", true),
-        ("alias-phi", "let box = scope { field: \"initial\" }; let alias = box; if exists ./flag { alias = box; alias::field = \"left\"; } else { box::field = \"right\"; }; alias::field", true),
-        ("disjoint-fields", "let box = scope { left: 0, right: 0 }; if exists ./flag { box::left = 11; } else { box::right = 29; }; box::left + box::right", true),
-        ("loop-carried-field", "let box = scope { sum: 0 }; for item in [1, 2, 3, 4] { box::sum = box::sum + item; }; box::sum", true),
-        ("loop-with-branch", "let box = scope { sum: 0 }; for item in [1, 2, 3, 4] { if exists ./flag { box::sum = box::sum + item; } else { box::sum = box::sum + 1; }; }; box::sum", true),
-        ("escaped-return", "let box = scope { field: 0 }; let alias = box; if exists ./flag { alias::field = 3; }; box", false),
-        ("per-iteration-instances", "let previous = scope { item: 0 }; for item in [1, 2] { let next = scope { item: item }; previous = next; }; previous::item", false),
-        ("captured-field", "let box = scope { item: 0, read: fn { item } }; if exists ./flag { box::item = 3; }; box::read()", false),
-        ("captured-binding", "let box = scope { item: 0 }; let update = fn { box::item = 7; }; if exists ./flag { update(); }; box::item", false),
-        ("return-in-branch", "let box = scope { item: 0 }; if exists ./flag { box::item = 7; box } else { box::item = 9; box }", false),
-        ("two-instances", "let box = scope { item: 0 }; let other = scope { item: 2 }; let alias = box; if exists ./flag { alias = other; }; alias::item = 9; box::item + other::item", false),
-        ("private-across-fs-read", "let box = scope { item: 0 }; if exists ./flag { box::item = 3; }; exists ./unrelated; box::item", true),
-        ("private-across-plain-barriers", "let box = scope { item: 0 }; if exists ./flag { box::item = 3; }; release; acquire; box::item", true),
-        ("scope-null-test", "let box = scope { item: 0 }; if exists ./flag { box::item = 3; }; box is null", false),
-        ("nested-scope", "let inner = scope { item: 0 }; let outer = scope { inner: inner }; if exists ./flag { inner::item = 3; }; outer::inner::item", false)
-        ,("readonly-helper", "fn inspect(value) { exists value::path }; let box = scope { path: ./flag, left: 7 }; if exists ./flag { inspect(box); } else { inspect(box); }; box::left + box::left", false)
-        ,("partial-write", "fn update(value) { value::left = 11; }; let box = scope { left: 0, right: 23 }; if exists ./flag { update(box); }; box::right + box::left", false)
-        ,("write-refresh", "fn update(value) { value::left = 11; }; let box = scope { left: 0, right: 23 }; update(box); box::left = 19; if exists ./flag { box::right = 29; }; box::left", false)
-        ,("captured-readonly", "let box = scope { path: ./flag, left: 7 }; fn inspect() { exists box::path }; if exists ./flag { inspect(); }; box::left + box::left", false)
-        ,("captured-partial-write", "let box = scope { left: 0, right: 23 }; fn update() { box::left = 11; }; if exists ./flag { update(); }; box::right + box::left", false)
-        ,("captured-rebind", "let box = scope { item: 1 }; let original = box; let other = scope { item: 2 }; fn update() { box = other; }; if exists ./flag { update(); }; box::item + original::item", false)
-        ,("returned-alias", "fn identity(value) { value }; let box = scope { item: 0 }; let alias = identity(box); if exists ./flag { alias::item = 9; }; box::item", false)
-        ,("enumerated-write", "let box = scope { item: 1 }; let values = $std::ranges::transform([1], fn(item) { box::item = 7; item }); if exists ./flag { box::item = 2; }; for item in values { }; box::item", false)
-        ,("nested-partial-write", "fn update(value) { value::child::left = 11; }; let child = scope { left: 0, right: 23 }; let box = scope { child: child, mode: true }; if exists ./flag { update(box); }; child::right + child::left", false)
-        ,("path-helper", "fn inspect(value) { exists value::path }; let box = scope { path: ./flag, mode: true }; let seen = inspect(box); if exists ./flag { seen = inspect(box); }; box::mode", false)
+        ("branch-phi", "let box = object { field: \"initial\" }; if exists ./flag { box::field = \"left\"; } else { box::field = \"right\"; }; box::field", true),
+        ("alias-phi", "let box = object { field: \"initial\" }; let alias = box; if exists ./flag { alias = box; alias::field = \"left\"; } else { box::field = \"right\"; }; alias::field", true),
+        ("disjoint-fields", "let box = object { left: 0, right: 0 }; if exists ./flag { box::left = 11; } else { box::right = 29; }; box::left + box::right", true),
+        ("loop-carried-field", "let box = object { sum: 0 }; for item in [1, 2, 3, 4] { box::sum = box::sum + item; }; box::sum", true),
+        ("loop-with-branch", "let box = object { sum: 0 }; for item in [1, 2, 3, 4] { if exists ./flag { box::sum = box::sum + item; } else { box::sum = box::sum + 1; }; }; box::sum", true),
+        ("escaped-return", "let box = object { field: 0 }; let alias = box; if exists ./flag { alias::field = 3; }; box", false),
+        ("per-iteration-instances", "let previous = object { item: 0 }; for item in [1, 2] { let next = object { item: item }; previous = next; }; previous::item", false),
+        ("captured-field", "let box = object { item: 0, read: fn { item } }; if exists ./flag { box::item = 3; }; box::read()", false),
+        ("captured-binding", "let box = object { item: 0 }; let update = fn { box::item = 7; }; if exists ./flag { update(); }; box::item", false),
+        ("return-in-branch", "let box = object { item: 0 }; if exists ./flag { box::item = 7; box } else { box::item = 9; box }", false),
+        ("two-instances", "let box = object { item: 0 }; let other = object { item: 2 }; let alias = box; if exists ./flag { alias = other; }; alias::item = 9; box::item + other::item", false),
+        ("private-across-fs-read", "let box = object { item: 0 }; if exists ./flag { box::item = 3; }; exists ./unrelated; box::item", true),
+        ("private-across-plain-barriers", "let box = object { item: 0 }; if exists ./flag { box::item = 3; }; release; acquire; box::item", true),
+        ("scope-null-test", "let box = object { item: 0 }; if exists ./flag { box::item = 3; }; box is null", false),
+        ("nested-scope", "let inner = object { item: 0 }; let outer = object { inner: inner }; if exists ./flag { inner::item = 3; }; outer::inner::item", false)
+        ,("readonly-helper", "fn inspect(value) { exists value::path }; let box = object { path: ./flag, left: 7 }; if exists ./flag { inspect(box); } else { inspect(box); }; box::left + box::left", false)
+        ,("partial-write", "fn update(value) { value::left = 11; }; let box = object { left: 0, right: 23 }; if exists ./flag { update(box); }; box::right + box::left", false)
+        ,("write-refresh", "fn update(value) { value::left = 11; }; let box = object { left: 0, right: 23 }; update(box); box::left = 19; if exists ./flag { box::right = 29; }; box::left", false)
+        ,("captured-readonly", "let box = object { path: ./flag, left: 7 }; fn inspect() { exists box::path }; if exists ./flag { inspect(); }; box::left + box::left", false)
+        ,("captured-partial-write", "let box = object { left: 0, right: 23 }; fn update() { box::left = 11; }; if exists ./flag { update(); }; box::right + box::left", false)
+        ,("captured-rebind", "let box = object { item: 1 }; let original = box; let other = object { item: 2 }; fn update() { box = other; }; if exists ./flag { update(); }; box::item + original::item", false)
+        ,("returned-alias", "fn identity(value) { value }; let box = object { item: 0 }; let alias = identity(box); if exists ./flag { alias::item = 9; }; box::item", false)
+        ,("enumerated-write", "let box = object { item: 1 }; let values = $std::ranges::transform([1], fn(item) { box::item = 7; item }); if exists ./flag { box::item = 2; }; for item in values { }; box::item", false)
+        ,("nested-partial-write", "fn update(value) { value::child::left = 11; }; let child = object { left: 0, right: 23 }; let box = object { child: child, mode: true }; if exists ./flag { update(box); }; child::right + child::left", false)
+        ,("path-helper", "fn inspect(value) { exists value::path }; let box = object { path: ./flag, mode: true }; let seen = inspect(box); if exists ./flag { seen = inspect(box); }; box::mode", false)
     };
     foreach (var example in examples)
     {
@@ -161,7 +161,7 @@ try
         }
     }
 
-    const string lateCapture = "let module = scope { read: fn() { \"ok\" } }; fn unrelated() { true }; unrelated(); let action = fn() { module::read() }; action()";
+    const string lateCapture = "let module = object { read: fn() { \"ok\" } }; fn unrelated() { true }; unrelated(); let action = fn() { module::read() }; action()";
     Module lateOriginal = Compiler.Compile(lateCapture, "late-first-capture", 0);
     MethodInfo blockScalarize = typeof(Optimizer).Assembly.GetType("Msync.Optimization.ScopeScalarization")!
         .GetMethod("Optimize", BindingFlags.Static | BindingFlags.NonPublic)!;
@@ -170,18 +170,18 @@ try
         Functions = lateOriginal.Functions.Select(function => (FunctionCode)blockScalarize.Invoke(null,
             [lateOriginal, function])!).ToArray()
     };
-    Check(await Execute(lateBlock) == await Execute(lateOriginal), "A first capture after an unrelated call lost the current Scope payload");
+    Check(await Execute(lateBlock) == await Execute(lateOriginal), "A first capture after an unrelated call lost the current Object payload");
     foreach (int level in new[] { 2, 3 })
         Check(await Execute(Optimizer.Optimize(lateOriginal, level)) == await Execute(lateOriginal),
             $"Actual O{level} lost late-captured namespace payload");
-    const string earlyCapture = "let module = scope { read: fn() { \"before\" } }; let action = fn() { module::read() }; fn unrelated() { true }; unrelated(); module = scope { read: fn() { \"after\" } }; action()";
+    const string earlyCapture = "let module = object { read: fn() { \"before\" } }; let action = fn() { module::read() }; fn unrelated() { true }; unrelated(); module = object { read: fn() { \"after\" } }; action()";
     Module earlyOriginal = Compiler.Compile(earlyCapture, "already-captured-replacement", 0);
     Module earlyBlock = earlyOriginal with
     {
         Functions = earlyOriginal.Functions.Select(function => (FunctionCode)blockScalarize.Invoke(null,
             [earlyOriginal, function])!).ToArray()
     };
-    Check(await Execute(earlyBlock) == await Execute(earlyOriginal), "An already captured location lost its replacement Scope after an epoch");
+    Check(await Execute(earlyBlock) == await Execute(earlyOriginal), "An already captured location lost its replacement Object after an epoch");
 
     Module scalarPhi = Manual([new NumberValue(3)], Function("scalar-phi", 2, Number,
         [new(OpCode.LoadLocal, 0), new(OpCode.JumpIfFalse, 6), new(OpCode.Constant, 0), new(OpCode.NewScope, ItemLayout),
@@ -200,8 +200,8 @@ try
         };
         string expected = await Execute(wrapped);
         Check(value ? expected == Snapshot(new NumberValue(3)) : expected.StartsWith("error:", StringComparison.Ordinal),
-            "The scalar/Scope control did not select the intended result or error");
-        Check(await Execute(RoundTrip(Rewrite(wrapped))) == expected, "A scalar/Scope merge changed a selected result/error");
+            "The scalar/Object control did not select the intended result or error");
+        Check(await Execute(RoundTrip(Rewrite(wrapped))) == expected, "A scalar/Object merge changed a selected result/error");
     }
 
     Module duplicate = Manual([], Function("duplicate", 0, Null,
@@ -216,9 +216,9 @@ try
             new(OpCode.NewScope, ItemLayout), new(OpCode.Call, 1, 2), new(OpCode.Return)]),
         Function("missing", 1, Any, [new(OpCode.LoadLocal, 0), new(OpCode.LoadField, MissingField), new(OpCode.Return)],
             parameters: [OpaqueScope]));
-    Check(await Execute(RoundTrip(Rewrite(missing))) == "error:Scope has no member 'missing'",
+    Check(await Execute(RoundTrip(Rewrite(missing))) == "error:Object has no member 'missing'",
         "Missing-field selected error changed");
-    Module persistent = Compiler.Compile("let box = scope { item: 1 }; if exists ./flag { box::item = 7; }; box::item", optimization: 0) with { PreserveLocals = true };
+    Module persistent = Compiler.Compile("let box = object { item: 1 }; if exists ./flag { box::item = 7; }; box::item", optimization: 0) with { PreserveLocals = true };
     Module session = Optimizer.Optimize(persistent, 2);
     Check(session.Functions[0].Instructions.SequenceEqual(persistent.Functions[0].Instructions),
         "The optimizer admitted persistent REPL entry storage to scalarization");
@@ -261,7 +261,7 @@ try
         Check(await Execute(RoundTrip(Rewrite(nullableAlias))) == expected, "May-return alias erased the Null alternative and its selected error");
     }
 
-    const string copy = "let box = scope { payload: \"before\", target: ./result }; if exists ./flag { box::payload = \"你好 Klee\"; } else { box::payload = \"other branch\"; }; for item in [1, 2] { box::target = ./result; }; box::payload -> box::target;";
+    const string copy = "let box = object { payload: \"before\", target: ./result }; if exists ./flag { box::payload = \"你好 Klee\"; } else { box::payload = \"other branch\"; }; for item in [1, 2] { box::target = ./result; }; box::payload -> box::target;";
     Module copyOriginal = Compiler.Compile(copy, "field-bytes", 0);
     Module copyRewritten = Rewrite(copyOriginal);
     foreach (bool present in new[] { false, true })
@@ -282,7 +282,7 @@ try
     for (var sample = 0; sample < 32; sample++)
     {
         int first = random.Next(-100, 100), left = random.Next(-100, 100), right = random.Next(-100, 100), increment = random.Next(-10, 10);
-        string source = $"let box = scope {{ sum: {first}, other: 2 }}; let alias = box; if exists ./flag {{ alias::sum = {left}; }} else {{ box::sum = {right}; }}; for item in [1, 2, 3] {{ box::sum = box::sum + {increment}; }}; box::sum + box::other";
+        string source = $"let box = object {{ sum: {first}, other: 2 }}; let alias = box; if exists ./flag {{ alias::sum = {left}; }} else {{ box::sum = {right}; }}; for item in [1, 2, 3] {{ box::sum = box::sum + {increment}; }}; box::sum + box::other";
         Module original = Compiler.Compile(source, "field-trace-" + sample, 0);
         Module lowered = Rewrite(original);
         foreach (bool present in new[] { false, true })

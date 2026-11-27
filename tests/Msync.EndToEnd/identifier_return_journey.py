@@ -74,7 +74,7 @@ def runtime(binary: Path, directory: Path) -> dict[str, int]:
             "DOT_FUNCTION",
         ),
         ('let 名-称 = "UNICODE_BINDING"; 名-称 -> ./result;', "UNICODE_BINDING"),
-        ('scope Config { .codex: "MEMBER" }; Config::.codex -> ./result;', "MEMBER"),
+        ('object Config { .codex: "MEMBER" }; Config::.codex -> ./result;', "MEMBER"),
         (
             'fn file(value: String) -> Path { value }; file("./input") -> ./result;',
             "ACTUAL_FILE_BYTES",

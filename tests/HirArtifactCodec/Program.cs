@@ -40,7 +40,7 @@ Check(domains.Types[^2].ScopeDomain is { Count: 1 } one && one[0] == 0
     "Exact and joined construction layout domains roundtrip independently of the semantic shape.");
 RejectLayoutModule(withDomains with { ScopeLayouts = read.ScopeLayouts }, "Dangling construction layout reference rejected.");
 RejectLayoutModule(withDomains with { Types = read.Types.Add(exact with { RuntimeType = TypeRef.Number }) },
-    "A Number cannot advertise Scope layouts.");
+    "A Number cannot advertise Object layouts.");
 RejectLayoutModule(withDomains with
 {
     Types = withDomains.Types.Add(HirType.ConstructedScope(1)),
@@ -49,7 +49,7 @@ RejectLayoutModule(withDomains with
         Kind = HirKind.Scope, Type = new(withDomains.Types.Length), Data = 0, Children = new(withDomains.Edges.Length, 1)
     }),
     Edges = withDomains.Edges.Add(new(0))
-}, "A Scope constructor cannot claim a different actual layout.");
+}, "An Object constructor cannot claim a different actual layout.");
 Check(read.Locations[5].TemplateOwner == new HirTemplateId(0), "Template-owned location");
 Check(read.Functions[2].Captures.Select(capture => capture.Mode).SequenceEqual([HirCaptureMode.Location, HirCaptureMode.Value]), "Capture modes remain distinct");
 Check(read.Templates[0].ResultAnnotation == new HirTypeId(10) && read.Templates[0].TypeParameterTypes[0] == new HirTypeId(10), "Bound generic annotations survive");

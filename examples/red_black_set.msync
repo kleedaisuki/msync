@@ -1,6 +1,6 @@
 # A comparison policy defines ordering and uniqueness independently of storage.
 let set_type = $std::containers::Set;
-let names = set_type::with_policy(["Klee", "Albedo", "KLEE"], scope {
+let names = set_type::with_policy(["Klee", "Albedo", "KLEE"], object {
     Self: String,
     sample: "",
     less: fn(left: String, right: String) -> Bool {
